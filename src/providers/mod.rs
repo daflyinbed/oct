@@ -3,7 +3,11 @@ pub mod openai;
 
 use crate::provider::ProviderRegistry;
 
-pub use anthropic::{map_anthropic_usage, AnthropicChatModel, AnthropicConfig, AnthropicProvider};
+pub use anthropic::{
+    anthropic_finish_reason, map_anthropic_response, map_anthropic_usage,
+    normalize_anthropic_stream_event, parse_anthropic_sse_event, AnthropicChatModel,
+    AnthropicConfig, AnthropicProvider, AnthropicResponse, AnthropicStreamEvent,
+};
 pub use openai::OpenAiProvider;
 
 pub fn register_defaults(registry: &mut ProviderRegistry) {

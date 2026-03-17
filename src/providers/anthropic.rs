@@ -105,26 +105,26 @@ struct AnthropicWireRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-struct AnthropicResponse {
-    id: Option<String>,
+pub struct AnthropicResponse {
+    pub id: Option<String>,
     #[serde(default)]
-    content: Vec<Value>,
+    pub content: Vec<Value>,
     #[serde(default)]
-    stop_reason: Option<String>,
+    pub stop_reason: Option<String>,
     #[serde(default)]
-    usage: Option<Value>,
+    pub usage: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-struct AnthropicStreamEvent {
+pub struct AnthropicStreamEvent {
     #[serde(rename = "type")]
-    event_type: String,
+    pub event_type: String,
     #[serde(default)]
-    delta: Option<Value>,
+    pub delta: Option<Value>,
     #[serde(default)]
-    content_block: Option<Value>,
+    pub content_block: Option<Value>,
     #[serde(default)]
-    usage: Option<Value>,
+    pub usage: Option<Value>,
 }
 
 impl AnthropicChatModel {
@@ -370,7 +370,7 @@ fn map_anthropic_tool_choice(choice: &crate::core::ToolChoice) -> Value {
     }
 }
 
-fn map_anthropic_response(payload: AnthropicResponse) -> Result<ChatResponse, ModelError> {
+pub fn map_anthropic_response(payload: AnthropicResponse) -> Result<ChatResponse, ModelError> {
     let usage = payload.usage.as_ref().map(map_anthropic_usage);
     let mut provider_metadata = Map::new();
     if let Some(raw_usage) = payload.usage {
@@ -497,8 +497,7 @@ fn flush_sse_buffer(buffer: &mut String) -> Vec<String> {
     }
 }
 
-#[cfg(test)]
-fn parse_anthropic_sse_event(event: &str) -> Result<Vec<StreamEvent>, ModelError> {
+pub fn parse_anthropic_sse_event(event: &str) -> Result<Vec<StreamEvent>, ModelError> {
     parse_anthropic_sse_event_with_state(event, &mut HashMap::new())
 }
 
@@ -523,8 +522,7 @@ fn parse_anthropic_sse_event_with_state(
     normalize_anthropic_stream_event_with_state(event, tool_state)
 }
 
-#[cfg(test)]
-fn normalize_anthropic_stream_event(event: AnthropicStreamEvent) -> Result<Vec<StreamEvent>, ModelError> {
+pub fn normalize_anthropic_stream_event(event: AnthropicStreamEvent) -> Result<Vec<StreamEvent>, ModelError> {
     normalize_anthropic_stream_event_with_state(event, &mut HashMap::new())
 }
 
@@ -671,107 +669,4 @@ fn parse_anthropic_content_block_start(
 
 fn parse_json_string_or_raw(raw: &str) -> Value {
     serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_string()))
-}
-
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use crate::provider::Provider;
-
-    use super::{
-        anthropic_finish_reason, map_anthropic_response, map_anthropic_usage,
-        normalize_anthropic_stream_event, parse_anthropic_sse_event, AnthropicProvider,
-        AnthropicResponse, AnthropicStreamEvent,
-    };
-
-    #[test]
-    fn maps_anthropic_usage_fields() {
-        let usage = map_anthropic_usage(&json!({
-            "input_tokens": 20,
-            "output_tokens": 9
-        }));
-        assert_eq!(usage.input_tokens, Some(20));
-        assert_eq!(usage.output_tokens, Some(9));
-        assert_eq!(usage.total_tokens, Some(29));
-    }
-
-    #[test]
-    fn returns_anthropic_model_with_effective_limits() {
-        let provider = AnthropicProvider::default();
-        let model = provider.chat_model("claude-sonnet-4").unwrap();
-        assert_eq!(model.info().provider_name, "anthropic");
-        assert_eq!(model.info().limits.max_input_tokens, Some(200_000));
-        assert_eq!(anthropic_finish_reason(Some("tool_use")), crate::core::FinishReason::ToolCalls);
-    }
-
-    #[test]
-    fn normalizes_anthropic_response() {
-        let response = map_anthropic_response(AnthropicResponse {
-            id: Some("msg_123".to_string()),
-            content: vec![
-                json!({ "type": "text", "text": "hello" }),
-                json!({
-                    "type": "tool_use",
-                    "id": "toolu_1",
-                    "name": "lookup",
-                    "input": { "q": "rust" }
-                }),
-            ],
-            stop_reason: Some("tool_use".to_string()),
-            usage: Some(json!({ "input_tokens": 15, "output_tokens": 6 })),
-        })
-        .unwrap();
-
-        assert_eq!(response.provider_response_id.as_deref(), Some("msg_123"));
-        assert_eq!(response.finish_reason, crate::core::FinishReason::ToolCalls);
-        assert_eq!(response.usage.as_ref().and_then(|u| u.total_tokens), Some(21));
-        assert!(response.provider_metadata.contains_key("raw_usage"));
-        assert_eq!(response.message.parts.len(), 2);
-    }
-
-    #[test]
-    fn normalizes_anthropic_stream_events() {
-        let events = normalize_anthropic_stream_event(AnthropicStreamEvent {
-            event_type: "content_block_delta".to_string(),
-            delta: Some(json!({
-                "type": "text_delta",
-                "text": "hello"
-            })),
-            content_block: None,
-            usage: Some(json!({ "input_tokens": 10, "output_tokens": 1 })),
-        })
-        .unwrap();
-
-        assert!(matches!(&events[0], crate::core::StreamEvent::Usage(_)));
-        assert!(matches!(&events[1], crate::core::StreamEvent::TextDelta(text) if text == "hello"));
-    }
-
-    #[test]
-    fn parses_anthropic_sse_message_stop() {
-        let events = parse_anthropic_sse_event(
-            r#"event: message_stop
-data: {"type":"message_stop"}"#,
-        )
-        .unwrap();
-        assert_eq!(events, vec![crate::core::StreamEvent::Finish(crate::core::FinishReason::Stop)]);
-    }
-
-    #[test]
-    fn emits_final_anthropic_tool_call_on_block_stop() {
-        let start = normalize_anthropic_stream_event(AnthropicStreamEvent {
-            event_type: "content_block_start".to_string(),
-            delta: None,
-            content_block: Some(json!({
-                "type": "tool_use",
-                "id": "toolu_1",
-                "name": "lookup",
-                "input": {}
-            })),
-            usage: None,
-        })
-        .unwrap();
-
-        assert!(matches!(&start[0], crate::core::StreamEvent::ToolCall(call) if call.name == "lookup"));
-    }
 }
