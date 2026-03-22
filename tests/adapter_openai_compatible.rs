@@ -2,9 +2,10 @@ use serde_json::json;
 
 use oct::adapter::{
     map_openai_finish_reason, map_openai_generate_response, map_openai_usage,
-    normalize_openai_stream_chunk, parse_openai_sse_event, OpenAiChoice, OpenAiCompatibleChatModel,
-    OpenAiCompatibleConfig, OpenAiGenerateResponse, OpenAiRequestMessage, OpenAiStreamChunk,
-    OpenAiStreamChunkChoice, OpenAiStreamChunkChoiceDelta,
+    normalize_openai_stream_chunk, parse_openai_generate_body, parse_openai_sse_event,
+    parse_openai_sse_transcript, OpenAiChoice, OpenAiCompatibleChatModel, OpenAiCompatibleConfig,
+    OpenAiGenerateResponse, OpenAiRequestMessage, OpenAiStreamChunk, OpenAiStreamChunkChoice,
+    OpenAiStreamChunkChoiceDelta,
 };
 use oct::core::{ContentPart, FinishReason, GenerateOptions, Message, Role, ToolChoice, ToolSpec};
 use oct::model::ChatRequest;
@@ -73,6 +74,9 @@ fn maps_chat_request_to_openai_wire_request() {
             stop_sequences: vec!["STOP".to_string()],
             json_schema: Some(json!({"name": "answer"})),
             tool_choice: Some(ToolChoice::Named("lookup".to_string())),
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
             provider_options: Default::default(),
         },
     };
@@ -95,15 +99,19 @@ fn normalizes_openai_generate_response() {
         choices: vec![OpenAiChoice {
             message: OpenAiRequestMessage {
                 role: "assistant".to_string(),
-                content: json!([
-                    { "type": "text", "text": "hello" },
-                    {
-                        "type": "tool_call",
-                        "id": "call_1",
+                content: Some(json!([
+                    { "type": "text", "text": "hello" }
+                ])),
+                reasoning_content: None,
+                tool_call_id: None,
+                tool_calls: Some(vec![json!({
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
                         "name": "lookup",
                         "arguments": { "q": "rust" }
                     }
-                ]),
+                })]),
             },
             finish_reason: Some("tool_calls".to_string()),
         }],
@@ -131,6 +139,7 @@ fn normalizes_openai_stream_chunks() {
         choices: vec![OpenAiStreamChunkChoice {
             delta: OpenAiStreamChunkChoiceDelta {
                 content: Some(json!({ "type": "text", "text": "hel" })),
+                reasoning_content: None,
                 tool_calls: Some(vec![json!({
                     "id": "call_1",
                     "function": {
@@ -160,11 +169,10 @@ fn normalizes_openai_stream_chunks() {
 
 #[test]
 fn parses_openai_sse_done_event() {
+    // [DONE] is now a terminator that emits no events
+    // The actual Finish event comes from the chunk with finish_reason
     let events = parse_openai_sse_event("data: [DONE]").unwrap();
-    assert_eq!(
-        events,
-        vec![oct::core::StreamEvent::Finish(FinishReason::Stop)]
-    );
+    assert!(events.is_empty());
 }
 
 #[test]
@@ -173,6 +181,7 @@ fn emits_final_openai_tool_call_when_done() {
         choices: vec![OpenAiStreamChunkChoice {
             delta: OpenAiStreamChunkChoiceDelta {
                 content: None,
+                reasoning_content: None,
                 tool_calls: Some(vec![json!({
                     "id": "call_1",
                     "function": {
@@ -193,4 +202,58 @@ fn emits_final_openai_tool_call_when_done() {
         oct::core::StreamEvent::ToolCallDelta { .. }
     ));
     assert!(matches!(&events[1], oct::core::StreamEvent::ToolCall(call) if call.name == "lookup"));
+}
+
+#[test]
+fn parses_openai_generate_body_text() {
+    let response = parse_openai_generate_body(
+        r#"{
+            "id": "resp_realistic",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            { "type": "text", "text": "hi there" }
+                        ]
+                    },
+                    "finish_reason": "stop"
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 12,
+                "completion_tokens": 3,
+                "total_tokens": 15
+            }
+        }"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        response.provider_response_id.as_deref(),
+        Some("resp_realistic")
+    );
+    assert_eq!(response.finish_reason, FinishReason::Stop);
+    assert_eq!(
+        response.usage.as_ref().and_then(|u| u.total_tokens),
+        Some(15)
+    );
+}
+
+#[test]
+fn parses_openai_sse_transcript_across_events() {
+    let events = parse_openai_sse_transcript(
+        "data: {\"choices\":[{\"delta\":{\"content\":{\"type\":\"text\",\"text\":\"hel\"}},\"finish_reason\":null}],\"usage\":null}\n\n\
+data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"id\":\"call_1\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"q\\\":\\\"rust\\\"}\"},\"done\":true}],\"content\":null},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2,\"total_tokens\":7}}\n\n\
+data: [DONE]\n\n",
+    )
+    .unwrap();
+
+    assert!(matches!(&events[0], oct::core::StreamEvent::TextDelta(text) if text == "hel"));
+    assert!(matches!(&events[1], oct::core::StreamEvent::Usage(_)));
+    assert!(matches!(
+        &events[2],
+        oct::core::StreamEvent::ToolCallDelta { .. }
+    ));
+    assert!(matches!(&events[3], oct::core::StreamEvent::ToolCall(call) if call.name == "lookup"));
 }

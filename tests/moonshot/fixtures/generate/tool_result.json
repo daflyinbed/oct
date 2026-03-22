@@ -1,0 +1,37 @@
+{
+  "request": {
+    "body": {
+      "model": "kimi-k2.5",
+      "messages": [
+        {
+          "role": "user",
+          "content": "What is the weather in Beijing?"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "The user is asking for the weather in Beijing. I need to use the get_weather function to get this information. Let me check the function parameters:\n\n- location: string (City name) - This is required\n\nBeijing is the location, so I'll pass that to the function.",
+          "tool_calls": [
+            {
+              "index": 0,
+              "id": "get_weather:0",
+              "type": "function",
+              "function": {
+                "name": "get_weather",
+                "arguments": "{\"location\": \"Beijing\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "get_weather:0",
+          "content": "{\"temperature\":\"25°C\",\"condition\":\"Sunny\",\"location\":\"Beijing\"}"
+        }
+      ]
+    }
+  },
+  "response": {
+    "body": "{\"id\":\"chatcmpl-69c0253119f26a5390fedbd7\",\"object\":\"chat.completion\",\"created\":1774200113,\"model\":\"kimi-k2.5\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"The current weather in Beijing is **sunny** with a temperature of **25°C**. It's a nice day there! ☀️\",\"reasoning_content\":\"The function returned the weather data for Beijing:\\n- Temperature: 25°C\\n- Condition: Sunny\\n- Location: Beijing\\n\\nNow I'll provide this information to the user in a clear and friendly way.\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":126,\"completion_tokens\":71,\"total_tokens\":197}}"
+  }
+}

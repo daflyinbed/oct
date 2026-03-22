@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::core::tool::ToolChoice;
 
@@ -11,5 +11,9 @@ pub struct GenerateOptions {
     pub stop_sequences: Vec<String>,
     pub json_schema: Option<Value>,
     pub tool_choice: Option<ToolChoice>,
-    pub provider_options: Map<String, Value>,
+    pub n: Option<u32>,
+    pub presence_penalty: Option<f32>,
+    pub frequency_penalty: Option<f32>,
+    #[serde(flatten)]
+    pub provider_options: Value,
 }

@@ -30,6 +30,7 @@ pub struct OpenAiCompatibleChatModel {
 
 #[derive(Debug, Clone, Default)]
 struct OpenAiToolCallAccumulator {
+    id: Option<String>,
     name: Option<String>,
     arguments: String,
 }
@@ -54,6 +55,8 @@ pub struct OpenAiStreamChunkChoiceDelta {
     #[serde(default)]
     pub content: Option<Value>,
     #[serde(default)]
+    pub reasoning_content: Option<Value>,
+    #[serde(default)]
     pub tool_calls: Option<Vec<Value>>,
 }
 
@@ -76,7 +79,14 @@ pub struct OpenAiStreamChunk {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OpenAiRequestMessage {
     pub role: String,
-    pub content: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<Value>,
+    #[serde(default)]
+    pub reasoning_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -111,6 +121,8 @@ pub struct OpenAiWireRequest {
     pub top_p: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_completion_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub stop: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
@@ -119,8 +131,14 @@ pub struct OpenAiWireRequest {
     pub tool_choice: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_format: Option<OpenAiResponseFormat>,
-    #[serde(skip_serializing_if = "Map::is_empty", default)]
-    pub provider_options: Map<String, Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub n: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub presence_penalty: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frequency_penalty: Option<f32>,
+    #[serde(flatten)]
+    pub provider_options: Value,
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -189,10 +207,14 @@ impl OpenAiCompatibleChatModel {
             temperature: req.options.temperature,
             top_p: req.options.top_p,
             max_tokens: req.options.max_output_tokens,
+            max_completion_tokens: None,
             stop: req.options.stop_sequences.clone(),
             tools,
             tool_choice,
             response_format,
+            n: req.options.n,
+            presence_penalty: req.options.presence_penalty,
+            frequency_penalty: req.options.frequency_penalty,
             provider_options: req.options.provider_options.clone(),
             stream: false,
             stream_options: None,
@@ -332,6 +354,12 @@ pub fn map_openai_generate_response(payload: OpenAiGenerateResponse) -> Result<C
     })
 }
 
+pub fn parse_openai_generate_body(body: &str) -> Result<ChatResponse, ModelError> {
+    let payload: OpenAiGenerateResponse = serde_json::from_str(body)
+        .map_err(|err| ModelError::transport(format!("invalid openai response json: {err}")))?;
+    map_openai_generate_response(payload)
+}
+
 fn map_message(message: &Message) -> Result<OpenAiRequestMessage, ModelError> {
     let role = match message.role {
         crate::core::Role::System => "system",
@@ -341,36 +369,99 @@ fn map_message(message: &Message) -> Result<OpenAiRequestMessage, ModelError> {
     }
     .to_string();
 
-    let mut parts = Vec::with_capacity(message.parts.len());
-    for part in &message.parts {
-        parts.push(match part {
-            ContentPart::Text(text) => json!({ "type": "text", "text": text }),
-            ContentPart::ImageUrl { url } => {
-                json!({ "type": "image_url", "image_url": { "url": url } })
-            }
-            ContentPart::Reasoning(text) => json!({ "type": "text", "text": text }),
-            ContentPart::ToolCall(call) => json!({
-                "type": "tool_call",
-                "id": call.id,
-                "name": call.name,
-                "arguments": call.arguments,
-            }),
-            ContentPart::ToolResult(result) => json!({
-                "type": "tool_result",
-                "tool_call_id": result.call_id,
-                "content": result.content,
-                "is_error": result.is_error,
-            }),
+    if message.role == crate::core::Role::Tool {
+        let tool_result = message
+            .parts
+            .iter()
+            .find_map(|p| match p {
+                ContentPart::ToolResult(r) => Some(r),
+                _ => None,
+            })
+            .ok_or_else(|| ModelError::provider("tool role message missing ToolResult part"))?;
+
+        let content_str = match &tool_result.content {
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+
+        return Ok(OpenAiRequestMessage {
+            role,
+            content: Some(Value::String(content_str)),
+            reasoning_content: None,
+            tool_call_id: Some(tool_result.call_id.clone()),
+            tool_calls: None,
         });
     }
 
-    let content = if parts.len() == 1 {
-        parts.into_iter().next().unwrap()
+    let mut text_parts = Vec::new();
+    let mut tool_calls = Vec::new();
+
+    for part in &message.parts {
+        match part {
+            ContentPart::Text(text) => {
+                text_parts.push(json!({ "type": "text", "text": text }));
+            }
+            ContentPart::ImageUrl { url } => {
+                text_parts.push(json!({ "type": "image_url", "image_url": { "url": url } }));
+            }
+            ContentPart::Reasoning(text) => {
+                text_parts.push(json!({ "type": "text", "text": text }));
+            }
+            ContentPart::ToolCall(call) => {
+                let args_str = match &call.arguments {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                tool_calls.push(json!({
+                    "id": call.id,
+                    "type": "function",
+                    "function": {
+                        "name": call.name,
+                        "arguments": args_str,
+                    },
+                }));
+            }
+            ContentPart::ToolResult(result) => {
+                text_parts.push(json!({
+                    "type": "tool_result",
+                    "tool_call_id": result.call_id,
+                    "content": result.content,
+                    "is_error": result.is_error,
+                }));
+            }
+        }
+    }
+
+    let content = if text_parts.is_empty() {
+        None
+    } else if text_parts.len() == 1 {
+        let part = text_parts.into_iter().next().unwrap();
+        if part.get("type").and_then(Value::as_str) == Some("text") {
+            if let Some(text) = part.get("text").and_then(Value::as_str) {
+                Some(Value::String(text.to_string()))
+            } else {
+                Some(part)
+            }
+        } else {
+            Some(part)
+        }
     } else {
-        Value::Array(parts)
+        Some(Value::Array(text_parts))
     };
 
-    Ok(OpenAiRequestMessage { role, content })
+    let tool_calls = if tool_calls.is_empty() {
+        None
+    } else {
+        Some(tool_calls)
+    };
+
+    Ok(OpenAiRequestMessage {
+        role,
+        content,
+        reasoning_content: None,
+        tool_call_id: None,
+        tool_calls,
+    })
 }
 
 fn map_response_message(message: OpenAiRequestMessage) -> Result<Message, ModelError> {
@@ -386,10 +477,53 @@ fn map_response_message(message: OpenAiRequestMessage) -> Result<Message, ModelE
         }
     };
 
-    Ok(Message {
-        role,
-        parts: parse_openai_content(message.content)?,
-    })
+    let mut parts = parse_openai_content_with_reasoning(message.content, message.reasoning_content)?;
+
+    if let Some(tool_calls) = message.tool_calls {
+        for call in tool_calls {
+            let id = call
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let function = call.get("function");
+            let name = function
+                .and_then(|f| f.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let arguments = function
+                .and_then(|f| f.get("arguments"))
+                .cloned()
+                .unwrap_or(Value::Null);
+            parts.push(ContentPart::ToolCall(crate::core::ToolCall {
+                id,
+                name,
+                arguments,
+            }));
+        }
+    }
+
+    Ok(Message { role, parts })
+}
+
+fn parse_openai_content_with_reasoning(
+    content: Option<Value>,
+    reasoning_content: Option<String>,
+) -> Result<Vec<ContentPart>, ModelError> {
+    let mut parts = Vec::new();
+
+    if let Some(reasoning) = reasoning_content {
+        if !reasoning.is_empty() {
+            parts.push(ContentPart::Reasoning(reasoning));
+        }
+    }
+
+    if let Some(content) = content {
+        parts.extend(parse_openai_content(content)?);
+    }
+
+    Ok(parts)
 }
 
 fn parse_openai_content(content: Value) -> Result<Vec<ContentPart>, ModelError> {
@@ -561,6 +695,22 @@ pub fn parse_openai_sse_event(event: &str) -> Result<Vec<StreamEvent>, ModelErro
     parse_openai_sse_event_with_state(event, &mut HashMap::new())
 }
 
+pub fn parse_openai_sse_transcript(transcript: &str) -> Result<Vec<StreamEvent>, ModelError> {
+    let mut buffer = transcript.to_string();
+    let mut tool_state = HashMap::new();
+    let mut events = Vec::new();
+
+    while let Some(event) = take_sse_event(&mut buffer) {
+        events.extend(parse_openai_sse_event_with_state(&event, &mut tool_state)?);
+    }
+
+    for remainder in flush_sse_buffer(&mut buffer) {
+        events.extend(parse_openai_sse_event_with_state(&remainder, &mut tool_state)?);
+    }
+
+    Ok(events)
+}
+
 fn parse_openai_sse_event_with_state(
     event: &str,
     tool_state: &mut HashMap<String, OpenAiToolCallAccumulator>,
@@ -578,7 +728,9 @@ fn parse_openai_sse_event_with_state(
 
     let data = data_lines.join("\n");
     if data == "[DONE]" {
-        return Ok(vec![StreamEvent::Finish(FinishReason::Stop)]);
+        // [DONE] is just a terminator, don't emit Finish here
+        // The actual Finish event comes from the chunk with finish_reason
+        return Ok(Vec::new());
     }
 
     let chunk: OpenAiStreamChunk = serde_json::from_str(&data)
@@ -602,6 +754,13 @@ fn normalize_openai_stream_chunk_with_state(
     }
 
     for choice in chunk.choices {
+        // Handle reasoning_content (Kimi-specific)
+        if let Some(reasoning) = choice.delta.reasoning_content {
+            if let Some(text) = reasoning.as_str() {
+                events.push(StreamEvent::ReasoningDelta(text.to_string()));
+            }
+        }
+
         if let Some(content) = choice.delta.content {
             for part in parse_openai_stream_delta_content(content)? {
                 events.push(part);
@@ -620,13 +779,16 @@ fn normalize_openai_stream_chunk_with_state(
 
         if let Some(reason) = choice.finish_reason {
             if reason == "tool_calls" || reason == "function_call" {
-                for (call_id, accumulator) in std::mem::take(tool_state) {
-                    let parsed_arguments = parse_json_string_or_raw(&accumulator.arguments);
-                    events.push(StreamEvent::ToolCall(crate::core::ToolCall {
-                        id: call_id,
-                        name: accumulator.name.unwrap_or_default(),
-                        arguments: parsed_arguments,
-                    }));
+                // Emit final ToolCall events for any remaining accumulators
+                for (_, accumulator) in std::mem::take(tool_state) {
+                    if accumulator.id.is_some() || accumulator.name.is_some() {
+                        let parsed_arguments = parse_json_string_or_raw(&accumulator.arguments);
+                        events.push(StreamEvent::ToolCall(crate::core::ToolCall {
+                            id: accumulator.id.unwrap_or_default(),
+                            name: accumulator.name.unwrap_or_default(),
+                            arguments: parsed_arguments,
+                        }));
+                    }
                 }
             }
             events.push(StreamEvent::Finish(map_openai_finish_reason(Some(&reason))));
@@ -681,11 +843,15 @@ fn parse_openai_tool_call_delta(
     part: Value,
     tool_state: &mut HashMap<String, OpenAiToolCallAccumulator>,
 ) -> Result<(StreamEvent, Option<StreamEvent>), ModelError> {
-    let call_id = part
-        .get("id")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
+    // Use "index" as the key for accumulating tool calls across chunks
+    let index = part
+        .get("index")
+        .and_then(Value::as_u64)
+        .map(|i| i.to_string())
+        .unwrap_or_else(|| part.get("id").and_then(Value::as_str).unwrap_or("0").to_string());
+
+    // Get id from the part (only present in first chunk)
+    let call_id_str = part.get("id").and_then(Value::as_str).map(str::to_string);
 
     let (name, arguments_delta) = if let Some(function) = part.get("function") {
         (
@@ -706,30 +872,33 @@ fn parse_openai_tool_call_delta(
         )
     };
 
-    let accumulator = tool_state.entry(call_id.clone()).or_default();
+    let accumulator = tool_state.entry(index.clone()).or_default();
+    if let Some(ref id) = call_id_str {
+        accumulator.id = Some(id.clone());
+    }
     if let Some(name) = name.clone() {
         accumulator.name = Some(name);
     }
     accumulator.arguments.push_str(&arguments_delta);
 
-    let final_event = if let Some(done) = part.get("done").and_then(Value::as_bool) {
-        if done {
-            let completed = tool_state.remove(&call_id).unwrap_or_default();
-            Some(StreamEvent::ToolCall(crate::core::ToolCall {
-                id: call_id.clone(),
-                name: completed.name.unwrap_or_default(),
-                arguments: parse_json_string_or_raw(&completed.arguments),
-            }))
-        } else {
-            None
-        }
+    // Emit final ToolCall when we have complete information
+    let final_event = if part.get("done").and_then(Value::as_bool) == Some(true) {
+        let completed = tool_state.remove(&index).unwrap_or_default();
+        Some(StreamEvent::ToolCall(crate::core::ToolCall {
+            id: completed.id.unwrap_or_default(),
+            name: completed.name.unwrap_or_default(),
+            arguments: parse_json_string_or_raw(&completed.arguments),
+        }))
     } else {
         None
     };
 
+    // Use the actual call_id for the delta event if available, otherwise use index
+    let delta_call_id = call_id_str.unwrap_or_else(|| index.clone());
+
     Ok((
         StreamEvent::ToolCallDelta {
-            call_id,
+            call_id: delta_call_id,
             name,
             arguments_delta,
         },

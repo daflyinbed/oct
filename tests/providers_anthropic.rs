@@ -3,8 +3,8 @@ use serde_json::json;
 use oct::provider::Provider;
 use oct::providers::{
     anthropic_finish_reason, map_anthropic_response, map_anthropic_usage,
-    normalize_anthropic_stream_event, parse_anthropic_sse_event, AnthropicProvider,
-    AnthropicResponse, AnthropicStreamEvent,
+    normalize_anthropic_stream_event, parse_anthropic_generate_body, parse_anthropic_sse_event,
+    parse_anthropic_sse_transcript, AnthropicProvider, AnthropicResponse, AnthropicStreamEvent,
 };
 
 #[test]
@@ -104,4 +104,54 @@ fn emits_final_anthropic_tool_call_on_block_stop() {
     .unwrap();
 
     assert!(matches!(&start[0], oct::core::StreamEvent::ToolCall(call) if call.name == "lookup"));
+}
+
+#[test]
+fn parses_anthropic_generate_body_text() {
+    let response = parse_anthropic_generate_body(
+        r#"{
+            "id": "msg_realistic",
+            "content": [
+                { "type": "text", "text": "hello from claude" }
+            ],
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 14,
+                "output_tokens": 5
+            }
+        }"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        response.provider_response_id.as_deref(),
+        Some("msg_realistic")
+    );
+    assert_eq!(response.finish_reason, oct::core::FinishReason::Stop);
+    assert_eq!(
+        response.usage.as_ref().and_then(|u| u.total_tokens),
+        Some(19)
+    );
+}
+
+#[test]
+fn parses_anthropic_sse_transcript_across_events() {
+    let events = parse_anthropic_sse_transcript(
+        "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"lookup\",\"input\":{}}}\n\n\
+event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"input_json_delta\",\"id\":\"toolu_1\",\"partial_json\":\"{\\\"q\\\":\\\"rust\\\"}\"},\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}\n\n\
+event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+    )
+    .unwrap();
+
+    assert!(matches!(&events[0], oct::core::StreamEvent::ToolCall(call) if call.name == "lookup"));
+    assert!(matches!(&events[1], oct::core::StreamEvent::Usage(_)));
+    assert!(matches!(
+        &events[2],
+        oct::core::StreamEvent::ToolCallDelta { .. }
+    ));
+    assert!(matches!(&events[3], oct::core::StreamEvent::ToolCall(call) if call.name == "lookup"));
+    assert!(matches!(
+        &events[4],
+        oct::core::StreamEvent::Finish(oct::core::FinishReason::Stop)
+    ));
 }

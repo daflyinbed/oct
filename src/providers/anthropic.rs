@@ -100,8 +100,8 @@ struct AnthropicWireRequest {
     tools: Vec<AnthropicToolDefinition>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<Value>,
-    #[serde(skip_serializing_if = "Map::is_empty", default)]
-    provider_options: Map<String, Value>,
+    #[serde(flatten)]
+    provider_options: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -241,7 +241,9 @@ impl ChatModel for AnthropicChatModel {
 
     async fn stream(&self, req: ChatRequest) -> Result<ChatStream, ModelError> {
         let mut wire = self.to_wire_request(&req)?;
-        wire.provider_options.insert("stream".to_string(), Value::Bool(true));
+        let mut opts = wire.provider_options.as_object_mut().cloned().unwrap_or_default();
+        opts.insert("stream".to_string(), Value::Bool(true));
+        wire.provider_options = Value::Object(opts);
 
         let response = self
             .client
@@ -393,6 +395,12 @@ pub fn map_anthropic_response(payload: AnthropicResponse) -> Result<ChatResponse
     })
 }
 
+pub fn parse_anthropic_generate_body(body: &str) -> Result<ChatResponse, ModelError> {
+    let payload: AnthropicResponse = serde_json::from_str(body)
+        .map_err(|err| ModelError::transport(format!("invalid anthropic response json: {err}")))?;
+    map_anthropic_response(payload)
+}
+
 fn parse_anthropic_part(part: Value) -> Result<ContentPart, ModelError> {
     let kind = part
         .get("type")
@@ -499,6 +507,22 @@ fn flush_sse_buffer(buffer: &mut String) -> Vec<String> {
 
 pub fn parse_anthropic_sse_event(event: &str) -> Result<Vec<StreamEvent>, ModelError> {
     parse_anthropic_sse_event_with_state(event, &mut HashMap::new())
+}
+
+pub fn parse_anthropic_sse_transcript(transcript: &str) -> Result<Vec<StreamEvent>, ModelError> {
+    let mut buffer = transcript.to_string();
+    let mut tool_state = HashMap::new();
+    let mut events = Vec::new();
+
+    while let Some(event) = take_sse_event(&mut buffer) {
+        events.extend(parse_anthropic_sse_event_with_state(&event, &mut tool_state)?);
+    }
+
+    for remainder in flush_sse_buffer(&mut buffer) {
+        events.extend(parse_anthropic_sse_event_with_state(&remainder, &mut tool_state)?);
+    }
+
+    Ok(events)
 }
 
 fn parse_anthropic_sse_event_with_state(

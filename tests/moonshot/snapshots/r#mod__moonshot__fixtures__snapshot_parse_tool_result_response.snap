@@ -1,0 +1,27 @@
+---
+source: tests/moonshot/fixtures.rs
+expression: response
+---
+message:
+  role: Assistant
+  parts:
+    - Reasoning: "The function returned the weather data for Beijing:\n- Temperature: 25°C\n- Condition: Sunny\n- Location: Beijing\n\nNow I'll provide this information to the user in a clear and friendly way."
+    - Text: "The current weather in Beijing is **sunny** with a temperature of **25°C**. It's a nice day there! ☀️"
+finish_reason: Stop
+usage:
+  input_tokens: 126
+  output_tokens: 71
+  total_tokens: 197
+  reasoning_tokens: ~
+  cached_input_tokens: ~
+  provider_details:
+    raw:
+      completion_tokens: 71
+      prompt_tokens: 126
+      total_tokens: 197
+provider_response_id: chatcmpl-69c0253119f26a5390fedbd7
+provider_metadata:
+  raw_usage:
+    completion_tokens: 71
+    prompt_tokens: 126
+    total_tokens: 197
