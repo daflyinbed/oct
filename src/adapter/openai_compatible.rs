@@ -594,6 +594,7 @@ fn map_message(message: &Message) -> Result<ChatCompletionRequestMessage, ModelE
 
     let mut text_parts = Vec::new();
     let mut tool_calls = Vec::new();
+    let mut reasoning_parts = Vec::new();
 
     for part in &message.parts {
         match part {
@@ -606,7 +607,7 @@ fn map_message(message: &Message) -> Result<ChatCompletionRequestMessage, ModelE
                 });
             }
             ContentPart::Reasoning(text) => {
-                text_parts.push(RequestMessageContentPart::Text { text: text.clone() });
+                reasoning_parts.push(text.clone());
             }
             ContentPart::ToolCall(call) => {
                 let args_str = match &call.arguments {
@@ -653,13 +654,19 @@ fn map_message(message: &Message) -> Result<ChatCompletionRequestMessage, ModelE
         Some(tool_calls)
     };
 
+    let reasoning_content = if reasoning_parts.is_empty() {
+        None
+    } else {
+        Some(reasoning_parts.join(""))
+    };
+
     Ok(ChatCompletionRequestMessage {
         role,
         content,
         name: None,
         tool_call_id: None,
         tool_calls,
-        reasoning_content: None,
+        reasoning_content,
     })
 }
 

@@ -471,3 +471,59 @@ fn parses_reasoning_field_as_fallback_in_stream_delta() {
         matches!(&events[0], oct::core::StreamEvent::ReasoningDelta(t) if t == "fallback thinking...")
     );
 }
+
+#[test]
+fn maps_reasoning_to_reasoning_content_in_request() {
+    let model = OpenAiCompatibleChatModel::new(OpenAiCompatibleConfig {
+        provider_name: "moonshot",
+        base_url: "https://api.moonshot.ai/v1".to_string(),
+        api_key_env: "MOONSHOT_API_KEY",
+        default_headers: Default::default(),
+        model_info: ModelInfo::new("moonshot", "kimi-k2.5")
+            .with_capabilities(ModelCapabilities {
+                streaming: true,
+                native_tools: true,
+                vision: true,
+                json_mode: true,
+                reasoning: true,
+                usage: true,
+            })
+            .with_limits(ModelLimits {
+                max_input_tokens: Some(128000),
+                max_output_tokens: Some(16384),
+                max_total_tokens: Some(128000),
+            }),
+        use_responses_api: false,
+    });
+
+    let req = ChatRequest {
+        messages: vec![
+            Message::new(
+                Role::User,
+                vec![ContentPart::Text("What is 2+2?".to_string())],
+            ),
+            Message::new(
+                Role::Assistant,
+                vec![
+                    ContentPart::Reasoning("I need to add 2 and 2.".to_string()),
+                    ContentPart::Text("The answer is 4.".to_string()),
+                ],
+            ),
+        ],
+        tools: vec![],
+        options: GenerateOptions::default(),
+    };
+
+    let wire = model.to_wire_request(&req).unwrap();
+    assert_eq!(wire.messages.len(), 2);
+
+    let assistant_msg = &wire.messages[1];
+    assert_eq!(assistant_msg.role, "assistant");
+    assert_eq!(
+        assistant_msg.reasoning_content,
+        Some("I need to add 2 and 2.".to_string())
+    );
+    assert!(
+        matches!(&assistant_msg.content, Some(oct::adapter::RequestMessageContentValue::String(s)) if s == "The answer is 4.")
+    );
+}

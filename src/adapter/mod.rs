@@ -12,5 +12,5 @@ pub use openai_compatible::{
     ChatCompletionUsage, ChatCompletionUsageCompletionDetails, ChatCompletionUsagePromptDetails,
     OpenAiChoice, OpenAiCompatibleChatModel, OpenAiCompatibleConfig, OpenAiGenerateResponse,
     OpenAiRequestMessage, OpenAiResponseFormat, OpenAiStreamChunk, OpenAiStreamChunkChoice,
-    OpenAiStreamChunkChoiceDelta, OpenAiToolDefinition, OpenAiWireRequest,
+    OpenAiStreamChunkChoiceDelta, OpenAiToolDefinition, OpenAiWireRequest, RequestMessageContentValue,
 };
