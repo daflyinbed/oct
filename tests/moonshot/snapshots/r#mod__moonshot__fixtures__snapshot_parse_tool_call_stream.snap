@@ -2,7 +2,6 @@
 source: tests/moonshot/fixtures.rs
 expression: events
 ---
-- TextDelta: ""
 - ReasoningDelta: The
 - ReasoningDelta: " user"
 - ReasoningDelta: " is"

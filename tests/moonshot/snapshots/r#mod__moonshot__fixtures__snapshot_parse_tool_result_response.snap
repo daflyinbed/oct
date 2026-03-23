@@ -17,11 +17,15 @@ usage:
   provider_details:
     raw:
       completion_tokens: 71
+      completion_tokens_details: ~
       prompt_tokens: 126
+      prompt_tokens_details: ~
       total_tokens: 197
 provider_response_id: chatcmpl-69c0253119f26a5390fedbd7
 provider_metadata:
   raw_usage:
     completion_tokens: 71
+    completion_tokens_details: ~
     prompt_tokens: 126
+    prompt_tokens_details: ~
     total_tokens: 197

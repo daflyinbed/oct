@@ -16,18 +16,20 @@ usage:
   cached_input_tokens: 15
   provider_details:
     raw:
-      cached_tokens: 15
       completion_tokens: 218
+      completion_tokens_details: ~
       prompt_tokens: 15
       prompt_tokens_details:
+        audio_tokens: ~
         cached_tokens: 15
       total_tokens: 233
 provider_response_id: chatcmpl-69c02518ba4f1a36c35e6882
 provider_metadata:
   raw_usage:
-    cached_tokens: 15
     completion_tokens: 218
+    completion_tokens_details: ~
     prompt_tokens: 15
     prompt_tokens_details:
+      audio_tokens: ~
       cached_tokens: 15
     total_tokens: 233

@@ -1,25 +1,35 @@
-use serde_json::json;
-
 use oct::adapter::{
     map_openai_finish_reason, map_openai_generate_response, map_openai_usage,
     normalize_openai_stream_chunk, parse_openai_generate_body, parse_openai_sse_event,
-    parse_openai_sse_transcript, OpenAiChoice, OpenAiCompatibleChatModel, OpenAiCompatibleConfig,
-    OpenAiGenerateResponse, OpenAiRequestMessage, OpenAiStreamChunk, OpenAiStreamChunkChoice,
-    OpenAiStreamChunkChoiceDelta,
+    parse_openai_sse_transcript, ChatCompletionChoice, ChatCompletionChunk,
+    ChatCompletionChunkChoice, ChatCompletionChunkDelta, ChatCompletionChunkDeltaToolCall,
+    ChatCompletionChunkDeltaToolCallFunction, ChatCompletionMessageToolCall,
+    ChatCompletionMessageToolCallFunction, ChatCompletionResponseMessage, ChatCompletionUsage,
+    ChatCompletionUsageCompletionDetails, ChatCompletionUsagePromptDetails,
+    OpenAiCompatibleChatModel, OpenAiCompatibleConfig,
 };
 use oct::core::{ContentPart, FinishReason, GenerateOptions, Message, Role, ToolChoice, ToolSpec};
 use oct::model::ChatRequest;
 use oct::provider::{ModelCapabilities, ModelInfo, ModelLimits};
+use serde_json::json;
 
 #[test]
 fn maps_openai_usage_fields() {
-    let usage = map_openai_usage(&json!({
-        "prompt_tokens": 11,
-        "completion_tokens": 7,
-        "total_tokens": 18,
-        "completion_tokens_details": { "reasoning_tokens": 2 },
-        "prompt_tokens_details": { "cached_tokens": 3 }
-    }));
+    let usage = map_openai_usage(&ChatCompletionUsage {
+        prompt_tokens: 11,
+        completion_tokens: 7,
+        total_tokens: 18,
+        completion_tokens_details: Some(ChatCompletionUsageCompletionDetails {
+            reasoning_tokens: Some(2),
+            audio_tokens: None,
+            accepted_prediction_tokens: None,
+            rejected_prediction_tokens: None,
+        }),
+        prompt_tokens_details: Some(ChatCompletionUsagePromptDetails {
+            cached_tokens: Some(3),
+            audio_tokens: None,
+        }),
+    });
 
     assert_eq!(usage.input_tokens, Some(11));
     assert_eq!(usage.output_tokens, Some(7));
@@ -94,32 +104,42 @@ fn maps_chat_request_to_openai_wire_request() {
 
 #[test]
 fn normalizes_openai_generate_response() {
-    let response = map_openai_generate_response(OpenAiGenerateResponse {
+    use oct::adapter::ChatCompletionResponse;
+
+    let response = map_openai_generate_response(ChatCompletionResponse {
         id: Some("resp_123".to_string()),
-        choices: vec![OpenAiChoice {
-            message: OpenAiRequestMessage {
+        object: None,
+        created: None,
+        model: None,
+        choices: vec![ChatCompletionChoice {
+            index: 0,
+            message: ChatCompletionResponseMessage {
                 role: "assistant".to_string(),
-                content: Some(json!([
-                    { "type": "text", "text": "hello" }
-                ])),
+                content: Some("hello".to_string()),
                 reasoning_content: None,
-                tool_call_id: None,
-                tool_calls: Some(vec![json!({
-                    "id": "call_1",
-                    "type": "function",
-                    "function": {
-                        "name": "lookup",
-                        "arguments": { "q": "rust" }
-                    }
-                })]),
+                reasoning: None,
+                refusal: None,
+                tool_calls: Some(vec![ChatCompletionMessageToolCall {
+                    id: "call_1".to_string(),
+                    kind: "function".to_string(),
+                    function: ChatCompletionMessageToolCallFunction {
+                        name: "lookup".to_string(),
+                        arguments: r#"{"q": "rust"}"#.to_string(),
+                    },
+                }]),
+                function_call: None,
             },
             finish_reason: Some("tool_calls".to_string()),
+            logprobs: None,
         }],
-        usage: Some(json!({
-            "prompt_tokens": 10,
-            "completion_tokens": 4,
-            "total_tokens": 14
-        })),
+        usage: Some(ChatCompletionUsage {
+            prompt_tokens: 10,
+            completion_tokens: 4,
+            total_tokens: 14,
+            completion_tokens_details: None,
+            prompt_tokens_details: None,
+        }),
+        system_fingerprint: None,
     })
     .unwrap();
 
@@ -135,22 +155,41 @@ fn normalizes_openai_generate_response() {
 
 #[test]
 fn normalizes_openai_stream_chunks() {
-    let events = normalize_openai_stream_chunk(OpenAiStreamChunk {
-        choices: vec![OpenAiStreamChunkChoice {
-            delta: OpenAiStreamChunkChoiceDelta {
-                content: Some(json!({ "type": "text", "text": "hel" })),
+    let events = normalize_openai_stream_chunk(ChatCompletionChunk {
+        id: None,
+        object: None,
+        created: None,
+        model: None,
+        choices: vec![ChatCompletionChunkChoice {
+            index: 0,
+            delta: ChatCompletionChunkDelta {
+                role: None,
+                content: Some("hel".to_string()),
+                refusal: None,
+                tool_calls: Some(vec![ChatCompletionChunkDeltaToolCall {
+                    index: 0,
+                    id: Some("call_1".to_string()),
+                    kind: Some("function".to_string()),
+                    function: Some(ChatCompletionChunkDeltaToolCallFunction {
+                        name: Some("lookup".to_string()),
+                        arguments: Some("{\"q\":".to_string()),
+                    }),
+                }]),
+                function_call: None,
                 reasoning_content: None,
-                tool_calls: Some(vec![json!({
-                    "id": "call_1",
-                    "function": {
-                        "name": "lookup",
-                        "arguments": "{\"q\":"
-                    }
-                })]),
+                reasoning: None,
             },
             finish_reason: Some("tool_calls".to_string()),
+            logprobs: None,
         }],
-        usage: Some(json!({ "prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7 })),
+        usage: Some(ChatCompletionUsage {
+            prompt_tokens: 5,
+            completion_tokens: 2,
+            total_tokens: 7,
+            completion_tokens_details: None,
+            prompt_tokens_details: None,
+        }),
+        system_fingerprint: None,
     })
     .unwrap();
 
@@ -169,31 +208,41 @@ fn normalizes_openai_stream_chunks() {
 
 #[test]
 fn parses_openai_sse_done_event() {
-    // [DONE] is now a terminator that emits no events
-    // The actual Finish event comes from the chunk with finish_reason
     let events = parse_openai_sse_event("data: [DONE]").unwrap();
     assert!(events.is_empty());
 }
 
 #[test]
 fn emits_final_openai_tool_call_when_done() {
-    let events = normalize_openai_stream_chunk(OpenAiStreamChunk {
-        choices: vec![OpenAiStreamChunkChoice {
-            delta: OpenAiStreamChunkChoiceDelta {
+    let events = normalize_openai_stream_chunk(ChatCompletionChunk {
+        id: None,
+        object: None,
+        created: None,
+        model: None,
+        choices: vec![ChatCompletionChunkChoice {
+            index: 0,
+            delta: ChatCompletionChunkDelta {
+                role: None,
                 content: None,
+                refusal: None,
+                tool_calls: Some(vec![ChatCompletionChunkDeltaToolCall {
+                    index: 0,
+                    id: Some("call_1".to_string()),
+                    kind: Some("function".to_string()),
+                    function: Some(ChatCompletionChunkDeltaToolCallFunction {
+                        name: Some("lookup".to_string()),
+                        arguments: Some("{\"q\":\"rust\"}".to_string()),
+                    }),
+                }]),
+                function_call: None,
                 reasoning_content: None,
-                tool_calls: Some(vec![json!({
-                    "id": "call_1",
-                    "function": {
-                        "name": "lookup",
-                        "arguments": "{\"q\":\"rust\"}"
-                    },
-                    "done": true
-                })]),
+                reasoning: None,
             },
             finish_reason: Some("tool_calls".to_string()),
+            logprobs: None,
         }],
         usage: None,
+        system_fingerprint: None,
     })
     .unwrap();
 
@@ -211,11 +260,10 @@ fn parses_openai_generate_body_text() {
             "id": "resp_realistic",
             "choices": [
                 {
+                    "index": 0,
                     "message": {
                         "role": "assistant",
-                        "content": [
-                            { "type": "text", "text": "hi there" }
-                        ]
+                        "content": "hi there"
                     },
                     "finish_reason": "stop"
                 }
@@ -243,8 +291,8 @@ fn parses_openai_generate_body_text() {
 #[test]
 fn parses_openai_sse_transcript_across_events() {
     let events = parse_openai_sse_transcript(
-        "data: {\"choices\":[{\"delta\":{\"content\":{\"type\":\"text\",\"text\":\"hel\"}},\"finish_reason\":null}],\"usage\":null}\n\n\
-data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"id\":\"call_1\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"q\\\":\\\"rust\\\"}\"},\"done\":true}],\"content\":null},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2,\"total_tokens\":7}}\n\n\
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hel\"},\"finish_reason\":null}],\"usage\":null}\n\n\
+data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"q\\\":\\\"rust\\\"}\"}}],\"content\":null},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2,\"total_tokens\":7}}\n\n\
 data: [DONE]\n\n",
     )
     .unwrap();
@@ -256,4 +304,170 @@ data: [DONE]\n\n",
         oct::core::StreamEvent::ToolCallDelta { .. }
     ));
     assert!(matches!(&events[3], oct::core::StreamEvent::ToolCall(call) if call.name == "lookup"));
+}
+
+#[test]
+fn parses_reasoning_content_in_response() {
+    use oct::adapter::ChatCompletionResponse;
+
+    let response = map_openai_generate_response(ChatCompletionResponse {
+        id: Some("resp_123".to_string()),
+        object: None,
+        created: None,
+        model: None,
+        choices: vec![ChatCompletionChoice {
+            index: 0,
+            message: ChatCompletionResponseMessage {
+                role: "assistant".to_string(),
+                content: Some("The answer is 42.".to_string()),
+                reasoning_content: Some("Let me think about this...".to_string()),
+                reasoning: None,
+                refusal: None,
+                tool_calls: None,
+                function_call: None,
+            },
+            finish_reason: Some("stop".to_string()),
+            logprobs: None,
+        }],
+        usage: None,
+        system_fingerprint: None,
+    })
+    .unwrap();
+
+    assert_eq!(response.message.parts.len(), 2);
+    assert!(
+        matches!(&response.message.parts[0], ContentPart::Reasoning(t) if t == "Let me think about this...")
+    );
+    assert!(matches!(&response.message.parts[1], ContentPart::Text(t) if t == "The answer is 42."));
+}
+
+#[test]
+fn parses_reasoning_field_as_fallback_in_response() {
+    use oct::adapter::ChatCompletionResponse;
+
+    let response = map_openai_generate_response(ChatCompletionResponse {
+        id: Some("resp_123".to_string()),
+        object: None,
+        created: None,
+        model: None,
+        choices: vec![ChatCompletionChoice {
+            index: 0,
+            message: ChatCompletionResponseMessage {
+                role: "assistant".to_string(),
+                content: Some("The answer is 42.".to_string()),
+                reasoning_content: None,
+                reasoning: Some("Using the reasoning field...".to_string()),
+                refusal: None,
+                tool_calls: None,
+                function_call: None,
+            },
+            finish_reason: Some("stop".to_string()),
+            logprobs: None,
+        }],
+        usage: None,
+        system_fingerprint: None,
+    })
+    .unwrap();
+
+    assert_eq!(response.message.parts.len(), 2);
+    assert!(
+        matches!(&response.message.parts[0], ContentPart::Reasoning(t) if t == "Using the reasoning field...")
+    );
+    assert!(matches!(&response.message.parts[1], ContentPart::Text(t) if t == "The answer is 42."));
+}
+
+#[test]
+fn prefers_reasoning_content_over_reasoning() {
+    use oct::adapter::ChatCompletionResponse;
+
+    let response = map_openai_generate_response(ChatCompletionResponse {
+        id: Some("resp_123".to_string()),
+        object: None,
+        created: None,
+        model: None,
+        choices: vec![ChatCompletionChoice {
+            index: 0,
+            message: ChatCompletionResponseMessage {
+                role: "assistant".to_string(),
+                content: Some("The answer is 42.".to_string()),
+                reasoning_content: Some("Primary reasoning".to_string()),
+                reasoning: Some("Fallback reasoning".to_string()),
+                refusal: None,
+                tool_calls: None,
+                function_call: None,
+            },
+            finish_reason: Some("stop".to_string()),
+            logprobs: None,
+        }],
+        usage: None,
+        system_fingerprint: None,
+    })
+    .unwrap();
+
+    assert_eq!(response.message.parts.len(), 2);
+    assert!(
+        matches!(&response.message.parts[0], ContentPart::Reasoning(t) if t == "Primary reasoning")
+    );
+}
+
+#[test]
+fn parses_reasoning_in_stream_delta() {
+    let events = normalize_openai_stream_chunk(ChatCompletionChunk {
+        id: None,
+        object: None,
+        created: None,
+        model: None,
+        choices: vec![ChatCompletionChunkChoice {
+            index: 0,
+            delta: ChatCompletionChunkDelta {
+                role: None,
+                content: None,
+                refusal: None,
+                tool_calls: None,
+                function_call: None,
+                reasoning_content: Some("thinking...".to_string()),
+                reasoning: None,
+            },
+            finish_reason: None,
+            logprobs: None,
+        }],
+        usage: None,
+        system_fingerprint: None,
+    })
+    .unwrap();
+
+    assert_eq!(events.len(), 1);
+    assert!(matches!(&events[0], oct::core::StreamEvent::ReasoningDelta(t) if t == "thinking..."));
+}
+
+#[test]
+fn parses_reasoning_field_as_fallback_in_stream_delta() {
+    let events = normalize_openai_stream_chunk(ChatCompletionChunk {
+        id: None,
+        object: None,
+        created: None,
+        model: None,
+        choices: vec![ChatCompletionChunkChoice {
+            index: 0,
+            delta: ChatCompletionChunkDelta {
+                role: None,
+                content: None,
+                refusal: None,
+                tool_calls: None,
+                function_call: None,
+                reasoning_content: None,
+                reasoning: Some("fallback thinking...".to_string()),
+            },
+            finish_reason: None,
+            logprobs: None,
+        }],
+        usage: None,
+        system_fingerprint: None,
+    })
+    .unwrap();
+
+    assert_eq!(events.len(), 1);
+    assert!(
+        matches!(&events[0], oct::core::StreamEvent::ReasoningDelta(t) if t == "fallback thinking...")
+    );
 }

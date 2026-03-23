@@ -1,12 +1,11 @@
 mod common;
 
-use serde_json::json;
-
 use common::StubProvider;
-use oct::adapter::map_openai_usage;
+use oct::adapter::{map_openai_usage, ChatCompletionUsage};
 use oct::core::ModelError;
 use oct::provider::ProviderRegistry;
 use oct::providers::{default_registry, map_anthropic_usage, MoonshotAIProvider};
+use serde_json::json;
 
 #[test]
 fn resolves_registered_model_specs() {
@@ -42,11 +41,13 @@ fn resolves_real_moonshotai_provider_models() {
 
 #[test]
 fn usage_mappers_produce_normalized_values() {
-    let openai_usage = map_openai_usage(&json!({
-        "prompt_tokens": 5,
-        "completion_tokens": 2,
-        "total_tokens": 7
-    }));
+    let openai_usage = map_openai_usage(&ChatCompletionUsage {
+        prompt_tokens: 5,
+        completion_tokens: 2,
+        total_tokens: 7,
+        completion_tokens_details: None,
+        prompt_tokens_details: None,
+    });
     assert_eq!(openai_usage.total_tokens, Some(7));
 
     let anthropic_usage = map_anthropic_usage(&json!({

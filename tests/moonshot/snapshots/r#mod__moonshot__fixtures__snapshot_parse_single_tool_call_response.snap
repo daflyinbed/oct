@@ -10,7 +10,8 @@ message:
     - ToolCall:
         id: "get_weather:0"
         name: get_weather
-        arguments: "{\"location\": \"Beijing\"}"
+        arguments:
+          location: Beijing
 finish_reason: ToolCalls
 usage:
   input_tokens: 61
@@ -20,18 +21,20 @@ usage:
   cached_input_tokens: 61
   provider_details:
     raw:
-      cached_tokens: 61
       completion_tokens: 102
+      completion_tokens_details: ~
       prompt_tokens: 61
       prompt_tokens_details:
+        audio_tokens: ~
         cached_tokens: 61
       total_tokens: 163
 provider_response_id: chatcmpl-69c0251e90b42420fd2841bf
 provider_metadata:
   raw_usage:
-    cached_tokens: 61
     completion_tokens: 102
+    completion_tokens_details: ~
     prompt_tokens: 61
     prompt_tokens_details:
+      audio_tokens: ~
       cached_tokens: 61
     total_tokens: 163
