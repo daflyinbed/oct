@@ -1,0 +1,21 @@
+---
+source: tests/anthropic/fixtures.rs
+expression: messages
+---
+- role: User
+  parts:
+    - Text: What is the weather in Beijing?
+- role: Assistant
+  parts:
+    - Text: "I'll check the current weather in Beijing for you."
+    - ToolCall:
+        id: call_ddfbfb9bbc6a4e7f87333b6a
+        name: get_weather
+        arguments:
+          location: Beijing
+- role: User
+  parts:
+    - ToolResult:
+        call_id: call_ddfbfb9bbc6a4e7f87333b6a
+        content: "{\"temperature\":\"25°C\",\"condition\":\"Sunny\",\"location\":\"Beijing\"}"
+        is_error: false

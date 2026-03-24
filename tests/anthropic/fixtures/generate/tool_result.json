@@ -1,0 +1,44 @@
+{
+  "request": {
+    "body": {
+      "model": "claude-sonnet-4-20250514",
+      "max_tokens": 1024,
+      "messages": [
+        {
+          "role": "user",
+          "content": "What is the weather in Beijing?"
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "I'll check the current weather in Beijing for you."
+            },
+            {
+              "type": "tool_use",
+              "id": "call_ddfbfb9bbc6a4e7f87333b6a",
+              "name": "get_weather",
+              "input": {
+                "location": "Beijing"
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "call_ddfbfb9bbc6a4e7f87333b6a",
+              "content": "{\"temperature\":\"25°C\",\"condition\":\"Sunny\",\"location\":\"Beijing\"}"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "response": {
+    "body": "{\"id\":\"msg_202603250115097be41123d6234d60\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"glm-4.7\",\"content\":[{\"type\":\"text\",\"text\":\"Currently, the weather in Beijing is **Sunny** with a temperature of **25°C**.\"}],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":55,\"output_tokens\":21,\"cache_read_input_tokens\":0,\"server_tool_use\":{\"web_search_requests\":0},\"service_tier\":\"standard\"}}"
+  }
+}

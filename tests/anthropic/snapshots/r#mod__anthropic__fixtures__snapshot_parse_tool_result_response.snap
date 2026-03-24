@@ -1,0 +1,32 @@
+---
+source: tests/anthropic/fixtures.rs
+expression: response
+---
+message:
+  role: Assistant
+  parts:
+    - Text: "Currently, the weather in Beijing is **Sunny** with a temperature of **25°C**."
+finish_reason: Stop
+usage:
+  input_tokens: 55
+  output_tokens: 21
+  total_tokens: 76
+  reasoning_tokens: ~
+  cached_input_tokens: ~
+  provider_details:
+    raw:
+      cache_read_input_tokens: 0
+      input_tokens: 55
+      output_tokens: 21
+      server_tool_use:
+        web_search_requests: 0
+      service_tier: standard
+provider_response_id: msg_202603250115097be41123d6234d60
+provider_metadata:
+  raw_usage:
+    cache_read_input_tokens: 0
+    input_tokens: 55
+    output_tokens: 21
+    server_tool_use:
+      web_search_requests: 0
+    service_tier: standard
