@@ -439,6 +439,12 @@ fn parse_anthropic_part(part: Value) -> Result<ContentPart, ModelError> {
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
         })),
+        "thinking" => Ok(ContentPart::Reasoning(
+            part.get("thinking")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        )),
         other => Err(ModelError::provider(format!(
             "unsupported anthropic content part type: {other}"
         ))),

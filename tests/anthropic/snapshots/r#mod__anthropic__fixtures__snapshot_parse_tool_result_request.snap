@@ -7,15 +7,14 @@ expression: messages
     - Text: What is the weather in Beijing?
 - role: Assistant
   parts:
-    - Text: "I'll check the current weather in Beijing for you."
     - ToolCall:
-        id: call_ddfbfb9bbc6a4e7f87333b6a
+        id: call_2a48af474a664a40aaad0142
         name: get_weather
         arguments:
           location: Beijing
 - role: User
   parts:
     - ToolResult:
-        call_id: call_ddfbfb9bbc6a4e7f87333b6a
+        call_id: call_2a48af474a664a40aaad0142
         content: "{\"temperature\":\"25°C\",\"condition\":\"Sunny\",\"location\":\"Beijing\"}"
         is_error: false

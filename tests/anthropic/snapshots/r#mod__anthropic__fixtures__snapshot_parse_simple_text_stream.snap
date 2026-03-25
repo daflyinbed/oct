@@ -2,18 +2,61 @@
 source: tests/anthropic/fixtures.rs
 expression: events
 ---
+- ReasoningDelta: The
+- ReasoningDelta: " user"
+- ReasoningDelta: " wants"
+- ReasoningDelta: " me"
+- ReasoningDelta: " to"
+- ReasoningDelta: " say"
+- ReasoningDelta: " \""
+- ReasoningDelta: hello
+- ReasoningDelta: "\""
+- ReasoningDelta: " in"
+- ReasoningDelta: " exactly"
+- ReasoningDelta: " one"
+- ReasoningDelta: " word"
+- ReasoningDelta: ".\n"
+- ReasoningDelta: The
+- ReasoningDelta: " request"
+- ReasoningDelta: " is"
+- ReasoningDelta: " extremely"
+- ReasoningDelta: " simple"
+- ReasoningDelta: " and"
+- ReasoningDelta: " benign"
+- ReasoningDelta: ".\n"
+- ReasoningDelta: There
+- ReasoningDelta: " are"
+- ReasoningDelta: " no"
+- ReasoningDelta: " security"
+- ReasoningDelta: " concerns"
+- ReasoningDelta: " or"
+- ReasoningDelta: " instructions"
+- ReasoningDelta: " to"
+- ReasoningDelta: " reveal"
+- ReasoningDelta: " internal"
+- ReasoningDelta: " processes"
+- ReasoningDelta: ".\n"
+- ReasoningDelta: I
+- ReasoningDelta: " will"
+- ReasoningDelta: " simply"
+- ReasoningDelta: " output"
+- ReasoningDelta: " the"
+- ReasoningDelta: " word"
+- ReasoningDelta: " \""
+- ReasoningDelta: Hello
+- ReasoningDelta: "\"."
 - TextDelta: Hello
 - Usage:
     input_tokens: 13
-    output_tokens: 2
-    total_tokens: 15
+    output_tokens: 46
+    total_tokens: 59
     reasoning_tokens: ~
     cached_input_tokens: ~
     provider_details:
       raw:
         cache_read_input_tokens: 0
         input_tokens: 13
-        output_tokens: 2
+        output_tokens: 46
         server_tool_use:
           web_search_requests: 0
         service_tier: standard

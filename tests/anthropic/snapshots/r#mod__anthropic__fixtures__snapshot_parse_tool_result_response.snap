@@ -5,28 +5,29 @@ expression: response
 message:
   role: Assistant
   parts:
-    - Text: "Currently, the weather in Beijing is **Sunny** with a temperature of **25°C**."
+    - Reasoning: "I received the weather information for Beijing from the function. The response indicates it's 25°C and Sunny in Beijing. I should present this information clearly to the user."
+    - Text: The weather in Beijing is currently **25°C** and **Sunny**.
 finish_reason: Stop
 usage:
-  input_tokens: 55
-  output_tokens: 21
-  total_tokens: 76
+  input_tokens: 96
+  output_tokens: 52
+  total_tokens: 148
   reasoning_tokens: ~
   cached_input_tokens: ~
   provider_details:
     raw:
       cache_read_input_tokens: 0
-      input_tokens: 55
-      output_tokens: 21
+      input_tokens: 96
+      output_tokens: 52
       server_tool_use:
         web_search_requests: 0
       service_tier: standard
-provider_response_id: msg_202603250115097be41123d6234d60
+provider_response_id: msg_20260326021856faa27ad516cf48d0
 provider_metadata:
   raw_usage:
     cache_read_input_tokens: 0
-    input_tokens: 55
-    output_tokens: 21
+    input_tokens: 96
+    output_tokens: 52
     server_tool_use:
       web_search_requests: 0
     service_tier: standard

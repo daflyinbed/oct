@@ -2,6 +2,55 @@
 source: tests/anthropic/fixtures.rs
 expression: events
 ---
+- ReasoningDelta: The
+- ReasoningDelta: " user"
+- ReasoningDelta: " is"
+- ReasoningDelta: " asking"
+- ReasoningDelta: " for"
+- ReasoningDelta: " the"
+- ReasoningDelta: " weather"
+- ReasoningDelta: " in"
+- ReasoningDelta: " Sh"
+- ReasoningDelta: enzhen
+- ReasoningDelta: "."
+- ReasoningDelta: " I"
+- ReasoningDelta: " have"
+- ReasoningDelta: " a"
+- ReasoningDelta: " get"
+- ReasoningDelta: _weather
+- ReasoningDelta: " function"
+- ReasoningDelta: " available"
+- ReasoningDelta: " that"
+- ReasoningDelta: " takes"
+- ReasoningDelta: " a"
+- ReasoningDelta: " location"
+- ReasoningDelta: " parameter"
+- ReasoningDelta: "."
+- ReasoningDelta: " The"
+- ReasoningDelta: " user"
+- ReasoningDelta: " has"
+- ReasoningDelta: " provided"
+- ReasoningDelta: " \""
+- ReasoningDelta: Sh
+- ReasoningDelta: enzhen
+- ReasoningDelta: "\""
+- ReasoningDelta: " as"
+- ReasoningDelta: " the"
+- ReasoningDelta: " location"
+- ReasoningDelta: ","
+- ReasoningDelta: " so"
+- ReasoningDelta: " I"
+- ReasoningDelta: " have"
+- ReasoningDelta: " all"
+- ReasoningDelta: " the"
+- ReasoningDelta: " required"
+- ReasoningDelta: " parameters"
+- ReasoningDelta: " to"
+- ReasoningDelta: " make"
+- ReasoningDelta: " the"
+- ReasoningDelta: " function"
+- ReasoningDelta: " call"
+- ReasoningDelta: "."
 - TextDelta: I
 - TextDelta: "'ll"
 - TextDelta: " check"
@@ -15,7 +64,7 @@ expression: events
 - TextDelta: " you"
 - TextDelta: "."
 - ToolCall:
-    id: call_e7148dc8697845279418704a
+    id: call_fa9d7f8696424e11bcef1cbb
     name: get_weather
     arguments: {}
 - ToolCallDelta:
@@ -24,25 +73,25 @@ expression: events
     arguments_delta: "{\"location\":\"Shenzhen\"}"
 - Usage:
     input_tokens: 41
-    output_tokens: 24
-    total_tokens: 65
+    output_tokens: 74
+    total_tokens: 115
     reasoning_tokens: ~
     cached_input_tokens: ~
     provider_details:
       raw:
         cache_read_input_tokens: 128
         input_tokens: 41
-        output_tokens: 24
+        output_tokens: 74
         server_tool_use:
           web_search_requests: 0
         service_tier: standard
-- ToolCall:
-    id: call_e7148dc8697845279418704a
-    name: get_weather
-    arguments: {}
 - ToolCall:
     id: ""
     name: ""
     arguments:
       location: Shenzhen
+- ToolCall:
+    id: call_fa9d7f8696424e11bcef1cbb
+    name: get_weather
+    arguments: {}
 - Finish: Stop

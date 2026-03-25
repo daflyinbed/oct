@@ -2,6 +2,10 @@
   "request": {
     "body": {
       "model": "claude-sonnet-4-20250514",
+      "thinking": {
+        "type": "enabled",
+        "budget_tokens": 1024
+      },
       "max_tokens": 1024,
       "messages": [
         {
@@ -13,6 +17,6 @@
     }
   },
   "response": {
-    "body": "{\"id\":\"msg_2026032501150752cd815b1ad84bd6\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"glm-4.7\",\"content\":[{\"type\":\"text\",\"text\":\"Earth\"}],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":13,\"output_tokens\":2,\"cache_read_input_tokens\":0,\"server_tool_use\":{\"web_search_requests\":0},\"service_tier\":\"standard\"}}"
+    "body": "{\"id\":\"msg_202603260218523ca65a82455549dc\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"glm-4.7\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"1.  **Analyze the Request:** The user wants me to say \\\"world\\\" in one word.\\n2.  **Identify the Target Word:** The word is \\\"world\\\".\\n3.  **Constraint Check:** \\\"In one word.\\\"\\n4.  **Formulate Output:** The most direct response is simply the word itself.\\n5.  **Final Decision:** Output \\\"World\\\".\",\"signature\":\"5443e27cf34c4e4bae8d4244\"},{\"type\":\"text\",\"text\":\"World\"}],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":13,\"output_tokens\":82,\"cache_read_input_tokens\":0,\"server_tool_use\":{\"web_search_requests\":0},\"service_tier\":\"standard\"}}"
   }
 }
