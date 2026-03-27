@@ -830,7 +830,7 @@ fn normalize_anthropic_stream_event_with_state(
                     events.push(StreamEvent::ToolCall(crate::core::ToolCall {
                         id: acc.id.unwrap_or_else(|| format!("tool_{}", index)),
                         name: acc.name.unwrap_or_default(),
-                        arguments: parse_json_string_or_raw(&acc.arguments),
+                        arguments: parse_json_string_or_raw(&acc.arguments)?,
                     }));
                 }
             }
@@ -899,7 +899,7 @@ fn normalize_anthropic_stream_event_with_state(
                 events.push(StreamEvent::ToolCall(crate::core::ToolCall {
                     id: acc.id.unwrap_or_else(|| format!("tool_{}", index)),
                     name: acc.name.unwrap_or_default(),
-                    arguments: parse_json_string_or_raw(&acc.arguments),
+                    arguments: parse_json_string_or_raw(&acc.arguments)?,
                 }));
             }
         }
@@ -911,10 +911,11 @@ fn normalize_anthropic_stream_event_with_state(
     Ok(events)
 }
 
-fn parse_json_string_or_raw(raw: &str) -> Value {
+fn parse_json_string_or_raw(raw: &str) -> Result<Value, ModelError> {
     if raw.is_empty() {
-        Value::Object(Map::new())
+        Ok(Value::Object(Map::new()))
     } else {
-        serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_string()))
+        serde_json::from_str(raw)
+            .map_err(|e| ModelError::provider(format!("invalid tool call arguments JSON: {e}")))
     }
 }

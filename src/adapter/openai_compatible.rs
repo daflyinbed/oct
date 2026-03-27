@@ -893,7 +893,7 @@ fn normalize_chat_completion_chunk_with_state(
             if reason == "tool_calls" || reason == "function_call" {
                 for (_, accumulator) in std::mem::take(tool_state) {
                     if accumulator.id.is_some() || accumulator.name.is_some() {
-                        let parsed_arguments = parse_json_string_or_raw(&accumulator.arguments);
+                        let parsed_arguments = parse_json_string_or_raw(&accumulator.arguments)?;
                         events.push(StreamEvent::ToolCall(crate::core::ToolCall {
                             id: accumulator.id.unwrap_or_default(),
                             name: accumulator.name.unwrap_or_default(),
@@ -946,8 +946,9 @@ fn parse_tool_call_delta(
     ))
 }
 
-fn parse_json_string_or_raw(raw: &str) -> Value {
-    serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_string()))
+fn parse_json_string_or_raw(raw: &str) -> Result<Value, ModelError> {
+    serde_json::from_str(raw)
+        .map_err(|e| ModelError::provider(format!("invalid tool call arguments JSON: {e}")))
 }
 
 pub type OpenAiWireRequest = ChatCompletionRequest;

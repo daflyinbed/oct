@@ -172,7 +172,7 @@ fn normalizes_openai_stream_chunks() {
                     kind: Some("function".to_string()),
                     function: Some(ChatCompletionChunkDeltaToolCallFunction {
                         name: Some("lookup".to_string()),
-                        arguments: Some("{\"q\":".to_string()),
+                        arguments: Some("{\"q\":\"test\"}".to_string()),
                     }),
                 }]),
                 function_call: None,
