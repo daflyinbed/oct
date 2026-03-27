@@ -11,6 +11,22 @@ use crate::model::{ChatModel, ChatRequest, ChatResponse, ChatStream};
 use crate::provider::{ModelCapabilities, ModelInfo, ModelLimits, Provider};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type")]
+#[allow(private_interfaces)]
+pub enum AnthropicContentBlockDelta {
+    #[serde(rename = "text_delta")]
+    TextDelta { text: String },
+    #[serde(rename = "input_json_delta")]
+    InputJsonDelta { partial_json: String },
+    #[serde(rename = "thinking_delta")]
+    ThinkingDelta { thinking: String },
+    #[serde(rename = "signature_delta")]
+    SignatureDelta { signature: String },
+    #[serde(rename = "citations_delta")]
+    CitationsDelta { citation: Box<AnthropicCitation> },
+}
+
+#[derive(Debug, Clone)]
 pub struct AnthropicConfig {
     pub base_url: String,
     pub api_key_env: &'static str,
@@ -279,22 +295,6 @@ struct AnthropicMessageDeltaUsage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[allow(private_interfaces)]
-pub enum AnthropicContentBlockDelta {
-    #[serde(rename = "text_delta")]
-    TextDelta { text: String },
-    #[serde(rename = "input_json_delta")]
-    InputJsonDelta { partial_json: String },
-    #[serde(rename = "thinking_delta")]
-    ThinkingDelta { thinking: String },
-    #[serde(rename = "signature_delta")]
-    SignatureDelta { signature: String },
-    #[serde(rename = "citations_delta")]
-    CitationsDelta { citation: AnthropicCitation },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
-#[allow(private_interfaces)]
 pub enum AnthropicStreamEvent {
     #[serde(rename = "message_start")]
     MessageStart { message: AnthropicResponse },
@@ -312,7 +312,7 @@ pub enum AnthropicStreamEvent {
     Ping,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AnthropicCitation {
     #[serde(rename = "type")]
     citation_type: String,
@@ -845,6 +845,8 @@ fn normalize_anthropic_stream_event_with_state(
                 AnthropicContentBlock::ToolUse(tool_block) => {
                     let id = tool_block.id.clone();
                     let name = tool_block.name.clone();
+                    let initial_input = tool_block.input.clone();
+                    
                     tool_state.insert(
                         index,
                         AnthropicToolAccumulator {
@@ -854,17 +856,22 @@ fn normalize_anthropic_stream_event_with_state(
                             emitted: true,
                         },
                     );
+                    
                     events.push(StreamEvent::ToolCall(crate::core::ToolCall {
                         id,
                         name,
-                        arguments: tool_block.input,
+                        arguments: initial_input,
                     }));
                 }
                 AnthropicContentBlock::Thinking(thinking_block) => {
-                    events.push(StreamEvent::ReasoningDelta(thinking_block.thinking));
+                    if !thinking_block.thinking.is_empty() {
+                        events.push(StreamEvent::ReasoningDelta(thinking_block.thinking));
+                    }
                 }
                 AnthropicContentBlock::Text(text_block) => {
-                    events.push(StreamEvent::TextDelta(text_block.text));
+                    if !text_block.text.is_empty() {
+                        events.push(StreamEvent::TextDelta(text_block.text));
+                    }
                 }
                 _ => {}
             }
@@ -877,8 +884,9 @@ fn normalize_anthropic_stream_event_with_state(
                 AnthropicContentBlockDelta::InputJsonDelta { partial_json } => {
                     let accumulator = tool_state.entry(index).or_default();
                     accumulator.arguments.push_str(&partial_json);
+                    let call_id = accumulator.id.clone().unwrap_or_else(|| format!("tool_{}", index));
                     events.push(StreamEvent::ToolCallDelta {
-                        call_id: format!("tool_{}", index),
+                        call_id,
                         name: None,
                         arguments_delta: partial_json,
                     });
@@ -895,14 +903,14 @@ fn normalize_anthropic_stream_event_with_state(
             }
         }
         AnthropicStreamEvent::ContentBlockStop { index } => {
-            if let Some(acc) = tool_state.remove(&index) {
-                if !acc.emitted && (acc.name.is_some() || !acc.arguments.is_empty()) {
-                    events.push(StreamEvent::ToolCall(crate::core::ToolCall {
-                        id: acc.id.unwrap_or_else(|| format!("tool_{}", index)),
-                        name: acc.name.unwrap_or_default(),
-                        arguments: parse_json_string_or_raw(&acc.arguments),
-                    }));
-                }
+            if let Some(acc) = tool_state.remove(&index)
+                && !acc.emitted && (acc.name.is_some() || !acc.arguments.is_empty())
+            {
+                events.push(StreamEvent::ToolCall(crate::core::ToolCall {
+                    id: acc.id.unwrap_or_else(|| format!("tool_{}", index)),
+                    name: acc.name.unwrap_or_default(),
+                    arguments: parse_json_string_or_raw(&acc.arguments),
+                }));
             }
         }
         AnthropicStreamEvent::Ping => {

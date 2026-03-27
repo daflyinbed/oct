@@ -12,7 +12,6 @@ expression: events
       raw:
         input_tokens: 0
         output_tokens: 0
-- ReasoningDelta: ""
 - ReasoningDelta: The
 - ReasoningDelta: " user"
 - ReasoningDelta: " wants"
@@ -56,7 +55,6 @@ expression: events
 - ReasoningDelta: " \""
 - ReasoningDelta: Hello
 - ReasoningDelta: "\"."
-- TextDelta: ""
 - TextDelta: Hello
 - Usage:
     input_tokens: 13

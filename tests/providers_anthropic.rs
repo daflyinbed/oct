@@ -110,17 +110,13 @@ fn parses_anthropic_sse_message_stop() {
 
 #[test]
 fn emits_final_anthropic_tool_call_on_block_stop() {
-    let start = normalize_anthropic_stream_event(AnthropicStreamEvent::ContentBlockStart {
-        index: 0,
-        content_block: AnthropicContentBlock::ToolUse(AnthropicToolUseBlock {
-            id: "toolu_1".to_string(),
-            name: "lookup".to_string(),
-            input: json!({}),
-        }),
-    })
+    let events = parse_anthropic_sse_transcript(
+        "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"lookup\",\"input\":{}}}\n\n\
+         event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+    )
     .unwrap();
 
-    assert!(matches!(&start[0], oct::core::StreamEvent::ToolCall(call) if call.name == "lookup"));
+    assert!(matches!(&events[0], oct::core::StreamEvent::ToolCall(call) if call.name == "lookup"));
 }
 
 #[test]
@@ -159,6 +155,7 @@ fn parses_anthropic_sse_transcript_across_events() {
     let events = parse_anthropic_sse_transcript(
         "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"lookup\",\"input\":{}}}\n\n\
 event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"q\\\":\\\"rust\\\"}\"}}\n\n\
+event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n\
 event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
     )
     .unwrap();
