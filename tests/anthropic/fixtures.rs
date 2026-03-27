@@ -52,14 +52,14 @@ fn parse_anthropic_messages_from_request(body: &serde_json::Value) -> Vec<Messag
                             "tool_use" => {
                                 let id = part["id"].as_str().unwrap_or_default().to_string();
                                 let name = part["name"].as_str().unwrap_or_default().to_string();
-                                let arguments = part
+                                let input = part
                                     .get("input")
                                     .cloned()
                                     .unwrap_or(serde_json::Value::Null);
                                 parts.push(ContentPart::ToolCall(oct::core::ToolCall {
                                     id,
                                     name,
-                                    arguments,
+                                    arguments: serde_json::to_string(&input).unwrap_or_default(),
                                 }));
                             }
                             "tool_result" => {

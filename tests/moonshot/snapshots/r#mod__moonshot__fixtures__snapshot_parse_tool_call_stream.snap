@@ -70,6 +70,5 @@ expression: events
 - ToolCall:
     id: "get_weather:0"
     name: get_weather
-    arguments:
-      location: Shenzhen
+    arguments: "{\"location\": \"Shenzhen\"}"
 - Finish: ToolCalls

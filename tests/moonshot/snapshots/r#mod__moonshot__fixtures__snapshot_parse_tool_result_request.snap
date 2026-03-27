@@ -11,8 +11,7 @@ expression: messages
     - ToolCall:
         id: "get_weather:0"
         name: get_weather
-        arguments:
-          location: Beijing
+        arguments: "{\"location\": \"Beijing\"}"
 - role: Tool
   parts:
     - Text: "{\"temperature\":\"25°C\",\"condition\":\"Sunny\",\"location\":\"Beijing\"}"

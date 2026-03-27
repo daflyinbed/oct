@@ -127,7 +127,7 @@ async fn main() {
                                     tool_calls.push(ToolCall {
                                         id: call_id.clone(),
                                         name: name.clone(),
-                                        arguments: json!(arguments_delta),
+                                        arguments: arguments_delta.clone(),
                                     });
                                 }
                             }

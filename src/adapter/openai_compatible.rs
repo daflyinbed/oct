@@ -610,16 +610,12 @@ fn map_message(message: &Message) -> Result<ChatCompletionRequestMessage, ModelE
                 reasoning_parts.push(text.clone());
             }
             ContentPart::ToolCall(call) => {
-                let args_str = match &call.arguments {
-                    Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                };
                 tool_calls.push(RequestMessageToolCall {
                     id: call.id.clone(),
                     kind: "function".to_string(),
                     function: RequestMessageToolCallFunction {
                         name: call.name.clone(),
-                        arguments: args_str,
+                        arguments: call.arguments.clone(),
                     },
                 });
             }
@@ -701,23 +697,19 @@ fn map_response_message(message: ChatCompletionResponseMessage) -> Result<Messag
 
     if let Some(tool_calls) = message.tool_calls {
         for call in tool_calls {
-            let arguments: Value = serde_json::from_str(&call.function.arguments)
-                .unwrap_or_else(|_| Value::String(call.function.arguments.clone()));
             parts.push(ContentPart::ToolCall(crate::core::ToolCall {
                 id: call.id,
                 name: call.function.name,
-                arguments,
+                arguments: call.function.arguments,
             }));
         }
     }
 
     if let Some(function_call) = message.function_call {
-        let arguments: Value = serde_json::from_str(&function_call.arguments)
-            .unwrap_or_else(|_| Value::String(function_call.arguments.clone()));
         parts.push(ContentPart::ToolCall(crate::core::ToolCall {
             id: String::new(),
             name: function_call.name,
-            arguments,
+            arguments: function_call.arguments,
         }));
     }
 
@@ -893,11 +885,10 @@ fn normalize_chat_completion_chunk_with_state(
             if reason == "tool_calls" || reason == "function_call" {
                 for (_, accumulator) in std::mem::take(tool_state) {
                     if accumulator.id.is_some() || accumulator.name.is_some() {
-                        let parsed_arguments = parse_json_string_or_raw(&accumulator.arguments)?;
                         events.push(StreamEvent::ToolCall(crate::core::ToolCall {
                             id: accumulator.id.unwrap_or_default(),
                             name: accumulator.name.unwrap_or_default(),
-                            arguments: parsed_arguments,
+                            arguments: accumulator.arguments,
                         }));
                     }
                 }
@@ -944,11 +935,6 @@ fn parse_tool_call_delta(
         },
         None,
     ))
-}
-
-fn parse_json_string_or_raw(raw: &str) -> Result<Value, ModelError> {
-    serde_json::from_str(raw)
-        .map_err(|e| ModelError::provider(format!("invalid tool call arguments JSON: {e}")))
 }
 
 pub type OpenAiWireRequest = ChatCompletionRequest;

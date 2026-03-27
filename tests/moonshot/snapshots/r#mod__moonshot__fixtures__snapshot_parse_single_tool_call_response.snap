@@ -10,8 +10,7 @@ message:
     - ToolCall:
         id: "get_weather:0"
         name: get_weather
-        arguments:
-          location: Beijing
+        arguments: "{\"location\": \"Beijing\"}"
 finish_reason: ToolCalls
 usage:
   input_tokens: 61

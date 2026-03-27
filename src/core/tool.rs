@@ -20,7 +20,7 @@ pub enum ToolChoice {
 pub struct ToolCall {
     pub id: String,
     pub name: String,
-    pub arguments: Value,
+    pub arguments: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

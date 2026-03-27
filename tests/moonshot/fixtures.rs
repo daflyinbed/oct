@@ -55,12 +55,10 @@ fn parse_messages_from_request(body: &serde_json::Value) -> Vec<Message> {
                         .unwrap_or_default()
                         .to_string();
                     let args_str = call["function"]["arguments"].as_str().unwrap_or_default();
-                    let arguments = serde_json::from_str(args_str)
-                        .unwrap_or_else(|_| serde_json::Value::String(args_str.to_string()));
                     parts.push(ContentPart::ToolCall(oct::core::ToolCall {
                         id,
                         name,
-                        arguments,
+                        arguments: args_str.to_string(),
                     }));
                 }
             }

@@ -11,8 +11,7 @@ expression: messages
     - ToolCall:
         id: call_347658d290644c939c908b08
         name: get_weather
-        arguments:
-          location: Shanghai
+        arguments: "{\"location\":\"Shanghai\"}"
 - role: User
   parts:
     - ToolResult:

@@ -575,7 +575,7 @@ fn map_anthropic_message(message: &Message) -> Result<AnthropicRequestMessage, M
             ContentPart::ToolCall(call) => AnthropicContentBlock::ToolUse(AnthropicToolUseBlock {
                 id: call.id.clone(),
                 name: call.name.clone(),
-                input: call.arguments.clone(),
+                input: serde_json::from_str(&call.arguments).unwrap_or(Value::Object(Default::default())),
             }),
             ContentPart::ToolResult(result) => AnthropicContentBlock::ToolResult(AnthropicToolResultBlock {
                 tool_use_id: result.call_id.clone(),
@@ -643,7 +643,7 @@ fn parse_anthropic_content_block(block: AnthropicContentBlock) -> Result<Content
         AnthropicContentBlock::ToolUse(tool_block) => Ok(ContentPart::ToolCall(crate::core::ToolCall {
             id: tool_block.id,
             name: tool_block.name,
-            arguments: tool_block.input,
+            arguments: serde_json::to_string(&tool_block.input).unwrap_or_default(),
         })),
         AnthropicContentBlock::ToolResult(result_block) => Ok(ContentPart::ToolResult(crate::core::ToolResult {
             call_id: result_block.tool_use_id,
@@ -830,7 +830,7 @@ fn normalize_anthropic_stream_event_with_state(
                     events.push(StreamEvent::ToolCall(crate::core::ToolCall {
                         id: acc.id.unwrap_or_else(|| format!("tool_{}", index)),
                         name: acc.name.unwrap_or_default(),
-                        arguments: parse_json_string_or_raw(&acc.arguments)?,
+                        arguments: acc.arguments,
                     }));
                 }
             }
@@ -899,7 +899,7 @@ fn normalize_anthropic_stream_event_with_state(
                 events.push(StreamEvent::ToolCall(crate::core::ToolCall {
                     id: acc.id.unwrap_or_else(|| format!("tool_{}", index)),
                     name: acc.name.unwrap_or_default(),
-                    arguments: parse_json_string_or_raw(&acc.arguments)?,
+                    arguments: acc.arguments,
                 }));
             }
         }
@@ -909,13 +909,4 @@ fn normalize_anthropic_stream_event_with_state(
     }
 
     Ok(events)
-}
-
-fn parse_json_string_or_raw(raw: &str) -> Result<Value, ModelError> {
-    if raw.is_empty() {
-        Ok(Value::Object(Map::new()))
-    } else {
-        serde_json::from_str(raw)
-            .map_err(|e| ModelError::provider(format!("invalid tool call arguments JSON: {e}")))
-    }
 }
