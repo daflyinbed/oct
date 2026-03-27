@@ -160,11 +160,11 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
     )
     .unwrap();
 
-    assert!(matches!(&events[0], oct::core::StreamEvent::ToolCall(call) if call.name == "lookup"));
     assert!(matches!(
-        &events[1],
+        &events[0],
         oct::core::StreamEvent::ToolCallDelta { .. }
     ));
+    assert!(matches!(&events[1], oct::core::StreamEvent::ToolCall(call) if call.name == "lookup"));
     assert!(matches!(
         &events[2],
         oct::core::StreamEvent::Finish(oct::core::FinishReason::Stop)

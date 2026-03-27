@@ -73,14 +73,15 @@ expression: events
 - TextDelta: " for"
 - TextDelta: " you"
 - TextDelta: "."
-- ToolCall:
-    id: call_fa9d7f8696424e11bcef1cbb
-    name: get_weather
-    arguments: {}
 - ToolCallDelta:
     call_id: call_fa9d7f8696424e11bcef1cbb
     name: ~
     arguments_delta: "{\"location\":\"Shenzhen\"}"
+- ToolCall:
+    id: call_fa9d7f8696424e11bcef1cbb
+    name: get_weather
+    arguments:
+      location: Shenzhen
 - Usage:
     input_tokens: 41
     output_tokens: 74

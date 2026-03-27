@@ -568,9 +568,9 @@ fn map_anthropic_message(message: &Message) -> Result<AnthropicRequestMessage, M
                     url: url.clone(),
                 },
             }),
-            ContentPart::Reasoning(text) => AnthropicContentBlock::Text(AnthropicTextBlock {
-                text: text.clone(),
-                citations: None,
+            ContentPart::Reasoning(text) => AnthropicContentBlock::Thinking(AnthropicThinkingBlock {
+                thinking: text.clone(),
+                signature: None,
             }),
             ContentPart::ToolCall(call) => AnthropicContentBlock::ToolUse(AnthropicToolUseBlock {
                 id: call.id.clone(),
@@ -843,25 +843,15 @@ fn normalize_anthropic_stream_event_with_state(
         AnthropicStreamEvent::ContentBlockStart { index, content_block } => {
             match content_block {
                 AnthropicContentBlock::ToolUse(tool_block) => {
-                    let id = tool_block.id.clone();
-                    let name = tool_block.name.clone();
-                    let initial_input = tool_block.input.clone();
-                    
                     tool_state.insert(
                         index,
                         AnthropicToolAccumulator {
-                            id: Some(id.clone()),
-                            name: Some(name.clone()),
+                            id: Some(tool_block.id.clone()),
+                            name: Some(tool_block.name.clone()),
                             arguments: String::new(),
-                            emitted: true,
+                            emitted: false,
                         },
                     );
-                    
-                    events.push(StreamEvent::ToolCall(crate::core::ToolCall {
-                        id,
-                        name,
-                        arguments: initial_input,
-                    }));
                 }
                 AnthropicContentBlock::Thinking(thinking_block) => {
                     if !thinking_block.thinking.is_empty() {
