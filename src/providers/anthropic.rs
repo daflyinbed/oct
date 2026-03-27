@@ -1,12 +1,12 @@
-use async_trait::async_trait;
 use async_stream::try_stream;
+use async_trait::async_trait;
 use futures_util::StreamExt;
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value};
 use std::collections::HashMap;
 
-use crate::core::{ContentPart, FinishReason, Message, ModelError, StreamEvent, Usage};
+use crate::core::{ContentPart, FinishReason, Message, ModelError, Role, StreamEvent, Usage};
 use crate::model::{ChatModel, ChatRequest, ChatResponse, ChatStream};
 use crate::provider::{ModelCapabilities, ModelInfo, ModelLimits, Provider};
 
@@ -21,12 +21,6 @@ pub struct AnthropicChatModel {
     info: ModelInfo,
     config: AnthropicConfig,
     client: reqwest::Client,
-}
-
-#[derive(Debug, Clone, Default)]
-struct AnthropicToolAccumulator {
-    name: Option<String>,
-    arguments: String,
 }
 
 #[derive(Debug, Clone)]
@@ -51,7 +45,7 @@ impl AnthropicProvider {
                 native_tools: true,
                 vision: true,
                 json_mode: false,
-                reasoning: false,
+                reasoning: true,
                 usage: true,
             })
             .with_limits(ModelLimits {
@@ -68,13 +62,78 @@ impl Default for AnthropicProvider {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-struct AnthropicRequestMessage {
-    role: String,
-    content: Vec<Value>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(private_interfaces)]
+pub struct AnthropicTextBlock {
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub citations: Option<Vec<AnthropicCitation>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AnthropicImageBlock {
+    source: AnthropicImageSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AnthropicImageSource {
+    #[serde(rename = "type")]
+    source_type: String,
+    url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnthropicToolUseBlock {
+    pub id: String,
+    pub name: String,
+    pub input: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AnthropicToolResultBlock {
+    tool_use_id: String,
+    content: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_error: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AnthropicThinkingBlock {
+    thinking: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signature: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AnthropicRedactedThinkingBlock {
+    data: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+#[allow(private_interfaces)]
+pub enum AnthropicContentBlock {
+    #[serde(rename = "text")]
+    Text(AnthropicTextBlock),
+    #[serde(rename = "image")]
+    Image(AnthropicImageBlock),
+    #[serde(rename = "tool_use")]
+    ToolUse(AnthropicToolUseBlock),
+    #[serde(rename = "tool_result")]
+    ToolResult(AnthropicToolResultBlock),
+    #[serde(rename = "thinking")]
+    Thinking(AnthropicThinkingBlock),
+    #[serde(rename = "redacted_thinking")]
+    RedactedThinking(AnthropicRedactedThinkingBlock),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AnthropicRequestMessage {
+    role: String,
+    content: Vec<AnthropicContentBlock>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct AnthropicToolDefinition {
     name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -82,16 +141,47 @@ struct AnthropicToolDefinition {
     input_schema: Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+enum AnthropicToolChoice {
+    #[serde(rename = "auto")]
+    Auto { disable_parallel_tool_use: Option<bool> },
+    #[serde(rename = "none")]
+    None,
+    #[serde(rename = "any")]
+    Any { disable_parallel_tool_use: Option<bool> },
+    #[serde(rename = "tool")]
+    Tool { name: String, disable_parallel_tool_use: Option<bool> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AnthropicMetadata {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AnthropicThinkingConfig {
+    #[serde(rename = "type")]
+    thinking_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    budget_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct AnthropicWireRequest {
     model: String,
     messages: Vec<AnthropicRequestMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<String>,
+    system: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     top_p: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_k: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
@@ -99,32 +189,162 @@ struct AnthropicWireRequest {
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     tools: Vec<AnthropicToolDefinition>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tool_choice: Option<Value>,
+    tool_choice: Option<AnthropicToolChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata: Option<AnthropicMetadata>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<AnthropicThinkingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream: Option<bool>,
     #[serde(flatten)]
-    provider_options: Value,
+    other: Map<String, Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnthropicContainer {
+    pub id: String,
+    pub expires_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnthropicCacheCreation {
+    pub ephemeral_1h_input_tokens: u64,
+    pub ephemeral_5m_input_tokens: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnthropicServerToolUsage {
+    #[serde(default)]
+    pub web_search_requests: u64,
+    #[serde(default)]
+    pub web_fetch_requests: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnthropicUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_creation_input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_creation: Option<AnthropicCacheCreation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_tool_use: Option<AnthropicServerToolUsage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inference_geo: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnthropicResponse {
-    pub id: Option<String>,
-    #[serde(default)]
-    pub content: Vec<Value>,
-    #[serde(default)]
+    pub id: String,
+    #[serde(rename = "type")]
+    pub response_type: String,
+    pub role: String,
+    pub content: Vec<AnthropicContentBlock>,
+    pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<String>,
-    #[serde(default)]
-    pub usage: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_sequence: Option<String>,
+    pub usage: AnthropicUsage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container: Option<AnthropicContainer>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AnthropicStreamEvent {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AnthropicMessageDelta {
+    stop_reason: Option<String>,
+    stop_sequence: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    container: Option<AnthropicContainer>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AnthropicMessageDeltaUsage {
+    output_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_creation_input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_read_input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    server_tool_use: Option<AnthropicServerToolUsage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+#[allow(private_interfaces)]
+pub enum AnthropicContentBlockDelta {
+    #[serde(rename = "text_delta")]
+    TextDelta { text: String },
+    #[serde(rename = "input_json_delta")]
+    InputJsonDelta { partial_json: String },
+    #[serde(rename = "thinking_delta")]
+    ThinkingDelta { thinking: String },
+    #[serde(rename = "signature_delta")]
+    SignatureDelta { signature: String },
+    #[serde(rename = "citations_delta")]
+    CitationsDelta { citation: AnthropicCitation },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+#[allow(private_interfaces)]
+pub enum AnthropicStreamEvent {
+    #[serde(rename = "message_start")]
+    MessageStart { message: AnthropicResponse },
+    #[serde(rename = "message_delta")]
+    MessageDelta { delta: AnthropicMessageDelta, usage: AnthropicMessageDeltaUsage },
+    #[serde(rename = "message_stop")]
+    MessageStop,
+    #[serde(rename = "content_block_start")]
+    ContentBlockStart { index: usize, content_block: AnthropicContentBlock },
+    #[serde(rename = "content_block_delta")]
+    ContentBlockDelta { index: usize, delta: AnthropicContentBlockDelta },
+    #[serde(rename = "content_block_stop")]
+    ContentBlockStop { index: usize },
+    #[serde(rename = "ping")]
+    Ping,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnthropicCitation {
     #[serde(rename = "type")]
-    pub event_type: String,
-    #[serde(default)]
-    pub delta: Option<Value>,
-    #[serde(default)]
-    pub content_block: Option<Value>,
-    #[serde(default)]
-    pub usage: Option<Value>,
+    citation_type: String,
+    cited_text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start_char_index: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    end_char_index: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start_page_number: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    end_page_number: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start_block_index: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    end_block_index: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    document_index: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    document_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    encrypted_index: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct AnthropicToolAccumulator {
+    id: Option<String>,
+    name: Option<String>,
+    arguments: String,
+    emitted: bool,
 }
 
 impl AnthropicChatModel {
@@ -154,15 +374,18 @@ impl AnthropicChatModel {
     }
 
     fn to_wire_request(&self, req: &ChatRequest) -> Result<AnthropicWireRequest, ModelError> {
-        let mut system_parts = Vec::new();
+        let mut system_text = String::new();
         let mut messages = Vec::new();
 
         for message in &req.messages {
-            if matches!(message.role, crate::core::Role::System) {
+            if matches!(message.role, Role::System) {
                 for part in &message.parts {
                     match part {
                         ContentPart::Text(text) | ContentPart::Reasoning(text) => {
-                            system_parts.push(text.clone())
+                            if !system_text.is_empty() {
+                                system_text.push_str("\n\n");
+                            }
+                            system_text.push_str(text);
                         }
                         _ => {
                             return Err(ModelError::unsupported(
@@ -177,21 +400,29 @@ impl AnthropicChatModel {
             messages.push(map_anthropic_message(message)?);
         }
 
+        let system = if system_text.is_empty() {
+            None
+        } else {
+            Some(Value::String(system_text))
+        };
+
+        let tool_choice = req.options.tool_choice.as_ref().map(map_anthropic_tool_choice);
+
         Ok(AnthropicWireRequest {
             model: self.info.model_id.clone(),
             messages,
-            system: if system_parts.is_empty() {
-                None
-            } else {
-                Some(system_parts.join("\n\n"))
-            },
+            system,
             temperature: req.options.temperature,
             top_p: req.options.top_p,
+            top_k: None,
             max_tokens: req.options.max_output_tokens,
             stop_sequences: req.options.stop_sequences.clone(),
             tools: req.tools.iter().map(map_anthropic_tool).collect(),
-            tool_choice: req.options.tool_choice.as_ref().map(map_anthropic_tool_choice),
-            provider_options: req.options.provider_options.clone(),
+            tool_choice,
+            metadata: None,
+            thinking: None,
+            stream: None,
+            other: req.options.provider_options.as_object().cloned().unwrap_or_default(),
         })
     }
 }
@@ -241,9 +472,7 @@ impl ChatModel for AnthropicChatModel {
 
     async fn stream(&self, req: ChatRequest) -> Result<ChatStream, ModelError> {
         let mut wire = self.to_wire_request(&req)?;
-        let mut opts = wire.provider_options.as_object_mut().cloned().unwrap_or_default();
-        opts.insert("stream".to_string(), Value::Bool(true));
-        wire.provider_options = Value::Object(opts);
+        wire.stream = Some(true);
 
         let response = self
             .client
@@ -275,7 +504,8 @@ impl ChatModel for AnthropicChatModel {
         let byte_stream = response.bytes_stream();
         let stream = try_stream! {
             let mut buffer = String::new();
-            let mut tool_state = HashMap::new();
+            let mut tool_state: HashMap<usize, AnthropicToolAccumulator> = HashMap::new();
+            let mut stop_reason: Option<String> = None;
             futures_util::pin_mut!(byte_stream);
 
             while let Some(chunk) = byte_stream.next().await {
@@ -286,14 +516,14 @@ impl ChatModel for AnthropicChatModel {
                 buffer.push_str(text);
 
                 while let Some(event) = take_sse_event(&mut buffer) {
-                    for normalized in parse_anthropic_sse_event_with_state(&event, &mut tool_state)? {
+                    for normalized in parse_anthropic_sse_event_with_state(&event, &mut tool_state, &mut stop_reason)? {
                         yield normalized;
                     }
                 }
             }
 
             for remainder in flush_sse_buffer(&mut buffer) {
-                for normalized in parse_anthropic_sse_event_with_state(&remainder, &mut tool_state)? {
+                for normalized in parse_anthropic_sse_event_with_state(&remainder, &mut tool_state, &mut stop_reason)? {
                     yield normalized;
                 }
             }
@@ -318,36 +548,39 @@ impl Provider for AnthropicProvider {
 
 fn map_anthropic_message(message: &Message) -> Result<AnthropicRequestMessage, ModelError> {
     let role = match message.role {
-        crate::core::Role::User => "user",
-        crate::core::Role::Assistant => "assistant",
-        crate::core::Role::Tool => "user",
-        crate::core::Role::System => unreachable!(),
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        Role::Tool => "user",
+        Role::System => unreachable!(),
     }
     .to_string();
 
     let mut content = Vec::with_capacity(message.parts.len());
     for part in &message.parts {
         content.push(match part {
-            ContentPart::Text(text) => json!({ "type": "text", "text": text }),
-            ContentPart::ImageUrl { url } => json!({
-                "type": "image",
-                "source": {
-                    "type": "url",
-                    "url": url,
-                }
+            ContentPart::Text(text) => AnthropicContentBlock::Text(AnthropicTextBlock {
+                text: text.clone(),
+                citations: None,
             }),
-            ContentPart::Reasoning(text) => json!({ "type": "text", "text": text }),
-            ContentPart::ToolCall(call) => json!({
-                "type": "tool_use",
-                "id": call.id,
-                "name": call.name,
-                "input": call.arguments,
+            ContentPart::ImageUrl { url } => AnthropicContentBlock::Image(AnthropicImageBlock {
+                source: AnthropicImageSource {
+                    source_type: "url".to_string(),
+                    url: url.clone(),
+                },
             }),
-            ContentPart::ToolResult(result) => json!({
-                "type": "tool_result",
-                "tool_use_id": result.call_id,
-                "content": result.content,
-                "is_error": result.is_error,
+            ContentPart::Reasoning(text) => AnthropicContentBlock::Text(AnthropicTextBlock {
+                text: text.clone(),
+                citations: None,
+            }),
+            ContentPart::ToolCall(call) => AnthropicContentBlock::ToolUse(AnthropicToolUseBlock {
+                id: call.id.clone(),
+                name: call.name.clone(),
+                input: call.arguments.clone(),
+            }),
+            ContentPart::ToolResult(result) => AnthropicContentBlock::ToolResult(AnthropicToolResultBlock {
+                tool_use_id: result.call_id.clone(),
+                content: result.content.clone(),
+                is_error: if result.is_error { Some(true) } else { None },
             }),
         });
     }
@@ -363,34 +596,37 @@ fn map_anthropic_tool(tool: &crate::core::ToolSpec) -> AnthropicToolDefinition {
     }
 }
 
-fn map_anthropic_tool_choice(choice: &crate::core::ToolChoice) -> Value {
+fn map_anthropic_tool_choice(choice: &crate::core::ToolChoice) -> AnthropicToolChoice {
     match choice {
-        crate::core::ToolChoice::Auto => json!({ "type": "auto" }),
-        crate::core::ToolChoice::None => json!({ "type": "none" }),
-        crate::core::ToolChoice::Required => json!({ "type": "any" }),
-        crate::core::ToolChoice::Named(name) => json!({ "type": "tool", "name": name }),
+        crate::core::ToolChoice::Auto => AnthropicToolChoice::Auto { disable_parallel_tool_use: None },
+        crate::core::ToolChoice::None => AnthropicToolChoice::None,
+        crate::core::ToolChoice::Required => AnthropicToolChoice::Any { disable_parallel_tool_use: None },
+        crate::core::ToolChoice::Named(name) => {
+            AnthropicToolChoice::Tool { name: name.clone(), disable_parallel_tool_use: None }
+        }
     }
 }
 
 pub fn map_anthropic_response(payload: AnthropicResponse) -> Result<ChatResponse, ModelError> {
-    let usage = payload.usage.as_ref().map(map_anthropic_usage);
+    let usage = Some(map_anthropic_usage(&payload.usage));
     let mut provider_metadata = Map::new();
-    if let Some(raw_usage) = payload.usage {
-        provider_metadata.insert("raw_usage".to_string(), raw_usage);
+    provider_metadata.insert("model".to_string(), Value::String(payload.model.clone()));
+    if let Some(container) = &payload.container {
+        provider_metadata.insert("container".to_string(), serde_json::to_value(container).unwrap_or(Value::Null));
     }
 
     Ok(ChatResponse {
         message: Message {
-            role: crate::core::Role::Assistant,
+            role: Role::Assistant,
             parts: payload
                 .content
                 .into_iter()
-                .map(parse_anthropic_part)
+                .map(parse_anthropic_content_block)
                 .collect::<Result<Vec<_>, _>>()?,
         },
         finish_reason: anthropic_finish_reason(payload.stop_reason.as_deref()),
         usage,
-        provider_response_id: payload.id,
+        provider_response_id: Some(payload.id),
         provider_metadata,
     })
 }
@@ -401,73 +637,59 @@ pub fn parse_anthropic_generate_body(body: &str) -> Result<ChatResponse, ModelEr
     map_anthropic_response(payload)
 }
 
-fn parse_anthropic_part(part: Value) -> Result<ContentPart, ModelError> {
-    let kind = part
-        .get("type")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ModelError::provider("anthropic content part missing type"))?;
-
-    match kind {
-        "text" => Ok(ContentPart::Text(
-            part.get("text")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-        )),
-        "tool_use" => Ok(ContentPart::ToolCall(crate::core::ToolCall {
-            id: part
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            name: part
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            arguments: part.get("input").cloned().unwrap_or(Value::Null),
+fn parse_anthropic_content_block(block: AnthropicContentBlock) -> Result<ContentPart, ModelError> {
+    match block {
+        AnthropicContentBlock::Text(text_block) => Ok(ContentPart::Text(text_block.text)),
+        AnthropicContentBlock::ToolUse(tool_block) => Ok(ContentPart::ToolCall(crate::core::ToolCall {
+            id: tool_block.id,
+            name: tool_block.name,
+            arguments: tool_block.input,
         })),
-        "tool_result" => Ok(ContentPart::ToolResult(crate::core::ToolResult {
-            call_id: part
-                .get("tool_use_id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            content: part.get("content").cloned().unwrap_or(Value::Null),
-            is_error: part
-                .get("is_error")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
+        AnthropicContentBlock::ToolResult(result_block) => Ok(ContentPart::ToolResult(crate::core::ToolResult {
+            call_id: result_block.tool_use_id,
+            content: result_block.content,
+            is_error: result_block.is_error.unwrap_or(false),
         })),
-        "thinking" => Ok(ContentPart::Reasoning(
-            part.get("thinking")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-        )),
-        other => Err(ModelError::provider(format!(
-            "unsupported anthropic content part type: {other}"
-        ))),
+        AnthropicContentBlock::Thinking(thinking_block) => Ok(ContentPart::Reasoning(thinking_block.thinking)),
+        AnthropicContentBlock::RedactedThinking(redacted_block) => {
+            Ok(ContentPart::Reasoning(format!("[redacted: {}]", redacted_block.data)))
+        }
+        AnthropicContentBlock::Image(_) => Err(ModelError::provider("unexpected image block in response")),
     }
 }
 
-pub fn map_anthropic_usage(raw: &Value) -> Usage {
+pub fn map_anthropic_usage(raw: &AnthropicUsage) -> Usage {
     let mut provider_details = Map::new();
-    provider_details.insert("raw".to_string(), raw.clone());
+    provider_details.insert("raw".to_string(), serde_json::to_value(raw).unwrap_or(Value::Null));
+    if let Some(cache_creation) = &raw.cache_creation {
+        provider_details.insert(
+            "cache_creation".to_string(),
+            serde_json::to_value(cache_creation).unwrap_or(Value::Null),
+        );
+    }
+    if let Some(server_tool_use) = &raw.server_tool_use {
+        provider_details.insert(
+            "server_tool_use".to_string(),
+            serde_json::to_value(server_tool_use).unwrap_or(Value::Null),
+        );
+    }
+    if let Some(ref geo) = raw.inference_geo {
+        provider_details.insert("inference_geo".to_string(), Value::String(geo.clone()));
+    }
+    if let Some(ref tier) = raw.service_tier {
+        provider_details.insert("service_tier".to_string(), Value::String(tier.clone()));
+    }
 
-    let input_tokens = raw.get("input_tokens").and_then(Value::as_u64).map(|v| v as u32);
-    let output_tokens = raw.get("output_tokens").and_then(Value::as_u64).map(|v| v as u32);
-    let total_tokens = match (input_tokens, output_tokens) {
-        (Some(input), Some(output)) => Some(input + output),
-        _ => None,
-    };
+    let input_tokens = Some(raw.input_tokens as u32);
+    let output_tokens = Some(raw.output_tokens as u32);
+    let total_tokens = Some((raw.input_tokens + raw.output_tokens) as u32);
 
     Usage {
         input_tokens,
         output_tokens,
         total_tokens,
         reasoning_tokens: None,
-        cached_input_tokens: None,
+        cached_input_tokens: raw.cache_read_input_tokens.map(|v| v as u32),
         provider_details,
     }
 }
@@ -477,6 +699,8 @@ pub fn anthropic_finish_reason(raw: Option<&str>) -> FinishReason {
         Some("end_turn") | Some("stop_sequence") => FinishReason::Stop,
         Some("max_tokens") => FinishReason::Length,
         Some("tool_use") => FinishReason::ToolCalls,
+        Some("pause_turn") => FinishReason::Stop,
+        Some("refusal") => FinishReason::ContentFilter,
         Some("error") => FinishReason::Error,
         _ => FinishReason::Unknown,
     }
@@ -512,20 +736,29 @@ fn flush_sse_buffer(buffer: &mut String) -> Vec<String> {
 }
 
 pub fn parse_anthropic_sse_event(event: &str) -> Result<Vec<StreamEvent>, ModelError> {
-    parse_anthropic_sse_event_with_state(event, &mut HashMap::new())
+    parse_anthropic_sse_event_with_state(event, &mut HashMap::new(), &mut None)
 }
 
 pub fn parse_anthropic_sse_transcript(transcript: &str) -> Result<Vec<StreamEvent>, ModelError> {
     let mut buffer = transcript.to_string();
     let mut tool_state = HashMap::new();
+    let mut stop_reason = None;
     let mut events = Vec::new();
 
     while let Some(event) = take_sse_event(&mut buffer) {
-        events.extend(parse_anthropic_sse_event_with_state(&event, &mut tool_state)?);
+        events.extend(parse_anthropic_sse_event_with_state(
+            &event,
+            &mut tool_state,
+            &mut stop_reason,
+        )?);
     }
 
     for remainder in flush_sse_buffer(&mut buffer) {
-        events.extend(parse_anthropic_sse_event_with_state(&remainder, &mut tool_state)?);
+        events.extend(parse_anthropic_sse_event_with_state(
+            &remainder,
+            &mut tool_state,
+            &mut stop_reason,
+        )?);
     }
 
     Ok(events)
@@ -533,7 +766,8 @@ pub fn parse_anthropic_sse_transcript(transcript: &str) -> Result<Vec<StreamEven
 
 fn parse_anthropic_sse_event_with_state(
     event: &str,
-    tool_state: &mut HashMap<String, AnthropicToolAccumulator>,
+    tool_state: &mut HashMap<usize, AnthropicToolAccumulator>,
+    stop_reason: &mut Option<String>,
 ) -> Result<Vec<StreamEvent>, ModelError> {
     let mut data_lines = Vec::new();
     for line in event.lines() {
@@ -547,156 +781,142 @@ fn parse_anthropic_sse_event_with_state(
     }
 
     let payload = data_lines.join("\n");
-    let event: AnthropicStreamEvent = serde_json::from_str(&payload)
+    let stream_event: AnthropicStreamEvent = serde_json::from_str(&payload)
         .map_err(|err| ModelError::transport(format!("invalid anthropic stream chunk: {err}")))?;
-    normalize_anthropic_stream_event_with_state(event, tool_state)
+    
+    normalize_anthropic_stream_event_with_state(stream_event, tool_state, stop_reason)
 }
 
-pub fn normalize_anthropic_stream_event(event: AnthropicStreamEvent) -> Result<Vec<StreamEvent>, ModelError> {
-    normalize_anthropic_stream_event_with_state(event, &mut HashMap::new())
+pub fn normalize_anthropic_stream_event(
+    event: AnthropicStreamEvent,
+) -> Result<Vec<StreamEvent>, ModelError> {
+    normalize_anthropic_stream_event_with_state(event, &mut HashMap::new(), &mut None)
 }
 
 fn normalize_anthropic_stream_event_with_state(
     event: AnthropicStreamEvent,
-    tool_state: &mut HashMap<String, AnthropicToolAccumulator>,
+    tool_state: &mut HashMap<usize, AnthropicToolAccumulator>,
+    stop_reason: &mut Option<String>,
 ) -> Result<Vec<StreamEvent>, ModelError> {
     let mut events = Vec::new();
 
-    if let Some(usage) = event.usage.as_ref() {
-        events.push(StreamEvent::Usage(map_anthropic_usage(usage)));
-    }
-
-    match event.event_type.as_str() {
-        "content_block_delta" => {
-            if let Some(delta) = event.delta {
-                events.extend(parse_anthropic_delta(delta, tool_state)?);
+    match event {
+        AnthropicStreamEvent::MessageStart { message } => {
+            events.push(StreamEvent::Usage(map_anthropic_usage(&message.usage)));
+        }
+        AnthropicStreamEvent::MessageDelta { delta, usage } => {
+            *stop_reason = delta.stop_reason.clone();
+            let mut delta_usage = Usage::new(
+                usage.input_tokens.map(|v| v as u32),
+                Some(usage.output_tokens as u32),
+                None,
+            );
+            delta_usage.cached_input_tokens = usage.cache_read_input_tokens.map(|v| v as u32);
+            delta_usage.provider_details.insert(
+                "cache_creation_input_tokens".to_string(),
+                Value::Number(usage.cache_creation_input_tokens.unwrap_or(0).into()),
+            );
+            if let Some(server_tool_use) = usage.server_tool_use {
+                delta_usage.provider_details.insert(
+                    "server_tool_use".to_string(),
+                    serde_json::to_value(server_tool_use).unwrap_or(Value::Null),
+                );
+            }
+            events.push(StreamEvent::Usage(delta_usage));
+        }
+        AnthropicStreamEvent::MessageStop => {
+            for (index, acc) in std::mem::take(tool_state) {
+                if !acc.emitted && (acc.name.is_some() || !acc.arguments.is_empty()) {
+                    events.push(StreamEvent::ToolCall(crate::core::ToolCall {
+                        id: acc.id.unwrap_or_else(|| format!("tool_{}", index)),
+                        name: acc.name.unwrap_or_default(),
+                        arguments: parse_json_string_or_raw(&acc.arguments),
+                    }));
+                }
+            }
+            let finish_reason = match stop_reason.as_deref() {
+                Some(reason) => anthropic_finish_reason(Some(reason)),
+                None => FinishReason::Stop,
+            };
+            events.push(StreamEvent::Finish(finish_reason));
+        }
+        AnthropicStreamEvent::ContentBlockStart { index, content_block } => {
+            match content_block {
+                AnthropicContentBlock::ToolUse(tool_block) => {
+                    let id = tool_block.id.clone();
+                    let name = tool_block.name.clone();
+                    tool_state.insert(
+                        index,
+                        AnthropicToolAccumulator {
+                            id: Some(id.clone()),
+                            name: Some(name.clone()),
+                            arguments: String::new(),
+                            emitted: true,
+                        },
+                    );
+                    events.push(StreamEvent::ToolCall(crate::core::ToolCall {
+                        id,
+                        name,
+                        arguments: tool_block.input,
+                    }));
+                }
+                AnthropicContentBlock::Thinking(thinking_block) => {
+                    events.push(StreamEvent::ReasoningDelta(thinking_block.thinking));
+                }
+                AnthropicContentBlock::Text(text_block) => {
+                    events.push(StreamEvent::TextDelta(text_block.text));
+                }
+                _ => {}
             }
         }
-        "content_block_start" => {
-            if let Some(block) = event.content_block {
-                if let Some(start_event) = parse_anthropic_content_block_start(block, tool_state)? {
-                    events.push(start_event);
+        AnthropicStreamEvent::ContentBlockDelta { index, delta } => {
+            match delta {
+                AnthropicContentBlockDelta::TextDelta { text } => {
+                    events.push(StreamEvent::TextDelta(text));
+                }
+                AnthropicContentBlockDelta::InputJsonDelta { partial_json } => {
+                    let accumulator = tool_state.entry(index).or_default();
+                    accumulator.arguments.push_str(&partial_json);
+                    events.push(StreamEvent::ToolCallDelta {
+                        call_id: format!("tool_{}", index),
+                        name: None,
+                        arguments_delta: partial_json,
+                    });
+                }
+                AnthropicContentBlockDelta::ThinkingDelta { thinking } => {
+                    events.push(StreamEvent::ReasoningDelta(thinking));
+                }
+                AnthropicContentBlockDelta::SignatureDelta { signature: _ } => {
+                    // Signature is for multi-turn thinking continuity, we don't expose it
+                }
+                AnthropicContentBlockDelta::CitationsDelta { citation: _ } => {
+                    // Citations are not exposed in our current API
                 }
             }
         }
-        "content_block_stop" => {
-            if let Some(delta) = event.delta {
-                if let Some(call_id) = delta.get("id").and_then(Value::as_str) {
-                    if let Some(acc) = tool_state.remove(call_id) {
-                        events.push(StreamEvent::ToolCall(crate::core::ToolCall {
-                            id: call_id.to_string(),
-                            name: acc.name.unwrap_or_default(),
-                            arguments: parse_json_string_or_raw(&acc.arguments),
-                        }));
-                    }
+        AnthropicStreamEvent::ContentBlockStop { index } => {
+            if let Some(acc) = tool_state.remove(&index) {
+                if !acc.emitted && (acc.name.is_some() || !acc.arguments.is_empty()) {
+                    events.push(StreamEvent::ToolCall(crate::core::ToolCall {
+                        id: acc.id.unwrap_or_else(|| format!("tool_{}", index)),
+                        name: acc.name.unwrap_or_default(),
+                        arguments: parse_json_string_or_raw(&acc.arguments),
+                    }));
                 }
             }
         }
-        "message_stop" => {
-            for (call_id, acc) in std::mem::take(tool_state) {
-                events.push(StreamEvent::ToolCall(crate::core::ToolCall {
-                    id: call_id,
-                    name: acc.name.unwrap_or_default(),
-                    arguments: parse_json_string_or_raw(&acc.arguments),
-                }));
-            }
-            events.push(StreamEvent::Finish(FinishReason::Stop));
+        AnthropicStreamEvent::Ping => {
+            // Ping events are keep-alive signals, no action needed
         }
-        _ => {}
     }
 
     Ok(events)
 }
 
-fn parse_anthropic_delta(
-    delta: Value,
-    tool_state: &mut HashMap<String, AnthropicToolAccumulator>,
-) -> Result<Vec<StreamEvent>, ModelError> {
-    let kind = delta
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-
-    match kind {
-        "text_delta" => Ok(vec![StreamEvent::TextDelta(
-            delta.get("text")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-        )]),
-        "thinking_delta" => Ok(vec![StreamEvent::ReasoningDelta(
-            delta.get("thinking")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-        )]),
-        "input_json_delta" => {
-            let call_id = delta
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let partial = delta
-                .get("partial_json")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let accumulator = tool_state.entry(call_id.clone()).or_default();
-            accumulator.arguments.push_str(&partial);
-            Ok(vec![StreamEvent::ToolCallDelta {
-                call_id,
-                name: None,
-                arguments_delta: partial,
-            }])
-        }
-        _ => Ok(Vec::new()),
-    }
-}
-
-fn parse_anthropic_content_block_start(
-    block: Value,
-    tool_state: &mut HashMap<String, AnthropicToolAccumulator>,
-) -> Result<Option<StreamEvent>, ModelError> {
-    let kind = block
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-
-    match kind {
-        "tool_use" => {
-            let id = block
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let name = block
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let input = block.get("input").cloned().unwrap_or(Value::Null);
-
-            tool_state.insert(
-                id.clone(),
-                AnthropicToolAccumulator {
-                    name: Some(name.clone()),
-                    arguments: match &input {
-                        Value::Null => String::new(),
-                        _ => input.to_string(),
-                    },
-                },
-            );
-
-            Ok(Some(StreamEvent::ToolCall(crate::core::ToolCall {
-                id,
-                name,
-                arguments: input,
-            })))
-        }
-        _ => Ok(None),
-    }
-}
-
 fn parse_json_string_or_raw(raw: &str) -> Value {
-    serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_string()))
+    if raw.is_empty() {
+        Value::Object(Map::new())
+    } else {
+        serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_string()))
+    }
 }

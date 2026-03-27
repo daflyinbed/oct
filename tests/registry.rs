@@ -4,8 +4,7 @@ use common::StubProvider;
 use oct::adapter::{map_openai_usage, ChatCompletionUsage};
 use oct::core::ModelError;
 use oct::provider::ProviderRegistry;
-use oct::providers::{default_registry, map_anthropic_usage, MoonshotAIProvider};
-use serde_json::json;
+use oct::providers::{default_registry, map_anthropic_usage, AnthropicUsage, MoonshotAIProvider};
 
 #[test]
 fn resolves_registered_model_specs() {
@@ -50,10 +49,16 @@ fn usage_mappers_produce_normalized_values() {
     });
     assert_eq!(openai_usage.total_tokens, Some(7));
 
-    let anthropic_usage = map_anthropic_usage(&json!({
-        "input_tokens": 9,
-        "output_tokens": 4
-    }));
+    let anthropic_usage = map_anthropic_usage(&AnthropicUsage {
+        input_tokens: 9,
+        output_tokens: 4,
+        cache_creation_input_tokens: None,
+        cache_read_input_tokens: None,
+        cache_creation: None,
+        server_tool_use: None,
+        inference_geo: None,
+        service_tier: None,
+    });
     assert_eq!(anthropic_usage.total_tokens, Some(13));
 }
 

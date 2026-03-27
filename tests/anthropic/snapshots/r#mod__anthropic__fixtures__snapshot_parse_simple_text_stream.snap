@@ -2,6 +2,17 @@
 source: tests/anthropic/fixtures.rs
 expression: events
 ---
+- Usage:
+    input_tokens: 0
+    output_tokens: 0
+    total_tokens: 0
+    reasoning_tokens: ~
+    cached_input_tokens: ~
+    provider_details:
+      raw:
+        input_tokens: 0
+        output_tokens: 0
+- ReasoningDelta: ""
 - ReasoningDelta: The
 - ReasoningDelta: " user"
 - ReasoningDelta: " wants"
@@ -45,19 +56,17 @@ expression: events
 - ReasoningDelta: " \""
 - ReasoningDelta: Hello
 - ReasoningDelta: "\"."
+- TextDelta: ""
 - TextDelta: Hello
 - Usage:
     input_tokens: 13
     output_tokens: 46
-    total_tokens: 59
+    total_tokens: ~
     reasoning_tokens: ~
-    cached_input_tokens: ~
+    cached_input_tokens: 0
     provider_details:
-      raw:
-        cache_read_input_tokens: 0
-        input_tokens: 13
-        output_tokens: 46
-        server_tool_use:
-          web_search_requests: 0
-        service_tier: standard
+      cache_creation_input_tokens: 0
+      server_tool_use:
+        web_fetch_requests: 0
+        web_search_requests: 0
 - Finish: Stop

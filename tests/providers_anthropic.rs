@@ -2,17 +2,25 @@ use serde_json::json;
 
 use oct::provider::Provider;
 use oct::providers::{
-    anthropic_finish_reason, map_anthropic_response, map_anthropic_usage,
-    normalize_anthropic_stream_event, parse_anthropic_generate_body, parse_anthropic_sse_event,
-    parse_anthropic_sse_transcript, AnthropicProvider, AnthropicResponse, AnthropicStreamEvent,
+    aggregate_anthropic_stream, anthropic_finish_reason, map_anthropic_response,
+    map_anthropic_usage, normalize_anthropic_stream_event, parse_anthropic_generate_body,
+    parse_anthropic_sse_event, parse_anthropic_sse_transcript, AnthropicContentBlock,
+    AnthropicContentBlockDelta, AnthropicProvider, AnthropicResponse, AnthropicStreamEvent,
+    AnthropicToolUseBlock, AnthropicUsage,
 };
 
 #[test]
 fn maps_anthropic_usage_fields() {
-    let usage = map_anthropic_usage(&json!({
-        "input_tokens": 20,
-        "output_tokens": 9
-    }));
+    let usage = map_anthropic_usage(&AnthropicUsage {
+        input_tokens: 20,
+        output_tokens: 9,
+        cache_creation_input_tokens: None,
+        cache_read_input_tokens: None,
+        cache_creation: None,
+        server_tool_use: None,
+        inference_geo: None,
+        service_tier: None,
+    });
     assert_eq!(usage.input_tokens, Some(20));
     assert_eq!(usage.output_tokens, Some(9));
     assert_eq!(usage.total_tokens, Some(29));
@@ -33,18 +41,34 @@ fn returns_anthropic_model_with_effective_limits() {
 #[test]
 fn normalizes_anthropic_response() {
     let response = map_anthropic_response(AnthropicResponse {
-        id: Some("msg_123".to_string()),
+        id: "msg_123".to_string(),
+        response_type: "message".to_string(),
+        role: "assistant".to_string(),
+        model: "claude-sonnet-4".to_string(),
         content: vec![
-            json!({ "type": "text", "text": "hello" }),
-            json!({
-                "type": "tool_use",
-                "id": "toolu_1",
-                "name": "lookup",
-                "input": { "q": "rust" }
+            AnthropicContentBlock::Text(oct::providers::anthropic::AnthropicTextBlock {
+                text: "hello".to_string(),
+                citations: None,
+            }),
+            AnthropicContentBlock::ToolUse(AnthropicToolUseBlock {
+                id: "toolu_1".to_string(),
+                name: "lookup".to_string(),
+                input: json!({ "q": "rust" }),
             }),
         ],
         stop_reason: Some("tool_use".to_string()),
-        usage: Some(json!({ "input_tokens": 15, "output_tokens": 6 })),
+        stop_sequence: None,
+        usage: AnthropicUsage {
+            input_tokens: 15,
+            output_tokens: 6,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+            cache_creation: None,
+            server_tool_use: None,
+            inference_geo: None,
+            service_tier: None,
+        },
+        container: None,
     })
     .unwrap();
 
@@ -54,25 +78,21 @@ fn normalizes_anthropic_response() {
         response.usage.as_ref().and_then(|u| u.total_tokens),
         Some(21)
     );
-    assert!(response.provider_metadata.contains_key("raw_usage"));
+    assert!(response.provider_metadata.contains_key("model"));
     assert_eq!(response.message.parts.len(), 2);
 }
 
 #[test]
 fn normalizes_anthropic_stream_events() {
-    let events = normalize_anthropic_stream_event(AnthropicStreamEvent {
-        event_type: "content_block_delta".to_string(),
-        delta: Some(json!({
-            "type": "text_delta",
-            "text": "hello"
-        })),
-        content_block: None,
-        usage: Some(json!({ "input_tokens": 10, "output_tokens": 1 })),
+    let events = normalize_anthropic_stream_event(AnthropicStreamEvent::ContentBlockDelta {
+        index: 0,
+        delta: AnthropicContentBlockDelta::TextDelta {
+            text: "hello".to_string(),
+        },
     })
     .unwrap();
 
-    assert!(matches!(&events[0], oct::core::StreamEvent::Usage(_)));
-    assert!(matches!(&events[1], oct::core::StreamEvent::TextDelta(text) if text == "hello"));
+    assert!(matches!(&events[0], oct::core::StreamEvent::TextDelta(text) if text == "hello"));
 }
 
 #[test]
@@ -90,16 +110,13 @@ fn parses_anthropic_sse_message_stop() {
 
 #[test]
 fn emits_final_anthropic_tool_call_on_block_stop() {
-    let start = normalize_anthropic_stream_event(AnthropicStreamEvent {
-        event_type: "content_block_start".to_string(),
-        delta: None,
-        content_block: Some(json!({
-            "type": "tool_use",
-            "id": "toolu_1",
-            "name": "lookup",
-            "input": {}
-        })),
-        usage: None,
+    let start = normalize_anthropic_stream_event(AnthropicStreamEvent::ContentBlockStart {
+        index: 0,
+        content_block: AnthropicContentBlock::ToolUse(AnthropicToolUseBlock {
+            id: "toolu_1".to_string(),
+            name: "lookup".to_string(),
+            input: json!({}),
+        }),
     })
     .unwrap();
 
@@ -111,6 +128,9 @@ fn parses_anthropic_generate_body_text() {
     let response = parse_anthropic_generate_body(
         r#"{
             "id": "msg_realistic",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-sonnet-4",
             "content": [
                 { "type": "text", "text": "hello from claude" }
             ],
@@ -137,21 +157,30 @@ fn parses_anthropic_generate_body_text() {
 #[test]
 fn parses_anthropic_sse_transcript_across_events() {
     let events = parse_anthropic_sse_transcript(
-        "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"lookup\",\"input\":{}}}\n\n\
-event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"input_json_delta\",\"id\":\"toolu_1\",\"partial_json\":\"{\\\"q\\\":\\\"rust\\\"}\"},\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}\n\n\
+        "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"lookup\",\"input\":{}}}\n\n\
+event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"q\\\":\\\"rust\\\"}\"}}\n\n\
 event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
     )
     .unwrap();
 
     assert!(matches!(&events[0], oct::core::StreamEvent::ToolCall(call) if call.name == "lookup"));
-    assert!(matches!(&events[1], oct::core::StreamEvent::Usage(_)));
     assert!(matches!(
-        &events[2],
+        &events[1],
         oct::core::StreamEvent::ToolCallDelta { .. }
     ));
-    assert!(matches!(&events[3], oct::core::StreamEvent::ToolCall(call) if call.name == "lookup"));
     assert!(matches!(
-        &events[4],
+        &events[2],
         oct::core::StreamEvent::Finish(oct::core::FinishReason::Stop)
     ));
+}
+
+#[test]
+fn aggregates_anthropic_stream_usage() {
+    let events = vec![
+        oct::core::StreamEvent::TextDelta("hello".to_string()),
+        oct::core::StreamEvent::Usage(oct::core::Usage::new(Some(10), Some(5), Some(15))),
+    ];
+    let usage = aggregate_anthropic_stream(&events);
+    assert!(usage.is_some());
+    assert_eq!(usage.unwrap().input_tokens, Some(10));
 }
