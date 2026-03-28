@@ -1,0 +1,47 @@
+---
+source: tests/moonshot/fixtures.rs
+expression: response
+---
+message:
+  role: Assistant
+  parts:
+    - Reasoning: "The user is asking for the weather in three cities: Beijing, Shanghai, and Guangzhou. I need to call the get_weather function for each of these locations.\n\nSince these are independent calls (no dependencies between them), I can make all three calls in the same function_calls block."
+    - Text: "I'll check the weather for all three cities for you."
+    - ToolCall:
+        id: "get_weather:0"
+        name: get_weather
+        arguments: "{\"location\": \"Beijing\"}"
+    - ToolCall:
+        id: "get_weather:1"
+        name: get_weather
+        arguments: "{\"location\": \"Shanghai\"}"
+    - ToolCall:
+        id: "get_weather:2"
+        name: get_weather
+        arguments: "{\"location\": \"Guangzhou\"}"
+finish_reason: ToolCalls
+usage:
+  input_tokens: 67
+  output_tokens: 122
+  total_tokens: 189
+  reasoning_tokens: ~
+  cached_input_tokens: 67
+  provider_details:
+    raw:
+      completion_tokens: 122
+      completion_tokens_details: ~
+      prompt_tokens: 67
+      prompt_tokens_details:
+        audio_tokens: ~
+        cached_tokens: 67
+      total_tokens: 189
+provider_response_id: chatcmpl-69c02523a706b31a6ab39a4f
+provider_metadata:
+  raw_usage:
+    completion_tokens: 122
+    completion_tokens_details: ~
+    prompt_tokens: 67
+    prompt_tokens_details:
+      audio_tokens: ~
+      cached_tokens: 67
+    total_tokens: 189

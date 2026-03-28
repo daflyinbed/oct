@@ -1,0 +1,36 @@
+---
+source: tests/anthropic/fixtures.rs
+expression: response
+---
+message:
+  role: Assistant
+  parts:
+    - Reasoning: "The user is asking about the weather in Beijing. I have a function called \"get_weather\" that can get the current weather for a location. The required parameter is \"location\" and the user has provided \"Beijing\" as the location. I should use this function to get the weather information."
+    - Text: "I'll check the current weather in Beijing for you."
+    - ToolCall:
+        id: call_99dad8ea8e3342f6b85aa4ed
+        name: get_weather
+        arguments: "{\"location\":\"Beijing\"}"
+finish_reason: ToolCalls
+usage:
+  input_tokens: 40
+  output_tokens: 84
+  total_tokens: 124
+  reasoning_tokens: ~
+  cached_input_tokens: 128
+  provider_details:
+    raw:
+      cache_read_input_tokens: 128
+      input_tokens: 40
+      output_tokens: 84
+      server_tool_use:
+        web_fetch_requests: 0
+        web_search_requests: 0
+      service_tier: standard
+    server_tool_use:
+      web_fetch_requests: 0
+      web_search_requests: 0
+    service_tier: standard
+provider_response_id: msg_20260326021853b975f1cb062a45ef
+provider_metadata:
+  model: glm-4.7

@@ -1,0 +1,19 @@
+---
+source: tests/anthropic/fixtures.rs
+expression: messages
+---
+- role: User
+  parts:
+    - Text: What is the weather in Beijing?
+- role: Assistant
+  parts:
+    - ToolCall:
+        id: call_2a48af474a664a40aaad0142
+        name: get_weather
+        arguments: "{\"location\":\"Beijing\"}"
+- role: User
+  parts:
+    - ToolResult:
+        call_id: call_2a48af474a664a40aaad0142
+        content: "{\"temperature\":\"25°C\",\"condition\":\"Sunny\",\"location\":\"Beijing\"}"
+        is_error: false

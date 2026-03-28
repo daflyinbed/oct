@@ -1,0 +1,49 @@
+{
+  "request": {
+    "body": {
+      "model": "claude-sonnet-4-20250514",
+      "thinking": {
+        "type": "enabled",
+        "budget_tokens": 1024
+      },
+      "max_tokens": 1024,
+      "messages": [
+        {
+          "role": "user",
+          "content": "What is the weather in Beijing?"
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "thinking",
+              "thinking": "The user is asking about the weather in Beijing. I have a function available called \"get_weather\" that takes a location parameter. The user has provided \"Beijing\" as the location, so I have all the required parameters to make this function call.",
+              "signature": "227059c26d7f496aa5665c74"
+            },
+            {
+              "type": "tool_use",
+              "id": "call_2a48af474a664a40aaad0142",
+              "name": "get_weather",
+              "input": {
+                "location": "Beijing"
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "call_2a48af474a664a40aaad0142",
+              "content": "{\"temperature\":\"25°C\",\"condition\":\"Sunny\",\"location\":\"Beijing\"}"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "response": {
+    "body": "{\"id\":\"msg_20260326021856faa27ad516cf48d0\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"glm-4.7\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"I received the weather information for Beijing from the function. The response indicates it's 25°C and Sunny in Beijing. I should present this information clearly to the user.\",\"signature\":\"a6ab3d4c96284b3fb9e2ab67\"},{\"type\":\"text\",\"text\":\"The weather in Beijing is currently **25°C** and **Sunny**.\"}],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":96,\"output_tokens\":52,\"cache_read_input_tokens\":0,\"server_tool_use\":{\"web_search_requests\":0},\"service_tier\":\"standard\"}}"
+  }
+}

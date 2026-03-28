@@ -1,0 +1,7 @@
+---
+source: tests/anthropic/fixtures.rs
+expression: messages
+---
+- role: User
+  parts:
+    - Text: What is the weather in Beijing?

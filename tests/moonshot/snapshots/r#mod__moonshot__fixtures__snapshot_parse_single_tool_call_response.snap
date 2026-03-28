@@ -1,0 +1,39 @@
+---
+source: tests/moonshot/fixtures.rs
+expression: response
+---
+message:
+  role: Assistant
+  parts:
+    - Reasoning: "The user is asking for the weather in Beijing. I have a function called `get_weather` that can retrieve weather information for a given location. The parameter required is \"location\" which should be a city name. Beijing is a city, so I can use this as the location parameter.\n\nLet me call the function with \"Beijing\" as the location."
+    - Text: "I'll check the weather in Beijing for you."
+    - ToolCall:
+        id: "get_weather:0"
+        name: get_weather
+        arguments: "{\"location\": \"Beijing\"}"
+finish_reason: ToolCalls
+usage:
+  input_tokens: 61
+  output_tokens: 102
+  total_tokens: 163
+  reasoning_tokens: ~
+  cached_input_tokens: 61
+  provider_details:
+    raw:
+      completion_tokens: 102
+      completion_tokens_details: ~
+      prompt_tokens: 61
+      prompt_tokens_details:
+        audio_tokens: ~
+        cached_tokens: 61
+      total_tokens: 163
+provider_response_id: chatcmpl-69c0251e90b42420fd2841bf
+provider_metadata:
+  raw_usage:
+    completion_tokens: 102
+    completion_tokens_details: ~
+    prompt_tokens: 61
+    prompt_tokens_details:
+      audio_tokens: ~
+      cached_tokens: 61
+    total_tokens: 163

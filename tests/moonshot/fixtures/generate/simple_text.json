@@ -1,0 +1,17 @@
+{
+  "request": {
+    "body": {
+      "model": "kimi-k2.5",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Say \"world\" in one word."
+        }
+      ],
+      "stream": false
+    }
+  },
+  "response": {
+    "body": "{\"id\":\"chatcmpl-69c02518ba4f1a36c35e6882\",\"object\":\"chat.completion\",\"created\":1774200089,\"model\":\"kimi-k2.5\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"World\",\"reasoning_content\":\"The user wants me to say \\\"world\\\" in one word. The word \\\"world\\\" is already one word. So I should just respond with \\\"world\\\".\\n\\nHowever, looking at the phrasing carefully: \\\"Say 'world' in one word.\\\" This could be interpreted as:\\n1. Just say the word \\\"world\\\" (which is one word)\\n2. Provide a synonym for \\\"world\\\" that is one word\\n3. Translate \\\"world\\\" into another language using one word\\n\\nGiven the simplicity and directness of the request, the most straightforward interpretation is that they want me to output the word \\\"world\\\", or perhaps they're testing if I'll follow instructions literally.\\n\\nThe safest, most literal answer is simply: World\\n\\nOr if they want a synonym: Earth, Globe, Universe, Planet, etc.\\n\\nBut given the specific phrasing \\\"Say 'world' in one word\\\", I think they just want me to output the word \\\"world\\\". It's already one word, so I should just say it.\\n\\nI'll go with the literal interpretation and just provide the word.\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":15,\"completion_tokens\":218,\"total_tokens\":233,\"cached_tokens\":15,\"prompt_tokens_details\":{\"cached_tokens\":15}}}"
+  }
+}

@@ -1,0 +1,70 @@
+---
+source: tests/anthropic/fixtures.rs
+expression: events
+---
+- Usage:
+    input_tokens: 0
+    output_tokens: 0
+    total_tokens: 0
+    reasoning_tokens: ~
+    cached_input_tokens: ~
+    provider_details:
+      raw:
+        input_tokens: 0
+        output_tokens: 0
+- ReasoningDelta: The
+- ReasoningDelta: " user"
+- ReasoningDelta: " wants"
+- ReasoningDelta: " me"
+- ReasoningDelta: " to"
+- ReasoningDelta: " say"
+- ReasoningDelta: " \""
+- ReasoningDelta: hello
+- ReasoningDelta: "\""
+- ReasoningDelta: " in"
+- ReasoningDelta: " exactly"
+- ReasoningDelta: " one"
+- ReasoningDelta: " word"
+- ReasoningDelta: ".\n"
+- ReasoningDelta: The
+- ReasoningDelta: " request"
+- ReasoningDelta: " is"
+- ReasoningDelta: " extremely"
+- ReasoningDelta: " simple"
+- ReasoningDelta: " and"
+- ReasoningDelta: " benign"
+- ReasoningDelta: ".\n"
+- ReasoningDelta: There
+- ReasoningDelta: " are"
+- ReasoningDelta: " no"
+- ReasoningDelta: " security"
+- ReasoningDelta: " concerns"
+- ReasoningDelta: " or"
+- ReasoningDelta: " instructions"
+- ReasoningDelta: " to"
+- ReasoningDelta: " reveal"
+- ReasoningDelta: " internal"
+- ReasoningDelta: " processes"
+- ReasoningDelta: ".\n"
+- ReasoningDelta: I
+- ReasoningDelta: " will"
+- ReasoningDelta: " simply"
+- ReasoningDelta: " output"
+- ReasoningDelta: " the"
+- ReasoningDelta: " word"
+- ReasoningDelta: " \""
+- ReasoningDelta: Hello
+- ReasoningDelta: "\"."
+- TextDelta: Hello
+- Usage:
+    input_tokens: 13
+    output_tokens: 46
+    total_tokens: ~
+    reasoning_tokens: ~
+    cached_input_tokens: 0
+    provider_details:
+      cache_creation_input_tokens: 0
+      server_tool_use:
+        web_fetch_requests: 0
+        web_search_requests: 0
+- Finish: Stop

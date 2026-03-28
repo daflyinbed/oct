@@ -1,0 +1,32 @@
+---
+source: tests/anthropic/fixtures.rs
+expression: response
+---
+message:
+  role: Assistant
+  parts:
+    - Reasoning: "1.  **Analyze the Request:** The user wants me to say \"world\" in one word.\n2.  **Identify the Target Word:** The word is \"world\".\n3.  **Constraint Check:** \"In one word.\"\n4.  **Formulate Output:** The most direct response is simply the word itself.\n5.  **Final Decision:** Output \"World\"."
+    - Text: World
+finish_reason: Stop
+usage:
+  input_tokens: 13
+  output_tokens: 82
+  total_tokens: 95
+  reasoning_tokens: ~
+  cached_input_tokens: 0
+  provider_details:
+    raw:
+      cache_read_input_tokens: 0
+      input_tokens: 13
+      output_tokens: 82
+      server_tool_use:
+        web_fetch_requests: 0
+        web_search_requests: 0
+      service_tier: standard
+    server_tool_use:
+      web_fetch_requests: 0
+      web_search_requests: 0
+    service_tier: standard
+provider_response_id: msg_202603260218523ca65a82455549dc
+provider_metadata:
+  model: glm-4.7

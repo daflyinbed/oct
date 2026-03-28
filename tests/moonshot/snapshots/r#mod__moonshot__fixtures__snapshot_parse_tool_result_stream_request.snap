@@ -1,0 +1,24 @@
+---
+source: tests/moonshot/fixtures.rs
+expression: messages
+---
+- role: User
+  parts:
+    - Text: What is the weather in Shanghai?
+- role: Assistant
+  parts:
+    - Reasoning: "The user is asking for the weather in Shanghai. I should use the get_weather function to retrieve this information. The location parameter should be \"Shanghai\"."
+    - ToolCall:
+        id: "get_weather:0"
+        name: get_weather
+        arguments: "{\"location\": \"Shanghai\"}"
+- role: Tool
+  parts:
+    - Text: "{\"temperature\":\"28°C\",\"condition\":\"Cloudy\",\"location\":\"Shanghai\"}"
+    - ToolResult:
+        call_id: "get_weather:0"
+        content:
+          condition: Cloudy
+          location: Shanghai
+          temperature: 28°C
+        is_error: false

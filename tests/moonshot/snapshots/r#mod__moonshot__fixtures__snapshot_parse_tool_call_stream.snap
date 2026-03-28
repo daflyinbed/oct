@@ -1,0 +1,74 @@
+---
+source: tests/moonshot/fixtures.rs
+expression: events
+---
+- ReasoningDelta: The
+- ReasoningDelta: " user"
+- ReasoningDelta: " is"
+- ReasoningDelta: " asking"
+- ReasoningDelta: " for"
+- ReasoningDelta: " the"
+- ReasoningDelta: " weather"
+- ReasoningDelta: " in"
+- ReasoningDelta: " Shenzhen"
+- ReasoningDelta: "."
+- ReasoningDelta: " I"
+- ReasoningDelta: " should"
+- ReasoningDelta: " use"
+- ReasoningDelta: " the"
+- ReasoningDelta: " get"
+- ReasoningDelta: _we
+- ReasoningDelta: ather
+- ReasoningDelta: " function"
+- ReasoningDelta: " with"
+- ReasoningDelta: " the"
+- ReasoningDelta: " location"
+- ReasoningDelta: " parameter"
+- ReasoningDelta: " set"
+- ReasoningDelta: " to"
+- ReasoningDelta: " \""
+- ReasoningDelta: S
+- ReasoningDelta: hen
+- ReasoningDelta: zhen
+- ReasoningDelta: "\"."
+- ToolCallDelta:
+    call_id: "get_weather:0"
+    name: get_weather
+    arguments_delta: ""
+- ToolCallDelta:
+    call_id: "0"
+    name: ~
+    arguments_delta: "{\""
+- ToolCallDelta:
+    call_id: "0"
+    name: ~
+    arguments_delta: location
+- ToolCallDelta:
+    call_id: "0"
+    name: ~
+    arguments_delta: "\":"
+- ToolCallDelta:
+    call_id: "0"
+    name: ~
+    arguments_delta: " \""
+- ToolCallDelta:
+    call_id: "0"
+    name: ~
+    arguments_delta: S
+- ToolCallDelta:
+    call_id: "0"
+    name: ~
+    arguments_delta: hen
+- ToolCallDelta:
+    call_id: "0"
+    name: ~
+    arguments_delta: zhen
+- ToolCallDelta:
+    call_id: "0"
+    name: ~
+    arguments_delta: "\"}"
+- ToolCall:
+    id: "get_weather:0"
+    name: get_weather
+    arguments: "{\"location\": \"Shenzhen\"}"
+- Finish: ToolCalls

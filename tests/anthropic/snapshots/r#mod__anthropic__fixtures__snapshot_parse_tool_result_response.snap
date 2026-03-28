@@ -1,0 +1,32 @@
+---
+source: tests/anthropic/fixtures.rs
+expression: response
+---
+message:
+  role: Assistant
+  parts:
+    - Reasoning: "I received the weather information for Beijing from the function. The response indicates it's 25°C and Sunny in Beijing. I should present this information clearly to the user."
+    - Text: The weather in Beijing is currently **25°C** and **Sunny**.
+finish_reason: Stop
+usage:
+  input_tokens: 96
+  output_tokens: 52
+  total_tokens: 148
+  reasoning_tokens: ~
+  cached_input_tokens: 0
+  provider_details:
+    raw:
+      cache_read_input_tokens: 0
+      input_tokens: 96
+      output_tokens: 52
+      server_tool_use:
+        web_fetch_requests: 0
+        web_search_requests: 0
+      service_tier: standard
+    server_tool_use:
+      web_fetch_requests: 0
+      web_search_requests: 0
+    service_tier: standard
+provider_response_id: msg_20260326021856faa27ad516cf48d0
+provider_metadata:
+  model: glm-4.7
