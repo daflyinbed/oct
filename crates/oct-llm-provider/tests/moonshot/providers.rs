@@ -1,5 +1,5 @@
-use oct::provider::Provider;
-use oct::providers::MoonshotAIProvider;
+use oct_llm_provider::provider::Provider;
+use oct_llm_provider::providers::MoonshotAIProvider;
 
 #[test]
 fn returns_moonshotai_model_with_effective_limits() {

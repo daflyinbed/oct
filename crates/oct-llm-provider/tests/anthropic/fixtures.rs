@@ -1,5 +1,5 @@
-use oct::core::{ContentPart, Message, Role};
-use oct::providers::{parse_anthropic_generate_body, parse_anthropic_sse_transcript};
+use oct_llm_provider::core::{ContentPart, Message, Role};
+use oct_llm_provider::providers::{parse_anthropic_generate_body, parse_anthropic_sse_transcript};
 use std::fs;
 
 fn load_fixture(path: &str) -> String {
@@ -56,7 +56,7 @@ fn parse_anthropic_messages_from_request(body: &serde_json::Value) -> Vec<Messag
                                     .get("input")
                                     .cloned()
                                     .unwrap_or(serde_json::Value::Null);
-                                parts.push(ContentPart::ToolCall(oct::core::ToolCall {
+                                parts.push(ContentPart::ToolCall(oct_llm_provider::core::ToolCall {
                                     id,
                                     name,
                                     arguments: serde_json::to_string(&input).unwrap_or_default(),
@@ -69,7 +69,7 @@ fn parse_anthropic_messages_from_request(body: &serde_json::Value) -> Vec<Messag
                                     .get("content")
                                     .cloned()
                                     .unwrap_or(serde_json::Value::Null);
-                                parts.push(ContentPart::ToolResult(oct::core::ToolResult {
+                                parts.push(ContentPart::ToolResult(oct_llm_provider::core::ToolResult {
                                     call_id,
                                     content,
                                     is_error: false,

@@ -1,5 +1,5 @@
-use oct::adapter::{parse_openai_generate_body, parse_openai_sse_transcript};
-use oct::core::{ContentPart, Message, Role};
+use oct_llm_provider::adapter::{parse_openai_generate_body, parse_openai_sse_transcript};
+use oct_llm_provider::core::{ContentPart, Message, Role};
 use std::fs;
 
 fn load_fixture(path: &str) -> String {
@@ -55,7 +55,7 @@ fn parse_messages_from_request(body: &serde_json::Value) -> Vec<Message> {
                         .unwrap_or_default()
                         .to_string();
                     let args_str = call["function"]["arguments"].as_str().unwrap_or_default();
-                    parts.push(ContentPart::ToolCall(oct::core::ToolCall {
+                    parts.push(ContentPart::ToolCall(oct_llm_provider::core::ToolCall {
                         id,
                         name,
                         arguments: args_str.to_string(),
@@ -66,7 +66,7 @@ fn parse_messages_from_request(body: &serde_json::Value) -> Vec<Message> {
             if role == Role::Tool {
                 let tool_call_id = msg["tool_call_id"].as_str().unwrap_or_default().to_string();
                 let content = msg["content"].as_str().unwrap_or_default();
-                parts.push(ContentPart::ToolResult(oct::core::ToolResult {
+                parts.push(ContentPart::ToolResult(oct_llm_provider::core::ToolResult {
                     call_id: tool_call_id,
                     content: serde_json::from_str(content)
                         .unwrap_or_else(|_| serde_json::Value::String(content.to_string())),

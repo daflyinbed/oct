@@ -1,4 +1,4 @@
-use oct::adapter::{
+use oct_llm_provider::adapter::{
     map_openai_finish_reason, map_openai_generate_response, map_openai_usage,
     normalize_openai_stream_chunk, parse_openai_generate_body, parse_openai_sse_event,
     parse_openai_sse_transcript, ChatCompletionChoice, ChatCompletionChunk,
@@ -8,9 +8,9 @@ use oct::adapter::{
     ChatCompletionUsageCompletionDetails, ChatCompletionUsagePromptDetails,
     OpenAiCompatibleChatModel, OpenAiCompatibleConfig,
 };
-use oct::core::{ContentPart, FinishReason, GenerateOptions, Message, Role, ToolChoice, ToolSpec};
-use oct::model::ChatRequest;
-use oct::provider::{ModelCapabilities, ModelInfo, ModelLimits};
+use oct_llm_provider::core::{ContentPart, FinishReason, GenerateOptions, Message, Role, ToolChoice, ToolSpec};
+use oct_llm_provider::model::ChatRequest;
+use oct_llm_provider::provider::{ModelCapabilities, ModelInfo, ModelLimits};
 use serde_json::json;
 
 #[test]
@@ -104,7 +104,7 @@ fn maps_chat_request_to_openai_wire_request() {
 
 #[test]
 fn normalizes_openai_generate_response() {
-    use oct::adapter::ChatCompletionResponse;
+    use oct_llm_provider::adapter::ChatCompletionResponse;
 
     let response = map_openai_generate_response(ChatCompletionResponse {
         id: Some("resp_123".to_string()),
@@ -193,16 +193,16 @@ fn normalizes_openai_stream_chunks() {
     })
     .unwrap();
 
-    assert!(matches!(&events[0], oct::core::StreamEvent::Usage(_)));
-    assert!(matches!(&events[1], oct::core::StreamEvent::TextDelta(text) if text == "hel"));
+    assert!(matches!(&events[0], oct_llm_provider::core::StreamEvent::Usage(_)));
+    assert!(matches!(&events[1], oct_llm_provider::core::StreamEvent::TextDelta(text) if text == "hel"));
     assert!(matches!(
         &events[2],
-        oct::core::StreamEvent::ToolCallDelta { .. }
+        oct_llm_provider::core::StreamEvent::ToolCallDelta { .. }
     ));
-    assert!(matches!(&events[3], oct::core::StreamEvent::ToolCall(call) if call.name == "lookup"));
+    assert!(matches!(&events[3], oct_llm_provider::core::StreamEvent::ToolCall(call) if call.name == "lookup"));
     assert!(matches!(
         &events[4],
-        oct::core::StreamEvent::Finish(FinishReason::ToolCalls)
+        oct_llm_provider::core::StreamEvent::Finish(FinishReason::ToolCalls)
     ));
 }
 
@@ -248,9 +248,9 @@ fn emits_final_openai_tool_call_when_done() {
 
     assert!(matches!(
         &events[0],
-        oct::core::StreamEvent::ToolCallDelta { .. }
+        oct_llm_provider::core::StreamEvent::ToolCallDelta { .. }
     ));
-    assert!(matches!(&events[1], oct::core::StreamEvent::ToolCall(call) if call.name == "lookup"));
+    assert!(matches!(&events[1], oct_llm_provider::core::StreamEvent::ToolCall(call) if call.name == "lookup"));
 }
 
 #[test]
@@ -297,18 +297,18 @@ data: [DONE]\n\n",
     )
     .unwrap();
 
-    assert!(matches!(&events[0], oct::core::StreamEvent::TextDelta(text) if text == "hel"));
-    assert!(matches!(&events[1], oct::core::StreamEvent::Usage(_)));
+    assert!(matches!(&events[0], oct_llm_provider::core::StreamEvent::TextDelta(text) if text == "hel"));
+    assert!(matches!(&events[1], oct_llm_provider::core::StreamEvent::Usage(_)));
     assert!(matches!(
         &events[2],
-        oct::core::StreamEvent::ToolCallDelta { .. }
+        oct_llm_provider::core::StreamEvent::ToolCallDelta { .. }
     ));
-    assert!(matches!(&events[3], oct::core::StreamEvent::ToolCall(call) if call.name == "lookup"));
+    assert!(matches!(&events[3], oct_llm_provider::core::StreamEvent::ToolCall(call) if call.name == "lookup"));
 }
 
 #[test]
 fn parses_reasoning_content_in_response() {
-    use oct::adapter::ChatCompletionResponse;
+    use oct_llm_provider::adapter::ChatCompletionResponse;
 
     let response = map_openai_generate_response(ChatCompletionResponse {
         id: Some("resp_123".to_string()),
@@ -343,7 +343,7 @@ fn parses_reasoning_content_in_response() {
 
 #[test]
 fn parses_reasoning_field_as_fallback_in_response() {
-    use oct::adapter::ChatCompletionResponse;
+    use oct_llm_provider::adapter::ChatCompletionResponse;
 
     let response = map_openai_generate_response(ChatCompletionResponse {
         id: Some("resp_123".to_string()),
@@ -378,7 +378,7 @@ fn parses_reasoning_field_as_fallback_in_response() {
 
 #[test]
 fn prefers_reasoning_content_over_reasoning() {
-    use oct::adapter::ChatCompletionResponse;
+    use oct_llm_provider::adapter::ChatCompletionResponse;
 
     let response = map_openai_generate_response(ChatCompletionResponse {
         id: Some("resp_123".to_string()),
@@ -437,7 +437,7 @@ fn parses_reasoning_in_stream_delta() {
     .unwrap();
 
     assert_eq!(events.len(), 1);
-    assert!(matches!(&events[0], oct::core::StreamEvent::ReasoningDelta(t) if t == "thinking..."));
+    assert!(matches!(&events[0], oct_llm_provider::core::StreamEvent::ReasoningDelta(t) if t == "thinking..."));
 }
 
 #[test]
@@ -468,7 +468,7 @@ fn parses_reasoning_field_as_fallback_in_stream_delta() {
 
     assert_eq!(events.len(), 1);
     assert!(
-        matches!(&events[0], oct::core::StreamEvent::ReasoningDelta(t) if t == "fallback thinking...")
+        matches!(&events[0], oct_llm_provider::core::StreamEvent::ReasoningDelta(t) if t == "fallback thinking...")
     );
 }
 
@@ -524,6 +524,6 @@ fn maps_reasoning_to_reasoning_content_in_request() {
         Some("I need to add 2 and 2.".to_string())
     );
     assert!(
-        matches!(&assistant_msg.content, Some(oct::adapter::RequestMessageContentValue::String(s)) if s == "The answer is 4.")
+        matches!(&assistant_msg.content, Some(oct_llm_provider::adapter::RequestMessageContentValue::String(s)) if s == "The answer is 4.")
     );
 }

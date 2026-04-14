@@ -1,9 +1,9 @@
 use clap::Parser;
 use futures_util::StreamExt;
-use oct::core::{ContentPart, FinishReason, Message, Role, StreamEvent, ToolCall, ToolResult, ToolSpec};
-use oct::model::ChatRequest;
-use oct::providers::MoonshotAIProvider;
-use oct::Provider;
+use oct_llm_provider::core::{ContentPart, FinishReason, Message, Role, StreamEvent, ToolCall, ToolResult, ToolSpec};
+use oct_llm_provider::model::ChatRequest;
+use oct_llm_provider::providers::MoonshotAIProvider;
+use oct_llm_provider::Provider;
 use serde_json::json;
 
 #[derive(Parser, Debug)]

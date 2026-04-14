@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 
-use oct::core::{FinishReason, Message, ModelError, Role};
-use oct::model::{ChatModel, ChatRequest, ChatResponse, ChatStream};
-use oct::provider::{ModelCapabilities, ModelInfo, ModelLimits, Provider};
+use oct_llm_provider::core::{FinishReason, Message, ModelError, Role};
+use oct_llm_provider::model::{ChatModel, ChatRequest, ChatResponse, ChatStream};
+use oct_llm_provider::provider::{ModelCapabilities, ModelInfo, ModelLimits, Provider};
 
 pub struct StubChatModel {
     pub info: ModelInfo,
