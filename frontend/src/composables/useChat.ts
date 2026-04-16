@@ -124,6 +124,9 @@ export function useChat(conversationId: () => string | null) {
           }
           case 'finish':
             break
+          case 'cancelled':
+            msg.text += '\n\n*已取消*'
+            break
           case 'error':
             msg.text += `\n\n**Error:** ${event.data}`
             break

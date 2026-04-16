@@ -67,6 +67,9 @@ export function sendMessage(
   })
     .then(async (res) => {
       if (!res.ok) {
+        if (res.status === 409) {
+          throw new Error('Agent is already running')
+        }
         throw new Error(`API error: ${res.status} ${res.statusText}`)
       }
       const reader = res.body?.getReader()

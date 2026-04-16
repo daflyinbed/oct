@@ -2,22 +2,25 @@ pub mod loop_runner;
 pub mod prompt;
 
 use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
+use std::sync::Arc;
+use tokio::sync::broadcast;
+use tokio_util::sync::CancellationToken;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-/// Events emitted by the agent loop, streamed as SSE to the frontend.
+use crate::tools::AgentTool;
+use oct_llm_provider::model::ChatModel;
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type", content = "data")]
 pub enum AgentEvent {
-    /// Streamed text content from the assistant.
     #[serde(rename = "text_delta")]
     TextDelta(String),
 
-    /// Streamed reasoning/thinking content.
     #[serde(rename = "reasoning_delta")]
     ReasoningDelta(String),
 
-    /// A tool call has started execution.
     #[serde(rename = "tool_call_start")]
     ToolCallStart {
         id: String,
@@ -25,7 +28,6 @@ pub enum AgentEvent {
         arguments: String,
     },
 
-    /// Result of a tool execution.
     #[serde(rename = "tool_result")]
     ToolResult {
         call_id: String,
@@ -33,7 +35,6 @@ pub enum AgentEvent {
         is_error: bool,
     },
 
-    /// Token usage update.
     #[serde(rename = "usage")]
     Usage {
         input_tokens: Option<u32>,
@@ -41,23 +42,37 @@ pub enum AgentEvent {
         reasoning_tokens: Option<u32>,
     },
 
-    /// Agent loop has finished.
     #[serde(rename = "finish")]
     Finish,
 
-    /// An error occurred.
+    #[serde(rename = "cancelled")]
+    Cancelled,
+
     #[serde(rename = "error")]
     Error(String),
 }
 
-/// Configuration for an agent session.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentConfig {
-    /// Provider and model spec, e.g. "anthropic:claude-sonnet-4-20250514".
-    pub provider_spec: String,
-    /// Working directory for file operations.
-    pub working_dir: std::path::PathBuf,
+pub struct AgentContext {
+    pub model: Arc<dyn ChatModel>,
+    pub tools: Arc<Vec<Box<dyn AgentTool>>>,
+    pub pool: SqlitePool,
+    pub system_prompt: String,
 }
 
-/// Unique identifier for a conversation.
+#[derive(Clone)]
+pub struct RunHandle {
+    pub event_tx: broadcast::Sender<AgentEvent>,
+    pub cancel: CancellationToken,
+}
+
+impl RunHandle {
+    pub fn subscribe(&self) -> broadcast::Receiver<AgentEvent> {
+        self.event_tx.subscribe()
+    }
+
+    pub fn cancel(&self) {
+        self.cancel.cancel();
+    }
+}
+
 pub type ConversationId = Uuid;

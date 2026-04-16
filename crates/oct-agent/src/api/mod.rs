@@ -3,6 +3,7 @@ pub mod config;
 pub mod conversations;
 
 use axum::Router;
+use dashmap::DashMap;
 use sqlx::SqlitePool;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -10,15 +11,16 @@ use utoipa::OpenApi;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_scalar::{Scalar, Servable};
 
+use crate::agent::RunHandle;
 use oct_llm_provider::provider::ProviderRegistry;
 
-/// Shared application state.
 #[derive(Clone)]
 pub struct AppState {
     pub pool: SqlitePool,
     pub registry: Arc<ProviderRegistry>,
     pub provider_spec: Arc<RwLock<String>>,
     pub working_dir: PathBuf,
+    pub sessions: DashMap<String, RunHandle>,
 }
 
 #[derive(OpenApi)]

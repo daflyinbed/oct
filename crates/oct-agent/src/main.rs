@@ -40,6 +40,7 @@ async fn main() -> Result<()> {
         registry,
         provider_spec: Arc::new(RwLock::new(provider_spec)),
         working_dir,
+        sessions: dashmap::DashMap::new(),
     };
 
     let app = api::build_router(state).layer(CorsLayer::permissive());

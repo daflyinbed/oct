@@ -6,6 +6,7 @@ export type AgentEvent =
   | { type: 'tool_result'; data: { call_id: string; content: string; is_error: boolean } }
   | { type: 'usage'; data: { input_tokens: number | null; output_tokens: number | null; reasoning_tokens: number | null } }
   | { type: 'finish'; data: null }
+  | { type: 'cancelled'; data: null }
   | { type: 'error'; data: string }
 
 export interface Conversation {
