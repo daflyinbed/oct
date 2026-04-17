@@ -57,6 +57,7 @@ pub async fn run_agent_loop(
         let mut current_text = String::new();
         let mut pending_tool_calls: Vec<ToolCall> = Vec::new();
         let mut finish_reason = FinishReason::Stop;
+        let mut last_usage: Option<(Option<u32>, Option<u32>, Option<u32>)> = None;
 
         loop {
             tokio::select! {
@@ -77,6 +78,11 @@ pub async fn run_agent_loop(
                             pending_tool_calls.push(tc);
                         }
                         Ok(StreamEvent::Usage(usage)) => {
+                            last_usage = Some((
+                                usage.input_tokens,
+                                usage.output_tokens,
+                                usage.reasoning_tokens,
+                            ));
                             let _ = handle.event_tx.send(AgentEvent::Usage {
                                 input_tokens: usage.input_tokens,
                                 output_tokens: usage.output_tokens,
@@ -121,8 +127,25 @@ pub async fn run_agent_loop(
                 role: Role::Assistant,
                 parts: assistant_parts,
             };
-            if let Err(e) = msg_db::insert_message(&ctx.pool, &conv_id, &assistant_msg).await {
-                error!("Failed to persist assistant message: {e}");
+            match msg_db::insert_message(&ctx.pool, &conv_id, &assistant_msg).await {
+                Ok(stored) => {
+                    if let Some((input, output, reasoning)) = last_usage {
+                        if let Err(e) = msg_db::update_message_usage(
+                            &ctx.pool,
+                            &stored.id,
+                            input,
+                            output,
+                            reasoning,
+                        )
+                        .await
+                        {
+                            error!("Failed to persist usage for message {}: {e}", stored.id);
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to persist assistant message: {e}");
+                }
             }
             full_messages.push(assistant_msg);
         }

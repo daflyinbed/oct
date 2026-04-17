@@ -4,6 +4,11 @@
 
 ```
 Cargo.toml                          # Workspace root
+.env                                # DATABASE_URL for sqlx
+dev.db                              # SQLite database (gitignored)
+migrations/                         # SQLite schema migrations
+.sqlx/                              # sqlx offline query cache (commit this)
+
 crates/
   oct-llm-provider/                 # LLM provider abstraction library
     src/
@@ -16,7 +21,6 @@ crates/
     examples/         # Example CLI chat application
 
   oct-agent/                        # Coding agent application
-    migrations/       # SQLite schema migrations
     src/
       tools/          # Agent tools: read_file, list_dir, write_file, execute_command
       agent/          # Agent loop, system prompt, AgentEvent types
@@ -45,3 +49,10 @@ scripts/              # Dev and build scripts
 - **Agent loop**: Infinite loop (no iteration limit) that streams LLM responses, executes tool calls, and feeds results back
 - **API**: Axum server with utoipa OpenAPI docs (Scalar UI at /scalar)
 - **Frontend**: Uses openapi-fetch to consume generated OpenAPI schema; SSE streaming for real-time chat
+
+## Build & Database
+
+- **sqlx compile-time macros**: All queries use `sqlx::query!`/`query_as!`/`query_scalar!` (compile-time checked)
+- **Offline mode**: `.sqlx/` cache is committed; builds work without a live database via `SQLX_OFFLINE=true`
+- **Regenerate cache**: After changing SQL queries, run `cargo sqlx prepare --workspace` from workspace root (requires DATABASE_URL in `.env` pointing to a migrated database)
+- **Migrations**: `sqlx migrate run` or run the app (auto-migrates on startup via `sqlx::migrate!`)

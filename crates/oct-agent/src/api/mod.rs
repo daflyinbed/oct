@@ -20,7 +20,7 @@ pub struct AppState {
     pub registry: Arc<ProviderRegistry>,
     pub provider_spec: Arc<RwLock<String>>,
     pub working_dir: PathBuf,
-    pub sessions: DashMap<String, RunHandle>,
+    pub sessions: Arc<DashMap<String, RunHandle>>,
 }
 
 #[derive(OpenApi)]

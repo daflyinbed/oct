@@ -18,10 +18,7 @@ pub async fn init_pool(database_url: &str) -> Result<SqlitePool> {
         .connect_with(options)
         .await?;
 
-    // Run migrations from embedded SQL
-    sqlx::query(include_str!("../../migrations/001_init.sql"))
-        .execute(&pool)
-        .await?;
+    sqlx::migrate!("../../migrations").run(&pool).await?;
 
     Ok(pool)
 }

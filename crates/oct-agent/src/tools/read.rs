@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use schemars::JsonSchema;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -15,10 +16,13 @@ impl ReadFileTool {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct ReadFileArgs {
+    /// Path to the file to read (relative to working directory or absolute)
     path: String,
+    /// Start line number (1-indexed, inclusive). Omit to start from beginning.
     start_line: Option<usize>,
+    /// End line number (1-indexed, inclusive). Omit to read until end.
     end_line: Option<usize>,
 }
 
@@ -59,24 +63,7 @@ impl AgentTool for ReadFileTool {
     }
 
     fn input_schema(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Path to the file to read (relative to working directory or absolute)"
-                },
-                "start_line": {
-                    "type": "integer",
-                    "description": "Start line number (1-indexed, inclusive). Omit to start from beginning."
-                },
-                "end_line": {
-                    "type": "integer",
-                    "description": "End line number (1-indexed, inclusive). Omit to read until end."
-                }
-            },
-            "required": ["path"]
-        })
+        serde_json::to_value(schemars::schema_for!(ReadFileArgs)).unwrap()
     }
 
     async fn execute(&self, args: serde_json::Value) -> Result<ToolOutput> {

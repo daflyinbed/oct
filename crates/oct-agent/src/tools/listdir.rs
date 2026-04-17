@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use schemars::JsonSchema;
 use serde::Deserialize;
 use std::path::PathBuf;
 
@@ -15,9 +16,11 @@ impl ListDirTool {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct ListDirArgs {
+    /// Directory path to list (relative to working directory). Defaults to working directory root.
     path: Option<String>,
+    /// Maximum depth to recurse. Default is 2.
     depth: Option<usize>,
 }
 
@@ -91,19 +94,7 @@ impl AgentTool for ListDirTool {
     }
 
     fn input_schema(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Directory path to list (relative to working directory). Defaults to working directory root."
-                },
-                "depth": {
-                    "type": "integer",
-                    "description": "Maximum depth to recurse. Default is 2."
-                }
-            }
-        })
+        serde_json::to_value(schemars::schema_for!(ListDirArgs)).unwrap()
     }
 
     async fn execute(&self, args: serde_json::Value) -> Result<ToolOutput> {

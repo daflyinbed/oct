@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use schemars::JsonSchema;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -15,10 +16,13 @@ impl WriteFileTool {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct WriteFileArgs {
+    /// Path to write to (relative to working directory or absolute)
     path: String,
+    /// Content to write to the file
     content: String,
+    /// Create parent directories if they don't exist. Default false.
     create_dirs: Option<bool>,
 }
 
@@ -79,24 +83,7 @@ impl AgentTool for WriteFileTool {
     }
 
     fn input_schema(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Path to write to (relative to working directory or absolute)"
-                },
-                "content": {
-                    "type": "string",
-                    "description": "Content to write to the file"
-                },
-                "create_dirs": {
-                    "type": "boolean",
-                    "description": "Create parent directories if they don't exist. Default false."
-                }
-            },
-            "required": ["path", "content"]
-        })
+        serde_json::to_value(schemars::schema_for!(WriteFileArgs)).unwrap()
     }
 
     async fn execute(&self, args: serde_json::Value) -> Result<ToolOutput> {

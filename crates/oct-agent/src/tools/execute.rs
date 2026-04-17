@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use schemars::JsonSchema;
 use serde::Deserialize;
 use std::path::PathBuf;
 
@@ -15,10 +16,13 @@ impl ExecuteCommandTool {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct ExecuteCommandArgs {
+    /// The shell command to execute
     command: String,
+    /// Working directory for the command (relative to project root). Defaults to project root.
     working_dir: Option<String>,
+    /// Timeout in seconds. Default is 30.
     timeout_secs: Option<u64>,
 }
 
@@ -34,24 +38,7 @@ impl AgentTool for ExecuteCommandTool {
     }
 
     fn input_schema(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "command": {
-                    "type": "string",
-                    "description": "The shell command to execute"
-                },
-                "working_dir": {
-                    "type": "string",
-                    "description": "Working directory for the command (relative to project root). Defaults to project root."
-                },
-                "timeout_secs": {
-                    "type": "integer",
-                    "description": "Timeout in seconds. Default is 30."
-                }
-            },
-            "required": ["command"]
-        })
+        serde_json::to_value(schemars::schema_for!(ExecuteCommandArgs)).unwrap()
     }
 
     async fn execute(&self, args: serde_json::Value) -> Result<ToolOutput> {

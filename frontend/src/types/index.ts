@@ -24,6 +24,9 @@ export interface StoredMessage {
   role: string
   parts_json: string
   ordering: number
+  input_tokens: number | null
+  output_tokens: number | null
+  reasoning_tokens: number | null
   created_at: string
 }
 

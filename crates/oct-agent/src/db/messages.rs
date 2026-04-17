@@ -14,11 +14,13 @@ pub struct StoredMessage {
     pub role: String,
     pub parts_json: String,
     pub ordering: i64,
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub reasoning_tokens: Option<i64>,
     pub created_at: String,
 }
 
 impl StoredMessage {
-    /// Convert to the oct-llm-provider Message type.
     pub fn to_message(&self) -> Result<Message> {
         let role = match self.role.as_str() {
             "system" => Role::System,
@@ -51,23 +53,22 @@ pub async fn insert_message(
     let parts_json = serde_json::to_string(&message.parts)?;
     let now = Utc::now().naive_utc().format("%Y-%m-%d %H:%M:%S").to_string();
 
-    // Get next ordering value
-    let ordering: i64 = sqlx::query_scalar(
+    let ordering: i64 = sqlx::query_scalar!(
         "SELECT COALESCE(MAX(ordering), 0) + 1 FROM messages WHERE conversation_id = ?",
+        conversation_id,
     )
-    .bind(conversation_id)
     .fetch_one(pool)
     .await?;
 
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO messages (id, conversation_id, role, parts_json, ordering, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        id,
+        conversation_id,
+        role,
+        parts_json,
+        ordering,
+        now,
     )
-    .bind(&id)
-    .bind(conversation_id)
-    .bind(role)
-    .bind(&parts_json)
-    .bind(ordering)
-    .bind(&now)
     .execute(pool)
     .await?;
 
@@ -77,6 +78,9 @@ pub async fn insert_message(
         role: role.to_string(),
         parts_json,
         ordering,
+        input_tokens: None,
+        output_tokens: None,
+        reasoning_tokens: None,
         created_at: now,
     })
 }
@@ -85,17 +89,17 @@ pub async fn list_messages(
     pool: &SqlitePool,
     conversation_id: &str,
 ) -> Result<Vec<StoredMessage>> {
-    let rows = sqlx::query_as::<_, StoredMessage>(
-        "SELECT id, conversation_id, role, parts_json, ordering, created_at FROM messages WHERE conversation_id = ? ORDER BY ordering ASC",
+    let rows = sqlx::query_as!(
+        StoredMessage,
+        "SELECT id, conversation_id, role, parts_json, ordering, input_tokens, output_tokens, reasoning_tokens, created_at FROM messages WHERE conversation_id = ? ORDER BY ordering ASC",
+        conversation_id,
     )
-    .bind(conversation_id)
     .fetch_all(pool)
     .await?;
 
     Ok(rows)
 }
 
-/// Load all messages as oct-llm-provider Message types.
 pub async fn load_messages_for_llm(
     pool: &SqlitePool,
     conversation_id: &str,
@@ -104,25 +108,24 @@ pub async fn load_messages_for_llm(
     stored.iter().map(|s| s.to_message()).collect()
 }
 
-pub async fn insert_usage(
+pub async fn update_message_usage(
     pool: &SqlitePool,
-    conversation_id: &str,
+    message_id: &str,
     input_tokens: Option<u32>,
     output_tokens: Option<u32>,
     reasoning_tokens: Option<u32>,
 ) -> Result<()> {
-    let id = Uuid::new_v4().to_string();
-    let now = Utc::now().naive_utc().format("%Y-%m-%d %H:%M:%S").to_string();
+    let input = input_tokens.map(|v| v as i64);
+    let output = output_tokens.map(|v| v as i64);
+    let reasoning = reasoning_tokens.map(|v| v as i64);
 
-    sqlx::query(
-        "INSERT INTO usage_log (id, conversation_id, input_tokens, output_tokens, reasoning_tokens, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+    sqlx::query!(
+        "UPDATE messages SET input_tokens = ?, output_tokens = ?, reasoning_tokens = ? WHERE id = ?",
+        input,
+        output,
+        reasoning,
+        message_id,
     )
-    .bind(&id)
-    .bind(conversation_id)
-    .bind(input_tokens.map(|v| v as i64))
-    .bind(output_tokens.map(|v| v as i64))
-    .bind(reasoning_tokens.map(|v| v as i64))
-    .bind(&now)
     .execute(pool)
     .await?;
 

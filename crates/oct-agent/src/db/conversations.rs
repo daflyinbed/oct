@@ -25,15 +25,15 @@ pub async fn create_conversation(
     let title = title.unwrap_or("New conversation");
     let now = Utc::now().naive_utc().format("%Y-%m-%d %H:%M:%S").to_string();
 
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO conversations (id, title, working_dir, provider_spec, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        id,
+        title,
+        working_dir,
+        provider_spec,
+        now,
+        now,
     )
-    .bind(&id)
-    .bind(title)
-    .bind(working_dir)
-    .bind(provider_spec)
-    .bind(&now)
-    .bind(&now)
     .execute(pool)
     .await?;
 
@@ -48,7 +48,8 @@ pub async fn create_conversation(
 }
 
 pub async fn list_conversations(pool: &SqlitePool) -> Result<Vec<Conversation>> {
-    let rows = sqlx::query_as::<_, Conversation>(
+    let rows = sqlx::query_as!(
+        Conversation,
         "SELECT id, title, working_dir, provider_spec, created_at, updated_at FROM conversations ORDER BY updated_at DESC",
     )
     .fetch_all(pool)
@@ -58,10 +59,11 @@ pub async fn list_conversations(pool: &SqlitePool) -> Result<Vec<Conversation>> 
 }
 
 pub async fn get_conversation(pool: &SqlitePool, id: &str) -> Result<Option<Conversation>> {
-    let row = sqlx::query_as::<_, Conversation>(
+    let row = sqlx::query_as!(
+        Conversation,
         "SELECT id, title, working_dir, provider_spec, created_at, updated_at FROM conversations WHERE id = ?",
+        id,
     )
-    .bind(id)
     .fetch_optional(pool)
     .await?;
 
@@ -69,8 +71,7 @@ pub async fn get_conversation(pool: &SqlitePool, id: &str) -> Result<Option<Conv
 }
 
 pub async fn delete_conversation(pool: &SqlitePool, id: &str) -> Result<bool> {
-    let result = sqlx::query("DELETE FROM conversations WHERE id = ?")
-        .bind(id)
+    let result: sqlx::sqlite::SqliteQueryResult = sqlx::query!("DELETE FROM conversations WHERE id = ?", id)
         .execute(pool)
         .await?;
 
@@ -79,11 +80,8 @@ pub async fn delete_conversation(pool: &SqlitePool, id: &str) -> Result<bool> {
 
 pub async fn update_conversation_title(pool: &SqlitePool, id: &str, title: &str) -> Result<bool> {
     let now = Utc::now().naive_utc().format("%Y-%m-%d %H:%M:%S").to_string();
-    let result =
-        sqlx::query("UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?")
-            .bind(title)
-            .bind(&now)
-            .bind(id)
+    let result: sqlx::sqlite::SqliteQueryResult =
+        sqlx::query!("UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?", title, now, id)
             .execute(pool)
             .await?;
 
@@ -96,12 +94,12 @@ pub async fn update_conversation_provider(
     provider_spec: &str,
 ) -> Result<bool> {
     let now = Utc::now().naive_utc().format("%Y-%m-%d %H:%M:%S").to_string();
-    let result = sqlx::query(
+    let result: sqlx::sqlite::SqliteQueryResult = sqlx::query!(
         "UPDATE conversations SET provider_spec = ?, updated_at = ? WHERE id = ?",
+        provider_spec,
+        now,
+        id,
     )
-    .bind(provider_spec)
-    .bind(&now)
-    .bind(id)
     .execute(pool)
     .await?;
 
