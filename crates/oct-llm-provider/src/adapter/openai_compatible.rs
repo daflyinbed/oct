@@ -14,9 +14,9 @@ use crate::provider::ModelInfo;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OpenAiCompatibleConfig {
-    pub provider_name: &'static str,
+    pub provider_name: String,
     pub base_url: String,
-    pub api_key_env: &'static str,
+    pub api_key_env: String,
     pub default_headers: Map<String, Value>,
     pub model_info: ModelInfo,
     pub use_responses_api: bool,
@@ -26,6 +26,7 @@ pub struct OpenAiCompatibleConfig {
 pub struct OpenAiCompatibleChatModel {
     pub config: OpenAiCompatibleConfig,
     client: reqwest::Client,
+    api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -348,6 +349,15 @@ impl OpenAiCompatibleChatModel {
         Self {
             config,
             client: reqwest::Client::new(),
+            api_key: None,
+        }
+    }
+
+    pub fn new_with_api_key(config: OpenAiCompatibleConfig, api_key: String, client: reqwest::Client) -> Self {
+        Self {
+            config,
+            client,
+            api_key: Some(api_key),
         }
     }
 
@@ -361,7 +371,10 @@ impl OpenAiCompatibleChatModel {
     }
 
     fn auth_header_value(&self) -> Result<HeaderValue, ModelError> {
-        let api_key = std::env::var(self.config.api_key_env).map_err(|_| ModelError::Authentication)?;
+        let api_key = match &self.api_key {
+            Some(key) => key.clone(),
+            None => std::env::var(&self.config.api_key_env).map_err(|_| ModelError::Authentication)?,
+        };
         HeaderValue::from_str(&format!("Bearer {api_key}"))
             .map_err(|err| ModelError::transport(format!("invalid auth header: {err}")))
     }

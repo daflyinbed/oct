@@ -2,7 +2,7 @@ pub mod loop_runner;
 pub mod prompt;
 
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -55,7 +55,7 @@ pub enum AgentEvent {
 pub struct AgentContext {
     pub model: Arc<dyn ChatModel>,
     pub tools: Arc<Vec<Box<dyn AgentTool>>>,
-    pub pool: SqlitePool,
+    pub pool: PgPool,
     pub system_prompt: String,
 }
 

@@ -1,7 +1,7 @@
 use anyhow::Result;
-use chrono::Utc;
+use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -14,10 +14,12 @@ pub struct StoredMessage {
     pub role: String,
     pub parts_json: String,
     pub ordering: i64,
+    pub provider_id: Option<String>,
+    pub model_id: Option<String>,
     pub input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
     pub reasoning_tokens: Option<i64>,
-    pub created_at: String,
+    pub created_at: NaiveDateTime,
 }
 
 impl StoredMessage {
@@ -44,29 +46,35 @@ fn role_to_string(role: &Role) -> &'static str {
 }
 
 pub async fn insert_message(
-    pool: &SqlitePool,
+    pool: &PgPool,
     conversation_id: &str,
     message: &Message,
+    provider_id: Option<&str>,
+    model_id: Option<&str>,
 ) -> Result<StoredMessage> {
     let id = Uuid::new_v4().to_string();
     let role = role_to_string(&message.role);
     let parts_json = serde_json::to_string(&message.parts)?;
-    let now = Utc::now().naive_utc().format("%Y-%m-%d %H:%M:%S").to_string();
+    let now = chrono::Utc::now().naive_utc();
 
-    let ordering: i64 = sqlx::query_scalar!(
-        "SELECT COALESCE(MAX(ordering), 0) + 1 FROM messages WHERE conversation_id = ?",
+    let ordering: Option<i64> = sqlx::query_scalar!(
+        "SELECT COALESCE(MAX(ordering), 0) + 1 FROM messages WHERE conversation_id = $1",
         conversation_id,
     )
     .fetch_one(pool)
     .await?;
 
+    let ordering = ordering.unwrap_or(1);
+
     sqlx::query!(
-        "INSERT INTO messages (id, conversation_id, role, parts_json, ordering, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO messages (id, conversation_id, role, parts_json, ordering, provider_id, model_id, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         id,
         conversation_id,
         role,
         parts_json,
         ordering,
+        provider_id,
+        model_id,
         now,
     )
     .execute(pool)
@@ -78,6 +86,8 @@ pub async fn insert_message(
         role: role.to_string(),
         parts_json,
         ordering,
+        provider_id: provider_id.map(|s| s.to_string()),
+        model_id: model_id.map(|s| s.to_string()),
         input_tokens: None,
         output_tokens: None,
         reasoning_tokens: None,
@@ -86,12 +96,12 @@ pub async fn insert_message(
 }
 
 pub async fn list_messages(
-    pool: &SqlitePool,
+    pool: &PgPool,
     conversation_id: &str,
 ) -> Result<Vec<StoredMessage>> {
     let rows = sqlx::query_as!(
         StoredMessage,
-        "SELECT id, conversation_id, role, parts_json, ordering, input_tokens, output_tokens, reasoning_tokens, created_at FROM messages WHERE conversation_id = ? ORDER BY ordering ASC",
+        "SELECT id, conversation_id, role, parts_json, ordering, provider_id, model_id, input_tokens, output_tokens, reasoning_tokens, created_at FROM messages WHERE conversation_id = $1 ORDER BY ordering ASC",
         conversation_id,
     )
     .fetch_all(pool)
@@ -101,15 +111,35 @@ pub async fn list_messages(
 }
 
 pub async fn load_messages_for_llm(
-    pool: &SqlitePool,
+    pool: &PgPool,
     conversation_id: &str,
 ) -> Result<Vec<Message>> {
     let stored = list_messages(pool, conversation_id).await?;
     stored.iter().map(|s| s.to_message()).collect()
 }
 
+pub async fn get_last_provider_spec(
+    pool: &PgPool,
+    conversation_id: &str,
+) -> Result<Option<(String, String)>> {
+    let row: Option<StoredMessage> = sqlx::query_as!(
+        StoredMessage,
+        "SELECT id, conversation_id, role, parts_json, ordering, provider_id, model_id, input_tokens, output_tokens, reasoning_tokens, created_at FROM messages WHERE conversation_id = $1 AND provider_id IS NOT NULL AND model_id IS NOT NULL ORDER BY ordering DESC LIMIT 1",
+        conversation_id,
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.and_then(|m| {
+        match (m.provider_id, m.model_id) {
+            (Some(p), Some(m)) => Some((p, m)),
+            _ => None,
+        }
+    }))
+}
+
 pub async fn update_message_usage(
-    pool: &SqlitePool,
+    pool: &PgPool,
     message_id: &str,
     input_tokens: Option<u32>,
     output_tokens: Option<u32>,
@@ -120,7 +150,7 @@ pub async fn update_message_usage(
     let reasoning = reasoning_tokens.map(|v| v as i64);
 
     sqlx::query!(
-        "UPDATE messages SET input_tokens = ?, output_tokens = ?, reasoning_tokens = ? WHERE id = ?",
+        "UPDATE messages SET input_tokens = $1, output_tokens = $2, reasoning_tokens = $3 WHERE id = $4",
         input,
         output,
         reasoning,

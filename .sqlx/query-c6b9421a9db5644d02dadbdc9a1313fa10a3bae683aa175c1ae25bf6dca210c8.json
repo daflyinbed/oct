@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM providers WHERE id = $1 AND source = 'custom'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c6b9421a9db5644d02dadbdc9a1313fa10a3bae683aa175c1ae25bf6dca210c8"
+}

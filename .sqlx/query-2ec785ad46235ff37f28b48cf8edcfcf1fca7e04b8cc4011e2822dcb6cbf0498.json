@@ -1,0 +1,82 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, conversation_id, role, parts_json, ordering, provider_id, model_id, input_tokens, output_tokens, reasoning_tokens, created_at FROM messages WHERE conversation_id = $1 ORDER BY ordering ASC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "conversation_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "role",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "parts_json",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "ordering",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "provider_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "model_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "input_tokens",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "output_tokens",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "reasoning_tokens",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "created_at",
+        "type_info": "Timestamp"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "2ec785ad46235ff37f28b48cf8edcfcf1fca7e04b8cc4011e2822dcb6cbf0498"
+}

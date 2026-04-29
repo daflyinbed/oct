@@ -1,21 +1,17 @@
 pub mod conversations;
 pub mod messages;
+pub mod models;
+pub mod projects;
+pub mod providers;
 
 use anyhow::Result;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use sqlx::SqlitePool;
-use std::str::FromStr;
+use sqlx::postgres::PgPoolOptions;
+use sqlx::PgPool;
 
-/// Initialize the SQLite database pool and run migrations.
-pub async fn init_pool(database_url: &str) -> Result<SqlitePool> {
-    let options = SqliteConnectOptions::from_str(database_url)?
-        .create_if_missing(true)
-        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-        .foreign_keys(true);
-
-    let pool = SqlitePoolOptions::new()
+pub async fn init_pool(database_url: &str) -> Result<PgPool> {
+    let pool = PgPoolOptions::new()
         .max_connections(5)
-        .connect_with(options)
+        .connect(database_url)
         .await?;
 
     sqlx::migrate!("../../migrations").run(&pool).await?;

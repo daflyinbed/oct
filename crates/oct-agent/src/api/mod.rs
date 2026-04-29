@@ -1,12 +1,13 @@
 pub mod chat;
-pub mod config;
 pub mod conversations;
+pub mod error;
+pub mod projects;
+pub mod providers;
 
 use axum::Router;
 use dashmap::DashMap;
-use sqlx::SqlitePool;
-use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use sqlx::PgPool;
+use std::sync::Arc;
 use utoipa::OpenApi;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_scalar::{Scalar, Servable};
@@ -16,10 +17,8 @@ use oct_llm_provider::provider::ProviderRegistry;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub pool: SqlitePool,
+    pub pool: PgPool,
     pub registry: Arc<ProviderRegistry>,
-    pub provider_spec: Arc<RwLock<String>>,
-    pub working_dir: PathBuf,
     pub sessions: Arc<DashMap<String, RunHandle>>,
 }
 
@@ -29,17 +28,25 @@ pub struct AppState {
     components(schemas(
         crate::agent::AgentEvent,
         crate::db::conversations::Conversation,
+        crate::db::conversations::CreateConversationRequest,
+        crate::db::conversations::UpdateConversationRequest,
         crate::db::messages::StoredMessage,
-        conversations::CreateConversationRequest,
-        conversations::UpdateConversationTitleRequest,
+        crate::db::projects::Project,
+        crate::db::projects::CreateProjectRequest,
+        crate::db::projects::UpdateProjectRequest,
+        crate::db::providers::Provider,
+        crate::db::providers::CreateProviderRequest,
+        crate::db::providers::UpdateProviderRequest,
+        crate::db::models::Model,
+        crate::db::models::CreateModelRequest,
+        crate::db::models::UpdateModelRequest,
         chat::SendMessageRequest,
-        config::AgentConfigResponse,
-        config::UpdateConfigRequest,
+        providers::ProviderResponse,
+        providers::ModelSummary,
     ))
 )]
 pub struct ApiDoc;
 
-/// Build the application router with all routes and OpenAPI doc.
 pub fn build_router(state: AppState) -> Router {
     let (router, api) = OpenApiRouter::with_openapi(ApiDoc::openapi())
         .nest("/api", api_routes(state.clone()))
@@ -57,16 +64,28 @@ pub fn build_router(state: AppState) -> Router {
 
 fn api_routes(state: AppState) -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
+        // Providers & Models
+        .routes(utoipa_axum::routes!(providers::list_providers))
+        .routes(utoipa_axum::routes!(providers::create_provider))
+        .routes(utoipa_axum::routes!(providers::update_provider))
+        .routes(utoipa_axum::routes!(providers::delete_provider))
+        .routes(utoipa_axum::routes!(providers::create_model))
+        .routes(utoipa_axum::routes!(providers::update_model))
+        .routes(utoipa_axum::routes!(providers::delete_model))
+        // Projects
+        .routes(utoipa_axum::routes!(projects::list_projects))
+        .routes(utoipa_axum::routes!(projects::create_project))
+        .routes(utoipa_axum::routes!(projects::get_project))
+        .routes(utoipa_axum::routes!(projects::update_project))
+        .routes(utoipa_axum::routes!(projects::delete_project))
+        // Conversations
         .routes(utoipa_axum::routes!(conversations::list_conversations))
         .routes(utoipa_axum::routes!(conversations::create_conversation))
         .routes(utoipa_axum::routes!(conversations::get_conversation))
         .routes(utoipa_axum::routes!(conversations::delete_conversation))
-        .routes(utoipa_axum::routes!(
-            conversations::update_conversation_title
-        ))
+        .routes(utoipa_axum::routes!(conversations::update_conversation))
+        // Chat
         .routes(utoipa_axum::routes!(chat::send_message))
         .routes(utoipa_axum::routes!(chat::get_messages))
-        .routes(utoipa_axum::routes!(config::get_config))
-        .routes(utoipa_axum::routes!(config::update_config))
         .with_state(state)
 }

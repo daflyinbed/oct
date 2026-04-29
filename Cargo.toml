@@ -1,3 +1,6 @@
 [workspace]
-members = ["crates/oct-llm-provider", "crates/oct-agent"]
+members = [
+  "crates/oct-llm-provider",
+  "crates/oct-agent" 
+]
 resolver = "3"

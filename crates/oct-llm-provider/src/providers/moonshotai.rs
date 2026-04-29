@@ -81,9 +81,9 @@ impl Provider for MoonshotAIProvider {
     fn chat_model(&self, model: &str) -> Result<Box<dyn ChatModel>, ModelError> {
         Ok(Box::new(OpenAiCompatibleChatModel::new(
             OpenAiCompatibleConfig {
-                provider_name: "moonshotai",
+                provider_name: "moonshotai".to_string(),
                 base_url: self.base_url.clone(),
-                api_key_env: self.api_key_env,
+                api_key_env: self.api_key_env.to_string(),
                 default_headers: Default::default(),
                 model_info: self.model_info(model),
                 use_responses_api: false,

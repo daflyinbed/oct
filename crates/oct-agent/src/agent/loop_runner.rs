@@ -127,7 +127,7 @@ pub async fn run_agent_loop(
                 role: Role::Assistant,
                 parts: assistant_parts,
             };
-            match msg_db::insert_message(&ctx.pool, &conv_id, &assistant_msg).await {
+            match msg_db::insert_message(&ctx.pool, &conv_id, &assistant_msg, None, None).await {
                 Ok(stored) => {
                     if let Some((input, output, reasoning)) = last_usage {
                         if let Err(e) = msg_db::update_message_usage(
@@ -214,7 +214,7 @@ pub async fn run_agent_loop(
                                 })],
                             };
                             if let Err(e) =
-                                msg_db::insert_message(&ctx.pool, &conv_id, &tool_msg).await
+                                msg_db::insert_message(&ctx.pool, &conv_id, &tool_msg, None, None).await
                             {
                                 error!("Failed to persist tool result: {e}");
                             }
@@ -247,7 +247,7 @@ pub async fn run_agent_loop(
                         })],
                     };
                     if let Err(e) =
-                        msg_db::insert_message(&ctx.pool, &conv_id, &cancel_msg).await
+                        msg_db::insert_message(&ctx.pool, &conv_id, &cancel_msg, None, None).await
                     {
                         error!("Failed to persist cancel result: {e}");
                     }

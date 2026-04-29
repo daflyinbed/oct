@@ -1,0 +1,70 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, name, adapter_type, base_url, api_key, doc_url, source, created_at, updated_at FROM providers WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "adapter_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "base_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "api_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "doc_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "source",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamp"
+      },
+      {
+        "ordinal": 8,
+        "name": "updated_at",
+        "type_info": "Timestamp"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "d73522426393dc2d45a954ece7b5c062d5c312dd4fac07e4ac75dbe82b0f3717"
+}

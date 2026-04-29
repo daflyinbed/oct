@@ -4,16 +4,16 @@ use crate::provider::{ModelCapabilities, ModelLimits};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelInfo {
-    pub provider_name: &'static str,
+    pub provider_name: String,
     pub model_id: String,
     pub capabilities: ModelCapabilities,
     pub limits: ModelLimits,
 }
 
 impl ModelInfo {
-    pub fn new(provider_name: &'static str, model_id: impl Into<String>) -> Self {
+    pub fn new(provider_name: impl Into<String>, model_id: impl Into<String>) -> Self {
         Self {
-            provider_name,
+            provider_name: provider_name.into(),
             model_id: model_id.into(),
             capabilities: ModelCapabilities::default(),
             limits: ModelLimits::default(),

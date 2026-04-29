@@ -1,36 +1,58 @@
 use anyhow::Result;
-use chrono::Utc;
+use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, ToSchema)]
 pub struct Conversation {
     pub id: String,
+    pub project_id: String,
     pub title: String,
-    pub working_dir: String,
-    pub provider_spec: String,
-    pub created_at: String,
-    pub updated_at: String,
+    pub created_at: NaiveDateTime,
+    pub updated_at: NaiveDateTime,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateConversationRequest {
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateConversationRequest {
+    pub title: Option<String>,
+}
+
+pub async fn list_conversations_by_project(
+    pool: &PgPool,
+    project_id: &str,
+) -> Result<Vec<Conversation>> {
+    let rows = sqlx::query_as!(
+        Conversation,
+        "SELECT id, project_id, title, created_at, updated_at FROM conversations WHERE project_id = $1 ORDER BY updated_at DESC",
+        project_id,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows)
 }
 
 pub async fn create_conversation(
-    pool: &SqlitePool,
-    working_dir: &str,
-    provider_spec: &str,
+    pool: &PgPool,
+    project_id: &str,
     title: Option<&str>,
 ) -> Result<Conversation> {
     let id = Uuid::new_v4().to_string();
     let title = title.unwrap_or("New conversation");
-    let now = Utc::now().naive_utc().format("%Y-%m-%d %H:%M:%S").to_string();
+    let now = chrono::Utc::now().naive_utc();
 
     sqlx::query!(
-        "INSERT INTO conversations (id, title, working_dir, provider_spec, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO conversations (id, project_id, title, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)",
         id,
+        project_id,
         title,
-        working_dir,
-        provider_spec,
         now,
         now,
     )
@@ -39,29 +61,17 @@ pub async fn create_conversation(
 
     Ok(Conversation {
         id,
+        project_id: project_id.to_string(),
         title: title.to_string(),
-        working_dir: working_dir.to_string(),
-        provider_spec: provider_spec.to_string(),
-        created_at: now.clone(),
+        created_at: now,
         updated_at: now,
     })
 }
 
-pub async fn list_conversations(pool: &SqlitePool) -> Result<Vec<Conversation>> {
-    let rows = sqlx::query_as!(
-        Conversation,
-        "SELECT id, title, working_dir, provider_spec, created_at, updated_at FROM conversations ORDER BY updated_at DESC",
-    )
-    .fetch_all(pool)
-    .await?;
-
-    Ok(rows)
-}
-
-pub async fn get_conversation(pool: &SqlitePool, id: &str) -> Result<Option<Conversation>> {
+pub async fn get_conversation(pool: &PgPool, id: &str) -> Result<Option<Conversation>> {
     let row = sqlx::query_as!(
         Conversation,
-        "SELECT id, title, working_dir, provider_spec, created_at, updated_at FROM conversations WHERE id = ?",
+        "SELECT id, project_id, title, created_at, updated_at FROM conversations WHERE id = $1",
         id,
     )
     .fetch_optional(pool)
@@ -70,38 +80,24 @@ pub async fn get_conversation(pool: &SqlitePool, id: &str) -> Result<Option<Conv
     Ok(row)
 }
 
-pub async fn delete_conversation(pool: &SqlitePool, id: &str) -> Result<bool> {
-    let result: sqlx::sqlite::SqliteQueryResult = sqlx::query!("DELETE FROM conversations WHERE id = ?", id)
+pub async fn delete_conversation(pool: &PgPool, id: &str) -> Result<bool> {
+    let result: sqlx::postgres::PgQueryResult = sqlx::query!("DELETE FROM conversations WHERE id = $1", id)
         .execute(pool)
         .await?;
 
     Ok(result.rows_affected() > 0)
 }
 
-pub async fn update_conversation_title(pool: &SqlitePool, id: &str, title: &str) -> Result<bool> {
-    let now = Utc::now().naive_utc().format("%Y-%m-%d %H:%M:%S").to_string();
-    let result: sqlx::sqlite::SqliteQueryResult =
-        sqlx::query!("UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?", title, now, id)
-            .execute(pool)
-            .await?;
-
-    Ok(result.rows_affected() > 0)
-}
-
-pub async fn update_conversation_provider(
-    pool: &SqlitePool,
+pub async fn update_conversation_title(
+    pool: &PgPool,
     id: &str,
-    provider_spec: &str,
+    title: &str,
 ) -> Result<bool> {
-    let now = Utc::now().naive_utc().format("%Y-%m-%d %H:%M:%S").to_string();
-    let result: sqlx::sqlite::SqliteQueryResult = sqlx::query!(
-        "UPDATE conversations SET provider_spec = ?, updated_at = ? WHERE id = ?",
-        provider_spec,
-        now,
-        id,
-    )
-    .execute(pool)
-    .await?;
+    let now = chrono::Utc::now().naive_utc();
+    let result: sqlx::postgres::PgQueryResult =
+        sqlx::query!("UPDATE conversations SET title = $1, updated_at = $2 WHERE id = $3", title, now, id)
+        .execute(pool)
+        .await?;
 
     Ok(result.rows_affected() > 0)
 }

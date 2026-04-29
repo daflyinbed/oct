@@ -1,15 +1,29 @@
 mod agent;
 mod api;
 mod db;
+mod seed;
 mod tools;
 
 use anyhow::Result;
-use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use clap::Parser;
+use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use tracing::info;
 
 use oct_llm_provider::providers::default_registry;
+
+#[derive(Parser)]
+#[command(name = "oct-agent", version, about = "Oct Agent CLI")]
+enum Cli {
+    /// Start the API server
+    Serve {
+        /// Port to listen on
+        #[arg(long, env = "OCT_PORT", default_value = "3000")]
+        port: u16,
+    },
+    /// Seed providers and models from models.dev
+    Seed,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -20,26 +34,23 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    let cli = Cli::parse();
     let database_url =
-        std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:oct-agent.db".to_string());
-    let port: u16 = std::env::var("OCT_PORT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(3000);
-    let provider_spec = std::env::var("OCT_PROVIDER")
-        .unwrap_or_else(|_| "anthropic:claude-sonnet-4-20250514".to_string());
-    let working_dir = std::env::var("OCT_WORKING_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://oct:oct@localhost:5432/oct".to_string());
 
-    let pool = db::init_pool(&database_url).await?;
+    match cli {
+        Cli::Serve { port } => run_server(&database_url, port).await,
+        Cli::Seed => seed::run(&database_url).await,
+    }
+}
+
+async fn run_server(database_url: &str, port: u16) -> Result<()> {
+    let pool = db::init_pool(database_url).await?;
     let registry = Arc::new(default_registry());
 
     let state = api::AppState {
         pool,
         registry,
-        provider_spec: Arc::new(RwLock::new(provider_spec)),
-        working_dir,
         sessions: Arc::new(dashmap::DashMap::new()),
     };
 

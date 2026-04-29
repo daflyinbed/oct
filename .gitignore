@@ -1,6 +1,7 @@
 /target
-frontend/node_modules
-frontend/dist
+node_modules
+packages/*/dist
 *.db
 *.db-wal
 *.db-shm
+packages/oct-design
