@@ -35,18 +35,12 @@ pnpm --filter frontend generate-api   # regenerate TypeScript types from OpenAPI
 pnpm -r exec eslint .                 # ESLint with @xwbx/eslint-config flat config
 ```
 
-### Infrastructure
-
-```bash
-docker compose up -d                  # start PostgreSQL 18.3 (port 5432, user/pass/db: oct)
-```
-
 ## Build & Database
 
-- **Database**: PostgreSQL (via `docker-compose.yml`). Default `DATABASE_URL`: `postgres://oct:oct@localhost:5432/oct` (override via env var or `.env`)
-- **sqlx compile-time macros**: All queries use `sqlx::query!`/`query_as!`/`query_scalar!` (compile-time checked, `postgres` feature)
+- **Database**: SQLite. Default `DATABASE_URL`: `sqlite://oct.db` (override via env var or `.env`)
+- **sqlx compile-time macros**: All queries use `sqlx::query!`/`query_as!`/`query_scalar!` (compile-time checked, `sqlite` feature)
 - **Offline mode**: `.sqlx/` cache is committed; builds work without a live database via `SQLX_OFFLINE=true`
-- **Regenerate cache**: After changing SQL queries, run `cargo sqlx prepare --workspace`
+- **Regenerate cache**: After changing SQL queries, run migrations against a SQLite database and then run `cargo sqlx prepare --workspace`
 - **Migrations**: `sqlx::migrate!("../../migrations")` in `crates/oct-agent/src/db/mod.rs` auto-runs on startup; migration files live at repo root `migrations/`
 - **Seeding**: `cargo run -p oct-agent -- seed` fetches the model catalog from `https://models.dev/api.json` and upserts providers/models (source=`seeded`). Custom providers/models (source=`custom`) are preserved.
 
@@ -68,7 +62,7 @@ docker compose up -d                  # start PostgreSQL 18.3 (port 5432, user/p
   - **Projects**: CRUD (list, create, get, update, delete). Projects have `name` and `working_dir`.
   - **Conversations**: CRUD (list, create, get, update, delete). Conversations belong to a project.
   - **Chat**: Send message (SSE streaming), get messages.
-- **AppState**: Holds `PgPool`, `Arc<ProviderRegistry>`, and `Arc<DashMap<String, RunHandle>>` for tracking active agent sessions.
+- **AppState**: Holds `SqlitePool`, `Arc<ProviderRegistry>`, and `Arc<DashMap<String, RunHandle>>` for tracking active agent sessions.
 - **Frontend** (`packages/app`): Vue 3 + Vite 8 + Tailwind v4. Uses `openapi-fetch` to consume the generated OpenAPI schema. `@vueuse/core` for composables. `unplugin-vue-components` for auto-imports. Key directories:
   - `src/composables/`: `useChat.ts`, `useProjects.ts`, `useProviders.ts`
   - `src/components/chat/`, `diff/`, `file-tree/`, `settings/`, `sidebar/`

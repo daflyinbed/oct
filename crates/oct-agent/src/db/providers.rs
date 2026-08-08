@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::SqlitePool;
 use utoipa::ToSchema;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, ToSchema)]
@@ -35,7 +35,7 @@ pub struct UpdateProviderRequest {
     pub doc_url: Option<String>,
 }
 
-pub async fn list_providers(pool: &PgPool) -> Result<Vec<Provider>> {
+pub async fn list_providers(pool: &SqlitePool) -> Result<Vec<Provider>> {
     let rows = sqlx::query_as!(
         Provider,
         "SELECT id, name, adapter_type, base_url, api_key, doc_url, source, created_at, updated_at FROM providers ORDER BY created_at ASC"
@@ -46,7 +46,7 @@ pub async fn list_providers(pool: &PgPool) -> Result<Vec<Provider>> {
     Ok(rows)
 }
 
-pub async fn get_provider(pool: &PgPool, id: &str) -> Result<Option<Provider>> {
+pub async fn get_provider(pool: &SqlitePool, id: &str) -> Result<Option<Provider>> {
     let row = sqlx::query_as!(
         Provider,
         "SELECT id, name, adapter_type, base_url, api_key, doc_url, source, created_at, updated_at FROM providers WHERE id = $1",
@@ -59,7 +59,7 @@ pub async fn get_provider(pool: &PgPool, id: &str) -> Result<Option<Provider>> {
 }
 
 pub async fn create_custom_provider(
-    pool: &PgPool,
+    pool: &SqlitePool,
     req: &CreateProviderRequest,
 ) -> Result<Provider> {
     let now = chrono::Utc::now().naive_utc();
@@ -91,7 +91,7 @@ pub async fn create_custom_provider(
 }
 
 pub async fn update_provider(
-    pool: &PgPool,
+    pool: &SqlitePool,
     id: &str,
     req: &UpdateProviderRequest,
 ) -> Result<bool> {
@@ -111,7 +111,7 @@ pub async fn update_provider(
     let api_key = req.api_key.as_deref().unwrap_or(&existing.api_key);
     let doc_url = req.doc_url.as_deref().or(existing.doc_url.as_deref());
 
-    let result: sqlx::postgres::PgQueryResult = sqlx::query!(
+    let result: sqlx::sqlite::SqliteQueryResult = sqlx::query!(
         "UPDATE providers SET name = $1, base_url = $2, api_key = $3, doc_url = $4, updated_at = $5 WHERE id = $6",
         name,
         base_url,
@@ -126,8 +126,8 @@ pub async fn update_provider(
     Ok(result.rows_affected() > 0)
 }
 
-pub async fn delete_provider(pool: &PgPool, id: &str) -> Result<bool> {
-    let result: sqlx::postgres::PgQueryResult = sqlx::query!(
+pub async fn delete_provider(pool: &SqlitePool, id: &str) -> Result<bool> {
+    let result: sqlx::sqlite::SqliteQueryResult = sqlx::query!(
         "DELETE FROM providers WHERE id = $1 AND source = 'custom'",
         id
     )

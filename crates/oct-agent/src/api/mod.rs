@@ -6,7 +6,7 @@ pub mod providers;
 
 use axum::Router;
 use dashmap::DashMap;
-use sqlx::PgPool;
+use sqlx::SqlitePool;
 use std::sync::Arc;
 use utoipa::OpenApi;
 use utoipa_axum::router::OpenApiRouter;
@@ -17,7 +17,7 @@ use oct_llm_provider::provider::ProviderRegistry;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub pool: PgPool,
+    pub pool: SqlitePool,
     pub registry: Arc<ProviderRegistry>,
     pub sessions: Arc<DashMap<String, RunHandle>>,
 }

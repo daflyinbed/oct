@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::SqlitePool;
 use utoipa::ToSchema;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, ToSchema)]
@@ -78,7 +78,7 @@ pub struct UpdateModelRequest {
     pub is_enabled: Option<bool>,
 }
 
-pub async fn list_models_by_provider(pool: &PgPool, provider_id: &str) -> Result<Vec<Model>> {
+pub async fn list_models_by_provider(pool: &SqlitePool, provider_id: &str) -> Result<Vec<Model>> {
     let rows = sqlx::query_as!(
         Model,
         "SELECT id, provider_id, model_id, name, family, reasoning, tool_call, attachment, structured_output, temperature, knowledge, release_date, open_weights, cost_input, cost_output, cost_cache_read, cost_cache_write, limit_context, limit_output, modalities_input, modalities_output, source, is_enabled, created_at FROM models WHERE provider_id = $1 ORDER BY created_at ASC",
@@ -90,7 +90,7 @@ pub async fn list_models_by_provider(pool: &PgPool, provider_id: &str) -> Result
     Ok(rows)
 }
 
-pub async fn list_enabled_models(pool: &PgPool) -> Result<Vec<Model>> {
+pub async fn list_enabled_models(pool: &SqlitePool) -> Result<Vec<Model>> {
     let rows = sqlx::query_as!(
         Model,
         "SELECT id, provider_id, model_id, name, family, reasoning, tool_call, attachment, structured_output, temperature, knowledge, release_date, open_weights, cost_input, cost_output, cost_cache_read, cost_cache_write, limit_context, limit_output, modalities_input, modalities_output, source, is_enabled, created_at FROM models WHERE is_enabled = true ORDER BY provider_id, created_at ASC"
@@ -102,7 +102,7 @@ pub async fn list_enabled_models(pool: &PgPool) -> Result<Vec<Model>> {
 }
 
 pub async fn get_model(
-    pool: &PgPool,
+    pool: &SqlitePool,
     provider_id: &str,
     model_id: &str,
 ) -> Result<Option<Model>> {
@@ -119,7 +119,7 @@ pub async fn get_model(
 }
 
 pub async fn create_model(
-    pool: &PgPool,
+    pool: &SqlitePool,
     provider_id: &str,
     req: &CreateModelRequest,
 ) -> Result<Model> {
@@ -189,7 +189,7 @@ pub async fn create_model(
 }
 
 pub async fn update_model(
-    pool: &PgPool,
+    pool: &SqlitePool,
     provider_id: &str,
     model_id: &str,
     req: &UpdateModelRequest,
@@ -217,7 +217,7 @@ pub async fn update_model(
     let modalities_output = req.modalities_output.as_deref().or(existing.modalities_output.as_deref());
     let is_enabled = req.is_enabled.unwrap_or(existing.is_enabled);
 
-    let result: sqlx::postgres::PgQueryResult = sqlx::query!(
+    let result: sqlx::sqlite::SqliteQueryResult = sqlx::query!(
         "UPDATE models SET name = $1, family = $2, reasoning = $3, tool_call = $4, attachment = $5, structured_output = $6, temperature = $7, knowledge = $8, release_date = $9, open_weights = $10, cost_input = $11, cost_output = $12, cost_cache_read = $13, cost_cache_write = $14, limit_context = $15, limit_output = $16, modalities_input = $17, modalities_output = $18, is_enabled = $19 WHERE provider_id = $20 AND model_id = $21",
         name,
         family,
@@ -247,8 +247,8 @@ pub async fn update_model(
     Ok(result.rows_affected() > 0)
 }
 
-pub async fn delete_model(pool: &PgPool, provider_id: &str, model_id: &str) -> Result<bool> {
-    let result: sqlx::postgres::PgQueryResult = sqlx::query!(
+pub async fn delete_model(pool: &SqlitePool, provider_id: &str, model_id: &str) -> Result<bool> {
+    let result: sqlx::sqlite::SqliteQueryResult = sqlx::query!(
         "DELETE FROM models WHERE provider_id = $1 AND model_id = $2 AND source = 'custom'",
         provider_id,
         model_id,

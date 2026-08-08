@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::SqlitePool;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -26,7 +26,7 @@ pub struct UpdateProjectRequest {
     pub working_dir: Option<String>,
 }
 
-pub async fn list_projects(pool: &PgPool) -> Result<Vec<Project>> {
+pub async fn list_projects(pool: &SqlitePool) -> Result<Vec<Project>> {
     let rows = sqlx::query_as!(
         Project,
         "SELECT id, name, working_dir, created_at, updated_at FROM projects ORDER BY updated_at DESC"
@@ -37,7 +37,7 @@ pub async fn list_projects(pool: &PgPool) -> Result<Vec<Project>> {
     Ok(rows)
 }
 
-pub async fn get_project(pool: &PgPool, id: &str) -> Result<Option<Project>> {
+pub async fn get_project(pool: &SqlitePool, id: &str) -> Result<Option<Project>> {
     let row = sqlx::query_as!(
         Project,
         "SELECT id, name, working_dir, created_at, updated_at FROM projects WHERE id = $1",
@@ -49,7 +49,7 @@ pub async fn get_project(pool: &PgPool, id: &str) -> Result<Option<Project>> {
     Ok(row)
 }
 
-pub async fn create_project(pool: &PgPool, req: &CreateProjectRequest) -> Result<Project> {
+pub async fn create_project(pool: &SqlitePool, req: &CreateProjectRequest) -> Result<Project> {
     let id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().naive_utc();
 
@@ -73,7 +73,7 @@ pub async fn create_project(pool: &PgPool, req: &CreateProjectRequest) -> Result
     })
 }
 
-pub async fn update_project(pool: &PgPool, id: &str, req: &UpdateProjectRequest) -> Result<bool> {
+pub async fn update_project(pool: &SqlitePool, id: &str, req: &UpdateProjectRequest) -> Result<bool> {
     let existing = sqlx::query_as!(
         Project,
         "SELECT id, name, working_dir, created_at, updated_at FROM projects WHERE id = $1",
@@ -88,7 +88,7 @@ pub async fn update_project(pool: &PgPool, id: &str, req: &UpdateProjectRequest)
     let name = req.name.as_deref().unwrap_or(&existing.name);
     let working_dir = req.working_dir.as_deref().unwrap_or(&existing.working_dir);
 
-    let result: sqlx::postgres::PgQueryResult = sqlx::query!(
+    let result: sqlx::sqlite::SqliteQueryResult = sqlx::query!(
         "UPDATE projects SET name = $1, working_dir = $2, updated_at = $3 WHERE id = $4",
         name,
         working_dir,
@@ -101,8 +101,8 @@ pub async fn update_project(pool: &PgPool, id: &str, req: &UpdateProjectRequest)
     Ok(result.rows_affected() > 0)
 }
 
-pub async fn delete_project(pool: &PgPool, id: &str) -> Result<bool> {
-    let result: sqlx::postgres::PgQueryResult = sqlx::query!("DELETE FROM projects WHERE id = $1", id)
+pub async fn delete_project(pool: &SqlitePool, id: &str) -> Result<bool> {
+    let result: sqlx::sqlite::SqliteQueryResult = sqlx::query!("DELETE FROM projects WHERE id = $1", id)
         .execute(pool)
         .await?;
 

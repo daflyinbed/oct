@@ -1,15 +1,10 @@
 {
-  "db_name": "PostgreSQL",
+  "db_name": "SQLite",
   "query": "UPDATE messages SET input_tokens = $1, output_tokens = $2, reasoning_tokens = $3 WHERE id = $4",
   "describe": {
     "columns": [],
     "parameters": {
-      "Left": [
-        "Int8",
-        "Int8",
-        "Int8",
-        "Text"
-      ]
+      "Right": 4
     },
     "nullable": []
   },

@@ -36,7 +36,7 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     let database_url =
-        std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://oct:oct@localhost:5432/oct".to_string());
+        std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://oct.db".to_string());
 
     match cli {
         Cli::Serve { port } => run_server(&database_url, port).await,

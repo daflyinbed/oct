@@ -17,10 +17,13 @@ chrono = { version = "0.4", features = [ "serde" ] }
 futures-util = "0.3"
 serde = { version = "1", features = [ "derive" ] }
 serde_json = "1"
-sqlx = { version = "0.8", features = [
+sqlx = { version = "0.8", default-features = false, features = [
   "runtime-tokio",
-  "postgres",
-  "chrono"
+  "sqlite",
+  "chrono",
+  "derive",
+  "macros",
+  "migrate"
 ] }
 thiserror = "2"
 tokio = { version = "1", features = [ "full" ] }

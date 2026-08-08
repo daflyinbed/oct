@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::SqlitePool;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -46,7 +46,7 @@ fn role_to_string(role: &Role) -> &'static str {
 }
 
 pub async fn insert_message(
-    pool: &PgPool,
+    pool: &SqlitePool,
     conversation_id: &str,
     message: &Message,
     provider_id: Option<&str>,
@@ -57,27 +57,17 @@ pub async fn insert_message(
     let parts_json = serde_json::to_string(&message.parts)?;
     let now = chrono::Utc::now().naive_utc();
 
-    let ordering: Option<i64> = sqlx::query_scalar!(
-        "SELECT COALESCE(MAX(ordering), 0) + 1 FROM messages WHERE conversation_id = $1",
-        conversation_id,
-    )
-    .fetch_one(pool)
-    .await?;
-
-    let ordering = ordering.unwrap_or(1);
-
-    sqlx::query!(
-        "INSERT INTO messages (id, conversation_id, role, parts_json, ordering, provider_id, model_id, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+    let ordering = sqlx::query_scalar!(
+        "INSERT INTO messages (id, conversation_id, role, parts_json, ordering, provider_id, model_id, created_at) SELECT $1, $2, $3, $4, COALESCE(MAX(ordering), 0) + 1, $5, $6, $7 FROM messages WHERE conversation_id = $2 RETURNING ordering",
         id,
         conversation_id,
         role,
         parts_json,
-        ordering,
         provider_id,
         model_id,
         now,
     )
-    .execute(pool)
+    .fetch_one(pool)
     .await?;
 
     Ok(StoredMessage {
@@ -96,7 +86,7 @@ pub async fn insert_message(
 }
 
 pub async fn list_messages(
-    pool: &PgPool,
+    pool: &SqlitePool,
     conversation_id: &str,
 ) -> Result<Vec<StoredMessage>> {
     let rows = sqlx::query_as!(
@@ -111,7 +101,7 @@ pub async fn list_messages(
 }
 
 pub async fn load_messages_for_llm(
-    pool: &PgPool,
+    pool: &SqlitePool,
     conversation_id: &str,
 ) -> Result<Vec<Message>> {
     let stored = list_messages(pool, conversation_id).await?;
@@ -119,7 +109,7 @@ pub async fn load_messages_for_llm(
 }
 
 pub async fn get_last_provider_spec(
-    pool: &PgPool,
+    pool: &SqlitePool,
     conversation_id: &str,
 ) -> Result<Option<(String, String)>> {
     let row: Option<StoredMessage> = sqlx::query_as!(
@@ -139,7 +129,7 @@ pub async fn get_last_provider_spec(
 }
 
 pub async fn update_message_usage(
-    pool: &PgPool,
+    pool: &SqlitePool,
     message_id: &str,
     input_tokens: Option<u32>,
     output_tokens: Option<u32>,

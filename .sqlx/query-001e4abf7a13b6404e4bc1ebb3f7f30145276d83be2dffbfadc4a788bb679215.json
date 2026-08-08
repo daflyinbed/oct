@@ -1,18 +1,10 @@
 {
-  "db_name": "PostgreSQL",
+  "db_name": "SQLite",
   "query": "INSERT INTO providers (id, name, adapter_type, base_url, api_key, doc_url, source, created_at, updated_at) VALUES ($1, $2, 'openai_compatible', $3, $4, $5, 'custom', $6, $7)",
   "describe": {
     "columns": [],
     "parameters": {
-      "Left": [
-        "Text",
-        "Text",
-        "Text",
-        "Text",
-        "Text",
-        "Timestamp",
-        "Timestamp"
-      ]
+      "Right": 7
     },
     "nullable": []
   },

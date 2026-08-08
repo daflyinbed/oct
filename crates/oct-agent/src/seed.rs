@@ -161,8 +161,7 @@ pub async fn run(database_url: &str) -> Result<()> {
                 model_row_id,
             )
             .fetch_one(&pool)
-            .await?
-            .unwrap_or(0);
+            .await?;
 
             if existing_model > 0 {
                 sqlx::query!(

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::SqlitePool;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -25,7 +25,7 @@ pub struct UpdateConversationRequest {
 }
 
 pub async fn list_conversations_by_project(
-    pool: &PgPool,
+    pool: &SqlitePool,
     project_id: &str,
 ) -> Result<Vec<Conversation>> {
     let rows = sqlx::query_as!(
@@ -40,7 +40,7 @@ pub async fn list_conversations_by_project(
 }
 
 pub async fn create_conversation(
-    pool: &PgPool,
+    pool: &SqlitePool,
     project_id: &str,
     title: Option<&str>,
 ) -> Result<Conversation> {
@@ -68,7 +68,7 @@ pub async fn create_conversation(
     })
 }
 
-pub async fn get_conversation(pool: &PgPool, id: &str) -> Result<Option<Conversation>> {
+pub async fn get_conversation(pool: &SqlitePool, id: &str) -> Result<Option<Conversation>> {
     let row = sqlx::query_as!(
         Conversation,
         "SELECT id, project_id, title, created_at, updated_at FROM conversations WHERE id = $1",
@@ -80,8 +80,8 @@ pub async fn get_conversation(pool: &PgPool, id: &str) -> Result<Option<Conversa
     Ok(row)
 }
 
-pub async fn delete_conversation(pool: &PgPool, id: &str) -> Result<bool> {
-    let result: sqlx::postgres::PgQueryResult = sqlx::query!("DELETE FROM conversations WHERE id = $1", id)
+pub async fn delete_conversation(pool: &SqlitePool, id: &str) -> Result<bool> {
+    let result: sqlx::sqlite::SqliteQueryResult = sqlx::query!("DELETE FROM conversations WHERE id = $1", id)
         .execute(pool)
         .await?;
 
@@ -89,12 +89,12 @@ pub async fn delete_conversation(pool: &PgPool, id: &str) -> Result<bool> {
 }
 
 pub async fn update_conversation_title(
-    pool: &PgPool,
+    pool: &SqlitePool,
     id: &str,
     title: &str,
 ) -> Result<bool> {
     let now = chrono::Utc::now().naive_utc();
-    let result: sqlx::postgres::PgQueryResult =
+    let result: sqlx::sqlite::SqliteQueryResult =
         sqlx::query!("UPDATE conversations SET title = $1, updated_at = $2 WHERE id = $3", title, now, id)
         .execute(pool)
         .await?;
