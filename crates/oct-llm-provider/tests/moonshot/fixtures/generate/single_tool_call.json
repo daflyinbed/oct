@@ -1,0 +1,36 @@
+{
+  "request": {
+    "body": {
+      "model": "kimi-k2.5",
+      "messages": [
+        {
+          "role": "user",
+          "content": "What is the weather in Beijing?"
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "description": "Get the current weather for a location",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "location": {
+                  "type": "string",
+                  "description": "City name"
+                }
+              },
+              "required": ["location"]
+            }
+          }
+        }
+      ],
+      "tool_choice": "auto"
+    }
+  },
+  "response": {
+    "body": "{\"id\":\"chatcmpl-69c0251e90b42420fd2841bf\",\"object\":\"chat.completion\",\"created\":1774200096,\"model\":\"kimi-k2.5\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"I'll check the weather in Beijing for you.\",\"reasoning_content\":\"The user is asking for the weather in Beijing. I have a function called `get_weather` that can retrieve weather information for a given location. The parameter required is \\\"location\\\" which should be a city name. Beijing is a city, so I can use this as the location parameter.\\n\\nLet me call the function with \\\"Beijing\\\" as the location.\",\"tool_calls\":[{\"index\":0,\"id\":\"get_weather:0\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"location\\\": \\\"Beijing\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":61,\"completion_tokens\":102,\"total_tokens\":163,\"cached_tokens\":61,\"prompt_tokens_details\":{\"cached_tokens\":61}}}"
+  }
+}

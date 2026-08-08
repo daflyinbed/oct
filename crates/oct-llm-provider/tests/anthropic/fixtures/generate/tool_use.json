@@ -1,0 +1,37 @@
+{
+  "request": {
+    "body": {
+      "model": "claude-sonnet-4-20250514",
+      "thinking": {
+        "type": "enabled",
+        "budget_tokens": 1024
+      },
+      "max_tokens": 1024,
+      "messages": [
+        {
+          "role": "user",
+          "content": "What is the weather in Beijing?"
+        }
+      ],
+      "tools": [
+        {
+          "name": "get_weather",
+          "description": "Get the current weather for a location",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "location": {
+                "type": "string",
+                "description": "City name"
+              }
+            },
+            "required": ["location"]
+          }
+        }
+      ]
+    }
+  },
+  "response": {
+    "body": "{\"id\":\"msg_20260326021853b975f1cb062a45ef\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"glm-4.7\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"The user is asking about the weather in Beijing. I have a function called \\\"get_weather\\\" that can get the current weather for a location. The required parameter is \\\"location\\\" and the user has provided \\\"Beijing\\\" as the location. I should use this function to get the weather information.\",\"signature\":\"3d5f0f11a8a1409b8fd1edb1\"},{\"type\":\"text\",\"text\":\"I'll check the current weather in Beijing for you.\"},{\"type\":\"tool_use\",\"id\":\"call_99dad8ea8e3342f6b85aa4ed\",\"name\":\"get_weather\",\"input\":{\"location\":\"Beijing\"}}],\"stop_reason\":\"tool_use\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":40,\"output_tokens\":84,\"cache_read_input_tokens\":128,\"server_tool_use\":{\"web_search_requests\":0},\"service_tier\":\"standard\"}}"
+  }
+}

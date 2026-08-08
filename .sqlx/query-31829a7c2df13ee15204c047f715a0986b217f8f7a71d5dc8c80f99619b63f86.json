@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE models SET name = $1, family = $2, reasoning = $3, tool_call = $4, attachment = $5, structured_output = $6, temperature = $7, knowledge = $8, release_date = $9, open_weights = $10, cost_input = $11, cost_output = $12, cost_cache_read = $13, cost_cache_write = $14, limit_context = $15, limit_output = $16, modalities_input = $17, modalities_output = $18, is_enabled = $19 WHERE provider_id = $20 AND model_id = $21",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 21
+    },
+    "nullable": []
+  },
+  "hash": "31829a7c2df13ee15204c047f715a0986b217f8f7a71d5dc8c80f99619b63f86"
+}

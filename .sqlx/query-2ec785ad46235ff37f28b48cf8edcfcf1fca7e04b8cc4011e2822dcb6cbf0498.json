@@ -1,0 +1,80 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, conversation_id, role, parts_json, ordering, provider_id, model_id, input_tokens, output_tokens, reasoning_tokens, created_at FROM messages WHERE conversation_id = $1 ORDER BY ordering ASC",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "conversation_id",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "role",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "parts_json",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "ordering",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "provider_id",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "model_id",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "input_tokens",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "output_tokens",
+        "ordinal": 8,
+        "type_info": "Integer"
+      },
+      {
+        "name": "reasoning_tokens",
+        "ordinal": 9,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 10,
+        "type_info": "Datetime"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "2ec785ad46235ff37f28b48cf8edcfcf1fca7e04b8cc4011e2822dcb6cbf0498"
+}

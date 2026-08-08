@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO messages (id, conversation_id, role, parts_json, ordering, provider_id, model_id, created_at) SELECT $1, $2, $3, $4, COALESCE(MAX(ordering), 0) + 1, $5, $6, $7 FROM messages WHERE conversation_id = $2 RETURNING ordering",
+  "describe": {
+    "columns": [
+      {
+        "name": "ordering",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "65117f2e4e1362c7af702fb6603bf0047ada91cdcb10b7717066ddb189112c4a"
+}
