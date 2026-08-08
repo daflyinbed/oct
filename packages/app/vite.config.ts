@@ -1,6 +1,6 @@
 import path from "node:path";
-import tailwindcss from "@tailwindcss/vite";
 import vue from "@vitejs/plugin-vue";
+import UnoCSS from "unocss/vite";
 import IconsResolver from "unplugin-icons/resolver";
 import Icons from "unplugin-icons/vite";
 import Components from "unplugin-vue-components/vite";
@@ -13,7 +13,7 @@ export default defineConfig({
       /* options */
     }),
     vue(),
-    tailwindcss(),
+    UnoCSS(),
     Components({
       resolvers: [IconsResolver()],
       dts: "src/components.d.ts",
