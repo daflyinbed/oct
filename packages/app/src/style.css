@@ -70,29 +70,9 @@
   --oct-color-warning-10: oklch(42% 0.11 75);
   --oct-color-warning-contrast: oklch(14% 0.01 85);
 
-  /* 旧内联样式的兼容层，新代码直接使用 UnoCSS 语义类。 */
-  --color-bg: var(--oct-color-background);
-  --color-panel: var(--oct-color-panel);
-  --color-surface: var(--oct-color-surface);
-  --color-text: var(--oct-color-neutral-10);
-  --color-muted: color-mix(in oklch, var(--oct-color-neutral-10) 64%, transparent);
-  --color-border: var(--oct-color-neutral-5);
-  --color-accent-9: var(--oct-color-accent-7);
-  --color-accent-7: var(--oct-color-accent-8);
-  --color-accent-contrast: var(--oct-color-accent-contrast);
-  --color-success: var(--oct-color-success-10);
-  --color-warning: var(--oct-color-warning-10);
-  --color-error: var(--oct-color-danger-10);
-  --color-info: var(--oct-color-accent-10);
-  --font-sans: "Inter", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
-  --radius-sm: 3px;
-  --radius-md: 6px;
-  --radius-lg: 12px;
-
   color: var(--oct-color-neutral-10);
   background: var(--oct-color-background);
-  font-family: var(--font-sans);
+  font-family: "Inter", system-ui, sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -119,7 +99,9 @@ body {
   line-height: 1.6;
 }
 
-p { margin: 0; }
+p {
+  margin: 0;
+}
 
 button {
   margin: 0;

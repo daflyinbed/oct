@@ -14,11 +14,8 @@
       <RouterView v-if="showChat" />
 
       <template v-if="!showSidebar && !showChat">
-        <div
-          class="flex-1 flex items-center justify-center"
-          style="background-color: var(--color-bg)"
-        >
-          <p style="color: var(--color-muted)">
+        <div class="flex-1 flex items-center justify-center bg-background">
+          <p class="text-neutral-10/60">
             All panels are hidden. Use the bottom bar to show them.
           </p>
         </div>

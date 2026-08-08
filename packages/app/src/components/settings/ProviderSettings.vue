@@ -3,32 +3,18 @@
     v-if="visible"
     class="fixed inset-0 z-50 flex items-start justify-center pt-[10vh]"
   >
+    <div class="absolute inset-0 bg-overlay" @click="$emit('close')" />
     <div
-      class="absolute inset-0"
-      style="background: rgba(0, 0, 0, 0.4)"
-      @click="$emit('close')"
-    />
-    <div
-      class="relative w-full max-w-2xl max-h-[75vh] flex flex-col border shadow-xl"
-      style="
-        background-color: var(--color-panel);
-        border-color: var(--color-border);
-        border-radius: var(--radius-lg);
-      "
+      class="relative w-full max-w-2xl max-h-[75vh] flex flex-col border border-neutral-5 rounded-lg bg-panel shadow-xl"
     >
       <div
-        class="flex items-center justify-between px-6 py-4 border-b"
-        style="border-color: var(--color-border)"
+        class="flex items-center justify-between px-6 py-4 border-b border-neutral-5"
       >
-        <h2
-          class="text-[1.1rem] font-semibold"
-          style="color: var(--color-text)"
-        >
+        <h2 class="text-[1.1rem] font-semibold text-neutral-10">
           Provider Settings
         </h2>
         <button
-          class="px-2 py-1 text-[1.1rem]"
-          style="color: var(--color-muted)"
+          class="control-ghost control-focus px-2 py-1 text-[1.1rem]"
           @click="$emit('close')"
         >
           ✕
@@ -38,8 +24,7 @@
       <div class="flex-1 overflow-y-auto p-6 space-y-4">
         <div
           v-if="providers.length === 0 && !loading"
-          class="text-center py-8"
-          style="color: var(--color-muted)"
+          class="text-center py-8 text-neutral-10/60"
         >
           No providers found. Run <code>seed</code> to load built-in providers.
         </div>
@@ -47,38 +32,25 @@
         <div
           v-for="provider in providers"
           :key="provider.id"
-          class="border p-4"
-          style="
-            border-color: var(--color-border);
-            border-radius: var(--radius-md);
-          "
+          class="border border-neutral-5 rounded-md p-4"
         >
           <div class="flex items-center justify-between mb-3">
             <div class="flex items-center gap-2">
+              <span class="text-[1rem] font-semibold text-neutral-10">{{
+                provider.name
+              }}</span>
               <span
-                class="text-[1rem] font-semibold"
-                style="color: var(--color-text)"
-                >{{ provider.name }}</span
-              >
-              <span
-                class="text-[0.875rem] px-1.5 py-0.5 font-medium"
-                :style="{
-                  backgroundColor: provider.api_key_set
-                    ? 'var(--color-success)'
-                    : 'var(--color-warning)',
-                  color: '#fff',
-                  borderRadius: 'var(--radius-sm)',
-                }"
+                class="rounded-sm px-1.5 py-0.5 text-[0.875rem] font-medium"
+                :class="
+                  provider.api_key_set
+                    ? 'bg-success-7 text-success-contrast'
+                    : 'bg-warning-7 text-warning-contrast'
+                "
               >
                 {{ provider.api_key_set ? "Key set" : "No key" }}
               </span>
               <span
-                class="text-[0.875rem] px-1.5 py-0.5 font-medium"
-                style="
-                  background-color: var(--color-surface);
-                  color: var(--color-muted);
-                  border-radius: var(--radius-sm);
-                "
+                class="rounded-sm bg-surface px-1.5 py-0.5 text-[0.875rem] font-medium text-neutral-10/60"
               >
                 {{ provider.adapter_type }}
               </span>
@@ -93,13 +65,7 @@
                   ? 'Key configured — enter new to replace'
                   : 'Enter API key...'
               "
-              class="flex-1 px-3 py-1.5 text-[0.875rem] border outline-none"
-              style="
-                background-color: var(--color-bg);
-                border-color: var(--color-border);
-                border-radius: var(--radius-md);
-                color: var(--color-text);
-              "
+              class="control-surface control-focus flex-1 bg-background px-3 py-1.5 text-[0.875rem]"
               :value="apiKeyInputs[provider.id] ?? ''"
               @input="
                 (e: Event) => {
@@ -110,23 +76,13 @@
               "
             />
             <button
-              class="px-2 py-1.5 text-[0.875rem] font-medium border"
-              style="
-                border-color: var(--color-border);
-                border-radius: var(--radius-md);
-                color: var(--color-muted);
-              "
+              class="control-ghost control-focus border border-neutral-5 px-2 py-1.5 text-[0.875rem] font-medium"
               @click="showKeys[provider.id] = !showKeys[provider.id]"
             >
               {{ showKeys[provider.id] ? "Hide" : "Show" }}
             </button>
             <button
-              class="px-3 py-1.5 text-[0.875rem] font-medium transition-colors disabled:opacity-50"
-              style="
-                background-color: var(--color-accent-9);
-                color: var(--color-accent-contrast);
-                border-radius: var(--radius-md);
-              "
+              class="control-solid control-focus px-3 py-1.5 text-[0.875rem] font-medium transition-colors disabled:opacity-50"
               :disabled="!apiKeyInputs[provider.id]?.trim()"
               @click="handleSaveKey(provider.id)"
             >
@@ -138,14 +94,13 @@
             <div
               v-for="model in provider.models"
               :key="model.model_id"
-              class="flex items-center justify-between px-3 py-1.5 text-[0.875rem]"
-              style="border-radius: var(--radius-sm)"
+              class="flex items-center justify-between rounded-sm px-3 py-1.5 text-[0.875rem]"
             >
               <div class="flex items-center gap-2">
                 <input
                   type="checkbox"
                   :checked="model.is_enabled"
-                  class="accent-[var(--color-accent-9)]"
+                  class="accent-accent-7"
                   @change="
                     handleToggleModel(
                       provider.id,
@@ -154,14 +109,13 @@
                     )
                   "
                 />
-                <span style="color: var(--color-text)">{{ model.name }}</span>
-                <span style="color: var(--color-muted); font-size: 0.875rem">{{
+                <span class="text-neutral-10">{{ model.name }}</span>
+                <span class="text-[0.875rem] text-neutral-10/60">{{
                   model.model_id
                 }}</span>
               </div>
               <div
-                class="flex items-center gap-2 text-[0.875rem]"
-                style="color: var(--color-muted)"
+                class="flex items-center gap-2 text-[0.875rem] text-neutral-10/60"
               >
                 <span v-if="model.limit_context"
                   >{{ formatTokens(model.limit_context) }} ctx</span

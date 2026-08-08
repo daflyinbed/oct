@@ -1,22 +1,12 @@
 <template>
-  <main
-    class="flex-1 flex flex-col min-w-0"
-    style="background-color: var(--color-bg)"
-  >
+  <main class="flex-1 flex flex-col min-w-0 bg-background">
     <div
-      class="flex items-center justify-between px-4 py-2 border-b"
-      style="border-color: var(--color-border)"
+      class="flex items-center justify-between px-4 py-2 border-b border-neutral-5"
     >
       <div class="flex items-center gap-2">
         <select
           :value="selectedProviderId ?? ''"
-          class="px-2 py-1 text-[0.875rem] border outline-none"
-          style="
-            background-color: var(--color-surface);
-            border-color: var(--color-border);
-            border-radius: var(--radius-md);
-            color: var(--color-text);
-          "
+          class="control-surface control-focus px-2 py-1 text-[0.875rem]"
           @change="
             (e: Event) => {
               const v = (e.target as HTMLSelectElement).value;
@@ -31,13 +21,7 @@
         </select>
         <select
           :value="selectedModelId ?? ''"
-          class="px-2 py-1 text-[0.875rem] border outline-none"
-          style="
-            background-color: var(--color-surface);
-            border-color: var(--color-border);
-            border-radius: var(--radius-md);
-            color: var(--color-text);
-          "
+          class="control-surface control-focus px-2 py-1 text-[0.875rem]"
           @change="
             (e: Event) => {
               const v = (e.target as HTMLSelectElement).value;
@@ -56,8 +40,7 @@
         </select>
       </div>
       <button
-        class="px-2 py-1 text-[0.875rem] font-medium"
-        style="color: var(--color-accent-9)"
+        class="control-ghost control-focus px-2 py-1 text-[0.875rem] font-medium text-accent-10"
         @click="$emit('openSettings')"
       >
         ⚙ Providers
@@ -69,8 +52,7 @@
         <ChatMessage v-for="msg in messages" :key="msg.id" :message="msg" />
         <div
           v-if="messages.length === 0"
-          class="text-center py-20"
-          style="color: var(--color-muted)"
+          class="text-center py-20 text-neutral-10/60"
         >
           <p class="text-[1.5rem] font-medium mb-2">Start a conversation</p>
           <p class="text-[1rem]">Select a chat or create a new one</p>
@@ -78,7 +60,7 @@
       </div>
     </div>
 
-    <div class="p-4 border-t" style="border-color: var(--color-border)">
+    <div class="p-4 border-t border-neutral-5">
       <div class="max-w-[75ch] mx-auto relative">
         <textarea
           v-model="inputMessage"
@@ -89,33 +71,12 @@
               : 'Select a conversation first...'
           "
           :disabled="!conversationId || sending"
-          class="w-full resize-none px-4 py-3 pr-12 text-[1rem] outline-none border"
-          style="
-            background-color: var(--color-surface);
-            border-color: var(--color-border);
-            border-radius: var(--radius-md);
-            color: var(--color-text);
-          "
+          class="control-surface control-focus w-full resize-none px-4 py-3 pr-12 text-[1rem]"
           @keydown.enter.prevent="handleSend"
         />
         <button
-          class="absolute right-3 bottom-3 px-3 py-1.5 text-[0.9rem] font-medium transition-colors disabled:opacity-50"
-          style="
-            background-color: var(--color-accent-9);
-            color: var(--color-accent-contrast);
-            border-radius: var(--radius-md);
-          "
+          class="control-solid control-focus absolute right-3 bottom-3 px-3 py-1.5 text-[0.9rem] font-medium transition-colors disabled:opacity-50"
           :disabled="!conversationId || sending"
-          @mouseenter="
-            (e: MouseEvent) =>
-              ((e.currentTarget as HTMLElement).style.backgroundColor =
-                'var(--color-accent-7)')
-          "
-          @mouseleave="
-            (e: MouseEvent) =>
-              ((e.currentTarget as HTMLElement).style.backgroundColor =
-                'var(--color-accent-9)')
-          "
           @click="handleSend"
         >
           {{ sending ? "..." : "Send" }}

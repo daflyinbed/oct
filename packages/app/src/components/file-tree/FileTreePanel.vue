@@ -1,32 +1,14 @@
 <template>
   <aside
     v-if="visible"
-    class="flex-shrink-0 w-[260px] flex flex-col border-l"
-    style="
-      border-color: var(--color-border);
-      background-color: var(--color-panel);
-    "
+    class="flex-shrink-0 w-[260px] flex flex-col border-l border-neutral-5 bg-panel"
   >
     <div
-      class="flex items-center justify-between px-4 py-3 border-b"
-      style="border-color: var(--color-border)"
+      class="flex items-center justify-between px-4 py-3 border-b border-neutral-5"
     >
-      <span class="text-[1rem] font-medium" style="color: var(--color-text)"
-        >Files</span
-      >
+      <span class="text-[1rem] font-medium text-neutral-10">Files</span>
       <button
-        class="p-1 text-[0.875rem]"
-        style="color: var(--color-muted); border-radius: var(--radius-sm)"
-        @mouseenter="
-          (e: MouseEvent) =>
-            ((e.currentTarget as HTMLElement).style.backgroundColor =
-              'var(--color-surface)')
-        "
-        @mouseleave="
-          (e: MouseEvent) =>
-            ((e.currentTarget as HTMLElement).style.backgroundColor =
-              'transparent')
-        "
+        class="control-ghost control-focus p-1 text-[0.875rem] rounded-sm"
         @click="$emit('close')"
       >
         ✕
@@ -37,42 +19,18 @@
       <div v-for="item in files" :key="item.path" class="mb-1">
         <button
           v-if="item.type === 'folder'"
-          class="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[0.9rem] transition-colors"
-          style="border-radius: var(--radius-md); color: var(--color-text)"
-          @mouseenter="
-            (e: MouseEvent) =>
-              ((e.currentTarget as HTMLElement).style.backgroundColor =
-                'var(--color-surface)')
-          "
-          @mouseleave="
-            (e: MouseEvent) =>
-              ((e.currentTarget as HTMLElement).style.backgroundColor =
-                'transparent')
-          "
+          class="control-ghost control-focus w-full flex items-center gap-2 px-3 py-1.5 text-left text-[0.9rem] transition-colors"
           @click="$emit('toggle-folder', item.path)"
         >
-          <span class="text-[0.875rem]" style="color: var(--color-muted)"
-            >📁</span
-          >
+          <span class="text-[0.875rem] text-neutral-10/60">📁</span>
           <span class="truncate">{{ item.name }}</span>
         </button>
 
         <button
           v-else
-          class="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[0.9rem] transition-colors"
-          style="border-radius: var(--radius-md); color: var(--color-text)"
-          @mouseenter="
-            (e: MouseEvent) =>
-              ((e.currentTarget as HTMLElement).style.backgroundColor =
-                'var(--color-surface)')
-          "
-          @mouseleave="
-            (e: MouseEvent) =>
-              ((e.currentTarget as HTMLElement).style.backgroundColor =
-                'transparent')
-          "
+          class="control-ghost control-focus w-full flex items-center gap-2 px-3 py-1.5 text-left text-[0.9rem] transition-colors"
         >
-          <span class="text-[0.875rem]" style="color: var(--color-muted)">
+          <span class="text-[0.875rem] text-neutral-10/60">
             {{
               item.status === "modified"
                 ? "~"
@@ -85,14 +43,14 @@
           </span>
           <span
             class="truncate"
-            :style="
+            :class="
               item.status === 'added'
-                ? { color: 'var(--color-success)' }
+                ? 'text-success-10'
                 : item.status === 'deleted'
-                  ? { color: 'var(--color-error)' }
+                  ? 'text-danger-10'
                   : item.status === 'modified'
-                    ? { color: 'var(--color-warning)' }
-                    : {}
+                    ? 'text-warning-10'
+                    : 'text-neutral-10'
             "
           >
             {{ item.name }}
