@@ -1,8 +1,6 @@
 <template>
-  <main class="flex-1 flex flex-col min-w-0 bg-background">
-    <div
-      class="flex items-center justify-between px-4 py-2 border-b border-neutral-5"
-    >
+  <main class="workspace-panel min-w-0 flex-1 bg-background">
+    <header class="workspace-panel-header justify-between border-b border-neutral-5">
       <div class="flex items-center gap-2">
         <select
           :value="selectedProviderId ?? ''"
@@ -45,9 +43,9 @@
       >
         ⚙ Providers
       </button>
-    </div>
+    </header>
 
-    <div ref="scrollContainer" class="flex-1 overflow-y-auto p-6">
+    <div ref="scrollContainer" class="workspace-panel-body p-6">
       <div class="max-w-[75ch] mx-auto space-y-6">
         <ChatMessage v-for="msg in messages" :key="msg.id" :message="msg" />
         <div

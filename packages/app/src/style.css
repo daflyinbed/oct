@@ -79,19 +79,11 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
-*,
-::before,
-::after {
-  box-sizing: border-box;
-  border-style: solid;
-  border-width: 0;
-}
-
+/* Element resets beyond @unocss/reset/tailwind.css live here. */
 html,
 body,
 #app {
   height: 100%;
-  margin: 0;
 }
 
 body {
@@ -99,17 +91,66 @@ body {
   line-height: 1.6;
 }
 
-p {
-  margin: 0;
+/* Workspace layout primitives keep every sibling panel on the same grid. */
+.workspace-shell {
+  display: flex;
+  height: 100%;
+  min-width: 0;
+  flex-direction: column;
+  overflow: hidden;
 }
 
-button {
-  margin: 0;
-  border: 0;
-  padding: 0;
-  color: inherit;
-  font: inherit;
-  background: transparent;
+.workspace-panels {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.workspace-panel {
+  display: flex;
+  min-height: 0;
+  flex-shrink: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.workspace-panel-header {
+  display: flex;
+  height: 3.5rem;
+  min-height: 3.5rem;
+  align-items: center;
+  padding-inline: 1rem;
+}
+
+.workspace-panel-body {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+}
+
+.workspace-resize-handle {
+  position: relative;
+  z-index: 1;
+  width: 1px;
+  flex-shrink: 0;
+  background: var(--oct-color-neutral-5);
+  transition: background-color 120ms ease;
+}
+
+.workspace-resize-handle::after {
+  position: absolute;
+  inset-block: 0;
+  left: 50%;
+  width: 9px;
+  content: "";
+  transform: translateX(-50%);
+}
+
+.workspace-resize-handle[data-state="hover"],
+.workspace-resize-handle[data-state="drag"] {
+  background: var(--oct-color-accent-7);
 }
 
 :focus-visible {

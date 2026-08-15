@@ -1,6 +1,7 @@
 pub mod chat;
 pub mod conversations;
 pub mod error;
+pub mod files;
 pub mod projects;
 pub mod providers;
 
@@ -41,6 +42,8 @@ pub struct AppState {
         crate::db::models::CreateModelRequest,
         crate::db::models::UpdateModelRequest,
         chat::SendMessageRequest,
+        files::FileEntry,
+        files::FileEntryKind,
         providers::ProviderResponse,
         providers::ModelSummary,
     ))
@@ -78,6 +81,8 @@ fn api_routes(state: AppState) -> OpenApiRouter<AppState> {
         .routes(utoipa_axum::routes!(projects::get_project))
         .routes(utoipa_axum::routes!(projects::update_project))
         .routes(utoipa_axum::routes!(projects::delete_project))
+        // Project files (directory tree)
+        .routes(utoipa_axum::routes!(files::list_project_files))
         // Conversations
         .routes(utoipa_axum::routes!(conversations::list_conversations))
         .routes(utoipa_axum::routes!(conversations::create_conversation))

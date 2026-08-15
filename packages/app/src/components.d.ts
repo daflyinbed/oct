@@ -16,6 +16,7 @@ declare module 'vue' {
     ChatPanel: typeof import('./components/chat/ChatPanel.vue')['default']
     DiffPanel: typeof import('./components/diff/DiffPanel.vue')['default']
     FileTreePanel: typeof import('./components/file-tree/FileTreePanel.vue')['default']
+    ILucideChevronRight: typeof import('~icons/lucide/chevron-right')['default']
     ILucideFiles: typeof import('~icons/lucide/files')['default']
     ILucideGitCompare: typeof import('~icons/lucide/git-compare')['default']
     ILucideMessageSquare: typeof import('~icons/lucide/message-square')['default']

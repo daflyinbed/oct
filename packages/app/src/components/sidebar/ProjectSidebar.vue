@@ -1,20 +1,18 @@
 <template>
-  <aside
-    class="flex-shrink-0 w-[260px] flex flex-col border-r border-neutral-5 bg-panel"
-  >
-    <div class="p-4 border-b border-neutral-5">
-      <div class="flex items-center justify-between">
-        <span class="text-[1rem] font-semibold text-neutral-10">Projects</span>
-        <button
-          class="control-ghost control-focus px-2 py-1 text-[0.875rem] font-medium text-accent-10"
-          @click="$emit('create-project')"
-        >
-          + New
-        </button>
-      </div>
-    </div>
+  <aside class="workspace-panel h-full w-full bg-panel">
+    <header
+      class="workspace-panel-header justify-between border-b border-neutral-5"
+    >
+      <span class="text-[1rem] font-semibold text-neutral-10">Projects</span>
+      <button
+        class="control-ghost control-focus px-2 py-1 text-[0.875rem] font-medium text-accent-10"
+        @click="$emit('create-project')"
+      >
+        + New
+      </button>
+    </header>
 
-    <div class="flex-1 overflow-y-auto p-2">
+    <div class="workspace-panel-body p-2">
       <div v-for="project in projects" :key="project.id" class="mb-2">
         <button
           class="control-ghost control-focus w-full flex items-center gap-2 px-3 py-2 text-left text-[1rem] font-medium transition-colors"

@@ -1,10 +1,7 @@
 <template>
-  <aside
-    v-if="visible"
-    class="flex-shrink-0 w-[420px] flex flex-col border-l border-neutral-5 bg-panel"
-  >
-    <div
-      class="flex items-center justify-between px-4 py-3 border-b border-neutral-5"
+  <aside v-if="visible" class="workspace-panel h-full w-full bg-panel">
+    <header
+      class="workspace-panel-header justify-between border-b border-neutral-5"
     >
       <div class="flex gap-1">
         <button
@@ -23,9 +20,9 @@
       >
         ✕
       </button>
-    </div>
+    </header>
 
-    <div class="flex-1 overflow-auto p-4">
+    <div class="workspace-panel-body p-4">
       <div v-if="activeTab === 'diff'" class="space-y-4">
         <div
           v-for="file in diffFiles"

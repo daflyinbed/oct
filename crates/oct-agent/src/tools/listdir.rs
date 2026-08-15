@@ -24,7 +24,7 @@ struct ListDirArgs {
     depth: Option<usize>,
 }
 
-fn should_ignore(name: &str) -> bool {
+pub(crate) fn should_ignore(name: &str) -> bool {
     matches!(
         name,
         ".git" | "node_modules" | "target" | "__pycache__" | ".DS_Store" | "dist" | "build"

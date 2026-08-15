@@ -63,7 +63,7 @@ pnpm -r exec eslint .                 # ESLint with @xwbx/eslint-config flat con
   - **Conversations**: CRUD (list, create, get, update, delete). Conversations belong to a project.
   - **Chat**: Send message (SSE streaming), get messages.
 - **AppState**: Holds `SqlitePool`, `Arc<ProviderRegistry>`, and `Arc<DashMap<String, RunHandle>>` for tracking active agent sessions.
-- **Frontend** (`packages/app`): Vue 3 + Vite 8 + Tailwind v4. Uses `openapi-fetch` to consume the generated OpenAPI schema. `@vueuse/core` for composables. `unplugin-vue-components` for auto-imports. Key directories:
+- **Frontend** (`packages/app`): Vue 3 + Vite 8 + UnoCSS (OKLCH tokens). Uses `openapi-fetch` to consume the generated OpenAPI schema. `@vueuse/core` for composables. `unplugin-vue-components` for auto-imports. Key directories:
   - `src/composables/`: `useChat.ts`, `useProjects.ts`, `useProviders.ts`
   - `src/components/chat/`, `diff/`, `file-tree/`, `settings/`, `sidebar/`
   - `src/api/`: `client.ts` (openapi-fetch), `schema.d.ts` (auto-generated)
@@ -88,3 +88,4 @@ pnpm -r exec eslint .                 # ESLint with @xwbx/eslint-config flat con
 - **Comments**: 除非用户明确要求，否则不要删除代码中的注释；但可以更新已有注释以保持准确性
 - **Rust edition 2024**: Both crates use `edition = "2024"`
 - **Path alias**: Frontend uses `@` → `packages/app/src` (Vite resolve alias)
+- **UI primitives**: 前端交互组件（dialog、popover、dropdown、splitter 等）优先使用 [reka-ui](https://reka-ui.com/)，不要手写浮层/焦点管理。文档入口：<https://reka-ui.com/llms.txt>（组件详情在 `/docs/components/<name>.md`）。已在用：`App.vue` 的 Splitter、`ProviderSettings.vue` 的 Dialog。

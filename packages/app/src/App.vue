@@ -1,40 +1,92 @@
 <template>
-  <div class="h-full flex flex-col overflow-hidden">
-    <div class="flex-1 flex overflow-hidden">
-      <ProjectSidebar
+  <div class="workspace-shell">
+    <SplitterGroup
+      v-if="hasVisiblePanel"
+      class="workspace-panels"
+      direction="horizontal"
+      auto-save-id="oct-workspace-layout"
+    >
+      <SplitterPanel
         v-if="showSidebar"
-        :projects="projects"
-        :conversations="conversations"
-        :selected-conversation-id="selectedConversationId"
-        @select-conversation="handleSelectConversation"
-        @create-project="handleCreateProject"
-        @create-conversation="handleCreateConversation"
+        id="project-sidebar-panel"
+        :order="1"
+        :default-size="20"
+        :min-size="12"
+        :max-size="33"
+      >
+        <ProjectSidebar
+          :projects="projects"
+          :conversations="conversations"
+          :selected-conversation-id="selectedConversationId"
+          @select-conversation="handleSelectConversation"
+          @create-project="handleCreateProject"
+          @create-conversation="handleCreateConversation"
+        />
+      </SplitterPanel>
+      <SplitterResizeHandle
+        v-if="showSidebar && hasPanelAfterSidebar"
+        id="project-sidebar-resize-handle"
+        class="workspace-resize-handle"
       />
 
-      <RouterView v-if="showChat" />
+      <SplitterPanel
+        v-if="showChat"
+        id="chat-panel"
+        :order="2"
+        :default-size="40"
+        :min-size="25"
+      >
+        <RouterView />
+      </SplitterPanel>
+      <SplitterResizeHandle
+        v-if="showChat && hasPanelAfterChat"
+        id="chat-resize-handle"
+        class="workspace-resize-handle"
+      />
 
-      <template v-if="!showSidebar && !showChat">
-        <div class="flex-1 flex items-center justify-center bg-background">
-          <p class="text-neutral-10/60">
-            All panels are hidden. Use the bottom bar to show them.
-          </p>
-        </div>
-      </template>
-
-      <DiffPanel
+      <SplitterPanel
         v-if="showDiffPanel"
-        :visible="showDiffPanel"
-        :diff-files="diffFiles"
-        @close="showDiffPanel = false"
+        id="diff-panel"
+        :order="3"
+        :default-size="25"
+        :min-size="15"
+        :max-size="55"
+      >
+        <DiffPanel
+          :visible="showDiffPanel"
+          :diff-files="diffFiles"
+          @close="showDiffPanel = false"
+        />
+      </SplitterPanel>
+      <SplitterResizeHandle
+        v-if="showDiffPanel && showFileTree"
+        id="diff-resize-handle"
+        class="workspace-resize-handle"
       />
 
-      <FileTreePanel
+      <SplitterPanel
         v-if="showFileTree"
-        :visible="showFileTree"
-        :files="fileTree"
-        @close="showFileTree = false"
-        @toggle-folder="handleToggleFolder"
-      />
+        id="file-tree-panel"
+        :order="4"
+        :default-size="15"
+        :min-size="12"
+        :max-size="35"
+      >
+        <FileTreePanel
+          :visible="showFileTree"
+          :project-id="activeProjectId"
+          @close="showFileTree = false"
+        />
+      </SplitterPanel>
+    </SplitterGroup>
+
+    <div
+      v-else
+      class="workspace-panels items-center justify-center bg-background"
+    >
+      <p class="text-neutral-10/60">
+        All panels are hidden. Use the bottom bar to show them.
+      </p>
     </div>
 
     <BottomBar
@@ -53,6 +105,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
+import { SplitterGroup, SplitterPanel, SplitterResizeHandle } from "reka-ui";
 import BottomBar from "@/components/BottomBar.vue";
 import DiffPanel from "@/components/diff/DiffPanel.vue";
 import FileTreePanel from "@/components/file-tree/FileTreePanel.vue";
@@ -75,10 +128,35 @@ const selectedConversationId = computed(() => {
   return id ?? null;
 });
 
+const activeProjectId = computed(() => {
+  const conversationId = selectedConversationId.value;
+  if (!conversationId) return null;
+  for (const [projectId, list] of conversations.value) {
+    if (list.some((conversation) => conversation.id === conversationId)) {
+      return projectId;
+    }
+  }
+  return null;
+});
+
 const showSidebar = ref(true);
 const showChat = ref(true);
 const showDiffPanel = ref(true);
 const showFileTree = ref(true);
+
+const hasVisiblePanel = computed(
+  () =>
+    showSidebar.value ||
+    showChat.value ||
+    showDiffPanel.value ||
+    showFileTree.value,
+);
+const hasPanelAfterSidebar = computed(
+  () => showChat.value || showDiffPanel.value || showFileTree.value,
+);
+const hasPanelAfterChat = computed(
+  () => showDiffPanel.value || showFileTree.value,
+);
 
 function handleSelectConversation(conversationId: string, _projectId: string) {
   router.push(`/conversation/${conversationId}`);
@@ -97,10 +175,6 @@ async function handleCreateConversation(projectId: string) {
   if (conv) {
     router.push(`/conversation/${conv.id}`);
   }
-}
-
-function handleToggleFolder(path: string) {
-  console.log("toggle folder", path);
 }
 
 const diffFiles = ref([
@@ -126,41 +200,6 @@ const diffFiles = ref([
       { num: 3, type: "add", content: "    pub messages: Vec<Message>," },
       { num: 4, type: "add", content: "}" },
     ],
-  },
-]);
-
-const fileTree = ref([
-  { type: "folder" as const, name: "crates", path: "crates" },
-  {
-    type: "file" as const,
-    name: "Cargo.toml",
-    path: "Cargo.toml",
-    status: "unchanged",
-  },
-  {
-    type: "file" as const,
-    name: "README.md",
-    path: "README.md",
-    status: "modified",
-  },
-  { type: "folder" as const, name: "migrations", path: "migrations" },
-  {
-    type: "file" as const,
-    name: ".gitignore",
-    path: ".gitignore",
-    status: "unchanged",
-  },
-  {
-    type: "file" as const,
-    name: "package.json",
-    path: "package.json",
-    status: "added",
-  },
-  {
-    type: "file" as const,
-    name: "old-config.yml",
-    path: "old-config.yml",
-    status: "deleted",
   },
 ]);
 

@@ -2,7 +2,7 @@ import {
   defineConfig,
   presetAttributify,
   presetIcons,
-  presetUno,
+  presetWind3,
 } from "unocss";
 
 // 颜色编号表示组件角色，而不是可随意取用的明暗色阶：
@@ -32,7 +32,7 @@ const colorProperties = ["bg", "text", "border", "fill", "stroke"] as const;
 
 export default defineConfig({
   presets: [
-    presetUno(),
+    presetWind3(),
     presetAttributify(),
     presetIcons({ scale: 1.2, warn: true }),
   ],

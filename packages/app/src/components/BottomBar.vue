@@ -1,5 +1,5 @@
 <template>
-  <div
+  <footer
     class="h-9 flex items-center border-t border-neutral-5 bg-panel select-none"
   >
     <!-- Left zone: aligns with ProjectSidebar -->
@@ -54,7 +54,7 @@
         <span class="hidden sm:inline">Files</span>
       </button>
     </div>
-  </div>
+  </footer>
 </template>
 
 <script setup lang="ts">

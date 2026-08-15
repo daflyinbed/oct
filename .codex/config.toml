@@ -1,0 +1,3 @@
+[mcp_servers.chrome-devtools]
+command = "vpx"
+args = ["chrome-devtools-mcp@latest", "--autoConnect"]
