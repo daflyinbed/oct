@@ -1,0 +1,158 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, provider_id, model_id, name, family, reasoning, tool_call, attachment, structured_output, temperature, knowledge, release_date, open_weights, cost_input, cost_output, cost_cache_read, cost_cache_write, limit_context, limit_output, modalities_input, modalities_output, source, is_enabled, created_at FROM models WHERE is_enabled = true ORDER BY provider_id, created_at ASC",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "provider_id",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "model_id",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "name",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "family",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "reasoning",
+        "ordinal": 5,
+        "type_info": "Bool"
+      },
+      {
+        "name": "tool_call",
+        "ordinal": 6,
+        "type_info": "Bool"
+      },
+      {
+        "name": "attachment",
+        "ordinal": 7,
+        "type_info": "Bool"
+      },
+      {
+        "name": "structured_output",
+        "ordinal": 8,
+        "type_info": "Bool"
+      },
+      {
+        "name": "temperature",
+        "ordinal": 9,
+        "type_info": "Bool"
+      },
+      {
+        "name": "knowledge",
+        "ordinal": 10,
+        "type_info": "Text"
+      },
+      {
+        "name": "release_date",
+        "ordinal": 11,
+        "type_info": "Text"
+      },
+      {
+        "name": "open_weights",
+        "ordinal": 12,
+        "type_info": "Bool"
+      },
+      {
+        "name": "cost_input",
+        "ordinal": 13,
+        "type_info": "Float"
+      },
+      {
+        "name": "cost_output",
+        "ordinal": 14,
+        "type_info": "Float"
+      },
+      {
+        "name": "cost_cache_read",
+        "ordinal": 15,
+        "type_info": "Float"
+      },
+      {
+        "name": "cost_cache_write",
+        "ordinal": 16,
+        "type_info": "Float"
+      },
+      {
+        "name": "limit_context",
+        "ordinal": 17,
+        "type_info": "Integer"
+      },
+      {
+        "name": "limit_output",
+        "ordinal": 18,
+        "type_info": "Integer"
+      },
+      {
+        "name": "modalities_input",
+        "ordinal": 19,
+        "type_info": "Text"
+      },
+      {
+        "name": "modalities_output",
+        "ordinal": 20,
+        "type_info": "Text"
+      },
+      {
+        "name": "source",
+        "ordinal": 21,
+        "type_info": "Text"
+      },
+      {
+        "name": "is_enabled",
+        "ordinal": 22,
+        "type_info": "Bool"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 23,
+        "type_info": "Datetime"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "b74fa0d7fb6d47e25d7b19daefc15ab00dd24a6d3a99c6ba73efa9cf6cc1cfee"
+}

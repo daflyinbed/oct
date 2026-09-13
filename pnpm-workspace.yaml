@@ -1,0 +1,6 @@
+allowBuilds:
+  esbuild: true
+  vue-demi: true
+shellEmulator: true
+packages:
+  - packages/app

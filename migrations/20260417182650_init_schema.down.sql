@@ -1,0 +1,5 @@
+DROP TABLE IF EXISTS messages;
+DROP TABLE IF EXISTS conversations;
+DROP TABLE IF EXISTS projects;
+DROP TABLE IF EXISTS models;
+DROP TABLE IF EXISTS providers;

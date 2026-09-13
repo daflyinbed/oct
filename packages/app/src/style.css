@@ -1,0 +1,170 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap");
+
+:root {
+  /* 独立背景层级 */
+  --oct-color-background: oklch(98% 0.004 85);
+  --oct-color-panel: oklch(96% 0.005 85);
+  --oct-color-surface: oklch(94% 0.006 85);
+  --oct-color-overlay: oklch(14% 0.01 85 / 46%);
+
+  /* Accent：Oct 原有的低饱和石板蓝 */
+  --oct-color-accent-1: oklch(96% 0.018 270);
+  --oct-color-accent-2: oklch(92% 0.035 270);
+  --oct-color-accent-3: oklch(86% 0.06 270);
+  --oct-color-accent-4: oklch(78% 0.09 270);
+  --oct-color-accent-5: oklch(68% 0.12 270);
+  --oct-color-accent-6: oklch(56% 0.14 270);
+  --oct-color-accent-7: oklch(44% 0.15 270);
+  --oct-color-accent-8: oklch(40% 0.15 270);
+  --oct-color-accent-9: oklch(35% 0.14 270);
+  --oct-color-accent-10: oklch(39% 0.15 270);
+  --oct-color-accent-contrast: oklch(98% 0.004 85);
+
+  /* Neutral：保留现有暖纸色底 */
+  --oct-color-neutral-1: oklch(96% 0.005 85);
+  --oct-color-neutral-2: oklch(94% 0.006 85);
+  --oct-color-neutral-3: oklch(91% 0.007 85);
+  --oct-color-neutral-4: oklch(88% 0.008 85);
+  --oct-color-neutral-5: oklch(84% 0.008 85);
+  --oct-color-neutral-6: oklch(75% 0.01 85);
+  --oct-color-neutral-7: oklch(60% 0.012 85);
+  --oct-color-neutral-8: oklch(43% 0.012 85);
+  --oct-color-neutral-9: oklch(25% 0.012 85);
+  --oct-color-neutral-10: oklch(14% 0.01 85);
+  --oct-color-neutral-contrast: oklch(98% 0.004 85);
+
+  --oct-color-danger-1: oklch(96% 0.02 25);
+  --oct-color-danger-2: oklch(92% 0.04 25);
+  --oct-color-danger-3: oklch(87% 0.07 25);
+  --oct-color-danger-4: oklch(79% 0.11 25);
+  --oct-color-danger-5: oklch(69% 0.15 25);
+  --oct-color-danger-6: oklch(59% 0.18 25);
+  --oct-color-danger-7: oklch(50% 0.18 25);
+  --oct-color-danger-8: oklch(45% 0.17 25);
+  --oct-color-danger-9: oklch(39% 0.15 25);
+  --oct-color-danger-10: oklch(43% 0.17 25);
+  --oct-color-danger-contrast: oklch(98% 0.004 85);
+
+  --oct-color-success-1: oklch(96% 0.025 155);
+  --oct-color-success-2: oklch(92% 0.045 155);
+  --oct-color-success-3: oklch(86% 0.075 155);
+  --oct-color-success-4: oklch(77% 0.11 155);
+  --oct-color-success-5: oklch(68% 0.14 155);
+  --oct-color-success-6: oklch(59% 0.15 155);
+  --oct-color-success-7: oklch(52% 0.15 155);
+  --oct-color-success-8: oklch(46% 0.14 155);
+  --oct-color-success-9: oklch(39% 0.12 155);
+  --oct-color-success-10: oklch(42% 0.13 155);
+  --oct-color-success-contrast: oklch(98% 0.004 85);
+
+  --oct-color-warning-1: oklch(97% 0.025 75);
+  --oct-color-warning-2: oklch(93% 0.05 75);
+  --oct-color-warning-3: oklch(87% 0.085 75);
+  --oct-color-warning-4: oklch(80% 0.12 75);
+  --oct-color-warning-5: oklch(72% 0.14 75);
+  --oct-color-warning-6: oklch(65% 0.15 75);
+  --oct-color-warning-7: oklch(60% 0.15 75);
+  --oct-color-warning-8: oklch(52% 0.14 75);
+  --oct-color-warning-9: oklch(44% 0.12 75);
+  --oct-color-warning-10: oklch(42% 0.11 75);
+  --oct-color-warning-contrast: oklch(14% 0.01 85);
+
+  color: var(--oct-color-neutral-10);
+  background: var(--oct-color-background);
+  font-family: "Inter", system-ui, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Element resets beyond @unocss/reset/tailwind.css live here. */
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+/* Workspace layout primitives keep every sibling panel on the same grid. */
+.workspace-shell {
+  display: flex;
+  height: 100%;
+  min-width: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.workspace-panels {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.workspace-panel {
+  display: flex;
+  min-height: 0;
+  flex-shrink: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.workspace-panel-header {
+  display: flex;
+  height: 3.5rem;
+  min-height: 3.5rem;
+  align-items: center;
+  padding-inline: 1rem;
+}
+
+.workspace-panel-body {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+}
+
+.workspace-resize-handle {
+  position: relative;
+  z-index: 1;
+  width: 1px;
+  flex-shrink: 0;
+  background: var(--oct-color-neutral-5);
+  transition: background-color 120ms ease;
+}
+
+.workspace-resize-handle::after {
+  position: absolute;
+  inset-block: 0;
+  left: 50%;
+  width: 9px;
+  content: "";
+  transform: translateX(-50%);
+}
+
+.workspace-resize-handle[data-state="hover"],
+.workspace-resize-handle[data-state="drag"] {
+  background: var(--oct-color-accent-7);
+}
+
+:focus-visible {
+  outline: 2px solid var(--oct-color-accent-7);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

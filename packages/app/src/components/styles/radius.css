@@ -1,0 +1,8 @@
+:root {
+  --radius-1: calc(3px * var(--scaling));
+  --radius-2: calc(4px * var(--scaling));
+  --radius-3: calc(6px * var(--scaling));
+  --radius-4: calc(8px * var(--scaling));
+  --radius-5: calc(12px * var(--scaling));
+  --radius-6: calc(16px * var(--scaling));
+}

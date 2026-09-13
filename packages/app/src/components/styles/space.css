@@ -1,0 +1,11 @@
+.radix-themes {
+  --space-1: calc(4px);
+  --space-2: calc(8px);
+  --space-3: calc(12px);
+  --space-4: calc(16px);
+  --space-5: calc(24px);
+  --space-6: calc(32px);
+  --space-7: calc(40px);
+  --space-8: calc(48px);
+  --space-9: calc(64px);
+}

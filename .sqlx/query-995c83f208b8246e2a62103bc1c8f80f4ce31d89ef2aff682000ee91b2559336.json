@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM models WHERE provider_id = $1 AND model_id = $2 AND source = 'custom'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "995c83f208b8246e2a62103bc1c8f80f4ce31d89ef2aff682000ee91b2559336"
+}
