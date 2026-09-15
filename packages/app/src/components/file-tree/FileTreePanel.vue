@@ -1,28 +1,31 @@
 <template>
   <aside v-if="visible" class="workspace-panel h-full w-full bg-panel">
     <header
-      class="workspace-panel-header justify-between border-b border-neutral-5"
+      class="workspace-panel-header justify-between border-b border-line-soft select-none"
     >
-      <span class="text-[1rem] font-medium text-neutral-10">Files</span>
+      <div
+        class="flex items-center gap-[7px] text-[12.5px] font-semibold text-neutral-10"
+      >
+        <i-lucide-files class="w-3.5 h-3.5 text-dim" />
+        Files
+      </div>
       <button
-        class="control-ghost control-focus p-1 text-[0.875rem] rounded-sm"
+        class="control-ghost control-focus w-[22px] h-[22px] rounded-md text-[12px]"
+        title="关闭"
         @click="$emit('close')"
       >
         ✕
       </button>
     </header>
 
-    <div class="workspace-panel-body p-2">
-      <p
-        v-if="!projectId"
-        class="px-3 py-2 text-[0.9rem] text-neutral-10/60"
-      >
+    <div class="workspace-panel-body p-1.5">
+      <p v-if="!projectId" class="px-2 py-1.5 text-[12.5px] text-faint">
         Select a conversation to browse its project files.
       </p>
-      <p v-else-if="loading" class="px-3 py-2 text-[0.9rem] text-neutral-10/60">
+      <p v-else-if="loading" class="px-2 py-1.5 text-[12.5px] text-faint">
         Loading…
       </p>
-      <p v-else-if="error" class="px-3 py-2 text-[0.9rem] text-danger-10">
+      <p v-else-if="error" class="px-2 py-1.5 text-[12.5px] text-danger-10">
         {{ error }}
       </p>
       <TreeRoot
@@ -37,7 +40,7 @@
       >
         <p
           v-if="flattenItems.length === 0"
-          class="px-3 py-2 text-[0.9rem] text-neutral-10/60"
+          class="px-2 py-1.5 text-[12.5px] text-faint"
         >
           Empty directory.
         </p>
@@ -46,16 +49,19 @@
           :key="item._id"
           v-bind="item.bind"
           v-slot="{ isExpanded, isSelected }"
-          class="cursor-pointer rounded-sm outline-none"
+          class="cursor-pointer rounded-[5px] outline-none"
         >
           <div
-            class="flex h-8 items-center gap-1 rounded-sm pr-2 text-[0.9rem] transition-colors"
+            class="flex h-6 items-center gap-1 rounded-[5px] pr-2 text-[12.5px] transition-colors"
             :class="
               isSelected
-                ? 'bg-accent-2 text-neutral-10'
-                : 'text-neutral-10 hover:bg-neutral-1'
+                ? 'bg-accent-3 text-neutral-10'
+                : 'text-dim hover:bg-neutral-1'
             "
             @mouseenter="hoveredPath = item.value.path"
+            @click="
+              item.value.kind === 'file' && $emit('open-file', item.value.path)
+            "
           >
             <!-- Per-level indent guide lanes, styled like pierre's file tree:
                  1px vertical lines that fade in on hover, ancestor column of
@@ -74,14 +80,14 @@
             </span>
             <i-lucide-chevron-right
               v-if="item.hasChildren"
-              class="h-4 w-4 shrink-0 text-neutral-10/60 transition-transform duration-150"
+              class="h-3.5 w-3.5 shrink-0 text-faint transition-transform duration-150"
               :class="isExpanded ? 'rotate-90' : ''"
             />
-            <span v-else class="w-4 shrink-0" />
+            <span v-else class="w-3.5 shrink-0" />
             <component
               :is="resolveFileIcon(item.value)"
               v-if="item.value.kind === 'file'"
-              class="h-4 w-4 shrink-0"
+              class="h-3.5 w-3.5 shrink-0"
             />
             <span class="truncate">{{ item.value.name }}</span>
           </div>
@@ -135,6 +141,7 @@ const props = defineProps<{
 
 defineEmits<{
   close: [];
+  "open-file": [path: string];
 }>();
 
 const { items, expanded, loading, error, loadRoot } = useFileTree();

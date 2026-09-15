@@ -1,73 +1,31 @@
 <template>
   <aside v-if="visible" class="workspace-panel h-full w-full bg-panel">
     <header
-      class="workspace-panel-header justify-between border-b border-neutral-5"
+      class="workspace-panel-header justify-between border-b border-line-soft select-none"
     >
-      <div class="flex gap-1">
-        <button
-          v-for="tab in tabs"
-          :key="tab.id"
-          class="control-ghost control-focus px-3 py-1.5 text-[0.9rem] font-medium transition-colors"
-          :class="activeTab === tab.id ? 'bg-neutral-2 text-neutral-10' : ''"
-          @click="activeTab = tab.id"
-        >
-          {{ tab.label }}
-        </button>
+      <div
+        class="flex items-center gap-[7px] text-[12.5px] font-semibold text-neutral-10"
+      >
+        <i-lucide-git-compare class="w-3.5 h-3.5 text-dim" />
+        Changes
       </div>
       <button
-        class="control-ghost control-focus p-1 text-[0.875rem] rounded-sm"
+        class="control-ghost control-focus w-[22px] h-[22px] rounded-md text-[12px]"
+        title="关闭"
         @click="$emit('close')"
       >
         ✕
       </button>
     </header>
 
-    <div class="workspace-panel-body p-4">
-      <div v-if="activeTab === 'diff'" class="space-y-4">
-        <div
-          v-for="file in diffFiles"
-          :key="file.path"
-          class="border border-neutral-5 rounded-md overflow-hidden"
-        >
-          <div
-            class="px-3 py-2 text-[0.875rem] font-medium border-b border-neutral-5 bg-surface text-neutral-10 font-mono"
-          >
-            {{ file.path }}
-          </div>
-          <div
-            class="p-3 text-[0.875rem] font-mono leading-relaxed text-neutral-10"
-          >
-            <div
-              v-for="(line, idx) in file.lines"
-              :key="idx"
-              class="px-2 py-0.5"
-              :class="
-                line.type === 'add'
-                  ? 'bg-success-1 text-success-10'
-                  : line.type === 'remove'
-                    ? 'bg-danger-1 text-danger-10'
-                    : ''
-              "
-            >
-              <span
-                class="inline-block w-8 text-right mr-3 text-neutral-10/60 select-none"
-                >{{ line.num }}</span
-              >
-              {{ line.content }}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div v-else class="text-[1rem] text-neutral-10/60">
-        Select a tab to view content
-      </div>
+    <div class="workspace-panel-body p-3">
+      <DiffFileCards :diff-files="diffFiles" />
     </div>
   </aside>
 </template>
 
 <script setup lang="ts">
-import { ref } from "vue";
+import DiffFileCards from "./DiffFileCards.vue";
 
 defineProps<{
   visible: boolean;
@@ -80,11 +38,4 @@ defineProps<{
 defineEmits<{
   close: [];
 }>();
-
-const tabs = [
-  { id: "diff", label: "Diff" },
-  { id: "files", label: "Files" },
-];
-
-const activeTab = ref("diff");
 </script>

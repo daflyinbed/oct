@@ -1,5 +1,13 @@
 <template>
   <div class="workspace-shell">
+    <TitleBar
+      :projects="projects"
+      :active-project-id="activeProjectId"
+      @select-project="handleSelectProject"
+      @create-project="handleCreateProject"
+      @open-settings="showSettings = true"
+    />
+
     <SplitterGroup
       v-if="hasVisiblePanel"
       class="workspace-panels"
@@ -19,7 +27,6 @@
           :conversations="conversations"
           :selected-conversation-id="selectedConversationId"
           @select-conversation="handleSelectConversation"
-          @create-project="handleCreateProject"
           @create-conversation="handleCreateConversation"
         />
       </SplitterPanel>
@@ -36,7 +43,33 @@
         :default-size="40"
         :min-size="25"
       >
-        <RouterView />
+        <div class="flex flex-col flex-1 min-h-0 min-w-0">
+          <WorkspaceTabBar
+            :tabs="displayTabs"
+            @select="activateTab"
+            @close="closeTab"
+            @tab-action="handleTabAction"
+          />
+          <div class="flex flex-col flex-1 min-h-0">
+            <!-- Chat 内容走路由（深链/侧栏入口共用）；其余标签类型直接切换渲染 -->
+            <div
+              v-show="!activeTab || activeTab.kind === 'chat'"
+              class="flex flex-col flex-1 min-h-0"
+            >
+              <RouterView />
+            </div>
+            <FileTabView
+              v-if="activeTab?.kind === 'file'"
+              :path="activeTab.payload ?? ''"
+            />
+            <DiffTabView
+              v-else-if="activeTab?.kind === 'diff'"
+              title="Working Tree"
+              :diff-files="diffFiles"
+            />
+            <GitGraphTabView v-else-if="activeTab?.kind === 'git-graph'" />
+          </div>
+        </div>
       </SplitterPanel>
       <SplitterResizeHandle
         v-if="showChat && hasPanelAfterChat"
@@ -76,6 +109,7 @@
           :visible="showFileTree"
           :project-id="activeProjectId"
           @close="showFileTree = false"
+          @open-file="handleOpenFile"
         />
       </SplitterPanel>
     </SplitterGroup>
@@ -84,7 +118,7 @@
       v-else
       class="workspace-panels items-center justify-center bg-background"
     >
-      <p class="text-neutral-10/60">
+      <p class="text-neutral-7">
         All panels are hidden. Use the bottom bar to show them.
       </p>
     </div>
@@ -99,18 +133,29 @@
       @toggle-diff="showDiffPanel = !showDiffPanel"
       @toggle-file-tree="showFileTree = !showFileTree"
     />
+
+    <SettingsModal :visible="showSettings" @close="showSettings = false" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { SplitterGroup, SplitterPanel, SplitterResizeHandle } from "reka-ui";
 import BottomBar from "@/components/BottomBar.vue";
+import WorkspaceTabBar, {
+  type TabAction,
+} from "@/components/layout/WorkspaceTabBar.vue";
 import DiffPanel from "@/components/diff/DiffPanel.vue";
+import FileTabView from "@/components/views/FileTabView.vue";
+import DiffTabView from "@/components/views/DiffTabView.vue";
+import GitGraphTabView from "@/components/views/GitGraphTabView.vue";
 import FileTreePanel from "@/components/file-tree/FileTreePanel.vue";
 import ProjectSidebar from "@/components/sidebar/ProjectSidebar.vue";
+import SettingsModal from "@/components/settings/SettingsModal.vue";
 import { useProjects } from "@/composables/useProjects";
+import { useTabs } from "@/composables/useTabs";
+import { useProviders } from "@/composables/useProviders";
 
 const route = useRoute();
 const router = useRouter();
@@ -122,6 +167,16 @@ const {
   createProject,
   createConversation,
 } = useProjects();
+const { fetchProviders } = useProviders();
+const {
+  tabs,
+  activeTab,
+  activeTabId,
+  openTab,
+  closeTab,
+  activateTab,
+  tabTitle,
+} = useTabs();
 
 const selectedConversationId = computed(() => {
   const id = (route.params as { id?: string }).id;
@@ -143,6 +198,7 @@ const showSidebar = ref(true);
 const showChat = ref(true);
 const showDiffPanel = ref(true);
 const showFileTree = ref(true);
+const showSettings = ref(false);
 
 const hasVisiblePanel = computed(
   () =>
@@ -158,8 +214,83 @@ const hasPanelAfterChat = computed(
   () => showDiffPanel.value || showFileTree.value,
 );
 
-function handleSelectConversation(conversationId: string, _projectId: string) {
+/* ---------- 标签页：路由 ↔ chat 标签双向同步，其余类型仅存在于标签中 ---------- */
+watch(
+  selectedConversationId,
+  (id) => {
+    if (id) openTab({ id: `chat:${id}`, kind: "chat", payload: id });
+  },
+  { immediate: true },
+);
+
+watch(activeTabId, (id) => {
+  const tab = tabs.value.find((item) => item.id === id);
+  if (tab?.kind === "chat" && tab.payload) {
+    const target = `/conversation/${tab.payload}`;
+    if (route.path !== target) router.push(target);
+  } else if (!tab && route.path !== "/") {
+    router.push("/");
+  }
+});
+
+const displayTabs = computed(() =>
+  tabs.value.map((tab) => ({
+    id: tab.id,
+    kind: tab.kind,
+    title: tabTitle(tab),
+    active: tab.id === activeTabId.value,
+  })),
+);
+
+function handleSelectConversation(conversationId: string) {
   router.push(`/conversation/${conversationId}`);
+}
+
+function handleTabAction(action: TabAction) {
+  if (action === "add-chat") void handleAddChatTab();
+  else if (action === "open-diff") handleOpenDiffTab();
+  else handleOpenGraphTab();
+}
+
+async function handleAddChatTab() {
+  const projectId = activeProjectId.value ?? projects.value[0]?.id;
+  if (!projectId) {
+    await handleCreateProject();
+    return;
+  }
+  const conversation = await createConversation(projectId);
+  if (conversation) {
+    router.push(`/conversation/${conversation.id}`);
+  }
+}
+
+function handleOpenFile(path: string) {
+  openTab({
+    id: `file:${activeProjectId.value}:${path}`,
+    kind: "file",
+    payload: path,
+    projectId: activeProjectId.value,
+  });
+}
+
+function handleOpenDiffTab() {
+  openTab({ id: "diff:working-tree", kind: "diff", title: "Working Tree" });
+}
+
+function handleOpenGraphTab() {
+  openTab({ id: "git-graph", kind: "git-graph", title: "Git Graph" });
+}
+
+async function handleSelectProject(projectId: string) {
+  const latest = conversations.value.get(projectId)?.at(-1);
+  if (latest) {
+    router.push(`/conversation/${latest.id}`);
+    return;
+  }
+  const conversation = await createConversation(projectId);
+  if (conversation) {
+    router.push(`/conversation/${conversation.id}`);
+  }
 }
 
 async function handleCreateProject() {
@@ -205,5 +336,6 @@ const diffFiles = ref([
 
 onMounted(() => {
   fetchProjects();
+  fetchProviders();
 });
 </script>

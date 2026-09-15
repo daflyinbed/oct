@@ -75,6 +75,37 @@ export function useProviders() {
     return !error;
   };
 
+  const createProvider = async (input: {
+    id: string;
+    name: string;
+    base_url: string;
+    api_key: string;
+  }) => {
+    const { data, error } = await client.POST("/api/providers", {
+      body: input,
+    });
+    if (!error && data) {
+      providers.value = [...providers.value, data];
+      return data;
+    }
+    return null;
+  };
+
+  const createModel = async (
+    providerId: string,
+    input: { model_id: string; name: string; limit_context?: number | null },
+  ) => {
+    const { error } = await client.POST("/api/providers/{id}/models", {
+      params: { path: { id: providerId } },
+      body: input,
+    });
+    if (!error) {
+      await fetchProviders();
+      return true;
+    }
+    return false;
+  };
+
   const selectProvider = (providerId: string) => {
     selectedProviderId.value = providerId;
     const provider = providers.value.find((p) => p.id === providerId);
@@ -109,6 +140,8 @@ export function useProviders() {
     fetchProviders,
     updateApiKey,
     toggleModelEnabled,
+    createProvider,
+    createModel,
     selectProvider,
     selectModel,
     getProviderSpec,

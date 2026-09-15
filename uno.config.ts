@@ -46,12 +46,18 @@ export default defineConfig({
     "bg-panel",
     "bg-surface",
     "bg-overlay",
+    "bg-titlebar",
+    "text-strong",
+    "text-dim",
+    "text-faint",
+    "border-line",
+    "border-line-soft",
   ],
   shortcuts: {
     "control-focus":
       "outline-none focus-visible:ring-2 focus-visible:ring-accent-9 focus-visible:ring-offset-1 focus-visible:ring-offset-background",
     "control-ghost":
-      "rounded-md text-neutral-10/60 hover:bg-neutral-1 hover:text-neutral-10 active:bg-neutral-2",
+      "rounded-md text-dim hover:bg-neutral-1 hover:text-neutral-10 active:bg-neutral-2",
     "control-solid":
       "rounded-md bg-accent-7 text-accent-contrast hover:bg-accent-8 active:bg-accent-9 disabled:bg-neutral-2 disabled:text-neutral-7",
     "control-surface":
@@ -83,10 +89,16 @@ export default defineConfig({
       panel: "var(--oct-color-panel)",
       surface: "var(--oct-color-surface)",
       overlay: "var(--oct-color-overlay)",
+      titlebar: "var(--oct-color-titlebar)",
+      strong: "var(--oct-color-strong)",
+      dim: "var(--oct-color-dim)",
+      faint: "var(--oct-color-faint)",
+      line: "var(--oct-color-border)",
+      "line-soft": "var(--oct-color-border-soft)",
     },
     fontFamily: {
-      sans: "Inter, system-ui, sans-serif",
-      mono: "JetBrains Mono, Fira Code, ui-monospace, monospace",
+      sans: '-apple-system, BlinkMacSystemFont, "Segoe UI", Inter, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif',
+      mono: 'ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace',
     },
   },
 });

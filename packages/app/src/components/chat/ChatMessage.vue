@@ -1,26 +1,19 @@
 <template>
-  <div class="flex gap-4">
+  <!-- 用户消息：IM 式右侧气泡；助手回合：扁平无头像（对齐 redesign demo） -->
+  <div v-if="message.role === 'user'" class="flex justify-end">
     <div
-      class="flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-md text-[0.875rem] font-medium"
-      :class="
-        message.role === 'user'
-          ? 'bg-accent-7 text-accent-contrast'
-          : 'bg-surface text-neutral-10'
-      "
+      class="max-w-[75%] bg-panel border border-line-soft rounded-xl px-3.5 py-2 text-[13px] leading-[1.55] text-neutral-10 whitespace-pre-wrap break-words"
     >
-      {{ message.role === "user" ? "U" : "A" }}
+      {{ message.content }}
+      <span v-if="message.isStreaming" class="animate-pulse">▌</span>
     </div>
-    <div class="flex-1 min-w-0">
-      <div class="text-[1rem] font-medium mb-1 text-neutral-10/60">
-        {{ message.role === "user" ? "You" : "Oct" }}
-      </div>
-      <div
-        class="text-[1rem] leading-relaxed whitespace-pre-wrap text-neutral-10"
-      >
-        {{ message.content }}
-        <span v-if="message.isStreaming" class="animate-pulse">▌</span>
-      </div>
-    </div>
+  </div>
+  <div
+    v-else
+    class="text-[13px] leading-[1.55] text-neutral-10 whitespace-pre-wrap break-words"
+  >
+    {{ message.content }}
+    <span v-if="message.isStreaming" class="animate-pulse">▌</span>
   </div>
 </template>
 

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -7,6 +7,17 @@
     <title>frontend</title>
   </head>
   <body>
+    <script>
+      // Restore persisted theme before first paint to avoid a flash.
+      try {
+        const stored = localStorage.getItem("oct-theme");
+        document.documentElement.dataset.theme = stored
+          ? JSON.parse(stored)
+          : "light";
+      } catch {
+        document.documentElement.dataset.theme = "light";
+      }
+    </script>
     <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
