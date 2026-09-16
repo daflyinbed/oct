@@ -170,6 +170,14 @@ pub async fn run_agent_loop(
             let args: Value = serde_json::from_str(&tc.arguments)
                 .unwrap_or(Value::Object(Default::default()));
 
+            // Announce the call at dispatch time so the frontend learns the tool
+            // has started before (not after) its result arrives.
+            let _ = handle.event_tx.send(AgentEvent::ToolCallStart {
+                id: tc.id.clone(),
+                name: tc.name.clone(),
+                arguments: tc.arguments.clone(),
+            });
+
             futures.push(async move {
                 let tool = tools.iter().find(|t| t.name() == tc.name);
                 let output = match tool {
@@ -194,11 +202,6 @@ pub async fn run_agent_loop(
                 result = futures.next() => {
                     match result {
                         Some((idx, tc, output)) => {
-                            let _ = handle.event_tx.send(AgentEvent::ToolCallStart {
-                                id: tc.id.clone(),
-                                name: tc.name.clone(),
-                                arguments: tc.arguments.clone(),
-                            });
                             let _ = handle.event_tx.send(AgentEvent::ToolResult {
                                 call_id: tc.id.clone(),
                                 content: output.content.clone(),

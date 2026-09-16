@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub mod execute;
 pub mod listdir;
 pub mod read;
+pub mod truncate;
 pub mod write;
 
 /// Output from a tool execution.

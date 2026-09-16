@@ -47,3 +47,6 @@ futures-core = "0.3"
 dashmap = "6"
 tokio-util = "0.7"
 schemars = "0.8"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

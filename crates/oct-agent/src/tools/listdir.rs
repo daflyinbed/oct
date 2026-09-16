@@ -4,6 +4,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use std::path::PathBuf;
 
+use super::truncate::{truncate_middle, MAX_TOOL_OUTPUT_BYTES};
 use super::{AgentTool, ToolOutput};
 
 pub struct ListDirTool {
@@ -128,6 +129,9 @@ impl AgentTool for ListDirTool {
         let mut output = format!("{dir_name}/\n");
         list_recursive(&target, "", 0, max_depth, &mut output).await?;
 
-        Ok(ToolOutput::success(output))
+        Ok(ToolOutput::success(truncate_middle(
+            &output,
+            MAX_TOOL_OUTPUT_BYTES,
+        )))
     }
 }

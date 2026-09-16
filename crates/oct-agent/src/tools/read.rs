@@ -4,6 +4,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
+use super::truncate::{truncate_line, truncate_middle, MAX_LINE_CHARS, MAX_TOOL_OUTPUT_BYTES};
 use super::{AgentTool, ToolOutput};
 
 pub struct ReadFileTool {
@@ -102,7 +103,10 @@ impl AgentTool for ReadFileTool {
         let selected: Vec<String> = lines[start - 1..end]
             .iter()
             .enumerate()
-            .map(|(i, line)| format!("{}. {line}", start + i))
+            .map(|(i, line)| {
+                let line = truncate_line(line, MAX_LINE_CHARS);
+                format!("{}. {line}", start + i)
+            })
             .collect();
 
         let header = if args.start_line.is_some() || args.end_line.is_some() {
@@ -111,9 +115,13 @@ impl AgentTool for ReadFileTool {
             String::new()
         };
 
-        Ok(ToolOutput::success(format!(
-            "{header}{}",
-            selected.join("\n")
+        // Line ranges are the primary defense against oversized output; the
+        // middle truncation is a safety net for pathological files.
+        let output = format!("{header}{}", selected.join("\n"));
+
+        Ok(ToolOutput::success(truncate_middle(
+            &output,
+            MAX_TOOL_OUTPUT_BYTES,
         )))
     }
 }
