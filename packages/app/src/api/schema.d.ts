@@ -100,6 +100,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{projectId}/files/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["read_project_file"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/providers": {
         parameters: {
             query?: never;
@@ -263,6 +279,19 @@ export interface components {
             doc_url?: string | null;
             id: string;
             name: string;
+        };
+        FileContent: {
+            /** @description UTF-8 text content, truncated to the preview size limit */
+            content: string;
+            /** @description Path relative to the project working directory (forward slashes) */
+            path: string;
+            /**
+             * Format: int64
+             * @description Total file size in bytes
+             */
+            size: number;
+            /** @description Whether the content was cut off because the file exceeds the size limit */
+            truncated: boolean;
         };
         FileEntry: {
             kind: components["schemas"]["FileEntryKind"];
@@ -817,6 +846,46 @@ export interface operations {
                 };
             };
             /** @description Path outside working directory or not a directory */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Project not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    read_project_file: {
+        parameters: {
+            query: {
+                /** @description File path relative to the project working directory */
+                path: string;
+            };
+            header?: never;
+            path: {
+                /** @description Project ID */
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description File text content (truncated at 1 MiB) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileContent"];
+                };
+            };
+            /** @description Path outside working directory, not a file, binary, or not valid UTF-8 */
             400: {
                 headers: {
                     [name: string]: unknown;

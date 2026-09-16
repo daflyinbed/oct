@@ -60,7 +60,9 @@
             </div>
             <FileTabView
               v-if="activeTab?.kind === 'file'"
+              :key="activeTab.id"
               :path="activeTab.payload ?? ''"
+              :project-id="activeTab.projectId ?? null"
             />
             <DiffTabView
               v-else-if="activeTab?.kind === 'diff'"

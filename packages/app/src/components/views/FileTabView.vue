@@ -3,24 +3,148 @@
     <header
       class="h-9 flex-none flex items-center gap-2 px-4 border-b border-line-soft font-mono text-[12.5px] text-dim"
     >
-      <i-lucide-file class="w-3.5 h-3.5 flex-none text-faint" />
+      <component :is="icon" class="w-3.5 h-3.5 flex-none text-faint" />
       <span class="truncate">{{ path }}</span>
+      <span v-if="meta" class="ml-auto flex-none pl-4 text-faint">{{ meta }}</span>
     </header>
+
     <div
-      class="flex-1 flex flex-col items-center justify-center gap-2 px-6 text-center text-faint"
+      v-if="pending"
+      class="flex-1 flex items-center justify-center gap-2 text-[12.5px] text-faint"
     >
-      <i-lucide-file-text class="w-8 h-8" />
-      <p class="text-[13px] text-dim">文件内容预览即将支持</p>
-      <p class="text-[12px]">
-        文件读取 API 接入后，这里将展示
-        <span class="font-mono">{{ path }}</span> 的内容
-      </p>
+      <i-lucide-loader-circle class="w-4 h-4 animate-spin" />
+      Loading…
     </div>
+    <div
+      v-else-if="error"
+      class="flex-1 flex flex-col items-center justify-center gap-2 px-6 text-center"
+    >
+      <i-lucide-file-warning class="w-8 h-8 text-danger-10" />
+      <p class="text-[13px] text-danger-10">{{ error }}</p>
+    </div>
+    <template v-else-if="file">
+      <p
+        v-if="file.truncated"
+        class="flex-none border-b border-line-soft px-4 py-1.5 text-[12px] text-warning-10"
+      >
+        File is {{ formatSize(file.size) }} — preview truncated at 1 MiB.
+      </p>
+      <!-- eslint-disable-next-line vue/no-v-html -- shiki 输出的受信任高亮 HTML -->
+      <div class="code-view flex-1 min-h-0 overflow-auto font-mono text-[12.5px] leading-[1.6]" v-html="html" />
+    </template>
   </section>
 </template>
 
 <script setup lang="ts">
-defineProps<{
+import { computed, ref, watch } from "vue";
+import { useFileContent } from "@/composables/useFileContent";
+import { resolveFileIcon } from "@/utils/fileIcons";
+import { highlightCode, languageForPath } from "@/utils/highlight";
+
+const props = defineProps<{
   path: string;
+  projectId: string | null;
 }>();
+
+const { data: file, loading, error } = useFileContent(props.projectId, props.path);
+
+const fileName = computed(() => props.path.split("/").pop() || "File");
+const icon = computed(() => resolveFileIcon({ name: fileName.value, kind: "file" }));
+const language = computed(() => languageForPath(props.path));
+
+const meta = computed(() => {
+  const content = file.value;
+  if (!content) return null;
+  const lines = content.content.split("\n").length;
+  return `${lines.toLocaleString()} lines · ${language.value} · ${formatSize(content.size)}`;
+});
+
+const html = ref<string | null>(null);
+// 每次内容变化自增，丢弃迟到的旧高亮结果。
+let highlightSeq = 0;
+
+watch(
+  () => file.value?.content,
+  async (code) => {
+    const seq = ++highlightSeq;
+    html.value = null;
+    if (!code) return;
+    try {
+      const result = await highlightCode(code, language.value);
+      if (seq === highlightSeq) html.value = result;
+    } catch {
+      // 高亮失败时退回纯文本，保证内容仍可查看。
+      if (seq === highlightSeq) html.value = `<pre>${escapeHtml(code)}</pre>`;
+    }
+  },
+  { immediate: true },
+);
+
+// 高亮器首次异步初始化期间也算作加载中。
+const pending = computed(
+  () => loading.value || (!!file.value && html.value === null),
+);
+
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, (ch) => {
+    const entities: Record<string, string> = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    };
+    return entities[ch] ?? ch;
+  });
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 </script>
+
+<!-- 非 scoped：v-html 注入的 shiki 节点拿不到 data-v 属性，
+     用 .code-view 命名空间隔离。 -->
+<style>
+.code-view pre {
+  margin: 0;
+  padding: 8px 0 16px;
+  background: transparent;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  white-space: pre;
+}
+
+/* 双主题颜色全部落在 CSS 变量上，跟随根节点 data-theme 切换 */
+.code-view .shiki,
+.code-view .shiki span {
+  color: var(--shiki-light, inherit);
+}
+
+[data-theme="dark"] .code-view .shiki,
+[data-theme="dark"] .code-view .shiki span {
+  color: var(--shiki-dark, inherit);
+}
+
+/* 行号列：利用 shiki 每行输出的 span.line 做 CSS 计数 */
+.code-view pre {
+  counter-reset: line-number;
+}
+
+.code-view .line {
+  counter-increment: line-number;
+}
+
+.code-view .line::before {
+  content: counter(line-number);
+  display: inline-block;
+  width: 3.5rem;
+  padding-right: 1.25rem;
+  text-align: right;
+  color: var(--oct-color-faint);
+  user-select: none;
+}
+</style>

@@ -42,6 +42,7 @@ pub struct AppState {
         crate::db::models::CreateModelRequest,
         crate::db::models::UpdateModelRequest,
         chat::SendMessageRequest,
+        files::FileContent,
         files::FileEntry,
         files::FileEntryKind,
         providers::ProviderResponse,
@@ -81,8 +82,9 @@ fn api_routes(state: AppState) -> OpenApiRouter<AppState> {
         .routes(utoipa_axum::routes!(projects::get_project))
         .routes(utoipa_axum::routes!(projects::update_project))
         .routes(utoipa_axum::routes!(projects::delete_project))
-        // Project files (directory tree)
+        // Project files (directory tree + content preview)
         .routes(utoipa_axum::routes!(files::list_project_files))
+        .routes(utoipa_axum::routes!(files::read_project_file))
         // Conversations
         .routes(utoipa_axum::routes!(conversations::list_conversations))
         .routes(utoipa_axum::routes!(conversations::create_conversation))
