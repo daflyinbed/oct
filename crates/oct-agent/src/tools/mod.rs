@@ -2,9 +2,11 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+pub mod edit;
 pub mod execute;
 pub mod listdir;
 pub mod read;
+pub mod shared;
 pub mod truncate;
 pub mod write;
 
@@ -57,11 +59,20 @@ pub fn to_tool_spec(tool: &dyn AgentTool) -> oct_llm_provider::core::ToolSpec {
 }
 
 /// Create all default tools for a given working directory.
+///
+/// The file-manipulating tools (read/write/edit) share one
+/// [`shared::ToolSharedState`] so read-before-edit tracking and per-file locks
+/// work across all of them within a single agent run.
 pub fn default_tools(working_dir: std::path::PathBuf) -> Vec<Box<dyn AgentTool>> {
+    let shared = std::sync::Arc::new(shared::ToolSharedState::new());
     vec![
-        Box::new(read::ReadFileTool::new(working_dir.clone())),
+        Box::new(read::ReadFileTool::new(working_dir.clone(), shared.clone())),
         Box::new(listdir::ListDirTool::new(working_dir.clone())),
-        Box::new(write::WriteFileTool::new(working_dir.clone())),
+        Box::new(write::WriteFileTool::new(
+            working_dir.clone(),
+            shared.clone(),
+        )),
+        Box::new(edit::EditFileTool::new(working_dir.clone(), shared)),
         Box::new(execute::ExecuteCommandTool::new(working_dir)),
     ]
 }

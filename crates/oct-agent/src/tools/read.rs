@@ -3,17 +3,23 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use super::truncate::{truncate_line, truncate_middle, MAX_LINE_CHARS, MAX_TOOL_OUTPUT_BYTES};
+use super::shared::{ToolSharedState, file_mtime};
+use super::truncate::{MAX_LINE_CHARS, MAX_TOOL_OUTPUT_BYTES, truncate_line, truncate_middle};
 use super::{AgentTool, ToolOutput};
 
 pub struct ReadFileTool {
     working_dir: PathBuf,
+    shared: Arc<ToolSharedState>,
 }
 
 impl ReadFileTool {
-    pub fn new(working_dir: PathBuf) -> Self {
-        Self { working_dir }
+    pub fn new(working_dir: PathBuf, shared: Arc<ToolSharedState>) -> Self {
+        Self {
+            working_dir,
+            shared,
+        }
     }
 }
 
@@ -77,16 +83,19 @@ impl AgentTool for ReadFileTool {
         };
 
         if !resolved.is_file() {
-            return Ok(ToolOutput::error(format!(
-                "{} is not a file",
-                args.path
-            )));
+            return Ok(ToolOutput::error(format!("{} is not a file", args.path)));
         }
 
         let content = match tokio::fs::read_to_string(&resolved).await {
             Ok(c) => c,
             Err(e) => return Ok(ToolOutput::error(format!("Failed to read file: {e}"))),
         };
+
+        // Record the read (mtime at read time) so edit_file can enforce its
+        // read-before-edit rule. Partial range reads count as reads too.
+        if let Some(mtime) = file_mtime(&resolved) {
+            self.shared.record_read(&resolved, mtime);
+        }
 
         let lines: Vec<&str> = content.lines().collect();
         let total = lines.len();
