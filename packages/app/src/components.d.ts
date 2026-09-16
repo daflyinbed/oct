@@ -11,6 +11,7 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    AppSelect: typeof import('./components/ui/AppSelect.vue')['default']
     BottomBar: typeof import('./components/BottomBar.vue')['default']
     ChatMessage: typeof import('./components/chat/ChatMessage.vue')['default']
     ChatPanel: typeof import('./components/chat/ChatPanel.vue')['default']
@@ -22,8 +23,11 @@ declare module 'vue' {
     GitGraphTabView: typeof import('./components/views/GitGraphTabView.vue')['default']
     ILucideArrowLeft: typeof import('~icons/lucide/arrow-left')['default']
     ILucideArrowUp: typeof import('~icons/lucide/arrow-up')['default']
+    ILucideCheck: typeof import('~icons/lucide/check')['default']
     ILucideChevronDown: typeof import('~icons/lucide/chevron-down')['default']
     ILucideChevronRight: typeof import('~icons/lucide/chevron-right')['default']
+    ILucideChevronsUpDown: typeof import('~icons/lucide/chevrons-up-down')['default']
+    ILucideChevronUp: typeof import('~icons/lucide/chevron-up')['default']
     ILucideDownload: typeof import('~icons/lucide/download')['default']
     ILucideFile: typeof import('~icons/lucide/file')['default']
     ILucideFiles: typeof import('~icons/lucide/files')['default']

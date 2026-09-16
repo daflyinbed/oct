@@ -34,53 +34,25 @@
           <span class="flex-1" />
 
           <!-- Provider / 模型选择器 -->
-          <label
-            class="inline-flex items-center h-[26px] px-2 rounded-md text-[12px] text-dim hover:bg-neutral-1 transition-colors max-w-[180px] cursor-pointer"
+          <AppSelect
+            :model-value="selectedProviderId"
+            :options="providerOptions"
+            placeholder="Provider"
             title="Provider"
-          >
-            <select
-              :value="selectedProviderId ?? ''"
-              class="w-full appearance-none bg-transparent outline-none cursor-pointer truncate"
-              @change="
-                (e: Event) => {
-                  const v = (e.target as HTMLSelectElement).value;
-                  if (v) $emit('selectProvider', v);
-                }
-              "
-            >
-              <option value="" disabled>Provider</option>
-              <option v-for="p in providersWithKey" :key="p.id" :value="p.id">
-                {{ p.name }}
-              </option>
-            </select>
-            <i-lucide-chevron-down class="w-3 h-3 flex-none text-faint" />
-          </label>
+            align="end"
+            trigger-class="max-w-[180px] text-dim"
+            @update:model-value="(v: string) => $emit('selectProvider', v)"
+          />
           <span class="flex-none text-[12px] text-faint">/</span>
-          <label
-            class="inline-flex items-center h-[26px] px-2 rounded-md text-[12px] text-neutral-10 hover:bg-neutral-1 transition-colors max-w-[220px] cursor-pointer"
+          <AppSelect
+            :model-value="selectedModelId"
+            :options="modelOptions"
+            placeholder="Model"
             title="Model"
-          >
-            <select
-              :value="selectedModelId ?? ''"
-              class="w-full appearance-none bg-transparent outline-none cursor-pointer truncate"
-              @change="
-                (e: Event) => {
-                  const v = (e.target as HTMLSelectElement).value;
-                  if (v) $emit('selectModel', v);
-                }
-              "
-            >
-              <option value="" disabled>Model</option>
-              <option
-                v-for="m in currentModels"
-                :key="m.model_id"
-                :value="m.model_id"
-              >
-                {{ m.name }}
-              </option>
-            </select>
-            <i-lucide-chevron-down class="w-3 h-3 flex-none text-faint" />
-          </label>
+            align="end"
+            trigger-class="max-w-[220px] text-neutral-10"
+            @update:model-value="(v: string) => $emit('selectModel', v)"
+          />
 
           <button
             class="ml-1 w-7 h-7 rounded-[7px] bg-accent-7 text-white flex items-center justify-center transition-[filter] hover:brightness-110 disabled:opacity-50"
@@ -106,6 +78,7 @@ import {
   watch,
 } from "vue";
 import ChatMessage from "./ChatMessage.vue";
+import AppSelect from "@/components/ui/AppSelect.vue";
 import type { components } from "@/api/schema";
 import type { DisplayMessage } from "@/composables/useChat";
 
@@ -134,6 +107,10 @@ const providersWithKey = computed(() =>
   props.providers.filter((p) => p.api_key_set),
 );
 
+const providerOptions = computed(() =>
+  providersWithKey.value.map((p) => ({ value: p.id, label: p.name })),
+);
+
 const currentModels = computed((): ModelSummary[] => {
   if (!props.selectedProviderId) return [];
   const provider = props.providers.find(
@@ -142,6 +119,10 @@ const currentModels = computed((): ModelSummary[] => {
   if (!provider) return [];
   return provider.models.filter((m) => m.is_enabled);
 });
+
+const modelOptions = computed(() =>
+  currentModels.value.map((m) => ({ value: m.model_id, label: m.name })),
+);
 
 function handleSend() {
   if (!inputMessage.value.trim() || !props.conversationId || props.sending)
