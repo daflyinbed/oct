@@ -4,8 +4,11 @@ use serde::{Deserialize, Serialize};
 
 pub mod edit;
 pub mod execute;
+pub mod glob;
+pub mod grep;
 pub mod listdir;
 pub mod read;
+pub mod search_common;
 pub mod shared;
 pub mod truncate;
 pub mod write;
@@ -68,6 +71,8 @@ pub fn default_tools(working_dir: std::path::PathBuf) -> Vec<Box<dyn AgentTool>>
     vec![
         Box::new(read::ReadFileTool::new(working_dir.clone(), shared.clone())),
         Box::new(listdir::ListDirTool::new(working_dir.clone())),
+        Box::new(grep::GrepTool::new(working_dir.clone())),
+        Box::new(glob::GlobTool::new(working_dir.clone())),
         Box::new(write::WriteFileTool::new(
             working_dir.clone(),
             shared.clone(),
