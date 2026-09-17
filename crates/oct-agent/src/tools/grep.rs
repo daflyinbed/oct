@@ -15,6 +15,7 @@ use grep_searcher::{
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
+use serde::Serialize;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -22,7 +23,7 @@ use std::time::{Duration, Instant};
 use super::read::validate_path_within;
 use super::search_common::{relativize, search_walk_builder, timeout_note};
 use super::truncate::{truncate_line, truncate_middle, MAX_TOOL_OUTPUT_BYTES};
-use super::{AgentTool, ToolOutput};
+use super::{AgentTool, ToolContext, ToolOutput};
 
 /// Wall-clock budget for one grep run.
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(20);
@@ -81,6 +82,36 @@ enum OutputMode {
     Count,
 }
 
+impl OutputMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            OutputMode::Content => "content",
+            OutputMode::FilesWithMatches => "files_with_matches",
+            OutputMode::Count => "count",
+        }
+    }
+}
+
+/// UI-only metadata for a grep call. `matched` counts matched lines in
+/// content mode, matching files in files_with_matches mode, and total
+/// matched lines across files in count mode.
+#[derive(Debug, Serialize)]
+struct GrepDetails {
+    title: String,
+    pattern: String,
+    output_mode: String,
+    matched: usize,
+    truncated: bool,
+    timed_out: bool,
+}
+
+/// Result counts surfaced to the UI via [`GrepDetails`].
+struct GrepStats {
+    matched: usize,
+    truncated: bool,
+    timed_out: bool,
+}
+
 /// Knobs validated and clamped in `execute` and consumed by `run_search`.
 struct SearchConfig {
     mode: OutputMode,
@@ -106,7 +137,14 @@ impl AgentTool for GrepTool {
         serde_json::to_value(schemars::schema_for!(GrepArgs)).unwrap()
     }
 
-    async fn execute(&self, args: serde_json::Value) -> Result<ToolOutput> {
+    fn title(&self, args: &serde_json::Value) -> String {
+        args.get("pattern")
+            .and_then(|v| v.as_str())
+            .unwrap_or("grep")
+            .to_string()
+    }
+
+    async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ToolOutput> {
         let args: GrepArgs =
             serde_json::from_value(args).context("Invalid arguments for grep")?;
 
@@ -174,7 +212,19 @@ impl AgentTool for GrepTool {
                 },
                 None => None,
             };
-            run_search(working_canonical, root, matcher, glob_matcher, config)
+            let mode_str = config.mode.as_str().to_string();
+            let (mut output, stats) =
+                run_search(working_canonical, root, matcher, glob_matcher, config);
+            output.details = serde_json::to_value(GrepDetails {
+                title: pattern.clone(),
+                pattern,
+                output_mode: mode_str,
+                matched: stats.matched,
+                truncated: stats.truncated,
+                timed_out: stats.timed_out,
+            })
+            .ok();
+            output
         })
         .await
         .context("grep search task panicked")?;
@@ -324,14 +374,14 @@ fn line_text(bytes: &[u8]) -> String {
 }
 
 /// Walk the search root and collect results for the requested output mode.
-/// Runs entirely on a blocking thread.
+/// Runs entirely on a blocking thread. Also returns the UI-facing stats.
 fn run_search(
     working_canonical: PathBuf,
     root: PathBuf,
     matcher: grep_regex::RegexMatcher,
     glob_matcher: Option<globset::GlobMatcher>,
     config: SearchConfig,
-) -> ToolOutput {
+) -> (ToolOutput, GrepStats) {
     let deadline = Instant::now() + SEARCH_TIMEOUT;
     let mut timed_out = false;
     let mut truncated = false;
@@ -484,14 +534,34 @@ fn run_search(
         out.push('\n');
     }
 
+    let stats = GrepStats {
+        // What "matched" means depends on the mode (see GrepDetails).
+        matched: match config.mode {
+            OutputMode::Content => content.matched_lines,
+            OutputMode::FilesWithMatches => files.len(),
+            OutputMode::Count => total_matches,
+        },
+        truncated: truncated || out.len() > MAX_TOOL_OUTPUT_BYTES,
+        timed_out,
+    };
+
     // Zero matches is a successful answer, not an error.
-    ToolOutput::success(truncate_middle(&out, MAX_TOOL_OUTPUT_BYTES))
+    (
+        ToolOutput::success(truncate_middle(&out, MAX_TOOL_OUTPUT_BYTES)),
+        stats,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::SystemTime;
+
+    /// A ToolContext wired to a throwaway broadcast channel; grep does not
+    /// stream, so the context is only needed for the trait signature.
+    fn noop_ctx() -> ToolContext {
+        ToolContext::new("test", tokio::sync::broadcast::channel(1).0)
+    }
 
     /// Unique temp directory per test (pid + nanos), like the other tool tests.
     fn temp_workspace(tag: &str) -> PathBuf {
@@ -515,7 +585,7 @@ mod tests {
         std::fs::write(wd.join("sub/b.rs"), "let x = 1; // TODO: here\n").unwrap();
 
         let out = GrepTool::new(wd.clone())
-            .execute(serde_json::json!({ "pattern": "TODO" }))
+            .execute(serde_json::json!({ "pattern": "TODO" }), &noop_ctx())
             .await
             .unwrap();
 
@@ -533,7 +603,7 @@ mod tests {
         std::fs::write(wd.join("greet.txt"), "Hello World\n").unwrap();
 
         let sensitive = GrepTool::new(wd.clone())
-            .execute(serde_json::json!({ "pattern": "hello world" }))
+            .execute(serde_json::json!({ "pattern": "hello world" }), &noop_ctx())
             .await
             .unwrap();
         assert!(!sensitive.is_error);
@@ -543,7 +613,7 @@ mod tests {
             .execute(serde_json::json!({
                 "pattern": "hello world",
                 "case_insensitive": true
-            }))
+            }), &noop_ctx())
             .await
             .unwrap();
         assert!(!insensitive.is_error);
@@ -562,7 +632,7 @@ mod tests {
         std::fs::write(wd.join("sub/c.rs"), "NEEDLE\n").unwrap();
 
         let out = GrepTool::new(wd.clone())
-            .execute(serde_json::json!({ "pattern": "NEEDLE", "glob": "*.rs" }))
+            .execute(serde_json::json!({ "pattern": "NEEDLE", "glob": "*.rs" }), &noop_ctx())
             .await
             .unwrap();
 
@@ -589,7 +659,7 @@ mod tests {
             .execute(serde_json::json!({
                 "pattern": "NEEDLE",
                 "output_mode": "files_with_matches"
-            }))
+            }), &noop_ctx())
             .await
             .unwrap();
 
@@ -611,7 +681,7 @@ mod tests {
         std::fs::write(wd.join("b.txt"), "one\n").unwrap();
 
         let out = GrepTool::new(wd.clone())
-            .execute(serde_json::json!({ "pattern": "one", "output_mode": "count" }))
+            .execute(serde_json::json!({ "pattern": "one", "output_mode": "count" }), &noop_ctx())
             .await
             .unwrap();
 
@@ -631,7 +701,7 @@ mod tests {
         }
 
         let out = GrepTool::new(wd.clone())
-            .execute(serde_json::json!({ "pattern": "NEEDLE", "head_limit": 2 }))
+            .execute(serde_json::json!({ "pattern": "NEEDLE", "head_limit": 2 }), &noop_ctx())
             .await
             .unwrap();
 
@@ -673,7 +743,7 @@ mod tests {
             .execute(serde_json::json!({
                 "pattern": "NEEDLE",
                 "output_mode": "files_with_matches"
-            }))
+            }), &noop_ctx())
             .await
             .unwrap();
 
@@ -696,7 +766,7 @@ mod tests {
             .execute(serde_json::json!({
                 "pattern": "NEEDLE",
                 "output_mode": "files_with_matches"
-            }))
+            }), &noop_ctx())
             .await
             .unwrap();
 
@@ -717,7 +787,7 @@ mod tests {
             .execute(serde_json::json!({
                 "pattern": "anything",
                 "path": outside.display().to_string()
-            }))
+            }), &noop_ctx())
             .await
             .unwrap();
 
@@ -735,7 +805,7 @@ mod tests {
         let out = GrepTool::new(wd.clone())
             .execute(serde_json::json!({
                 "pattern": "NEEDLE", "path": "a.rs", "glob": "*.rs"
-            }))
+            }), &noop_ctx())
             .await
             .unwrap();
         assert!(!out.is_error);
@@ -745,7 +815,7 @@ mod tests {
         let out = GrepTool::new(wd.clone())
             .execute(serde_json::json!({
                 "pattern": "NEEDLE", "path": "a.rs", "glob": "*.txt"
-            }))
+            }), &noop_ctx())
             .await
             .unwrap();
         assert!(out.content.contains("Found 0 matching lines"));
@@ -758,7 +828,7 @@ mod tests {
         let wd = temp_workspace("badregex");
 
         let out = GrepTool::new(wd.clone())
-            .execute(serde_json::json!({ "pattern": "([" }))
+            .execute(serde_json::json!({ "pattern": "([" }), &noop_ctx())
             .await
             .unwrap();
 

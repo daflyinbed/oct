@@ -2,16 +2,28 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::read::validate_path_within;
 use super::shared::{ReadCheck, ToolSharedState, file_mtime};
 use super::write::validate_write_path;
-use super::{AgentTool, ToolOutput};
+use super::{AgentTool, ToolContext, ToolOutput};
 
 /// Cap for the file line quoted in the nearest-match hint, in bytes.
 const HINT_LINE_MAX_BYTES: usize = 200;
+
+/// UI-only metadata for an edit_file call.
+#[derive(Debug, Serialize)]
+struct EditFileDetails {
+    title: String,
+    file_path: String,
+    replacements: usize,
+    replace_all: bool,
+    /// True when the empty-old_string create-new-file path was taken.
+    created: bool,
+}
 
 pub struct EditFileTool {
     working_dir: PathBuf,
@@ -71,10 +83,17 @@ impl EditFileTool {
                 if let Some(mtime) = file_mtime(&resolved) {
                     self.shared.record_write(&resolved, mtime);
                 }
-                Ok(ToolOutput::success(format!(
-                    "The file {} has been created successfully.",
-                    args.file_path
-                )))
+                let details = EditFileDetails {
+                    title: args.file_path.clone(),
+                    file_path: args.file_path.clone(),
+                    replacements: 0,
+                    replace_all: false,
+                    created: true,
+                };
+                Ok(ToolOutput::success_with_details(
+                    format!("The file {} has been created successfully.", args.file_path),
+                    details,
+                ))
             }
             Err(e) => Ok(ToolOutput::error(format!("Failed to write file: {e}"))),
         }
@@ -174,7 +193,14 @@ impl EditFileTool {
                 if replace_all && matches.len() > 1 {
                     message.push_str(" All occurrences were successfully replaced.");
                 }
-                Ok(ToolOutput::success(message))
+                let details = EditFileDetails {
+                    title: args.file_path.clone(),
+                    file_path: args.file_path.clone(),
+                    replacements: if replace_all { matches.len() } else { 1 },
+                    replace_all,
+                    created: false,
+                };
+                Ok(ToolOutput::success_with_details(message, details))
             }
             Err(e) => Ok(ToolOutput::error(format!("Failed to write file: {e}"))),
         }
@@ -251,7 +277,14 @@ impl AgentTool for EditFileTool {
         serde_json::to_value(schemars::schema_for!(EditFileArgs)).unwrap()
     }
 
-    async fn execute(&self, args: serde_json::Value) -> Result<ToolOutput> {
+    fn title(&self, args: &serde_json::Value) -> String {
+        args.get("file_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("edit_file")
+            .to_string()
+    }
+
+    async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ToolOutput> {
         let args: EditFileArgs =
             serde_json::from_value(args).context("Invalid arguments for edit_file")?;
 
@@ -292,6 +325,12 @@ mod tests {
     use crate::tools::write::WriteFileTool;
     use serde_json::json;
 
+    /// A ToolContext wired to a throwaway broadcast channel; edit_file does
+    /// not stream, so the context is only needed for the trait signature.
+    fn noop_ctx() -> ToolContext {
+        ToolContext::new("test", tokio::sync::broadcast::channel(1).0)
+    }
+
     /// A temp working directory with the edit/read/write tools sharing one
     /// `ToolSharedState`, mirroring how `default_tools` wires them up.
     struct Fixture {
@@ -326,7 +365,11 @@ mod tests {
         }
 
         async fn read(&self, name: &str) {
-            let out = self.read.execute(json!({ "path": name })).await.unwrap();
+            let out = self
+                .read
+                .execute(json!({ "path": name }), &noop_ctx())
+                .await
+                .unwrap();
             assert!(!out.is_error, "fixture read failed: {}", out.content);
         }
     }
@@ -349,7 +392,7 @@ mod tests {
                 "file_path": "a.txt",
                 "old_string": "beta",
                 "new_string": "BETA"
-            }))
+            }), &noop_ctx())
             .await
             .unwrap();
 
@@ -373,7 +416,7 @@ mod tests {
                 "file_path": "a.txt",
                 "old_string": "content",
                 "new_string": "content"
-            }))
+            }), &noop_ctx())
             .await
             .unwrap();
 
@@ -397,7 +440,7 @@ mod tests {
                 "file_path": "a.txt",
                 "old_string": "fn main() {}\n",
                 "new_string": "fn main() { return }\n"
-            }))
+            }), &noop_ctx())
             .await
             .unwrap();
 
@@ -429,7 +472,7 @@ mod tests {
                 "file_path": "a.txt",
                 "old_string": "zebra",
                 "new_string": "horse"
-            }))
+            }), &noop_ctx())
             .await
             .unwrap();
 
@@ -450,7 +493,7 @@ mod tests {
                 "file_path": "a.txt",
                 "old_string": "= 1",
                 "new_string": "= 10"
-            }))
+            }), &noop_ctx())
             .await
             .unwrap();
 
@@ -469,7 +512,7 @@ mod tests {
                 "old_string": "= 1",
                 "new_string": "= 10",
                 "replace_all": true
-            }))
+            }), &noop_ctx())
             .await
             .unwrap();
 
@@ -497,7 +540,7 @@ mod tests {
                 "old_string": "one",
                 "new_string": "1",
                 "replace_all": true
-            }))
+            }), &noop_ctx())
             .await
             .unwrap();
 
@@ -515,7 +558,7 @@ mod tests {
                 "file_path": "new.txt",
                 "old_string": "",
                 "new_string": "brand new\n"
-            }))
+            }), &noop_ctx())
             .await
             .unwrap();
 
@@ -536,7 +579,7 @@ mod tests {
                 "file_path": "new.txt",
                 "old_string": "",
                 "new_string": "other\n"
-            }))
+            }), &noop_ctx())
             .await
             .unwrap();
         assert!(out.is_error);
@@ -550,7 +593,7 @@ mod tests {
                 "file_path": "empty.txt",
                 "old_string": "",
                 "new_string": "filled\n"
-            }))
+            }), &noop_ctx())
             .await
             .unwrap();
         assert!(!out.is_error);
@@ -571,7 +614,7 @@ mod tests {
                 "file_path": "missing_dir/new.txt",
                 "old_string": "",
                 "new_string": "content\n"
-            }))
+            }), &noop_ctx())
             .await
             .unwrap();
 
@@ -591,7 +634,7 @@ mod tests {
                 "file_path": "a.txt",
                 "old_string": "line2",
                 "new_string": "LINE2"
-            }))
+            }), &noop_ctx())
             .await
             .unwrap();
 
@@ -613,7 +656,7 @@ mod tests {
                 "file_path": "a.txt",
                 "old_string": "hello",
                 "new_string": "goodbye"
-            }))
+            }), &noop_ctx())
             .await
             .unwrap();
 
@@ -631,7 +674,7 @@ mod tests {
                 "file_path": "a.txt",
                 "old_string": "hello",
                 "new_string": "goodbye"
-            }))
+            }), &noop_ctx())
             .await
             .unwrap();
         assert!(!out.is_error);
@@ -650,7 +693,7 @@ mod tests {
             .execute(json!({
                 "path": "a.txt",
                 "content": "count = 1\n"
-            }))
+            }), &noop_ctx())
             .await
             .unwrap();
         assert!(!out.is_error);
@@ -662,7 +705,7 @@ mod tests {
                 "file_path": "a.txt",
                 "old_string": "count = 1",
                 "new_string": "count = 2"
-            }))
+            }), &noop_ctx())
             .await
             .unwrap();
 
@@ -699,7 +742,7 @@ mod tests {
                 "file_path": "a.txt",
                 "old_string": "original",
                 "new_string": "edited"
-            }))
+            }), &noop_ctx())
             .await
             .unwrap();
 
@@ -722,7 +765,7 @@ mod tests {
                 "file_path": "subdir",
                 "old_string": "a",
                 "new_string": "b"
-            }))
+            }), &noop_ctx())
             .await
             .unwrap();
 
@@ -751,7 +794,7 @@ mod tests {
                 "file_path": format!("../{}", outside.file_name().unwrap().to_string_lossy()),
                 "old_string": "secret",
                 "new_string": "b"
-            }))
+            }), &noop_ctx())
             .await
             .unwrap();
 
@@ -778,7 +821,7 @@ mod tests {
                 // appears on the over-long line 2.
                 "old_string": "token\nrest of the missing text",
                 "new_string": "x"
-            }))
+            }), &noop_ctx())
             .await
             .unwrap();
 

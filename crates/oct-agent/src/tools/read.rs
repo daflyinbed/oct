@@ -2,12 +2,13 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::shared::{ToolSharedState, file_mtime};
 use super::truncate::{MAX_LINE_CHARS, MAX_TOOL_OUTPUT_BYTES, truncate_line, truncate_middle};
-use super::{AgentTool, ToolOutput};
+use super::{AgentTool, ToolContext, ToolOutput};
 
 pub struct ReadFileTool {
     working_dir: PathBuf,
@@ -21,6 +22,19 @@ impl ReadFileTool {
             shared,
         }
     }
+}
+
+/// UI-only metadata for a read_file call.
+#[derive(Debug, Serialize)]
+struct ReadFileDetails {
+    title: String,
+    path: String,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
+    total_lines: usize,
+    shown_lines: usize,
+    /// Per-line or middle truncation kicked in (best effort).
+    truncated: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -73,7 +87,14 @@ impl AgentTool for ReadFileTool {
         serde_json::to_value(schemars::schema_for!(ReadFileArgs)).unwrap()
     }
 
-    async fn execute(&self, args: serde_json::Value) -> Result<ToolOutput> {
+    fn title(&self, args: &serde_json::Value) -> String {
+        args.get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("read_file")
+            .to_string()
+    }
+
+    async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ToolOutput> {
         let args: ReadFileArgs =
             serde_json::from_value(args).context("Invalid arguments for read_file")?;
 
@@ -103,16 +124,33 @@ impl AgentTool for ReadFileTool {
         let start = args.start_line.unwrap_or(1).max(1);
         let end = args.end_line.unwrap_or(total).min(total);
 
+        let details = ReadFileDetails {
+            title: args.path.clone(),
+            path: args.path.clone(),
+            start_line: args.start_line,
+            end_line: args.end_line,
+            total_lines: total,
+            shown_lines: end.saturating_sub(start - 1),
+            truncated: false,
+        };
+
         if start > total {
-            return Ok(ToolOutput::success(format!(
-                "(File has {total} lines, requested start_line {start} is beyond end)"
-            )));
+            return Ok(ToolOutput::success_with_details(
+                format!("(File has {total} lines, requested start_line {start} is beyond end)"),
+                details,
+            ));
         }
 
+        // Best-effort per-line truncation flag: an over-long line is capped by
+        // truncate_line below.
+        let mut per_line_truncated = false;
         let selected: Vec<String> = lines[start - 1..end]
             .iter()
             .enumerate()
             .map(|(i, line)| {
+                if line.chars().count() > MAX_LINE_CHARS {
+                    per_line_truncated = true;
+                }
                 let line = truncate_line(line, MAX_LINE_CHARS);
                 format!("{}. {line}", start + i)
             })
@@ -127,11 +165,17 @@ impl AgentTool for ReadFileTool {
         // Line ranges are the primary defense against oversized output; the
         // middle truncation is a safety net for pathological files.
         let output = format!("{header}{}", selected.join("\n"));
+        let truncated = per_line_truncated || output.len() > MAX_TOOL_OUTPUT_BYTES;
 
-        Ok(ToolOutput::success(truncate_middle(
-            &output,
-            MAX_TOOL_OUTPUT_BYTES,
-        )))
+        let details = ReadFileDetails {
+            truncated,
+            ..details
+        };
+
+        Ok(ToolOutput::success_with_details(
+            truncate_middle(&output, MAX_TOOL_OUTPUT_BYTES),
+            details,
+        ))
     }
 }
 

@@ -2,10 +2,11 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use serde::Serialize;
 use std::path::PathBuf;
 
 use super::truncate::{truncate_middle, MAX_TOOL_OUTPUT_BYTES};
-use super::{AgentTool, ToolOutput};
+use super::{AgentTool, ToolContext, ToolOutput};
 
 pub struct ListDirTool {
     working_dir: PathBuf,
@@ -15,6 +16,15 @@ impl ListDirTool {
     pub fn new(working_dir: PathBuf) -> Self {
         Self { working_dir }
     }
+}
+
+/// UI-only metadata for a list_dir call.
+#[derive(Debug, Serialize)]
+struct ListDirDetails {
+    title: String,
+    path: String,
+    depth: usize,
+    truncated: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -98,7 +108,14 @@ impl AgentTool for ListDirTool {
         serde_json::to_value(schemars::schema_for!(ListDirArgs)).unwrap()
     }
 
-    async fn execute(&self, args: serde_json::Value) -> Result<ToolOutput> {
+    fn title(&self, args: &serde_json::Value) -> String {
+        args.get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or(".")
+            .to_string()
+    }
+
+    async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ToolOutput> {
         let args: ListDirArgs =
             serde_json::from_value(args).context("Invalid arguments for list_dir")?;
 
@@ -129,9 +146,16 @@ impl AgentTool for ListDirTool {
         let mut output = format!("{dir_name}/\n");
         list_recursive(&target, "", 0, max_depth, &mut output).await?;
 
-        Ok(ToolOutput::success(truncate_middle(
-            &output,
-            MAX_TOOL_OUTPUT_BYTES,
-        )))
+        let details = ListDirDetails {
+            title: args.path.clone().unwrap_or_else(|| ".".to_string()),
+            path: args.path.clone().unwrap_or_else(|| ".".to_string()),
+            depth: max_depth,
+            truncated: output.len() > MAX_TOOL_OUTPUT_BYTES,
+        };
+
+        Ok(ToolOutput::success_with_details(
+            truncate_middle(&output, MAX_TOOL_OUTPUT_BYTES),
+            details,
+        ))
     }
 }

@@ -2,11 +2,12 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::shared::{ToolSharedState, file_mtime};
-use super::{AgentTool, ToolOutput};
+use super::{AgentTool, ToolContext, ToolOutput};
 
 pub struct WriteFileTool {
     working_dir: PathBuf,
@@ -20,6 +21,15 @@ impl WriteFileTool {
             shared,
         }
     }
+}
+
+/// UI-only metadata for a write_file call.
+#[derive(Debug, Serialize)]
+struct WriteFileDetails {
+    title: String,
+    path: String,
+    bytes: usize,
+    create_dirs: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -124,7 +134,14 @@ impl AgentTool for WriteFileTool {
         serde_json::to_value(schemars::schema_for!(WriteFileArgs)).unwrap()
     }
 
-    async fn execute(&self, args: serde_json::Value) -> Result<ToolOutput> {
+    fn title(&self, args: &serde_json::Value) -> String {
+        args.get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("write_file")
+            .to_string()
+    }
+
+    async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ToolOutput> {
         let args: WriteFileArgs =
             serde_json::from_value(args).context("Invalid arguments for write_file")?;
 
@@ -163,10 +180,16 @@ impl AgentTool for WriteFileTool {
                 if let Some(mtime) = file_mtime(&resolved) {
                     self.shared.record_write(&resolved, mtime);
                 }
-                Ok(ToolOutput::success(format!(
-                    "Successfully wrote {bytes} bytes to {}",
-                    args.path
-                )))
+                let details = WriteFileDetails {
+                    title: args.path.clone(),
+                    path: args.path.clone(),
+                    bytes,
+                    create_dirs: args.create_dirs.unwrap_or(false),
+                };
+                Ok(ToolOutput::success_with_details(
+                    format!("Successfully wrote {bytes} bytes to {}", args.path),
+                    details,
+                ))
             }
             Err(e) => Ok(ToolOutput::error(format!("Failed to write file: {e}"))),
         }
@@ -177,6 +200,12 @@ impl AgentTool for WriteFileTool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A ToolContext wired to a throwaway broadcast channel; write_file does
+    /// not stream, so the context is only needed for the trait signature.
+    fn noop_ctx() -> ToolContext {
+        ToolContext::new("test", tokio::sync::broadcast::channel(1).0)
+    }
 
     struct Fixture {
         dir: PathBuf,
@@ -203,7 +232,7 @@ mod tests {
 
         async fn write(&self, path: &str, content: &str) -> ToolOutput {
             self.write
-                .execute(json!({ "path": path, "content": content }))
+                .execute(json!({ "path": path, "content": content }), &noop_ctx())
                 .await
                 .unwrap()
         }
@@ -255,7 +284,7 @@ mod tests {
         let shared = Arc::new(ToolSharedState::new());
         let tool = WriteFileTool::new(base.join("wd"), shared);
         let out = tool
-            .execute(json!({ "path": "link/new.txt", "content": "x" }))
+            .execute(json!({ "path": "link/new.txt", "content": "x" }), &noop_ctx())
             .await
             .unwrap();
         assert!(out.is_error);
@@ -294,7 +323,7 @@ mod tests {
         let shared = Arc::new(ToolSharedState::new());
         let tool = WriteFileTool::new(base.join("wd"), shared);
         let out = tool
-            .execute(json!({ "path": "f.txt", "content": "x" }))
+            .execute(json!({ "path": "f.txt", "content": "x" }), &noop_ctx())
             .await
             .unwrap();
         assert!(out.is_error);

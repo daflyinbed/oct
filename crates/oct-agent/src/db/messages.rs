@@ -13,6 +13,9 @@ pub struct StoredMessage {
     pub conversation_id: String,
     pub role: String,
     pub parts_json: String,
+    /// UI-only tool-result metadata, serialized JSON. Never part of the
+    /// model-visible message parts.
+    pub details_json: Option<String>,
     pub ordering: i64,
     pub provider_id: Option<String>,
     pub model_id: Option<String>,
@@ -51,18 +54,26 @@ pub async fn insert_message(
     message: &Message,
     provider_id: Option<&str>,
     model_id: Option<&str>,
+    details: Option<&serde_json::Value>,
 ) -> Result<StoredMessage> {
     let id = Uuid::new_v4().to_string();
     let role = role_to_string(&message.role);
     let parts_json = serde_json::to_string(&message.parts)?;
+    // UI-only metadata; stored in its own column so it never leaks into the
+    // model-visible parts_json.
+    let details_json = match details {
+        Some(value) => Some(serde_json::to_string(value)?),
+        None => None,
+    };
     let now = chrono::Utc::now().naive_utc();
 
     let ordering = sqlx::query_scalar!(
-        "INSERT INTO messages (id, conversation_id, role, parts_json, ordering, provider_id, model_id, created_at) SELECT $1, $2, $3, $4, COALESCE(MAX(ordering), 0) + 1, $5, $6, $7 FROM messages WHERE conversation_id = $2 RETURNING ordering",
+        "INSERT INTO messages (id, conversation_id, role, parts_json, details_json, ordering, provider_id, model_id, created_at) SELECT $1, $2, $3, $4, $5, COALESCE(MAX(ordering), 0) + 1, $6, $7, $8 FROM messages WHERE conversation_id = $2 RETURNING ordering",
         id,
         conversation_id,
         role,
         parts_json,
+        details_json,
         provider_id,
         model_id,
         now,
@@ -75,6 +86,7 @@ pub async fn insert_message(
         conversation_id: conversation_id.to_string(),
         role: role.to_string(),
         parts_json,
+        details_json,
         ordering,
         provider_id: provider_id.map(|s| s.to_string()),
         model_id: model_id.map(|s| s.to_string()),
@@ -91,7 +103,7 @@ pub async fn list_messages(
 ) -> Result<Vec<StoredMessage>> {
     let rows = sqlx::query_as!(
         StoredMessage,
-        "SELECT id, conversation_id, role, parts_json, ordering, provider_id, model_id, input_tokens, output_tokens, reasoning_tokens, created_at FROM messages WHERE conversation_id = $1 ORDER BY ordering ASC",
+        "SELECT id, conversation_id, role, parts_json, details_json, ordering, provider_id, model_id, input_tokens, output_tokens, reasoning_tokens, created_at FROM messages WHERE conversation_id = $1 ORDER BY ordering ASC",
         conversation_id,
     )
     .fetch_all(pool)
@@ -114,7 +126,7 @@ pub async fn get_last_provider_spec(
 ) -> Result<Option<(String, String)>> {
     let row: Option<StoredMessage> = sqlx::query_as!(
         StoredMessage,
-        "SELECT id, conversation_id, role, parts_json, ordering, provider_id, model_id, input_tokens, output_tokens, reasoning_tokens, created_at FROM messages WHERE conversation_id = $1 AND provider_id IS NOT NULL AND model_id IS NOT NULL ORDER BY ordering DESC LIMIT 1",
+        "SELECT id, conversation_id, role, parts_json, details_json, ordering, provider_id, model_id, input_tokens, output_tokens, reasoning_tokens, created_at FROM messages WHERE conversation_id = $1 AND provider_id IS NOT NULL AND model_id IS NOT NULL ORDER BY ordering DESC LIMIT 1",
         conversation_id,
     )
     .fetch_optional(pool)

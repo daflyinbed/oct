@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use crate::tools::AgentTool;
+use crate::tools::{AgentTool, OutputStream};
 use oct_llm_provider::model::ChatModel;
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -21,11 +21,32 @@ pub enum AgentEvent {
     #[serde(rename = "reasoning_delta")]
     ReasoningDelta(String),
 
+    /// The model is generating a tool call (forwarded verbatim from the
+    /// provider stream).
+    #[serde(rename = "tool_call_delta")]
+    ToolCallDelta {
+        call_id: String,
+        name: Option<String>,
+        arguments_delta: String,
+    },
+
     #[serde(rename = "tool_call_start")]
     ToolCallStart {
         id: String,
         name: String,
         arguments: String,
+        /// Human-readable title for this call (e.g. the command being run),
+        /// derived from the arguments for the UI.
+        title: String,
+    },
+
+    /// Live tool output while a call is still running. Live view only:
+    /// never persisted and never sent to the LLM.
+    #[serde(rename = "tool_output_delta")]
+    ToolOutputDelta {
+        call_id: String,
+        stream: OutputStream,
+        delta: String,
     },
 
     #[serde(rename = "tool_result")]
@@ -33,6 +54,9 @@ pub enum AgentEvent {
         call_id: String,
         content: String,
         is_error: bool,
+        /// UI-only structured metadata; never sent to the LLM.
+        #[schema(value_type = Object)]
+        details: Option<serde_json::Value>,
     },
 
     #[serde(rename = "usage")]

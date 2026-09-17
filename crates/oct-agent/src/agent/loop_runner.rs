@@ -73,7 +73,19 @@ pub async fn run_agent_loop(
                                 .event_tx
                                 .send(AgentEvent::ReasoningDelta(text));
                         }
-                        Ok(StreamEvent::ToolCallDelta { .. }) => {}
+                        Ok(StreamEvent::ToolCallDelta {
+                            call_id,
+                            name,
+                            arguments_delta,
+                        }) => {
+                            // Forward partial tool-call arguments verbatim so
+                            // the frontend can render the call as it streams.
+                            let _ = handle.event_tx.send(AgentEvent::ToolCallDelta {
+                                call_id,
+                                name,
+                                arguments_delta,
+                            });
+                        }
                         Ok(StreamEvent::ToolCall(tc)) => {
                             pending_tool_calls.push(tc);
                         }
@@ -127,7 +139,7 @@ pub async fn run_agent_loop(
                 role: Role::Assistant,
                 parts: assistant_parts,
             };
-            match msg_db::insert_message(&ctx.pool, &conv_id, &assistant_msg, None, None).await {
+            match msg_db::insert_message(&ctx.pool, &conv_id, &assistant_msg, None, None, None).await {
                 Ok(stored) => {
                     if let Some((input, output, reasoning)) = last_usage {
                         if let Err(e) = msg_db::update_message_usage(
@@ -163,6 +175,11 @@ pub async fn run_agent_loop(
         let total = indexed_calls.len();
 
         let mut futures = FuturesUnordered::new();
+        // ToolContext per call, parallel to `indexed_calls` (same idx). Kept
+        // here so the completion branch can flush the smoother's remainder
+        // before the final ToolResult event.
+        let mut contexts: Vec<tools::ToolContext> = Vec::with_capacity(total);
+
         for (idx, tc) in &indexed_calls {
             let tc = tc.clone();
             let idx = *idx;
@@ -170,18 +187,29 @@ pub async fn run_agent_loop(
             let args: Value = serde_json::from_str(&tc.arguments)
                 .unwrap_or(Value::Object(Default::default()));
 
+            // Best-effort human-readable title for the UI; falls back to the
+            // tool name (unknown tool, unparseable args).
+            let title = tools
+                .iter()
+                .find(|t| t.name() == tc.name)
+                .map_or_else(|| tc.name.clone(), |t| t.title(&args));
+
+            let tool_ctx = tools::ToolContext::new(tc.id.clone(), handle.event_tx.clone());
+            contexts.push(tool_ctx.clone());
+
             // Announce the call at dispatch time so the frontend learns the tool
             // has started before (not after) its result arrives.
             let _ = handle.event_tx.send(AgentEvent::ToolCallStart {
-                id: tc.id.clone(),
+                id: tool_ctx.call_id().to_string(),
                 name: tc.name.clone(),
                 arguments: tc.arguments.clone(),
+                title,
             });
 
             futures.push(async move {
                 let tool = tools.iter().find(|t| t.name() == tc.name);
                 let output = match tool {
-                    Some(t) => match t.execute(args).await {
+                    Some(t) => match t.execute(args, &tool_ctx).await {
                         Ok(o) => o,
                         Err(e) => crate::tools::ToolOutput::error(format!(
                             "Tool execution error: {e}"
@@ -202,10 +230,16 @@ pub async fn run_agent_loop(
                 result = futures.next() => {
                     match result {
                         Some((idx, tc, output)) => {
+                            // Flush the smoother's buffered remainder first so
+                            // the frontend has seen all streamed output when
+                            // the closing ToolResult arrives.
+                            contexts[idx].flush();
+
                             let _ = handle.event_tx.send(AgentEvent::ToolResult {
                                 call_id: tc.id.clone(),
                                 content: output.content.clone(),
                                 is_error: output.is_error,
+                                details: output.details.clone(),
                             });
 
                             let tool_msg = Message {
@@ -216,8 +250,17 @@ pub async fn run_agent_loop(
                                     is_error: output.is_error,
                                 })],
                             };
-                            if let Err(e) =
-                                msg_db::insert_message(&ctx.pool, &conv_id, &tool_msg, None, None).await
+                            // details are UI-only: persisted in their own
+                            // column, never inside parts_json.
+                            if let Err(e) = msg_db::insert_message(
+                                &ctx.pool,
+                                &conv_id,
+                                &tool_msg,
+                                None,
+                                None,
+                                output.details.as_ref(),
+                            )
+                            .await
                             {
                                 error!("Failed to persist tool result: {e}");
                             }
@@ -250,7 +293,7 @@ pub async fn run_agent_loop(
                         })],
                     };
                     if let Err(e) =
-                        msg_db::insert_message(&ctx.pool, &conv_id, &cancel_msg, None, None).await
+                        msg_db::insert_message(&ctx.pool, &conv_id, &cancel_msg, None, None, None).await
                     {
                         error!("Failed to persist cancel result: {e}");
                     }

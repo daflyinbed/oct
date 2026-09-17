@@ -141,6 +141,7 @@ pub async fn send_message(
         &user_msg,
         Some(&provider_id),
         Some(&model_id),
+        None,
     )
     .await
     {

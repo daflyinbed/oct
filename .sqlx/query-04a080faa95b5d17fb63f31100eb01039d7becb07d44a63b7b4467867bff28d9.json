@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, conversation_id, role, parts_json, ordering, provider_id, model_id, input_tokens, output_tokens, reasoning_tokens, created_at FROM messages WHERE conversation_id = $1 AND provider_id IS NOT NULL AND model_id IS NOT NULL ORDER BY ordering DESC LIMIT 1",
+  "query": "SELECT id, conversation_id, role, parts_json, details_json, ordering, provider_id, model_id, input_tokens, output_tokens, reasoning_tokens, created_at FROM messages WHERE conversation_id = $1 AND provider_id IS NOT NULL AND model_id IS NOT NULL ORDER BY ordering DESC LIMIT 1",
   "describe": {
     "columns": [
       {
@@ -24,38 +24,43 @@
         "type_info": "Text"
       },
       {
-        "name": "ordering",
+        "name": "details_json",
         "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "ordering",
+        "ordinal": 5,
         "type_info": "Integer"
       },
       {
         "name": "provider_id",
-        "ordinal": 5,
-        "type_info": "Text"
-      },
-      {
-        "name": "model_id",
         "ordinal": 6,
         "type_info": "Text"
       },
       {
-        "name": "input_tokens",
+        "name": "model_id",
         "ordinal": 7,
-        "type_info": "Integer"
+        "type_info": "Text"
       },
       {
-        "name": "output_tokens",
+        "name": "input_tokens",
         "ordinal": 8,
         "type_info": "Integer"
       },
       {
-        "name": "reasoning_tokens",
+        "name": "output_tokens",
         "ordinal": 9,
         "type_info": "Integer"
       },
       {
-        "name": "created_at",
+        "name": "reasoning_tokens",
         "ordinal": 10,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 11,
         "type_info": "Datetime"
       }
     ],
@@ -67,6 +72,7 @@
       false,
       false,
       false,
+      true,
       false,
       true,
       true,
@@ -76,5 +82,5 @@
       false
     ]
   },
-  "hash": "49d838ae694feb7564f7ea10aa9d7621f7786d844e6834a7965e9e5ba6e0fff1"
+  "hash": "04a080faa95b5d17fb63f31100eb01039d7becb07d44a63b7b4467867bff28d9"
 }

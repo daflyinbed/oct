@@ -10,13 +10,14 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use super::read::validate_path_within;
 use super::search_common::{relativize, search_walk_builder, timeout_note};
 use super::truncate::{truncate_middle, MAX_TOOL_OUTPUT_BYTES};
-use super::{AgentTool, ToolOutput};
+use super::{AgentTool, ToolContext, ToolOutput};
 
 /// Wall-clock budget for one glob run.
 const GLOB_TIMEOUT: Duration = Duration::from_secs(10);
@@ -44,6 +45,24 @@ struct GlobArgs {
     limit: Option<usize>,
 }
 
+/// UI-only metadata for a glob call. `found` counts ALL matches discovered
+/// during the walk, regardless of the result limit.
+#[derive(Debug, Serialize)]
+struct GlobDetails {
+    title: String,
+    pattern: String,
+    found: usize,
+    truncated: bool,
+    timed_out: bool,
+}
+
+/// Result counts surfaced to the UI via [`GlobDetails`].
+struct GlobStats {
+    found: usize,
+    truncated: bool,
+    timed_out: bool,
+}
+
 #[async_trait]
 impl AgentTool for GlobTool {
     fn name(&self) -> &str {
@@ -61,7 +80,14 @@ impl AgentTool for GlobTool {
         serde_json::to_value(schemars::schema_for!(GlobArgs)).unwrap()
     }
 
-    async fn execute(&self, args: serde_json::Value) -> Result<ToolOutput> {
+    fn title(&self, args: &serde_json::Value) -> String {
+        args.get("pattern")
+            .and_then(|v| v.as_str())
+            .unwrap_or("glob")
+            .to_string()
+    }
+
+    async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ToolOutput> {
         let args: GlobArgs =
             serde_json::from_value(args).context("Invalid arguments for glob")?;
 
@@ -96,7 +122,16 @@ impl AgentTool for GlobTool {
                 Ok(glob) => glob.compile_matcher(),
                 Err(e) => return ToolOutput::error(format!("Invalid glob pattern: {e}")),
             };
-            run_glob(working_canonical, root, matcher, limit)
+            let (mut output, stats) = run_glob(working_canonical, root, matcher, limit);
+            output.details = serde_json::to_value(GlobDetails {
+                title: pattern.clone(),
+                pattern,
+                found: stats.found,
+                truncated: stats.truncated,
+                timed_out: stats.timed_out,
+            })
+            .ok();
+            output
         })
         .await
         .context("glob search task panicked")?;
@@ -106,13 +141,13 @@ impl AgentTool for GlobTool {
 }
 
 /// Walk the search root, collect paths matching the glob, and render them.
-/// Runs entirely on a blocking thread.
+/// Runs entirely on a blocking thread. Also returns the UI-facing stats.
 fn run_glob(
     working_canonical: PathBuf,
     root: PathBuf,
     matcher: globset::GlobMatcher,
     limit: usize,
-) -> ToolOutput {
+) -> (ToolOutput, GlobStats) {
     let deadline = Instant::now() + GLOB_TIMEOUT;
     let mut timed_out = false;
     let mut matches: Vec<(SystemTime, String)> = Vec::new();
@@ -176,14 +211,29 @@ fn run_glob(
         out.push('\n');
     }
 
+    let stats = GlobStats {
+        found: total,
+        truncated: truncated || out.len() > MAX_TOOL_OUTPUT_BYTES,
+        timed_out,
+    };
+
     // Zero matches is a successful answer, not an error.
-    ToolOutput::success(truncate_middle(&out, MAX_TOOL_OUTPUT_BYTES))
+    (
+        ToolOutput::success(truncate_middle(&out, MAX_TOOL_OUTPUT_BYTES)),
+        stats,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::Path;
+
+    /// A ToolContext wired to a throwaway broadcast channel; glob does not
+    /// stream, so the context is only needed for the trait signature.
+    fn noop_ctx() -> ToolContext {
+        ToolContext::new("test", tokio::sync::broadcast::channel(1).0)
+    }
 
     /// Unique temp directory per test (pid + nanos), like the other tool tests.
     fn temp_workspace(tag: &str) -> PathBuf {
@@ -224,7 +274,7 @@ mod tests {
 
         // `**/` matches at any depth; newest file first.
         let recursive = GlobTool::new(wd.clone())
-            .execute(serde_json::json!({ "pattern": "**/*.txt" }))
+            .execute(serde_json::json!({ "pattern": "**/*.txt" }), &noop_ctx())
             .await
             .unwrap();
         assert!(!recursive.is_error);
@@ -237,7 +287,7 @@ mod tests {
 
         // Literal separators: `*.txt` stays at the top level.
         let top_level = GlobTool::new(wd.clone())
-            .execute(serde_json::json!({ "pattern": "*.txt" }))
+            .execute(serde_json::json!({ "pattern": "*.txt" }), &noop_ctx())
             .await
             .unwrap();
         assert!(top_level.content.contains("Found 3 files"));
@@ -263,7 +313,7 @@ mod tests {
         std::fs::write(wd.join("keep_file.txt"), "x").unwrap();
 
         let out = GlobTool::new(wd.clone())
-            .execute(serde_json::json!({ "pattern": "**/*.txt" }))
+            .execute(serde_json::json!({ "pattern": "**/*.txt" }), &noop_ctx())
             .await
             .unwrap();
 
@@ -283,7 +333,7 @@ mod tests {
         std::fs::write(wd.join("c.txt"), "c").unwrap();
 
         let out = GlobTool::new(wd.clone())
-            .execute(serde_json::json!({ "pattern": "**/*.txt", "limit": 2 }))
+            .execute(serde_json::json!({ "pattern": "**/*.txt", "limit": 2 }), &noop_ctx())
             .await
             .unwrap();
 
@@ -306,7 +356,7 @@ mod tests {
         std::fs::write(wd.join("a.txt"), "x").unwrap();
 
         let out = GlobTool::new(wd.clone())
-            .execute(serde_json::json!({ "pattern": "*.txt", "path": "a.txt" }))
+            .execute(serde_json::json!({ "pattern": "*.txt", "path": "a.txt" }), &noop_ctx())
             .await
             .unwrap();
         assert!(!out.is_error);
@@ -321,7 +371,7 @@ mod tests {
         let wd = temp_workspace("badpattern");
 
         let out = GlobTool::new(wd.clone())
-            .execute(serde_json::json!({ "pattern": "[" }))
+            .execute(serde_json::json!({ "pattern": "[" }), &noop_ctx())
             .await
             .unwrap();
 
