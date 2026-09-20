@@ -61,6 +61,13 @@ interface BuildableMessage {
 const messages = ref<DisplayMessage[]>([]);
 const sending = ref(false);
 
+/**
+ * Dedupe guard: the route watch in [id].vue and the tab-return refresh in
+ * App.vue can fire for the same conversation within one tick (sidebar
+ * switch while a non-chat tab is active); collapse repeats into one request.
+ */
+let lastFetch: { id: string; at: number } | null = null;
+
 /** Tail cap per tool call for live output kept in the DOM. */
 const LIVE_OUTPUT_MAX_CHARS = 32_768;
 
@@ -486,6 +493,15 @@ function applyStreamEvent(event: AgentEvent) {
 
 export function useChat() {
   const fetchMessages = async (conversationId: string) => {
+    const now = Date.now();
+    if (
+      lastFetch &&
+      lastFetch.id === conversationId &&
+      now - lastFetch.at < 200
+    ) {
+      return;
+    }
+    lastFetch = { id: conversationId, at: now };
     const { data, error } = await client.GET(
       "/api/conversations/{id}/messages",
       { params: { path: { id: conversationId } } },

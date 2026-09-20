@@ -155,6 +155,7 @@ import GitGraphTabView from "@/components/views/GitGraphTabView.vue";
 import FileTreePanel from "@/components/file-tree/FileTreePanel.vue";
 import ProjectSidebar from "@/components/sidebar/ProjectSidebar.vue";
 import SettingsModal from "@/components/settings/SettingsModal.vue";
+import { useChat } from "@/composables/useChat";
 import { useProjects } from "@/composables/useProjects";
 import { useTabs } from "@/composables/useTabs";
 import { useProviders } from "@/composables/useProviders";
@@ -170,6 +171,7 @@ const {
   createConversation,
 } = useProjects();
 const { fetchProviders } = useProviders();
+const { sending, fetchMessages } = useChat();
 const {
   tabs,
   activeTab,
@@ -225,11 +227,23 @@ watch(
   { immediate: true },
 );
 
-watch(activeTabId, (id) => {
+watch(activeTabId, (id, prevId) => {
   const tab = tabs.value.find((item) => item.id === id);
   if (tab?.kind === "chat" && tab.payload) {
     const target = `/conversation/${tab.payload}`;
-    if (route.path !== target) router.push(target);
+    // 前一个激活标签也是 chat 时路由已经变化，[id].vue 的 route watch
+    // 会拉取消息，这里无需重复请求（刚关闭的标签不在列表，按非 chat 算）
+    const prevWasChat =
+      prevId != null &&
+      tabs.value.some((item) => item.id === prevId && item.kind === "chat");
+    if (route.path !== target) {
+      router.push(target);
+    } else if (prevId != null && !prevWasChat && !sending.value) {
+      // 从非 chat 标签切回本会话时路由不变（chat 区只是 v-show 隐藏），
+      // route watch 不会触发：主动刷新，避免残留切换前的旧 live DOM。
+      // 流式进行中跳过——live 视图比库里的更完整。
+      fetchMessages(tab.payload);
+    }
   } else if (!tab && route.path !== "/") {
     router.push("/");
   }
