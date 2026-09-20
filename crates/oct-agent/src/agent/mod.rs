@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::tools::{AgentTool, OutputStream};
 use oct_llm_provider::model::ChatModel;
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq)]
 #[serde(tag = "type", content = "data")]
 pub enum AgentEvent {
     #[serde(rename = "text_delta")]
