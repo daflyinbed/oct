@@ -598,6 +598,16 @@ export function useChat() {
     }
   };
 
+  /**
+   * 请求取消该会话正在运行的 agent。UI 状态由 SSE 流（cancelled 事件 +
+   * 流关闭）落定而非本响应；错误（如 run 已结束时的 404）忽略即可。
+   */
+  const cancelConversation = async (conversationId: string) => {
+    await client.POST("/api/conversations/{id}/cancel", {
+      params: { path: { id: conversationId } },
+    });
+  };
+
   const clearMessages = () => {
     messages.value = [];
   };
@@ -607,6 +617,7 @@ export function useChat() {
     sending: readonly(sending),
     fetchMessages,
     sendMessage,
+    cancelConversation,
     clearMessages,
   };
 }

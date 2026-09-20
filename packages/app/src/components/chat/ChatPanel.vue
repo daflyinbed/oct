@@ -54,9 +54,19 @@
             @update:model-value="(v: string) => $emit('selectModel', v)"
           />
 
+          <!-- agent 运行中切换为停止按钮 -->
           <button
+            v-if="sending"
+            class="ml-1 h-7 w-7 flex items-center justify-center rounded-[7px] bg-neutral-3 text-neutral-10 transition-colors hover:bg-neutral-4"
+            title="停止"
+            @click="$emit('stop')"
+          >
+            <i-lucide-square class="h-3 w-3 fill-current" />
+          </button>
+          <button
+            v-else
             class="ml-1 h-7 w-7 flex items-center justify-center rounded-[7px] bg-accent-7 text-white transition-[filter] disabled:opacity-50 hover:brightness-110"
-            :disabled="!conversationId || sending"
+            :disabled="!conversationId"
             title="发送（Enter）"
             @click="handleSend"
           >
@@ -95,6 +105,7 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{
   send: [content: string];
+  stop: [];
   selectProvider: [providerId: string];
   selectModel: [modelId: string];
 }>();

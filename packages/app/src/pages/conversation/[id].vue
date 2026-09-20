@@ -7,6 +7,7 @@
     :selected-provider-id="selectedProviderId"
     :selected-model-id="selectedModelId"
     @send="handleSendMessage"
+    @stop="handleStop"
   />
 </template>
 
@@ -22,7 +23,8 @@ const conversationId = computed(
   () => (route.params as { id?: string }).id ?? "",
 );
 
-const { messages, sending, fetchMessages, sendMessage } = useChat();
+const { messages, sending, fetchMessages, sendMessage, cancelConversation } =
+  useChat();
 const { providers, selectedProviderId, selectedModelId, getProviderSpec } =
   useProviders();
 
@@ -37,5 +39,9 @@ watch(
 async function handleSendMessage(content: string) {
   if (!conversationId.value) return;
   await sendMessage(conversationId.value, content, getProviderSpec());
+}
+
+function handleStop() {
+  if (conversationId.value) cancelConversation(conversationId.value);
 }
 </script>

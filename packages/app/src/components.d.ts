@@ -46,6 +46,7 @@ declare module 'vue' {
     ILucideSearch: typeof import('~icons/lucide/search')['default']
     ILucideSettings: typeof import('~icons/lucide/settings')['default']
     ILucideSlidersHorizontal: typeof import('~icons/lucide/sliders-horizontal')['default']
+    ILucideSquare: typeof import('~icons/lucide/square')['default']
     ILucideSun: typeof import('~icons/lucide/sun')['default']
     ILucideX: typeof import('~icons/lucide/x')['default']
     ProjectSidebar: typeof import('./components/sidebar/ProjectSidebar.vue')['default']
