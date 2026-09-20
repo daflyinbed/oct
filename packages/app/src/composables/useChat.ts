@@ -132,7 +132,11 @@ function appendLiveOutput(
     segments.push({ stream, text: delta });
   }
 
-  let total = card.liveOutput.droppedChars;
+  // The cap applies to RETAINED text only; droppedChars is a running count
+  // of what was trimmed, not part of the budget. (Including it here made the
+  // loop over-trim: once droppedChars alone exceeded the cap, every further
+  // delta was sliced away until the live view emptied out.)
+  let total = 0;
   for (const seg of segments) total += seg.text.length;
   while (total > LIVE_OUTPUT_MAX_CHARS && segments.length > 0) {
     const first = segments[0];

@@ -1,0 +1,396 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import client from "@/api/client";
+import { useChat } from "@/composables/useChat";
+
+import type { ToolCallPart } from "@/composables/useChat";
+import type { DeepReadonly } from "vue";
+
+// fetchMessages 走 openapi-fetch client，这里整体 mock 掉。
+vi.mock("@/api/client", () => ({
+  default: { GET: vi.fn(), POST: vi.fn() },
+}));
+
+const GET = vi.mocked(client.GET);
+
+const { messages, sending, fetchMessages, sendMessage, clearMessages } =
+  useChat();
+
+// ---------------------------------------------------------------------------
+// 测试数据构造
+// ---------------------------------------------------------------------------
+
+/** 后端 StoredMessage 的最小形状（仅用到本 composable 读的字段）。 */
+function storedMessage(
+  role: string,
+  partsJson: string,
+  extra: Record<string, unknown> = {},
+) {
+  return {
+    id: `msg-${Math.random().toString(36).slice(2)}`,
+    conversation_id: "conv",
+    role,
+    parts_json: partsJson,
+    details_json: null,
+    ordering: 0,
+    provider_id: null,
+    model_id: null,
+    input_tokens: null,
+    output_tokens: null,
+    reasoning_tokens: null,
+    created_at: "2026-09-20T00:00:00",
+    ...extra,
+  };
+}
+
+/** 用 SSE body 生成 Response（可按任意字符串切块，模拟网络分片）。 */
+function sseResponse(chunks: string[]): Response {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      controller.close();
+    },
+  });
+  return new Response(stream, {
+    status: 200,
+    headers: { "content-type": "text/event-stream" },
+  });
+}
+
+function sse(events: unknown[]): Response {
+  return sseResponse([
+    `${events.map((e) => `data: ${JSON.stringify(e)}`).join("\n\n")}\n\n`,
+  ]);
+}
+
+// AgentEvent 线格式（serde tag="type" content="data"）
+const textDelta = (data: string) => ({ type: "text_delta", data });
+const reasoningDelta = (data: string) => ({ type: "reasoning_delta", data });
+function toolCallDelta(
+  call_id: string,
+  arguments_delta: string,
+  name: string | null = null,
+) {
+  return { type: "tool_call_delta", data: { call_id, name, arguments_delta } };
+}
+function toolCallStart(
+  id: string,
+  name: string,
+  title: string,
+  arguments_: string,
+) {
+  return {
+    type: "tool_call_start",
+    data: { id, name, title, arguments: arguments_ },
+  };
+}
+function toolOutputDelta(
+  call_id: string,
+  stream: "stdout" | "stderr",
+  delta: string,
+) {
+  return { type: "tool_output_delta", data: { call_id, stream, delta } };
+}
+function toolResult(
+  call_id: string,
+  content: string,
+  is_error = false,
+  details: Record<string, unknown> | null = null,
+) {
+  return {
+    type: "tool_result",
+    data: { call_id, content, is_error, details },
+  };
+}
+const finishEvent = { type: "finish" };
+const cancelledEvent = { type: "cancelled" };
+const errorEvent = (data: string) => ({ type: "error", data });
+
+function toolCards(): DeepReadonly<ToolCallPart>[] {
+  return messages.value.flatMap((m) =>
+    m.parts.filter(
+      (p): p is DeepReadonly<ToolCallPart> => p.kind === "tool_call",
+    ),
+  );
+}
+
+let convSeq = 0;
+/** 每个用例用独立会话 id，避开 fetchMessages 的 200ms 去重守卫。 */
+function nextConvId(): string {
+  convSeq += 1;
+  return `conv-${convSeq}`;
+}
+
+beforeEach(() => {
+  clearMessages();
+  GET.mockReset();
+  vi.unstubAllGlobals();
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+// ---------------------------------------------------------------------------
+// 历史回放（fetchMessages → storedToDisplayList）
+// ---------------------------------------------------------------------------
+
+describe("fetchMessages 历史回放", () => {
+  it("用户与助手的文本消息各自渲染为气泡", async () => {
+    GET.mockResolvedValue({
+      data: [
+        storedMessage("user", '[{"Text":"你好"}]'),
+        storedMessage("assistant", '[{"Text":"先分析"},{"Text":"再回答"}]'),
+      ],
+    } as never);
+
+    await fetchMessages(nextConvId());
+
+    expect(messages.value.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(messages.value[1]?.parts).toEqual([
+      { kind: "text", text: "先分析再回答" },
+    ]);
+  });
+
+  it("tool 消息回填到匹配的工具卡片（content/details/title）", async () => {
+    GET.mockResolvedValue({
+      data: [
+        storedMessage("user", '[{"Text":"读一下"}]'),
+        storedMessage(
+          "assistant",
+          String.raw`[{"ToolCall":{"id":"c1","name":"read_file","arguments":"{\"path\":\"a.txt\"}"}}]`,
+        ),
+        storedMessage(
+          "tool",
+          '[{"ToolResult":{"call_id":"c1","content":"1. hi","is_error":false}}]',
+          { details_json: '{"title":"a.txt","total_lines":1}' },
+        ),
+      ],
+    } as never);
+
+    await fetchMessages(nextConvId());
+
+    // tool 消息不单独成气泡，而是填充进 assistant 的卡片
+    expect(messages.value.map((m) => m.role)).toEqual(["user", "assistant"]);
+    const card = toolCards()[0]!;
+    expect(card.name).toBe("read_file");
+    expect(card.status).toBe("done");
+    expect(card.content).toBe("1. hi");
+    expect(card.isError).toBe(false);
+    expect(card.title).toBe("a.txt");
+    expect(card.details).toEqual({ title: "a.txt", total_lines: 1 });
+  });
+
+  it("孤儿 tool result（无匹配卡片）落到最近的 assistant 消息上", async () => {
+    GET.mockResolvedValue({
+      data: [
+        storedMessage("user", '[{"Text":"旧数据"}]'),
+        storedMessage(
+          "tool",
+          '[{"ToolResult":{"call_id":"orphan","content":"x","is_error":true}}]',
+        ),
+      ],
+    } as never);
+
+    await fetchMessages(nextConvId());
+
+    const cards = toolCards();
+    expect(cards).toHaveLength(1);
+    expect(cards[0]!.name).toBe("unknown");
+    expect(cards[0]!.isError).toBe(true);
+    // 宿主是补建的 assistant 消息
+    expect(messages.value.at(-1)?.role).toBe("assistant");
+  });
+
+  it("无法解析的 parts_json 降级为单一文本 part", async () => {
+    GET.mockResolvedValue({
+      data: [storedMessage("user", "not-json-at-all")],
+    } as never);
+
+    await fetchMessages(nextConvId());
+
+    expect(messages.value[0]?.parts).toEqual([
+      { kind: "text", text: "not-json-at-all" },
+    ]);
+  });
+
+  it("请求失败时保持现有消息不变", async () => {
+    GET.mockResolvedValue({ data: undefined, error: {} } as never);
+    await fetchMessages(nextConvId());
+    expect(messages.value).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 实时流（sendMessage → fetch SSE → applyStreamEvent）
+// ---------------------------------------------------------------------------
+
+describe("sendMessage 实时流", () => {
+  function stubFetch(...responses: Response[]) {
+    const fetchMock = vi.fn();
+    for (const r of responses) fetchMock.mockResolvedValueOnce(r);
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it("文本 delta 累积为一个文本 part，finish 后结束流式态", async () => {
+    stubFetch(
+      sse([
+        textDelta("你好"),
+        textDelta("，世界"),
+        reasoningDelta("思考中"), // 不渲染，但不应破坏状态
+        {
+          type: "usage",
+          data: { input_tokens: 1, output_tokens: 2, reasoning_tokens: null },
+        },
+        finishEvent,
+      ]),
+    );
+
+    await sendMessage(nextConvId(), "hi");
+
+    // pending 用户消息 + 最终 assistant 消息
+    expect(messages.value).toHaveLength(2);
+    expect(messages.value[0]?.role).toBe("user");
+    const assistant = messages.value[1]!;
+    expect(assistant.role).toBe("assistant");
+    expect(assistant.parts).toEqual([{ kind: "text", text: "你好，世界" }]);
+    expect(assistant.isStreaming).toBe(false);
+    expect(sending.value).toBe(false);
+  });
+
+  it("sSE 行在网络分片中间断开仍能正确解析", async () => {
+    const body =
+      `data: ${JSON.stringify(textDelta("你"))}\n\n` +
+      `data: ${JSON.stringify(textDelta("好"))}\n\n` +
+      `data: ${JSON.stringify(finishEvent)}\n\n`;
+    // 故意在 data 前缀中间和 JSON 中间切断
+    const cut1 = body.indexOf("ata: ");
+    const cut2 = body.indexOf('{"type"') + 4;
+    stubFetch(
+      sseResponse([
+        body.slice(0, cut1),
+        body.slice(cut1, cut2),
+        body.slice(cut2),
+      ]),
+    );
+
+    await sendMessage(nextConvId(), "hi");
+
+    expect(messages.value[1]?.parts).toEqual([{ kind: "text", text: "你好" }]);
+  });
+
+  it("工具卡片完整生命周期：delta 生成 → start 运行 → 输出流 → result 完成", async () => {
+    stubFetch(
+      sse([
+        toolCallDelta("call-1", '{"pa', "read_file"),
+        toolCallStart("call-1", "read_file", "a.txt", '{"path":"a.txt"}'),
+        toolOutputDelta("call-1", "stdout", "line1\n"),
+        toolOutputDelta("call-1", "stdout", "line2\n"), // 同流合并
+        toolOutputDelta("call-1", "stderr", "warn\n"), // 换流分段
+        toolResult("call-1", "1. line1\n2. line2", false, {
+          title: "a.txt",
+          total_lines: 2,
+        }),
+        textDelta("done"),
+        finishEvent,
+      ]),
+    );
+
+    await sendMessage(nextConvId(), "read a.txt");
+
+    const card = toolCards()[0]!;
+    expect(card.name).toBe("read_file");
+    expect(card.title).toBe("a.txt");
+    expect(card.arguments).toBe('{"path":"a.txt"}'); // start 的 canonical 参数覆盖 delta 累积
+    expect(card.status).toBe("done");
+    expect(card.content).toBe("1. line1\n2. line2");
+    expect(card.details).toEqual({ title: "a.txt", total_lines: 2 });
+    expect(card.liveOutput.segments.map((s) => [s.stream, s.text])).toEqual([
+      ["stdout", "line1\nline2\n"],
+      ["stderr", "warn\n"],
+    ]);
+  });
+
+  it("cancelled：generating 卡片被丢弃，running 卡片落为错误", async () => {
+    stubFetch(
+      sse([
+        toolCallDelta("c-gen", "{}"), // 只到 delta：generating → 丢弃
+        toolCallStart("c-run", "execute", "ls", "{}"), // 已派发：running → 错误
+        toolCallStart("c-done", "read_file", "a.txt", "{}"),
+        toolResult("c-done", "ok"), // 已有结果：done 保持
+        cancelledEvent,
+      ]),
+    );
+
+    await sendMessage(nextConvId(), "hi");
+
+    const cards = toolCards().sort((a, b) => a.callId.localeCompare(b.callId));
+    expect(cards.map((c) => c.callId)).toEqual(["c-done", "c-run"]);
+    expect(cards[0]!.status).toBe("done");
+    expect(cards[0]!.isError).toBe(false);
+    expect(cards[1]!.status).toBe("done");
+    expect(cards[1]!.isError).toBe(true);
+    expect(messages.value.at(-1)?.isStreaming).toBe(false);
+  });
+
+  it("error 事件把错误文本合并进当前文本 part", async () => {
+    stubFetch(sse([textDelta("部分回答"), errorEvent("LLM error: boom")]));
+
+    await sendMessage(nextConvId(), "hi");
+
+    // 尾部已是文本 part 时错误信息以空行分隔追加（与渲染行为一致）
+    expect(messages.value[1]?.parts).toEqual([
+      { kind: "text", text: "部分回答\n\nError: LLM error: boom" },
+    ]);
+  });
+
+  it("hTTP 非 2xx 或网络失败时给出失败提示且不悬挂流式态", async () => {
+    stubFetch(new Response("boom", { status: 500 }));
+    await sendMessage(nextConvId(), "hi");
+    expect(messages.value[1]?.parts).toEqual([
+      { kind: "text", text: "Failed to send message." },
+    ]);
+    expect(sending.value).toBe(false);
+
+    // 流式消息 id 取自 Date.now()：隔几毫秒避免与上一次 send 撞 id
+    await new Promise((r) => setTimeout(r, 5));
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network")));
+    await sendMessage(nextConvId(), "hi");
+    expect(messages.value[3]?.parts).toEqual([
+      { kind: "text", text: "Failed to send message." },
+    ]);
+    expect(sending.value).toBe(false);
+  });
+
+  it("空白内容直接忽略，不发起请求", async () => {
+    const fetchMock = stubFetch();
+    await sendMessage(nextConvId(), "   ");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(messages.value).toHaveLength(0);
+  });
+
+  it("live output 超过尾部上限时裁掉最旧内容并计数", async () => {
+    // 40KB stdout 输出 > LIVE_OUTPUT_MAX_CHARS(32768)
+    const chunk = "x".repeat(1024);
+    const events = [
+      toolCallStart("c1", "execute", "cat big", "{}"),
+      ...Array.from({ length: 40 }).fill(
+        toolOutputDelta("c1", "stdout", chunk),
+      ),
+      toolResult("c1", "final"),
+      finishEvent,
+    ];
+    stubFetch(sse(events));
+
+    await sendMessage(nextConvId(), "hi");
+
+    const card = toolCards()[0]!;
+    const kept = card.liveOutput.segments.reduce(
+      (n, s) => n + s.text.length,
+      0,
+    );
+    expect(kept).toBe(32768);
+    expect(card.liveOutput.droppedChars).toBe(40 * 1024 - 32768);
+  });
+});
