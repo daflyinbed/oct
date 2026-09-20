@@ -6,3 +6,4 @@ packages/*/dist
 *.db-shm
 packages/oct-design
 .zcode/
+.vitest/
