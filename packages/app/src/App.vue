@@ -43,7 +43,9 @@
         :default-size="40"
         :min-size="25"
       >
-        <div class="flex flex-col flex-1 min-h-0 min-w-0">
+        <!-- h-full 而非 flex-1：SplitterPanel 的 DOM 不是 flex 容器，
+             百分比高度才是让内部 flex-1/overflow 链生效的锚点 -->
+        <div class="flex flex-col h-full min-h-0 min-w-0">
           <WorkspaceTabBar
             :tabs="displayTabs"
             @select="activateTab"
