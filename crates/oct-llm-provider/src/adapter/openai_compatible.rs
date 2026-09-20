@@ -896,10 +896,14 @@ fn normalize_chat_completion_chunk_with_state(
 
         if let Some(reason) = choice.finish_reason {
             if reason == "tool_calls" || reason == "function_call" {
-                for (_, accumulator) in std::mem::take(tool_state) {
+                for (index, accumulator) in std::mem::take(tool_state) {
                     if accumulator.id.is_some() || accumulator.name.is_some() {
                         events.push(StreamEvent::ToolCall(crate::core::ToolCall {
-                            id: accumulator.id.unwrap_or_default(),
+                            // Keep the id consistent with the delta events
+                            // (which fall back to the index): an empty id here
+                            // would break downstream start/result matching
+                            // for providers that never send one.
+                            id: accumulator.id.unwrap_or(index),
                             name: accumulator.name.unwrap_or_default(),
                             arguments: accumulator.arguments,
                         }));
@@ -938,7 +942,14 @@ fn parse_tool_call_delta(
     }
     accumulator.arguments.push_str(&arguments_delta);
 
-    let delta_call_id = call_id_str.unwrap_or_else(|| index.clone());
+    // Some providers (e.g. DeepSeek) include the tool call id only on the
+    // first delta of a call; every later delta must reuse the id established
+    // for this index, otherwise downstream delta/dispatch matching by call_id
+    // breaks and the deltas split across two ids.
+    let delta_call_id = accumulator
+        .id
+        .clone()
+        .unwrap_or_else(|| index.clone());
 
     Ok((
         StreamEvent::ToolCallDelta {
