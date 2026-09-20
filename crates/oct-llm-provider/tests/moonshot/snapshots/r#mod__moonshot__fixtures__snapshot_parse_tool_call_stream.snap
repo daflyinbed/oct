@@ -1,5 +1,5 @@
 ---
-source: tests/moonshot/fixtures.rs
+source: crates/oct-llm-provider/tests/moonshot/fixtures.rs
 expression: events
 ---
 - ReasoningDelta: The
@@ -36,35 +36,35 @@ expression: events
     name: get_weather
     arguments_delta: ""
 - ToolCallDelta:
-    call_id: "0"
+    call_id: "get_weather:0"
     name: ~
     arguments_delta: "{\""
 - ToolCallDelta:
-    call_id: "0"
+    call_id: "get_weather:0"
     name: ~
     arguments_delta: location
 - ToolCallDelta:
-    call_id: "0"
+    call_id: "get_weather:0"
     name: ~
     arguments_delta: "\":"
 - ToolCallDelta:
-    call_id: "0"
+    call_id: "get_weather:0"
     name: ~
     arguments_delta: " \""
 - ToolCallDelta:
-    call_id: "0"
+    call_id: "get_weather:0"
     name: ~
     arguments_delta: S
 - ToolCallDelta:
-    call_id: "0"
+    call_id: "get_weather:0"
     name: ~
     arguments_delta: hen
 - ToolCallDelta:
-    call_id: "0"
+    call_id: "get_weather:0"
     name: ~
     arguments_delta: zhen
 - ToolCallDelta:
-    call_id: "0"
+    call_id: "get_weather:0"
     name: ~
     arguments_delta: "\"}"
 - ToolCall:
