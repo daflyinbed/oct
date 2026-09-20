@@ -16,6 +16,7 @@ declare module 'vue' {
     ChatMessage: typeof import('./components/chat/ChatMessage.vue')['default']
     ChatPanel: typeof import('./components/chat/ChatPanel.vue')['default']
     DiffFileCards: typeof import('./components/diff/DiffFileCards.vue')['default']
+    DiffLines: typeof import('./components/diff/DiffLines.vue')['default']
     DiffPanel: typeof import('./components/diff/DiffPanel.vue')['default']
     DiffTabView: typeof import('./components/views/DiffTabView.vue')['default']
     FileTabView: typeof import('./components/views/FileTabView.vue')['default']
