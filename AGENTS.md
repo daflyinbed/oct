@@ -4,7 +4,7 @@
 
 Two separate package managers coexist:
 
-- **Rust workspace** (`Cargo.toml`): `crates/oct-llm-provider` (library) → `crates/oct-agent` (binary)
+- **Rust workspace** (`Cargo.toml`): `crates/oct-llm-provider` (library) → `crates/oct-agent` (library + `oct-agent` binary; integration tests import `oct_agent::…`)
 - **pnpm workspace** (`pnpm-workspace.yaml`): `packages/app` (Vue 3 frontend)
 
 ## Commands
@@ -80,8 +80,13 @@ pnpm -r exec eslint .                 # ESLint with @xwbx/eslint-config flat con
 
 ## Testing
 
+- CI 铁律:测试绝不调用真实模型。所有 LLM 交互都由 mock 驱动(scripted model / 本地 HTTP mock server)。
 - `oct-llm-provider` tests use **insta** snapshot testing (YAML). Fixtures are JSON files under `tests/<provider>/fixtures/`. After intentional output changes, run `cargo insta review` to accept new snapshots. Test files: `adapter_openai_compatible.rs`, `providers_anthropic.rs`, `registry.rs`, `anthropic/`, `moonshot/`.
-- `oct-agent` has no automated tests yet.
+- `oct-llm-provider` **wire-format tests** (`tests/http_wire.rs`): raw-TCP mock server (`tests/http_mock/`) 驱动真实 reqwest + SSE 解码路径,响应体按"恶意"字节边界切块(多字节 UTF-8 中间、SSE 事件中间、data 行中间),并覆盖 401/429/500 状态映射。API key 经环境变量注入(Anthropic)或显式参数注入(OpenAI)。
+- `oct-agent` **agent loop integration tests** (`tests/agent_loop.rs`): `tests/support/` 提供 `ScriptedModel`(剧本化 ChatModel,记录收到的每个 ChatRequest)驱动完整生产路径(真实工具 + SQLite + broadcast 事件),覆盖工具调用回路、并行工具、取消三个时机、错误传播。DB 用临时文件 SQLite(`TestEnv`),不要用 `:memory:`(连接池各连接是独立的库)。
+- `oct-agent` **API e2e tests** (`tests/api_e2e.rs`): `tests/support` 的 `TestApp` 在随机端口起真实 axum 服务器(独立迁移的临时 SQLite),纯 HTTP 驱动;LLM 是 `tests/support/llm.rs` 的 axum 版 OpenAI 兼容 mock,经 `POST /api/providers` 的 base_url 注入——整条生产链路(路由 → DB 解析 → reqwest → SSE 解码 → agent loop → 真实工具 → 持久化 → SSE 事件流)零生产代码改动地被黑盒覆盖。含 CRUD、工具回路、409 冲突、cancel、错误路径 session 清理。
+- 测试禁 sleep 等并发:取消用 `CancellationToken`(同步原语),等事件用 `rx.recv()` + timeout 兜底;SSE 断言以流 EOF 为终止信号(session entry 移除 ⟹ broadcast 关闭 ⟹ body 结束)。
+- `oct-agent` 工具层为内联 `#[cfg(test)]` 测试(`src/tools/`)。
 
 ## Code Style
 
