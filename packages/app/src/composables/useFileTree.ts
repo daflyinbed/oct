@@ -37,7 +37,10 @@ function toErrorMessage(e: unknown, fallback: string): string {
   return e instanceof Error && e.message ? e.message : fallback;
 }
 
-async function fetchEntries(projectId: string, path: string): Promise<TreeNode[]> {
+async function fetchEntries(
+  projectId: string,
+  path: string,
+): Promise<TreeNode[]> {
   const { data, error: err } = await client.GET(
     "/api/projects/{projectId}/files",
     {
@@ -82,8 +85,9 @@ async function loadRoot(projectId: string) {
     if (seq !== loadSeq) return;
     items.value = nodes;
     loadedDirs.add("");
-  } catch (e) {
-    if (seq === loadSeq) error.value = toErrorMessage(e, "Failed to load files");
+  } catch (error_) {
+    if (seq === loadSeq)
+      error.value = toErrorMessage(error_, "Failed to load files");
   } finally {
     if (seq === loadSeq) loading.value = false;
   }
@@ -98,9 +102,9 @@ async function ensureChildren(projectId: string, node: TreeNode) {
     if (projectId !== currentProjectId) return;
     node.children = children;
     loadedDirs.add(node.path);
-  } catch (e) {
+  } catch (error_) {
     if (projectId === currentProjectId) {
-      error.value = toErrorMessage(e, `Failed to load ${node.path}`);
+      error.value = toErrorMessage(error_, `Failed to load ${node.path}`);
     }
   } finally {
     pendingDirs.delete(node.path);

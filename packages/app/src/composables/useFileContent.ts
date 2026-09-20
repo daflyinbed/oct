@@ -33,5 +33,9 @@ export function useFileContent(projectId: string | null, path: string) {
     error.value = "No project is active for this file.";
   }
 
-  return { data: readonly(data), loading: readonly(loading), error: readonly(error) };
+  return {
+    data: readonly(data),
+    loading: readonly(loading),
+    error: readonly(error),
+  };
 }

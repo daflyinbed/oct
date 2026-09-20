@@ -4,7 +4,7 @@
       :projects="projects"
       :active-project-id="activeProjectId"
       @select-project="handleSelectProject"
-      @create-project="handleCreateProject"
+      @create-project="showNewProject = true"
       @open-settings="showSettings = true"
     />
 
@@ -45,18 +45,18 @@
       >
         <!-- h-full 而非 flex-1：SplitterPanel 的 DOM 不是 flex 容器，
              百分比高度才是让内部 flex-1/overflow 链生效的锚点 -->
-        <div class="flex flex-col h-full min-h-0 min-w-0">
+        <div class="h-full min-h-0 min-w-0 flex flex-col">
           <WorkspaceTabBar
             :tabs="displayTabs"
             @select="activateTab"
             @close="closeTab"
             @tab-action="handleTabAction"
           />
-          <div class="flex flex-col flex-1 min-h-0">
+          <div class="min-h-0 flex flex-1 flex-col">
             <!-- Chat 内容走路由（深链/侧栏入口共用）；其余标签类型直接切换渲染 -->
             <div
               v-show="!activeTab || activeTab.kind === 'chat'"
-              class="flex flex-col flex-1 min-h-0"
+              class="min-h-0 flex flex-1 flex-col"
             >
               <RouterView />
             </div>
@@ -139,39 +139,38 @@
     />
 
     <SettingsModal :visible="showSettings" @close="showSettings = false" />
+    <NewProjectDialog
+      :visible="showNewProject"
+      @close="showNewProject = false"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
+import { SplitterGroup, SplitterPanel, SplitterResizeHandle } from "reka-ui";
 import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { SplitterGroup, SplitterPanel, SplitterResizeHandle } from "reka-ui";
 import BottomBar from "@/components/BottomBar.vue";
-import WorkspaceTabBar, {
-  type TabAction,
-} from "@/components/layout/WorkspaceTabBar.vue";
 import DiffPanel from "@/components/diff/DiffPanel.vue";
-import FileTabView from "@/components/views/FileTabView.vue";
-import DiffTabView from "@/components/views/DiffTabView.vue";
-import GitGraphTabView from "@/components/views/GitGraphTabView.vue";
 import FileTreePanel from "@/components/file-tree/FileTreePanel.vue";
-import ProjectSidebar from "@/components/sidebar/ProjectSidebar.vue";
+import NewProjectDialog from "@/components/layout/NewProjectDialog.vue";
+import WorkspaceTabBar from "@/components/layout/WorkspaceTabBar.vue";
 import SettingsModal from "@/components/settings/SettingsModal.vue";
+import ProjectSidebar from "@/components/sidebar/ProjectSidebar.vue";
+import DiffTabView from "@/components/views/DiffTabView.vue";
+import FileTabView from "@/components/views/FileTabView.vue";
+import GitGraphTabView from "@/components/views/GitGraphTabView.vue";
 import { useChat } from "@/composables/useChat";
 import { useProjects } from "@/composables/useProjects";
-import { useTabs } from "@/composables/useTabs";
 import { useProviders } from "@/composables/useProviders";
+import { useTabs } from "@/composables/useTabs";
+import type { TabAction } from "@/components/layout/WorkspaceTabBar.vue";
 
 const route = useRoute();
 const router = useRouter();
 
-const {
-  projects,
-  conversations,
-  fetchProjects,
-  createProject,
-  createConversation,
-} = useProjects();
+const { projects, conversations, fetchProjects, createConversation } =
+  useProjects();
 const { fetchProviders } = useProviders();
 const { sending, fetchMessages } = useChat();
 const {
@@ -205,6 +204,7 @@ const showChat = ref(true);
 const showDiffPanel = ref(true);
 const showFileTree = ref(true);
 const showSettings = ref(false);
+const showNewProject = ref(false);
 
 const hasVisiblePanel = computed(
   () =>
@@ -273,7 +273,7 @@ function handleTabAction(action: TabAction) {
 async function handleAddChatTab() {
   const projectId = activeProjectId.value ?? projects.value[0]?.id;
   if (!projectId) {
-    await handleCreateProject();
+    showNewProject.value = true;
     return;
   }
   const conversation = await createConversation(projectId);
@@ -309,14 +309,6 @@ async function handleSelectProject(projectId: string) {
   if (conversation) {
     router.push(`/conversation/${conversation.id}`);
   }
-}
-
-async function handleCreateProject() {
-  const name = prompt("Project name:");
-  if (!name) return;
-  const workingDir = prompt("Working directory:");
-  if (!workingDir) return;
-  await createProject(name, workingDir);
 }
 
 async function handleCreateConversation(projectId: string) {

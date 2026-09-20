@@ -1,6 +1,5 @@
-import { createHighlighterCore, type HighlighterCore } from "shiki/core";
+import { createHighlighterCore } from "shiki/core";
 import { createOnigurumaEngine } from "shiki/engine/oniguruma";
-
 import langC from "shiki/langs/c.mjs";
 import langCpp from "shiki/langs/cpp.mjs";
 import langCss from "shiki/langs/css.mjs";
@@ -35,6 +34,7 @@ import langXml from "shiki/langs/xml.mjs";
 import langYaml from "shiki/langs/yaml.mjs";
 import themeGithubDark from "shiki/themes/github-dark-default.mjs";
 import themeGithubLight from "shiki/themes/github-light.mjs";
+import type { HighlighterCore } from "shiki/core";
 
 // 与 FileTreePanel 图标表对应的常用语言集合；未列出的后缀回退 plaintext。
 const EXTENSION_LANGUAGES: Record<string, string> = {
@@ -155,9 +155,14 @@ function getHighlighter(): Promise<HighlighterCore> {
 
 // defaultColor: false 让明暗两套颜色都以 CSS 变量（--shiki-light/--shiki-dark）
 // 输出，由 .code-view 的样式跟随 data-theme 切换。
-export async function highlightCode(code: string, lang: string): Promise<string> {
+export async function highlightCode(
+  code: string,
+  lang: string,
+): Promise<string> {
   const highlighter = await getHighlighter();
-  const resolved = highlighter.getLoadedLanguages().includes(lang) ? lang : "plaintext";
+  const resolved = highlighter.getLoadedLanguages().includes(lang)
+    ? lang
+    : "plaintext";
   return highlighter.codeToHtml(code, {
     lang: resolved,
     themes: { light: "github-light", dark: "github-dark-default" },

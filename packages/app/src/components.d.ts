@@ -50,6 +50,7 @@ declare module 'vue' {
     ILucideSquare: typeof import('~icons/lucide/square')['default']
     ILucideSun: typeof import('~icons/lucide/sun')['default']
     ILucideX: typeof import('~icons/lucide/x')['default']
+    NewProjectDialog: typeof import('./components/layout/NewProjectDialog.vue')['default']
     ProjectSidebar: typeof import('./components/sidebar/ProjectSidebar.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']

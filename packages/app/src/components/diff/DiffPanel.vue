@@ -1,16 +1,16 @@
 <template>
   <aside v-if="visible" class="workspace-panel h-full w-full bg-panel">
     <header
-      class="workspace-panel-header justify-between border-b border-line-soft select-none"
+      class="workspace-panel-header select-none justify-between border-b border-line-soft"
     >
       <div
-        class="flex items-center gap-[7px] text-[12.5px] font-semibold text-neutral-10"
+        class="flex items-center gap-[7px] text-[12.5px] text-neutral-10 font-semibold"
       >
-        <i-lucide-git-compare class="w-3.5 h-3.5 text-dim" />
+        <i-lucide-git-compare class="h-3.5 w-3.5 text-dim" />
         Changes
       </div>
       <button
-        class="control-ghost control-focus w-[22px] h-[22px] rounded-md text-[12px]"
+        class="h-[22px] w-[22px] control-ghost rounded-md text-[12px] control-focus"
         title="关闭"
         @click="$emit('close')"
       >

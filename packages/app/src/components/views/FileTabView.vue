@@ -1,25 +1,27 @@
 <template>
   <section class="workspace-panel min-w-0 flex-1 bg-background">
     <header
-      class="h-9 flex-none flex items-center gap-2 px-4 border-b border-line-soft font-mono text-[12.5px] text-dim"
+      class="h-9 flex flex-none items-center gap-2 border-b border-line-soft px-4 text-[12.5px] text-dim font-mono"
     >
-      <component :is="icon" class="w-3.5 h-3.5 flex-none text-faint" />
+      <component :is="icon" class="h-3.5 w-3.5 flex-none text-faint" />
       <span class="truncate">{{ path }}</span>
-      <span v-if="meta" class="ml-auto flex-none pl-4 text-faint">{{ meta }}</span>
+      <span v-if="meta" class="ml-auto flex-none pl-4 text-faint">{{
+        meta
+      }}</span>
     </header>
 
     <div
       v-if="pending"
-      class="flex-1 flex items-center justify-center gap-2 text-[12.5px] text-faint"
+      class="flex flex-1 items-center justify-center gap-2 text-[12.5px] text-faint"
     >
-      <i-lucide-loader-circle class="w-4 h-4 animate-spin" />
+      <i-lucide-loader-circle class="h-4 w-4 animate-spin" />
       Loading…
     </div>
     <div
       v-else-if="error"
-      class="flex-1 flex flex-col items-center justify-center gap-2 px-6 text-center"
+      class="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center"
     >
-      <i-lucide-file-warning class="w-8 h-8 text-danger-10" />
+      <i-lucide-file-warning class="h-8 w-8 text-danger-10" />
       <p class="text-[13px] text-danger-10">{{ error }}</p>
     </div>
     <template v-else-if="file">
@@ -30,7 +32,10 @@
         File is {{ formatSize(file.size) }} — preview truncated at 1 MiB.
       </p>
       <!-- eslint-disable-next-line vue/no-v-html -- shiki 输出的受信任高亮 HTML -->
-      <div class="code-view flex-1 min-h-0 overflow-auto font-mono text-[12.5px] leading-[1.6]" v-html="html" />
+      <div
+        class="code-view min-h-0 flex-1 overflow-auto text-[12.5px] leading-[1.6] font-mono"
+        v-html="html"
+      />
     </template>
   </section>
 </template>
@@ -46,10 +51,16 @@ const props = defineProps<{
   projectId: string | null;
 }>();
 
-const { data: file, loading, error } = useFileContent(props.projectId, props.path);
+const {
+  data: file,
+  loading,
+  error,
+} = useFileContent(props.projectId, props.path);
 
 const fileName = computed(() => props.path.split("/").pop() || "File");
-const icon = computed(() => resolveFileIcon({ name: fileName.value, kind: "file" }));
+const icon = computed(() =>
+  resolveFileIcon({ name: fileName.value, kind: "file" }),
+);
 const language = computed(() => languageForPath(props.path));
 
 const meta = computed(() => {
@@ -85,17 +96,18 @@ const pending = computed(
   () => loading.value || (!!file.value && html.value === null),
 );
 
+// 提到模块作用域，避免每次调用重新编译正则
+const HTML_ESCAPE = /[&<>"']/g;
+const HTML_ENTITIES: Record<string, string> = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#39;",
+};
+
 function escapeHtml(text: string): string {
-  return text.replace(/[&<>"']/g, (ch) => {
-    const entities: Record<string, string> = {
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#39;",
-    };
-    return entities[ch] ?? ch;
-  });
+  return text.replaceAll(HTML_ESCAPE, (ch) => HTML_ENTITIES[ch] ?? ch);
 }
 
 function formatSize(bytes: number): string {

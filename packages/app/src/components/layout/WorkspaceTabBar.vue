@@ -1,12 +1,12 @@
 <template>
   <!-- 通用标签条：chat / 文件 / diff / git graph 等所有标签类型共用 -->
   <div
-    class="h-[35px] flex-none flex items-stretch bg-titlebar border-b border-line-soft overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+    class="[scrollbar-width:none] h-[35px] flex flex-none items-stretch overflow-x-auto border-b border-line-soft bg-titlebar [&::-webkit-scrollbar]:hidden"
   >
     <button
       v-for="tab in tabs"
       :key="tab.id"
-      class="flex items-center gap-[7px] py-0 pl-3 pr-[6px] border-r border-line-soft text-[12.5px] whitespace-nowrap relative transition-colors"
+      class="relative flex items-center gap-[7px] whitespace-nowrap border-r border-line-soft py-0 pl-3 pr-[6px] text-[12.5px] transition-colors"
       :class="
         tab.active
           ? 'bg-background text-strong shadow-[inset_0_2px_0_var(--oct-color-accent-7)]'
@@ -17,48 +17,48 @@
     >
       <i-lucide-message-square
         v-if="tab.kind === 'chat'"
-        class="w-3 h-3 flex-none"
+        class="h-3 w-3 flex-none"
       />
       <i-lucide-file
         v-else-if="tab.kind === 'file'"
-        class="w-3 h-3 flex-none"
+        class="h-3 w-3 flex-none"
       />
       <i-lucide-git-compare
         v-else-if="tab.kind === 'diff'"
-        class="w-3 h-3 flex-none"
+        class="h-3 w-3 flex-none"
       />
-      <i-lucide-git-branch v-else class="w-3 h-3 flex-none" />
+      <i-lucide-git-branch v-else class="h-3 w-3 flex-none" />
       <span class="max-w-[160px] truncate">{{ tab.title }}</span>
       <span
-        class="w-4 h-4 rounded-[4px] inline-flex items-center justify-center text-faint hover:bg-neutral-2 hover:text-neutral-10 transition-colors"
+        class="h-4 w-4 inline-flex items-center justify-center rounded-[4px] text-faint transition-colors hover:bg-neutral-2 hover:text-neutral-10"
         title="关闭标签"
         @click.stop="$emit('close', tab.id)"
       >
-        <i-lucide-x class="w-2.5 h-2.5" />
+        <i-lucide-x class="h-2.5 w-2.5" />
       </span>
     </button>
 
     <!-- 新建标签：不同类型的标签从这里打开 -->
     <DropdownMenuRoot>
       <DropdownMenuTrigger
-        class="w-[34px] flex-none flex items-center justify-center text-faint hover:bg-neutral-1 hover:text-neutral-10 transition-colors outline-none"
+        class="w-[34px] flex flex-none items-center justify-center text-faint outline-none transition-colors hover:bg-neutral-1 hover:text-neutral-10"
         title="新建标签"
       >
-        <i-lucide-plus class="w-3 h-3" />
+        <i-lucide-plus class="h-3 w-3" />
       </DropdownMenuTrigger>
       <DropdownMenuPortal>
         <DropdownMenuContent
           align="start"
           :side-offset="6"
-          class="min-w-[150px] z-50 p-1 rounded-lg border border-neutral-5 bg-surface shadow-[var(--oct-shadow)]"
+          class="z-50 min-w-[150px] border border-neutral-5 rounded-lg bg-surface p-1 shadow-[var(--oct-shadow)]"
         >
           <DropdownMenuItem
             v-for="action in addActions"
             :key="action.label"
-            class="flex items-center gap-2 h-[26px] px-2 rounded-[5px] text-[12.5px] text-neutral-10 outline-none cursor-pointer data-[highlighted]:bg-neutral-1"
-            @select="$emit('tab-action', action.event)"
+            class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-[12.5px] text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
+            @select="$emit('tabAction', action.event)"
           >
-            <component :is="action.icon" class="w-3.5 h-3.5 text-dim" />
+            <component :is="action.icon" class="h-3.5 w-3.5 text-dim" />
             {{ action.label }}
           </DropdownMenuItem>
         </DropdownMenuContent>
@@ -68,7 +68,6 @@
 </template>
 
 <script setup lang="ts">
-import type { Component } from "vue";
 import {
   DropdownMenuContent,
   DropdownMenuItem,
@@ -76,10 +75,11 @@ import {
   DropdownMenuRoot,
   DropdownMenuTrigger,
 } from "reka-ui";
-import type { TabKind } from "@/composables/useTabs";
-import IconChat from "~icons/lucide/message-square";
-import IconDiff from "~icons/lucide/git-compare";
 import IconGraph from "~icons/lucide/git-branch";
+import IconDiff from "~icons/lucide/git-compare";
+import IconChat from "~icons/lucide/message-square";
+import type { TabKind } from "@/composables/useTabs";
+import type { Component } from "vue";
 
 export interface DisplayTab {
   id: string;
@@ -95,7 +95,7 @@ defineProps<{
 defineEmits<{
   select: [tabId: string];
   close: [tabId: string];
-  "tab-action": [action: TabAction];
+  tabAction: [action: TabAction];
 }>();
 
 export type TabAction = "add-chat" | "open-diff" | "open-graph";

@@ -1,9 +1,9 @@
 <template>
   <main
-    class="flex-1 flex flex-col items-center justify-center min-w-0 bg-background"
+    class="min-w-0 flex flex-1 flex-col items-center justify-center bg-background"
   >
     <div class="text-center text-faint">
-      <p class="text-[15px] font-medium mb-1.5 text-dim">
+      <p class="mb-1.5 text-[15px] text-dim font-medium">
         Start a conversation
       </p>
       <p class="text-[12.5px]">Select a chat or create a new one</p>

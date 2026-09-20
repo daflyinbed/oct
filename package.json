@@ -14,7 +14,6 @@
     "@unocss/eslint-plugin": "^66.10.5",
     "@xwbx/eslint-config": "^0.13.0",
     "eslint": "^10.2.0",
-    "eslint-plugin-storybook": "^10.3.5",
     "prettier": "^3.8.3",
     "typescript": "^5.9.3"
   }

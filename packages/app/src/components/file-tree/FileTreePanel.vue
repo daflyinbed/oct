@@ -1,16 +1,16 @@
 <template>
   <aside v-if="visible" class="workspace-panel h-full w-full bg-panel">
     <header
-      class="workspace-panel-header justify-between border-b border-line-soft select-none"
+      class="workspace-panel-header select-none justify-between border-b border-line-soft"
     >
       <div
-        class="flex items-center gap-[7px] text-[12.5px] font-semibold text-neutral-10"
+        class="flex items-center gap-[7px] text-[12.5px] text-neutral-10 font-semibold"
       >
-        <i-lucide-files class="w-3.5 h-3.5 text-dim" />
+        <i-lucide-files class="h-3.5 w-3.5 text-dim" />
         Files
       </div>
       <button
-        class="control-ghost control-focus w-[22px] h-[22px] rounded-md text-[12px]"
+        class="h-[22px] w-[22px] control-ghost rounded-md text-[12px] control-focus"
         title="关闭"
         @click="$emit('close')"
       >
@@ -31,8 +31,8 @@
       <TreeRoot
         v-else
         v-slot="{ flattenItems }"
-        class="files-tree outline-none"
         v-model:expanded="expanded"
+        class="files-tree outline-none"
         :items="items"
         :get-key="getKey"
         :get-children="getChildren"
@@ -52,7 +52,7 @@
           class="cursor-pointer rounded-[5px] outline-none"
         >
           <div
-            class="flex h-6 items-center gap-1 rounded-[5px] pr-2 text-[12.5px] transition-colors"
+            class="h-6 flex items-center gap-1 rounded-[5px] pr-2 text-[12.5px] transition-colors"
             :class="
               isSelected
                 ? 'bg-accent-3 text-neutral-10'
@@ -60,7 +60,7 @@
             "
             @mouseenter="hoveredPath = item.value.path"
             @click="
-              item.value.kind === 'file' && $emit('open-file', item.value.path)
+              item.value.kind === 'file' && $emit('openFile', item.value.path)
             "
           >
             <!-- Per-level indent guide lanes, styled like pierre's file tree:
@@ -72,7 +72,7 @@
               class="relative h-full w-4 shrink-0"
             >
               <span
-                class="tree-guide absolute top-0 left-1/2 h-full w-px -translate-x-1/2 bg-neutral-5 opacity-0 transition-opacity duration-150 [.files-tree:hover_&]:opacity-75"
+                class="tree-guide absolute left-1/2 top-0 h-full w-px bg-neutral-5 opacity-0 transition-opacity duration-150 -translate-x-1/2 [.files-tree:hover_&]:opacity-75"
                 :class="
                   isGuideActive(item.value.path, level) ? 'opacity-100!' : ''
                 "
@@ -98,10 +98,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from "vue";
 import { TreeItem, TreeRoot } from "reka-ui";
-import { useFileTree, type TreeNode } from "@/composables/useFileTree";
+import { ref, watch } from "vue";
+import { useFileTree } from "@/composables/useFileTree";
 import { resolveFileIcon } from "@/utils/fileIcons";
+import type { TreeNode } from "@/composables/useFileTree";
 
 const props = defineProps<{
   visible: boolean;
@@ -110,7 +111,7 @@ const props = defineProps<{
 
 defineEmits<{
   close: [];
-  "open-file": [path: string];
+  openFile: [path: string];
 }>();
 
 const { items, expanded, loading, error, loadRoot } = useFileTree();

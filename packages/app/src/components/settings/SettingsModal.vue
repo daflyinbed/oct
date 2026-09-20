@@ -3,32 +3,32 @@
     <DialogPortal>
       <DialogOverlay class="fixed inset-0 z-50 bg-overlay" />
       <DialogContent
-        class="fixed left-1/2 top-1/2 z-50 flex h-[650px] max-h-[calc(100vh-72px)] w-[940px] max-w-[calc(100vw-72px)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-xl border border-neutral-5 bg-panel shadow-[var(--oct-shadow)]"
+        class="fixed left-1/2 top-1/2 z-50 h-[650px] max-h-[calc(100vh-72px)] max-w-[calc(100vw-72px)] w-[940px] flex overflow-hidden border border-neutral-5 rounded-xl bg-panel shadow-[var(--oct-shadow)] -translate-x-1/2 -translate-y-1/2"
       >
         <!-- 左侧：搜索 + 分类导航（provider 设置是 AI 分类下的子项） -->
         <div
-          class="w-[216px] flex-none flex flex-col bg-titlebar border-r border-line-soft"
+          class="w-[216px] flex flex-none flex-col border-r border-line-soft bg-titlebar"
         >
           <div class="flex-none p-3 pb-2">
             <div
-              class="flex items-center gap-[7px] h-7 px-[9px] rounded-md border border-line-soft bg-surface text-faint focus-within:border-accent-6 transition-colors"
+              class="h-7 flex items-center gap-[7px] border border-line-soft rounded-md bg-surface px-[9px] text-faint transition-colors focus-within:border-accent-6"
             >
-              <i-lucide-search class="w-3 h-3 flex-none" />
+              <i-lucide-search class="h-3 w-3 flex-none" />
               <input
                 v-model="query"
                 placeholder="Search settings…"
-                class="flex-1 min-w-0 bg-transparent border-none outline-none text-[12.5px] text-neutral-10 placeholder:text-faint"
+                class="min-w-0 flex-1 border-none bg-transparent text-[12.5px] text-neutral-10 outline-none placeholder:text-faint"
               />
             </div>
           </div>
           <div class="flex-1 overflow-y-auto px-1.5 pb-3">
             <button
-              class="w-full flex items-center gap-2 h-7 px-2 rounded-md text-left text-[12.5px] text-neutral-10 transition-colors"
+              class="h-7 w-full flex items-center gap-2 rounded-md px-2 text-left text-[12.5px] text-neutral-10 transition-colors"
               :class="view.name !== 'ai' ? 'bg-neutral-1 font-semibold' : ''"
               @click="view = { name: 'ai' }"
             >
               <i-lucide-chevron-right
-                class="w-2.5 h-2.5 flex-none text-faint"
+                class="h-2.5 w-2.5 flex-none text-faint"
               />
               AI
             </button>
@@ -36,83 +36,83 @@
         </div>
 
         <!-- 右侧：顶栏（面包屑）+ 内容 -->
-        <div class="flex-1 min-w-0 flex flex-col">
+        <div class="min-w-0 flex flex-1 flex-col">
           <div
-            class="h-[46px] flex-none flex items-center gap-2 px-3 pl-4 border-b border-line-soft"
+            class="h-[46px] flex flex-none items-center gap-2 border-b border-line-soft px-3 pl-4"
           >
             <template v-if="view.name !== 'ai'">
               <button
-                class="control-ghost control-focus w-[22px] h-[22px] rounded-md flex-none"
+                class="h-[22px] w-[22px] flex-none control-ghost rounded-md control-focus"
                 title="返回"
                 @click="goBack"
               >
-                <i-lucide-arrow-left class="w-3.5 h-3.5" />
+                <i-lucide-arrow-left class="h-3.5 w-3.5" />
               </button>
               <button
-                class="text-[12.5px] text-dim hover:text-neutral-10 transition-colors"
+                class="text-[12.5px] text-dim transition-colors hover:text-neutral-10"
                 @click="view = { name: 'ai' }"
               >
                 AI
               </button>
-              <span class="text-faint text-[12.5px]">/</span>
+              <span class="text-[12.5px] text-faint">/</span>
               <button
-                class="text-[12.5px] text-dim hover:text-neutral-10 transition-colors"
+                class="text-[12.5px] text-dim transition-colors hover:text-neutral-10"
                 @click="view = { name: 'providers' }"
               >
                 LLM Providers
               </button>
               <template v-if="view.name === 'provider'">
-                <span class="text-faint text-[12.5px]">/</span>
-                <span class="text-[12.5px] font-semibold text-neutral-10">{{
+                <span class="text-[12.5px] text-faint">/</span>
+                <span class="text-[12.5px] text-neutral-10 font-semibold">{{
                   selected?.name
                 }}</span>
               </template>
               <template v-else-if="view.name === 'connect-provider'">
-                <span class="text-faint text-[12.5px]">/</span>
-                <span class="text-[12.5px] font-semibold text-neutral-10"
+                <span class="text-[12.5px] text-faint">/</span>
+                <span class="text-[12.5px] text-neutral-10 font-semibold"
                   >Connect Provider</span
                 >
               </template>
             </template>
-            <span class="text-[12.5px] font-semibold text-neutral-10" v-else>
+            <span v-else class="text-[12.5px] text-neutral-10 font-semibold">
               AI
             </span>
             <span class="flex-1" />
             <button
               v-if="view.name === 'providers'"
-              class="control-surface control-focus h-[26px] px-2.5 rounded-md text-[12px] font-medium inline-flex items-center gap-1.5"
+              class="h-[26px] inline-flex items-center gap-1.5 control-surface rounded-md px-2.5 text-[12px] font-medium control-focus"
               @click="startConnect"
             >
-              <i-lucide-plus class="w-3 h-3" />
+              <i-lucide-plus class="h-3 w-3" />
               Connect Provider
             </button>
             <DialogClose
-              class="control-ghost control-focus w-[26px] h-[26px] rounded-md text-[12px]"
+              class="h-[26px] w-[26px] control-ghost rounded-md text-[12px] control-focus"
               title="关闭（Esc）"
             >
               ✕
             </DialogClose>
           </div>
 
-          <div class="flex-1 overflow-y-auto px-7 pt-[18px] pb-12">
+          <div class="flex-1 overflow-y-auto px-7 pb-12 pt-[18px]">
             <!-- ============ AI 根页：LLM Providers 子项 ============ -->
             <template v-if="view.name === 'ai'">
-              <DialogTitle class="text-[16.5px] font-semibold text-strong">
+              <DialogTitle class="text-[16.5px] text-strong font-semibold">
                 AI
               </DialogTitle>
               <p class="mt-1 text-[12px] text-dim">
                 模型 Provider 与聊天标签页可用模型的配置入口。
               </p>
               <div
-                class="mt-6 pb-1.5 font-mono text-[11px] tracking-[0.5px] text-dim border-b border-dashed border-line"
+                class="mt-6 border-b border-line border-dashed pb-1.5 text-[11px] text-dim tracking-[0.5px] font-mono"
               >
                 General
               </div>
               <div
-                class="flex items-center gap-[18px] py-3 border-b border-dashed border-line-soft"
+                class="flex items-center gap-[18px] border-b border-line-soft border-dashed py-3"
               >
-                <div class="flex-1 min-w-0">
-                  <div class="text-[13px] font-semibold text-strong">
+                <div class="min-w-0 flex-1">
+                  <div class="text-[13px] text-strong font-semibold">
                     LLM Providers
                   </div>
                   <div class="mt-0.5 text-[12px] text-dim">
@@ -120,11 +120,11 @@
                   </div>
                 </div>
                 <button
-                  class="control-surface control-focus h-[26px] px-2.5 rounded-md text-[12px] font-medium inline-flex items-center gap-1.5 flex-none"
+                  class="h-[26px] inline-flex flex-none items-center gap-1.5 control-surface rounded-md px-2.5 text-[12px] font-medium control-focus"
                   @click="view = { name: 'providers' }"
                 >
                   Configure
-                  <i-lucide-chevron-right class="w-3 h-3 text-dim" />
+                  <i-lucide-chevron-right class="h-3 w-3 text-dim" />
                 </button>
               </div>
             </template>
@@ -134,27 +134,27 @@
               <div
                 v-for="provider in connectedProviders"
                 :key="provider.id"
-                class="border-b border-dashed border-line-soft py-3"
+                class="border-b border-line-soft border-dashed py-3"
               >
                 <div class="flex items-center gap-2">
                   <span
-                    class="flex-none w-1.5 h-1.5 rounded-full bg-success-10"
+                    class="h-1.5 w-1.5 flex-none rounded-full bg-success-10"
                   />
-                  <span class="text-[13px] font-semibold text-strong">{{
+                  <span class="text-[13px] text-strong font-semibold">{{
                     provider.name
                   }}</span>
                   <span
-                    class="rounded bg-neutral-2 px-1.5 py-px text-[10.5px] leading-[16px] font-medium text-dim"
+                    class="rounded bg-neutral-2 px-1.5 py-px text-[10.5px] text-dim font-medium leading-[16px]"
                   >
                     {{ provider.adapter_type }}
                   </span>
                   <span class="flex-1" />
                   <button
-                    class="control-surface control-focus h-[26px] px-2.5 rounded-md text-[12px] font-medium inline-flex items-center gap-1.5 flex-none"
+                    class="h-[26px] inline-flex flex-none items-center gap-1.5 control-surface rounded-md px-2.5 text-[12px] font-medium control-focus"
                     @click="view = { name: 'provider', id: provider.id }"
                   >
                     Configure
-                    <i-lucide-chevron-right class="w-3 h-3 text-dim" />
+                    <i-lucide-chevron-right class="h-3 w-3 text-dim" />
                   </button>
                 </div>
                 <div class="mt-1.5 pl-3.5 text-[12px] text-dim">
@@ -169,10 +169,10 @@
               >
                 <p class="text-[12.5px] text-faint">尚未连接任何 Provider。</p>
                 <button
-                  class="control-surface control-focus mt-3 h-[26px] px-2.5 rounded-md text-[12px] font-medium inline-flex items-center gap-1.5"
+                  class="mt-3 h-[26px] inline-flex items-center gap-1.5 control-surface rounded-md px-2.5 text-[12px] font-medium control-focus"
                   @click="startConnect"
                 >
-                  <i-lucide-plus class="w-3 h-3" />
+                  <i-lucide-plus class="h-3 w-3" />
                   Connect Provider
                 </button>
               </div>
@@ -188,7 +188,7 @@
             <template v-else-if="view.name === 'connect-provider'">
               <div class="flex items-center gap-1">
                 <button
-                  class="h-[26px] px-2.5 rounded-md text-[12.5px] transition-colors"
+                  class="h-[26px] rounded-md px-2.5 text-[12.5px] transition-colors"
                   :class="
                     connectMode === 'pick'
                       ? 'bg-neutral-2 text-strong font-semibold'
@@ -199,7 +199,7 @@
                   从列表连接
                 </button>
                 <button
-                  class="h-[26px] px-2.5 rounded-md text-[12.5px] transition-colors"
+                  class="h-[26px] rounded-md px-2.5 text-[12.5px] transition-colors"
                   :class="
                     connectMode === 'manual'
                       ? 'bg-neutral-2 text-strong font-semibold'
@@ -214,12 +214,12 @@
               <!-- 模式一：从已有（未连接）Provider 中选择并填 Key -->
               <template v-if="connectMode === 'pick'">
                 <div
-                  class="mt-4 max-h-[260px] overflow-y-auto rounded-lg border border-line-soft bg-surface"
+                  class="mt-4 max-h-[260px] overflow-y-auto border border-line-soft rounded-lg bg-surface"
                 >
                   <button
                     v-for="provider in unconnectedProviders"
                     :key="provider.id"
-                    class="w-full flex items-center gap-2 px-3 h-9 text-left text-[12.5px] transition-colors border-b border-line-soft last:border-b-0"
+                    class="h-9 w-full flex items-center gap-2 border-b border-line-soft px-3 text-left text-[12.5px] transition-colors last:border-b-0"
                     :class="
                       pickId === provider.id
                         ? 'bg-accent-3 text-neutral-10'
@@ -229,7 +229,7 @@
                   >
                     <span class="truncate">{{ provider.name }}</span>
                     <span
-                      class="ml-auto flex-none rounded bg-neutral-2 px-1.5 py-px text-[10.5px] leading-[16px] font-medium text-dim"
+                      class="ml-auto flex-none rounded bg-neutral-2 px-1.5 py-px text-[10.5px] text-dim font-medium leading-[16px]"
                     >
                       {{ provider.adapter_type }}
                     </span>
@@ -244,15 +244,15 @@
 
                 <template v-if="picked">
                   <div
-                    class="mt-5 pb-1.5 font-mono text-[11px] tracking-[0.5px] text-dim border-b border-dashed border-line"
+                    class="mt-5 border-b border-line border-dashed pb-1.5 text-[11px] text-dim tracking-[0.5px] font-mono"
                   >
                     Connect {{ picked.name }}
                   </div>
                   <div
-                    class="flex items-center gap-[18px] py-2.5 border-b border-dashed border-line-soft"
+                    class="flex items-center gap-[18px] border-b border-line-soft border-dashed py-2.5"
                   >
-                    <div class="flex-1 min-w-0">
-                      <div class="text-[13px] font-semibold text-strong">
+                    <div class="min-w-0 flex-1">
+                      <div class="text-[13px] text-strong font-semibold">
                         API Key
                       </div>
                       <div class="mt-0.5 text-[12px] text-dim">
@@ -263,17 +263,17 @@
                       v-model="pickKey"
                       :type="showPickKey ? 'text' : 'password'"
                       placeholder="Enter API key..."
-                      class="control-surface control-focus w-[240px] flex-none h-[26px] px-2.5 text-[12px]"
+                      class="h-[26px] w-[240px] flex-none control-surface px-2.5 text-[12px] control-focus"
                       @keydown.enter="connectPicked"
                     />
                     <button
-                      class="control-ghost control-focus h-[26px] px-2 rounded-md text-[12px] flex-none"
+                      class="h-[26px] flex-none control-ghost rounded-md px-2 text-[12px] control-focus"
                       @click="showPickKey = !showPickKey"
                     >
                       {{ showPickKey ? "Hide" : "Show" }}
                     </button>
                     <button
-                      class="control-solid control-focus h-[26px] px-3 rounded-md text-[12px] font-medium transition-colors disabled:opacity-50 flex-none"
+                      class="h-[26px] flex-none control-solid rounded-md px-3 text-[12px] font-medium control-focus transition-colors disabled:opacity-50"
                       :disabled="!pickKey.trim()"
                       @click="connectPicked"
                     >
@@ -289,7 +289,7 @@
                   <button
                     v-for="t in PROVIDER_TYPES"
                     :key="t.type"
-                    class="h-[26px] px-2.5 rounded-md text-[12.5px] transition-colors"
+                    class="h-[26px] rounded-md px-2.5 text-[12.5px] transition-colors"
                     :class="
                       addForm.type === t.type
                         ? 'bg-neutral-2 text-strong font-semibold'
@@ -303,7 +303,7 @@
 
                 <div class="mt-4 space-y-4">
                   <label class="block">
-                    <span class="text-[13px] font-semibold text-strong">
+                    <span class="text-[13px] text-strong font-semibold">
                       Provider Name
                     </span>
                     <span class="ml-1 text-[12px] text-danger-10">*</span>
@@ -315,11 +315,11 @@
                       :placeholder="
                         addForm.type === 'anthropic' ? 'Anthropic' : 'OpenAI'
                       "
-                      class="control-surface control-focus mt-2 w-full h-[30px] px-3 text-[13px]"
+                      class="mt-2 h-[30px] w-full control-surface px-3 text-[13px] control-focus"
                     />
                   </label>
                   <label class="block">
-                    <span class="text-[13px] font-semibold text-strong">
+                    <span class="text-[13px] text-strong font-semibold">
                       API URL
                     </span>
                     <span class="ml-1 text-[12px] text-danger-10">*</span>
@@ -333,11 +333,11 @@
                           ? 'https://api.anthropic.com/v1'
                           : 'https://api.openai.com/v1'
                       "
-                      class="control-surface control-focus mt-2 w-full h-[30px] px-3 text-[13px]"
+                      class="mt-2 h-[30px] w-full control-surface px-3 text-[13px] control-focus"
                     />
                   </label>
                   <label class="block">
-                    <span class="text-[13px] font-semibold text-strong">
+                    <span class="text-[13px] text-strong font-semibold">
                       API Key
                     </span>
                     <span class="ml-1 text-[12px] text-danger-10">*</span>
@@ -348,7 +348,7 @@
                       v-model="addForm.api_key"
                       type="password"
                       placeholder="sk-..."
-                      class="control-surface control-focus mt-2 w-full h-[30px] px-3 text-[13px]"
+                      class="mt-2 h-[30px] w-full control-surface px-3 text-[13px] control-focus"
                     />
                   </label>
                   <p v-if="addError" class="text-[12px] text-danger-10">
@@ -356,14 +356,14 @@
                   </p>
                   <div class="flex items-center gap-2">
                     <button
-                      class="control-solid control-focus h-[28px] px-4 rounded-md text-[12.5px] font-medium disabled:opacity-50 transition-colors"
+                      class="h-[28px] control-solid rounded-md px-4 text-[12.5px] font-medium control-focus transition-colors disabled:opacity-50"
                       :disabled="!canSubmitProvider || creating"
                       @click="submitProvider"
                     >
                       {{ creating ? "Creating…" : "Create Provider" }}
                     </button>
                     <button
-                      class="control-ghost control-focus h-[28px] px-3 rounded-md text-[12.5px]"
+                      class="h-[28px] control-ghost rounded-md px-3 text-[12.5px] control-focus"
                       @click="view = { name: 'providers' }"
                     >
                       Cancel
@@ -376,11 +376,11 @@
             <!-- ============ Provider 详情（Key + 模型可见性） ============ -->
             <template v-else-if="view.name === 'provider' && selected">
               <div class="flex items-center gap-2">
-                <DialogTitle class="text-[16.5px] font-semibold text-strong">
+                <DialogTitle class="text-[16.5px] text-strong font-semibold">
                   {{ selected.name }}
                 </DialogTitle>
                 <span
-                  class="rounded bg-success-7 px-1.5 py-px text-[10.5px] leading-[16px] font-medium text-success-contrast"
+                  class="rounded bg-success-7 px-1.5 py-px text-[10.5px] text-success-contrast font-medium leading-[16px]"
                 >
                   已连接
                 </span>
@@ -393,15 +393,15 @@
               </p>
 
               <div
-                class="mt-6 pb-1.5 font-mono text-[11px] tracking-[0.5px] text-dim border-b border-dashed border-line"
+                class="mt-6 border-b border-line border-dashed pb-1.5 text-[11px] text-dim tracking-[0.5px] font-mono"
               >
                 Connection
               </div>
               <div
-                class="flex items-center gap-[18px] py-2.5 border-b border-dashed border-line-soft"
+                class="flex items-center gap-[18px] border-b border-line-soft border-dashed py-2.5"
               >
-                <div class="flex-1 min-w-0">
-                  <div class="text-[13px] font-semibold text-strong">
+                <div class="min-w-0 flex-1">
+                  <div class="text-[13px] text-strong font-semibold">
                     API Key
                   </div>
                   <div class="mt-0.5 text-[12px] text-dim">
@@ -411,7 +411,7 @@
                 <input
                   :type="showKeys[selected.id] ? 'text' : 'password'"
                   placeholder="••••••••（已配置）"
-                  class="control-surface control-focus w-[240px] flex-none h-[26px] px-2.5 text-[12px]"
+                  class="h-[26px] w-[240px] flex-none control-surface px-2.5 text-[12px] control-focus"
                   :value="keyInputs[selected.id] ?? ''"
                   @input="
                     (e: Event) => {
@@ -423,13 +423,13 @@
                   @keydown.enter="saveKey(selected.id)"
                 />
                 <button
-                  class="control-ghost control-focus h-[26px] px-2 rounded-md text-[12px] flex-none"
+                  class="h-[26px] flex-none control-ghost rounded-md px-2 text-[12px] control-focus"
                   @click="showKeys[selected.id] = !showKeys[selected.id]"
                 >
                   {{ showKeys[selected.id] ? "Hide" : "Show" }}
                 </button>
                 <button
-                  class="control-solid control-focus h-[26px] px-3 rounded-md text-[12px] font-medium transition-colors disabled:opacity-50 flex-none"
+                  class="h-[26px] flex-none control-solid rounded-md px-3 text-[12px] font-medium control-focus transition-colors disabled:opacity-50"
                   :disabled="!keyInputs[selected.id]?.trim()"
                   @click="saveKey(selected.id)"
                 >
@@ -438,24 +438,24 @@
               </div>
 
               <div
-                class="mt-6 pb-1.5 font-mono text-[11px] tracking-[0.5px] text-dim border-b border-dashed border-line"
+                class="mt-6 border-b border-line border-dashed pb-1.5 text-[11px] text-dim tracking-[0.5px] font-mono"
               >
                 Models
               </div>
               <div
                 v-for="model in filteredModels"
                 :key="model.model_id"
-                class="flex items-center gap-[18px] py-2.5 border-b border-dashed border-line-soft"
+                class="flex items-center gap-[18px] border-b border-line-soft border-dashed py-2.5"
               >
-                <div class="flex-1 min-w-0">
-                  <div class="text-[13px] font-semibold text-strong truncate">
+                <div class="min-w-0 flex-1">
+                  <div class="truncate text-[13px] text-strong font-semibold">
                     {{ model.name }}
                   </div>
-                  <div class="mt-0.5 font-mono text-[11.5px] text-faint">
+                  <div class="mt-0.5 text-[11.5px] text-faint font-mono">
                     {{ model.model_id }}
                   </div>
                 </div>
-                <div class="flex items-center gap-1 flex-none">
+                <div class="flex flex-none items-center gap-1">
                   <span
                     v-if="model.limit_context"
                     class="rounded bg-neutral-2 px-1 py-px text-[10px] text-dim"
@@ -474,7 +474,7 @@
                   >
                 </div>
                 <button
-                  class="flex-none relative w-[34px] h-[19px] rounded-full transition-colors"
+                  class="relative h-[19px] w-[34px] flex-none rounded-full transition-colors"
                   :class="model.is_enabled ? 'bg-accent-7' : 'bg-neutral-2'"
                   role="switch"
                   :aria-checked="model.is_enabled"
@@ -492,7 +492,7 @@
                   "
                 >
                   <span
-                    class="absolute top-[2px] left-[2px] w-[15px] h-[15px] rounded-full bg-white shadow-[0_1px_3px_rgba(0,0,0,0.3)] transition-transform"
+                    class="absolute left-[2px] top-[2px] h-[15px] w-[15px] rounded-full bg-white shadow-[0_1px_3px_rgba(0,0,0,0.3)] transition-transform"
                     :class="model.is_enabled ? 'translate-x-[15px]' : ''"
                   />
                 </button>
@@ -506,38 +506,38 @@
 
               <!-- 自定义 Provider：手动登记模型 -->
               <div v-if="selected.source === 'custom'" class="mt-4">
-                <div class="text-[12.5px] font-semibold text-neutral-10">
+                <div class="text-[12.5px] text-neutral-10 font-semibold">
                   Add Model
                 </div>
                 <div
-                  class="mt-2 flex items-end gap-2 rounded-lg border border-line-soft bg-surface p-3"
+                  class="mt-2 flex items-end gap-2 border border-line-soft rounded-lg bg-surface p-3"
                 >
-                  <label class="flex-1 min-w-0 block">
+                  <label class="block min-w-0 flex-1">
                     <span class="text-[11px] text-dim">Model ID</span>
                     <input
                       v-model="modelForm.model_id"
                       placeholder="e.g. gpt-5"
-                      class="control-surface control-focus mt-1 w-full h-[26px] px-2.5 text-[12px]"
+                      class="mt-1 h-[26px] w-full control-surface px-2.5 text-[12px] control-focus"
                     />
                   </label>
-                  <label class="flex-1 min-w-0 block">
+                  <label class="block min-w-0 flex-1">
                     <span class="text-[11px] text-dim">Display Name</span>
                     <input
                       v-model="modelForm.name"
                       placeholder="e.g. GPT-5"
-                      class="control-surface control-focus mt-1 w-full h-[26px] px-2.5 text-[12px]"
+                      class="mt-1 h-[26px] w-full control-surface px-2.5 text-[12px] control-focus"
                     />
                   </label>
-                  <label class="w-[120px] flex-none block">
+                  <label class="block w-[120px] flex-none">
                     <span class="text-[11px] text-dim">Context</span>
                     <input
                       v-model="modelForm.limit_context"
                       placeholder="128000"
-                      class="control-surface control-focus mt-1 w-full h-[26px] px-2.5 text-[12px]"
+                      class="mt-1 h-[26px] w-full control-surface px-2.5 text-[12px] control-focus"
                     />
                   </label>
                   <button
-                    class="control-solid control-focus h-[26px] px-3 rounded-md text-[12px] font-medium disabled:opacity-50 flex-none"
+                    class="h-[26px] flex-none control-solid rounded-md px-3 text-[12px] font-medium control-focus disabled:opacity-50"
                     :disabled="!modelForm.model_id.trim()"
                     @click="submitModel(selected.id)"
                   >
@@ -557,7 +557,6 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
 import {
   DialogClose,
   DialogContent,
@@ -567,6 +566,7 @@ import {
   DialogRoot,
   DialogTitle,
 } from "reka-ui";
+import { computed, ref, watch } from "vue";
 import { useProviders } from "@/composables/useProviders";
 import type { components } from "@/api/schema";
 
@@ -717,13 +717,17 @@ const canSubmitProvider = computed(
     addForm.value.api_key.trim().length > 0,
 );
 
+// 提到模块作用域，避免每次调用重新编译正则
+const SLUG_INVALID_CHARS = /[^a-z0-9]+/g;
+const SLUG_EDGE_DASHES = /(^-|-$)/g;
+
 function slugify(name: string): string {
   return (
     name
       .trim()
       .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/(^-|-$)/g, "") || "custom"
+      .replaceAll(SLUG_INVALID_CHARS, "-")
+      .replaceAll(SLUG_EDGE_DASHES, "") || "custom"
   );
 }
 

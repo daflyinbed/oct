@@ -10,6 +10,16 @@ const conversations = ref<Map<string, Conversation[]>>(new Map());
 const loading = ref(false);
 
 export function useProjects() {
+  const fetchConversations = async (projectId: string) => {
+    const { data, error } = await client.GET(
+      "/api/projects/{projectId}/conversations",
+      { params: { path: { projectId } } },
+    );
+    if (!error && data) {
+      conversations.value = new Map(conversations.value).set(projectId, data);
+    }
+  };
+
   const fetchProjects = async () => {
     loading.value = true;
     const { data, error } = await client.GET("/api/projects");
@@ -20,16 +30,6 @@ export function useProjects() {
       }
     }
     loading.value = false;
-  };
-
-  const fetchConversations = async (projectId: string) => {
-    const { data, error } = await client.GET(
-      "/api/projects/{projectId}/conversations",
-      { params: { path: { projectId } } },
-    );
-    if (!error && data) {
-      conversations.value = new Map(conversations.value).set(projectId, data);
-    }
   };
 
   const createProject = async (name: string, workingDir: string) => {

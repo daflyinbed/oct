@@ -2,21 +2,21 @@
   <aside class="workspace-panel h-full w-full bg-panel">
     <header class="workspace-panel-header flex-none">
       <span
-        class="text-[11px] font-semibold tracking-[0.8px] uppercase text-dim"
+        class="text-[11px] text-dim font-semibold tracking-[0.8px] uppercase"
         >Threads</span
       >
     </header>
 
     <!-- 搜索 -->
-    <div class="flex-none px-2.5 pt-0.5 pb-2.5">
+    <div class="flex-none px-2.5 pb-2.5 pt-0.5">
       <div
-        class="flex items-center gap-[7px] h-7 px-[9px] rounded-md border border-line-soft bg-surface text-faint focus-within:border-accent-6 transition-colors"
+        class="h-7 flex items-center gap-[7px] border border-line-soft rounded-md bg-surface px-[9px] text-faint transition-colors focus-within:border-accent-6"
       >
-        <i-lucide-search class="w-3 h-3 flex-none" />
+        <i-lucide-search class="h-3 w-3 flex-none" />
         <input
           v-model="filter"
           placeholder="Search threads…"
-          class="flex-1 min-w-0 bg-transparent border-none outline-none text-[12.5px] text-neutral-10 placeholder:text-faint"
+          class="min-w-0 flex-1 border-none bg-transparent text-[12.5px] text-neutral-10 outline-none placeholder:text-faint"
         />
       </div>
     </div>
@@ -24,26 +24,26 @@
     <div class="workspace-panel-body px-1.5 pb-3">
       <div v-for="project in visibleProjects" :key="project.id" class="mb-1">
         <button
-          class="group/pg control-focus w-full flex items-center gap-1.5 h-7 px-2 rounded-md text-left text-[12.5px] font-semibold text-neutral-10 hover:bg-neutral-1 transition-colors"
+          class="group/pg h-7 w-full flex items-center gap-1.5 rounded-md px-2 text-left text-[12.5px] text-neutral-10 font-semibold control-focus transition-colors hover:bg-neutral-1"
           @click="toggleProject(project.id)"
         >
           <i-lucide-chevron-right
-            class="w-2.5 h-2.5 flex-none text-faint transition-transform"
+            class="h-2.5 w-2.5 flex-none text-faint transition-transform"
             :class="expandedProjects.has(project.id) ? 'rotate-90' : ''"
           />
           <span class="truncate">{{ project.name }}</span>
           <span
-            class="flex-none text-[10.5px] leading-[16px] font-normal text-faint bg-neutral-2 rounded-full px-1.5"
+            class="flex-none rounded-full bg-neutral-2 px-1.5 text-[10.5px] text-faint font-normal leading-[16px]"
           >
             {{ (conversations.get(project.id) ?? []).length }}
           </span>
           <span class="flex-1" />
           <span
-            class="flex-none w-5 h-5 rounded-[4px] inline-flex items-center justify-center text-dim opacity-0 group-hover/pg:opacity-100 hover:bg-neutral-2 hover:text-neutral-10 transition-[opacity,colors]"
+            class="h-5 w-5 inline-flex flex-none items-center justify-center rounded-[4px] text-dim opacity-0 transition-[opacity,colors] hover:bg-neutral-2 hover:text-neutral-10 group-hover/pg:opacity-100"
             title="在此项目新建对话"
-            @click.stop="$emit('create-conversation', project.id)"
+            @click.stop="$emit('createConversation', project.id)"
           >
-            <i-lucide-plus class="w-[11px] h-[11px]" />
+            <i-lucide-plus class="h-[11px] w-[11px]" />
           </span>
         </button>
 
@@ -57,26 +57,26 @@
                 .includes(filter.trim().toLowerCase())
             "
             :key="conv.id"
-            class="control-focus relative w-full flex items-center rounded-md pl-[26px] pr-2 py-[5px] text-left text-[12.5px] transition-colors"
+            class="relative w-full flex items-center rounded-md py-[5px] pl-[26px] pr-2 text-left text-[12.5px] control-focus transition-colors"
             :class="
               selectedConversationId === conv.id
                 ? 'bg-accent-3 text-neutral-10'
                 : 'text-dim hover:bg-neutral-1 hover:text-neutral-10'
             "
-            @click="$emit('select-conversation', conv.id, project.id)"
+            @click="$emit('selectConversation', conv.id, project.id)"
           >
             <span
               v-if="selectedConversationId === conv.id"
-              class="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-[3px] rounded-full bg-accent-7"
+              class="absolute left-2 top-1/2 h-3.5 w-[3px] rounded-full bg-accent-7 -translate-y-1/2"
             />
             <span class="truncate">{{ conv.title || "New Chat" }}</span>
           </button>
 
           <button
-            class="control-focus w-full flex items-center gap-1.5 rounded-md pl-[26px] pr-2 py-[5px] text-left text-[12.5px] text-faint hover:bg-neutral-1 hover:text-accent-10 transition-colors"
-            @click="$emit('create-conversation', project.id)"
+            class="w-full flex items-center gap-1.5 rounded-md py-[5px] pl-[26px] pr-2 text-left text-[12.5px] text-faint control-focus transition-colors hover:bg-neutral-1 hover:text-accent-10"
+            @click="$emit('createConversation', project.id)"
           >
-            <i-lucide-plus class="w-3 h-3" />
+            <i-lucide-plus class="h-3 w-3" />
             New Chat
           </button>
         </div>
@@ -99,8 +99,8 @@ const props = defineProps<{
 }>();
 
 defineEmits<{
-  "select-conversation": [conversationId: string, projectId: string];
-  "create-conversation": [projectId: string];
+  selectConversation: [conversationId: string, projectId: string];
+  createConversation: [projectId: string];
 }>();
 
 const expandedProjects = ref<Set<string>>(new Set());
