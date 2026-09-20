@@ -1,15 +1,10 @@
-mod agent;
-mod api;
-mod db;
-mod seed;
-mod tools;
-
 use anyhow::Result;
 use clap::Parser;
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use tracing::info;
 
+use oct_agent::{api, db, seed};
 use oct_llm_provider::providers::default_registry;
 
 #[derive(Parser)]
