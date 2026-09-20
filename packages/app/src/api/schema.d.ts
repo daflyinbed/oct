@@ -193,17 +193,48 @@ export interface components {
             /** @enum {string} */
             type: "reasoning_delta";
         } | {
+            /**
+             * @description The model is generating a tool call (forwarded verbatim from the
+             *     provider stream).
+             */
+            data: {
+                arguments_delta: string;
+                call_id: string;
+                name?: string | null;
+            };
+            /** @enum {string} */
+            type: "tool_call_delta";
+        } | {
             data: {
                 arguments: string;
                 id: string;
                 name: string;
+                /**
+                 * @description Human-readable title for this call (e.g. the command being run),
+                 *     derived from the arguments for the UI.
+                 */
+                title: string;
             };
             /** @enum {string} */
             type: "tool_call_start";
         } | {
+            /**
+             * @description Live tool output while a call is still running. Live view only:
+             *     never persisted and never sent to the LLM.
+             */
+            data: {
+                call_id: string;
+                delta: string;
+                stream: components["schemas"]["OutputStream"];
+            };
+            /** @enum {string} */
+            type: "tool_output_delta";
+        } | {
             data: {
                 call_id: string;
                 content: string;
+                /** @description UI-only structured metadata; never sent to the LLM. */
+                details: Record<string, never>;
                 is_error: boolean;
             };
             /** @enum {string} */
@@ -352,6 +383,11 @@ export interface components {
             source: string;
             tool_call: boolean;
         };
+        /**
+         * @description Which of a command's output streams a delta belongs to.
+         * @enum {string}
+         */
+        OutputStream: "stdout" | "stderr";
         Project: {
             /** Format: date-time */
             created_at: string;
@@ -395,6 +431,11 @@ export interface components {
             conversation_id: string;
             /** Format: date-time */
             created_at: string;
+            /**
+             * @description UI-only tool-result metadata, serialized JSON. Never part of the
+             *     model-visible message parts.
+             */
+            details_json?: string | null;
             id: string;
             /** Format: int64 */
             input_tokens?: number | null;

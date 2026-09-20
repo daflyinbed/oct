@@ -1,10 +1,10 @@
 <template>
   <main class="workspace-panel min-w-0 flex-1 bg-background">
     <div ref="scrollContainer" class="workspace-panel-body">
-      <div class="max-w-[760px] mx-auto px-7 pt-[18px] pb-3 space-y-[18px]">
+      <div class="mx-auto max-w-[760px] px-7 pb-3 pt-[18px] space-y-[18px]">
         <ChatMessage v-for="msg in messages" :key="msg.id" :message="msg" />
-        <div v-if="messages.length === 0" class="text-center pt-20 text-faint">
-          <p class="text-[15px] font-medium mb-1.5 text-dim">
+        <div v-if="messages.length === 0" class="pt-20 text-center text-faint">
+          <p class="mb-1.5 text-[15px] text-dim font-medium">
             Start a conversation
           </p>
           <p class="text-[12.5px]">Select a chat or create a new one</p>
@@ -13,9 +13,9 @@
     </div>
 
     <!-- 输入区：模型选择器内嵌在输入框内（Zed agent 面板的做法） -->
-    <div class="flex-none px-7 pt-2.5 pb-3.5">
+    <div class="flex-none px-7 pb-3.5 pt-2.5">
       <div
-        class="max-w-[760px] mx-auto bg-surface border border-neutral-5 rounded-[10px] transition-colors focus-within:border-accent-6"
+        class="mx-auto max-w-[760px] border border-neutral-5 rounded-[10px] bg-surface transition-colors focus-within:border-accent-6"
       >
         <textarea
           ref="inputEl"
@@ -27,7 +27,7 @@
               : 'Select a conversation first...'
           "
           :disabled="!conversationId || sending"
-          class="w-full block resize-none bg-transparent border-none px-3.5 pt-3 pb-1.5 text-[13.5px] leading-[1.5] text-neutral-10 placeholder:text-faint outline-none"
+          class="block w-full resize-none border-none bg-transparent px-3.5 pb-1.5 pt-3 text-[13.5px] text-neutral-10 leading-[1.5] outline-none placeholder:text-faint"
           @keydown.enter.prevent="handleSend"
         />
         <div class="flex items-center gap-0.5 p-2">
@@ -55,12 +55,12 @@
           />
 
           <button
-            class="ml-1 w-7 h-7 rounded-[7px] bg-accent-7 text-white flex items-center justify-center transition-[filter] hover:brightness-110 disabled:opacity-50"
+            class="ml-1 h-7 w-7 flex items-center justify-center rounded-[7px] bg-accent-7 text-white transition-[filter] disabled:opacity-50 hover:brightness-110"
             :disabled="!conversationId || sending"
             title="发送（Enter）"
             @click="handleSend"
           >
-            <i-lucide-arrow-up class="w-3.5 h-3.5" />
+            <i-lucide-arrow-up class="h-3.5 w-3.5" />
           </button>
         </div>
       </div>
@@ -77,8 +77,8 @@ import {
   ref,
   watch,
 } from "vue";
-import ChatMessage from "./ChatMessage.vue";
 import AppSelect from "@/components/ui/AppSelect.vue";
+import ChatMessage from "./ChatMessage.vue";
 import type { components } from "@/api/schema";
 import type { DisplayMessage } from "@/composables/useChat";
 
@@ -155,8 +155,24 @@ watch(
   () => scrollToBottom(),
 );
 
+// 消息内容增长（文本/工具参数/实时输出）时跟随滚动到底部
 watch(
-  () => props.messages.at(-1)?.content,
+  () => {
+    const last = props.messages.at(-1);
+    if (!last) return 0;
+    let size = 0;
+    for (const part of last.parts) {
+      if (part.kind === "text") {
+        size += part.text.length;
+      } else {
+        size += part.arguments.length + part.liveOutput.droppedChars;
+        for (const seg of part.liveOutput.segments) {
+          size += seg.text.length;
+        }
+      }
+    }
+    return size;
+  },
   () => scrollToBottom(),
 );
 </script>
