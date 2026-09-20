@@ -94,5 +94,6 @@ fn api_routes(state: AppState) -> OpenApiRouter<AppState> {
         // Chat
         .routes(utoipa_axum::routes!(chat::send_message))
         .routes(utoipa_axum::routes!(chat::get_messages))
+        .routes(utoipa_axum::routes!(chat::cancel_agent))
         .with_state(state)
 }

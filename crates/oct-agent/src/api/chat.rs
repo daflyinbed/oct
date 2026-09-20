@@ -1,4 +1,5 @@
 use axum::extract::{Path, State};
+use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
 use axum::Json;
@@ -194,6 +195,31 @@ pub async fn send_message(
     });
 
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+#[utoipa::path(
+    post,
+    path = "/conversations/{id}/cancel",
+    params(("id" = String, Path, description = "Conversation ID")),
+    responses(
+        (status = 200, description = "Cancellation requested"),
+        (status = 404, description = "No agent running for this conversation")
+    ),
+    tag = "chat"
+)]
+pub async fn cancel_agent(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<StatusCode> {
+    match state.sessions.get(&id) {
+        Some(handle) => {
+            handle.cancel.cancel();
+            Ok(StatusCode::OK)
+        }
+        None => Err(AppError::NotFound(
+            "No agent running for this conversation".into(),
+        )),
+    }
 }
 
 #[utoipa::path(
