@@ -537,17 +537,13 @@ export function useChat() {
     startFlushing();
 
     try {
-      const baseUrl = "http://127.0.0.1:3000";
       const body: { content: string; provider_spec?: string } = { content };
       if (providerSpec) body.provider_spec = providerSpec;
-      const res = await fetch(
-        `${baseUrl}/api/conversations/${conversationId}/messages`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        },
-      );
+      const res = await fetch(`/api/conversations/${conversationId}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
 
       if (!res.ok || !res.body) {
         throw new Error(`HTTP ${res.status}`);
