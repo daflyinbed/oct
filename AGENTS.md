@@ -27,7 +27,13 @@ cargo sqlx prepare --workspace         # regenerate .sqlx/ cache
 pnpm --filter frontend dev            # Vite dev server (port 5173)
 pnpm --filter frontend build          # vue-tsc typecheck then vite build
 pnpm --filter frontend generate-api   # regenerate TypeScript types from OpenAPI schema (requires running server)
+pnpm --filter frontend test           # vitest 单测（独立 vitest.config.ts，node 环境，不加载 vue/unocss 插件）
 ```
+
+### Frontend unit tests
+
+- vitest 测试与源码同目录（`src/**/*.test.ts`）。测 composable 时优先经公开 API 驱动：mock `@/api/client`（REST）与全局 `fetch`（SSE），不导出私有函数。
+- `useChat` 的 SSE mock：用 `ReadableStream` 构造 `Response`，可按任意字符串切块模拟网络分片。
 
 ### Lint
 
