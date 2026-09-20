@@ -503,7 +503,10 @@ impl ChatModel for AnthropicChatModel {
 
         let byte_stream = response.bytes_stream();
         let stream = try_stream! {
-            let mut buffer = String::new();
+            // Byte-level buffer: a network chunk may end mid multibyte UTF-8
+            // character, so decoding whole chunks directly can fail; instead
+            // only complete events (bounded by the blank line) are decoded.
+            let mut buffer: Vec<u8> = Vec::new();
             let mut tool_state: HashMap<usize, AnthropicToolAccumulator> = HashMap::new();
             let mut stop_reason: Option<String> = None;
             futures_util::pin_mut!(byte_stream);
@@ -511,11 +514,10 @@ impl ChatModel for AnthropicChatModel {
             while let Some(chunk) = byte_stream.next().await {
                 let chunk = chunk
                     .map_err(|err| ModelError::transport(format!("stream read failed: {err}")))?;
-                let text = std::str::from_utf8(&chunk)
-                    .map_err(|err| ModelError::transport(format!("stream chunk was not valid utf-8: {err}")))?;
-                buffer.push_str(text);
+                buffer.extend_from_slice(&chunk);
 
                 while let Some(event) = take_sse_event(&mut buffer) {
+                    let event = decode_sse_event(event)?;
                     for normalized in parse_anthropic_sse_event_with_state(&event, &mut tool_state, &mut stop_reason)? {
                         yield normalized;
                     }
@@ -523,6 +525,7 @@ impl ChatModel for AnthropicChatModel {
             }
 
             for remainder in flush_sse_buffer(&mut buffer) {
+                let remainder = decode_sse_event(remainder)?;
                 for normalized in parse_anthropic_sse_event_with_state(&remainder, &mut tool_state, &mut stop_reason)? {
                     yield normalized;
                 }
@@ -713,13 +716,22 @@ pub fn aggregate_anthropic_stream(events: &[StreamEvent]) -> Option<Usage> {
     })
 }
 
-fn take_sse_event(buffer: &mut String) -> Option<String> {
-    if let Some(index) = buffer.find("\n\n") {
-        let event = buffer[..index].to_string();
+/// Find `needle` in `haystack` at the byte level.
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Extract the next complete SSE event from `buffer`, byte level. Only whole
+/// events are ever decoded (in the stream loop above): a multibyte UTF-8
+/// character split across network chunks can never be cut inside an event
+/// here because UTF-8 continuation bytes never collide with \n / \r.
+fn take_sse_event(buffer: &mut Vec<u8>) -> Option<Vec<u8>> {
+    if let Some(index) = find_subslice(buffer, b"\n\n") {
+        let event = buffer[..index].to_vec();
         buffer.drain(..index + 2);
         Some(event)
-    } else if let Some(index) = buffer.find("\r\n\r\n") {
-        let event = buffer[..index].to_string();
+    } else if let Some(index) = find_subslice(buffer, b"\r\n\r\n") {
+        let event = buffer[..index].to_vec();
         buffer.drain(..index + 4);
         Some(event)
     } else {
@@ -727,12 +739,17 @@ fn take_sse_event(buffer: &mut String) -> Option<String> {
     }
 }
 
-fn flush_sse_buffer(buffer: &mut String) -> Vec<String> {
-    if buffer.trim().is_empty() {
+fn flush_sse_buffer(buffer: &mut Vec<u8>) -> Vec<Vec<u8>> {
+    if buffer.iter().all(|b| b.is_ascii_whitespace()) {
         Vec::new()
     } else {
         vec![std::mem::take(buffer)]
     }
+}
+
+fn decode_sse_event(bytes: Vec<u8>) -> Result<String, ModelError> {
+    String::from_utf8(bytes)
+        .map_err(|err| ModelError::transport(format!("stream event was not valid utf-8: {err}")))
 }
 
 pub fn parse_anthropic_sse_event(event: &str) -> Result<Vec<StreamEvent>, ModelError> {
@@ -740,12 +757,15 @@ pub fn parse_anthropic_sse_event(event: &str) -> Result<Vec<StreamEvent>, ModelE
 }
 
 pub fn parse_anthropic_sse_transcript(transcript: &str) -> Result<Vec<StreamEvent>, ModelError> {
-    let mut buffer = transcript.to_string();
+    let mut buffer = transcript.as_bytes().to_vec();
     let mut tool_state = HashMap::new();
     let mut stop_reason = None;
     let mut events = Vec::new();
 
     while let Some(event) = take_sse_event(&mut buffer) {
+        // The transcript comes from a &str, so events are valid UTF-8 by
+        // construction and the lossy fallback never triggers.
+        let event = String::from_utf8_lossy(&event).into_owned();
         events.extend(parse_anthropic_sse_event_with_state(
             &event,
             &mut tool_state,
@@ -754,6 +774,7 @@ pub fn parse_anthropic_sse_transcript(transcript: &str) -> Result<Vec<StreamEven
     }
 
     for remainder in flush_sse_buffer(&mut buffer) {
+        let remainder = String::from_utf8_lossy(&remainder).into_owned();
         events.extend(parse_anthropic_sse_event_with_state(
             &remainder,
             &mut tool_state,
@@ -909,4 +930,64 @@ fn normalize_anthropic_stream_event_with_state(
     }
 
     Ok(events)
+}
+#[cfg(test)]
+mod sse_tests {
+    use super::*;
+
+    /// Network chunks routinely split a multibyte UTF-8 character
+    /// mid-sequence: replaying the transcript through every possible chunk
+    /// split must decode without error and produce events identical to the
+    /// whole-transcript parse.
+    #[test]
+    fn anthropic_sse_survives_multibyte_splits_across_chunks() {
+        let transcript = concat!(
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"你好\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"，世界！\"}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+        );
+        let expected = parse_anthropic_sse_transcript(transcript).unwrap();
+        assert_eq!(
+            expected,
+            vec![
+                StreamEvent::TextDelta("你好".to_string()),
+                StreamEvent::TextDelta("，世界！".to_string()),
+                StreamEvent::Finish(FinishReason::Stop),
+            ]
+        );
+
+        for size in 1..transcript.len() {
+            let mut buffer = Vec::new();
+            let mut tool_state = HashMap::new();
+            let mut stop_reason = None;
+            let mut got = Vec::new();
+            for chunk in transcript.as_bytes().chunks(size) {
+                buffer.extend_from_slice(chunk);
+                while let Some(event) = take_sse_event(&mut buffer) {
+                    let event = decode_sse_event(event)
+                        .unwrap_or_else(|err| panic!("chunk size {size}: {err}"));
+                    got.extend(
+                        parse_anthropic_sse_event_with_state(
+                            &event,
+                            &mut tool_state,
+                            &mut stop_reason,
+                        )
+                        .unwrap_or_else(|err| panic!("chunk size {size}: {err}")),
+                    );
+                }
+            }
+            for remainder in flush_sse_buffer(&mut buffer) {
+                let event = decode_sse_event(remainder)
+                    .unwrap_or_else(|err| panic!("chunk size {size}: {err}"));
+                got.extend(
+                    parse_anthropic_sse_event_with_state(&event, &mut tool_state, &mut stop_reason)
+                        .unwrap_or_else(|err| panic!("chunk size {size}: {err}")),
+                );
+            }
+            assert_eq!(got, expected, "mismatch at chunk size {size}");
+        }
+    }
 }
