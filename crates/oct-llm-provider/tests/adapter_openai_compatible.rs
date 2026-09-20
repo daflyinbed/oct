@@ -41,9 +41,9 @@ fn maps_openai_usage_fields() {
 #[test]
 fn maps_chat_request_to_openai_wire_request() {
     let model = OpenAiCompatibleChatModel::new(OpenAiCompatibleConfig {
-        provider_name: "openai",
+        provider_name: "openai".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
-        api_key_env: "OPENAI_API_KEY",
+        api_key_env: "OPENAI_API_KEY".to_string(),
         default_headers: Default::default(),
         model_info: ModelInfo::new("openai", "gpt-4.1")
             .with_capabilities(ModelCapabilities {
@@ -475,9 +475,9 @@ fn parses_reasoning_field_as_fallback_in_stream_delta() {
 #[test]
 fn maps_reasoning_to_reasoning_content_in_request() {
     let model = OpenAiCompatibleChatModel::new(OpenAiCompatibleConfig {
-        provider_name: "moonshot",
+        provider_name: "moonshot".to_string(),
         base_url: "https://api.moonshot.ai/v1".to_string(),
-        api_key_env: "MOONSHOT_API_KEY",
+        api_key_env: "MOONSHOT_API_KEY".to_string(),
         default_headers: Default::default(),
         model_info: ModelInfo::new("moonshot", "kimi-k2.5")
             .with_capabilities(ModelCapabilities {

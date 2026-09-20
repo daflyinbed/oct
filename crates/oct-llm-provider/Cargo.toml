@@ -32,6 +32,15 @@ clap = { version = "4", features = [
   "derive",
   "env" 
 ] }
+# net/time are only needed by the test HTTP mock server (tests/http_mock).
+tokio = { version = "1", features = [
+  "rt",
+  "rt-multi-thread",
+  "macros",
+  "net",
+  "time",
+  "io-util"
+] }
 
 [[example]]
 name = "chat"
