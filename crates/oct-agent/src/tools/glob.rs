@@ -229,10 +229,10 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    /// A ToolContext wired to a throwaway broadcast channel; glob does not
+    /// A ToolContext wired to a throwaway event hub; glob does not
     /// stream, so the context is only needed for the trait signature.
     fn noop_ctx() -> ToolContext {
-        ToolContext::new("test", tokio::sync::broadcast::channel(1).0)
+        ToolContext::new("test", std::sync::Arc::new(crate::agent::EventHub::new()))
     }
 
     /// Unique temp directory per test (pid + nanos), like the other tool tests.

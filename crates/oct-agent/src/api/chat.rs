@@ -4,12 +4,10 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use futures_util::StreamExt;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::broadcast;
-use tokio_stream::wrappers::BroadcastStream;
 use tokio_util::sync::CancellationToken;
 use utoipa::ToSchema;
 
@@ -19,7 +17,7 @@ use super::AppState;
 use super::error::{AppError, ApiResult};
 use crate::agent::loop_runner::run_agent_loop;
 use crate::agent::prompt::system_prompt;
-use crate::agent::{AgentContext, RunHandle};
+use crate::agent::{AgentContext, AgentEvent, EventHub, RunHandle};
 use crate::db::{conversations as conv_db, messages as msg_db, providers as provider_db, projects as project_db};
 use crate::tools;
 
@@ -27,6 +25,12 @@ use crate::tools;
 pub struct SendMessageRequest {
     pub content: String,
     pub provider_spec: String,
+}
+
+/// Whether an agent run is currently active for a conversation.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RunningStatus {
+    pub running: bool,
 }
 
 fn parse_provider_spec(spec: &str) -> Result<(&str, &str), AppError> {
@@ -75,10 +79,12 @@ async fn resolve_model(
     Ok((model, provider_id.to_string(), model_id.to_string()))
 }
 
-/// Shared tail of the chat endpoints: replace the placeholder session entry
-/// with the real run handle, spawn the agent loop, and return the SSE stream
-/// of its broadcast events. `state.sessions` must already hold a placeholder
-/// entry for `id` (so concurrent starts get a 409).
+/// Shared tail of the chat endpoints: take the session entry the caller
+/// inserted (a real run handle with a fresh event hub), subscribe to the hub,
+/// spawn the agent loop, and return the SSE stream of the run's events.
+/// `state.sessions` must already hold the entry for `id` (so concurrent
+/// starts get a 409); the entry stays until the loop returns, which keeps
+/// GET /run reporting `running` and GET /events able to replay.
 fn start_agent_run(
     state: &AppState,
     id: &str,
@@ -86,17 +92,19 @@ fn start_agent_run(
     chat_model: Box<dyn oct_llm_provider::model::ChatModel>,
     messages: Vec<Message>,
 ) -> ApiResult<Response> {
-    let (event_tx, _) = broadcast::channel(256);
-    let cancel = CancellationToken::new();
-    let handle = RunHandle {
-        event_tx: event_tx.clone(),
-        cancel,
-    };
+    let handle = state
+        .sessions
+        .get(id)
+        .map(|entry| entry.value().clone())
+        .expect("caller inserted the session entry");
 
-    let rx = handle.subscribe();
-    if let Some(mut entry) = state.sessions.get_mut(id) {
-        *entry.value_mut() = handle.clone();
-    }
+    // Subscribe before spawning so the response stream is live from the very
+    // first event (the hub log would replay them anyway — subscribing first
+    // is just the cheaper path).
+    let stream = handle
+        .hub
+        .subscribe()
+        .map(|e| Ok::<_, Infallible>(sse_event(&e)));
 
     let ctx = AgentContext {
         model: Arc::from(chat_model),
@@ -110,19 +118,40 @@ fn start_agent_run(
 
     tokio::spawn(async move {
         run_agent_loop(ctx, conv_id.clone(), messages, handle).await;
+        // Dropping the last run handle releases the hub: every subscriber
+        // stream reaches EOF (the SSE bodies end), matching the old broadcast
+        // termination semantics.
         sessions.remove(&conv_id);
     });
 
-    let stream = BroadcastStream::new(rx).map(|e| match e {
-        Ok(e) => Ok::<_, Infallible>(
-            Event::default()
-                .json_data(&e)
-                .unwrap_or_else(|_| Event::default()),
-        ),
-        Err(_) => Ok(Event::default()),
-    });
-
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()).into_response())
+}
+
+/// Serialize an AgentEvent as an SSE `data:` payload.
+fn sse_event(e: &AgentEvent) -> Event {
+    Event::default()
+        .json_data(e)
+        .unwrap_or_else(|_| Event::default())
+}
+
+/// Insert the session entry for a new run: a REAL handle with a fresh event
+/// hub (not a placeholder channel). Unlike the previous placeholder scheme,
+/// a GET /events arriving in the run-startup window already replays from the
+/// same hub this run will publish to, so no handle swap is ever needed.
+fn insert_session_entry(state: &AppState, id: &str) -> Result<(), AppError> {
+    match state.sessions.entry(id.to_string()) {
+        dashmap::mapref::entry::Entry::Occupied(_) => Err(AppError::Conflict(
+            "Agent is already running for this conversation".into(),
+        )),
+        dashmap::mapref::entry::Entry::Vacant(entry) => {
+            entry.insert(RunHandle {
+                hub: Arc::new(EventHub::new()),
+                cancel: CancellationToken::new(),
+                start_message_id: None,
+            });
+            Ok(())
+        }
+    }
 }
 
 #[utoipa::path(
@@ -142,20 +171,7 @@ pub async fn send_message(
     Path(id): Path<String>,
     Json(req): Json<SendMessageRequest>,
 ) -> ApiResult<Response> {
-    let placeholder_cancel = CancellationToken::new();
-    match state.sessions.entry(id.clone()) {
-        dashmap::mapref::entry::Entry::Occupied(_) => {
-            return Err(AppError::Conflict(
-                "Agent is already running for this conversation".into(),
-            ));
-        }
-        dashmap::mapref::entry::Entry::Vacant(entry) => {
-            entry.insert(RunHandle {
-                event_tx: broadcast::channel(256).0,
-                cancel: placeholder_cancel.clone(),
-            });
-        }
-    }
+    insert_session_entry(&state, &id)?;
 
     let conversation = conv_db::get_conversation(&state.pool, &id)
         .await
@@ -195,7 +211,7 @@ pub async fn send_message(
     }
 
     let user_msg = Message::text(Role::User, &req.content);
-    if let Err(e) = msg_db::insert_message(
+    let stored_user = match msg_db::insert_message(
         &state.pool,
         &id,
         &user_msg,
@@ -205,8 +221,19 @@ pub async fn send_message(
     )
     .await
     {
-        state.sessions.remove(&id);
-        return Err(AppError::from(e));
+        Ok(m) => m,
+        Err(e) => {
+            state.sessions.remove(&id);
+            return Err(AppError::from(e));
+        }
+    };
+
+    // Record the run boundary on the (already live) session entry: the user
+    // message row is the divide between DB history and this run's event log.
+    // GET /events reports it as run_meta so a reconnecting frontend truncates
+    // its history exactly here before replaying the run's events.
+    if let Some(mut entry) = state.sessions.get_mut(&id) {
+        entry.value_mut().start_message_id = Some(stored_user.id.clone());
     }
 
     let messages = match msg_db::load_messages_for_llm(&state.pool, &id).await {
@@ -236,20 +263,7 @@ pub async fn resume_turn(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> ApiResult<Response> {
-    let placeholder_cancel = CancellationToken::new();
-    match state.sessions.entry(id.clone()) {
-        dashmap::mapref::entry::Entry::Occupied(_) => {
-            return Err(AppError::Conflict(
-                "Agent is already running for this conversation".into(),
-            ));
-        }
-        dashmap::mapref::entry::Entry::Vacant(entry) => {
-            entry.insert(RunHandle {
-                event_tx: broadcast::channel(256).0,
-                cancel: placeholder_cancel.clone(),
-            });
-        }
-    }
+    insert_session_entry(&state, &id)?;
 
     let conversation = conv_db::get_conversation(&state.pool, &id)
         .await
@@ -363,6 +377,68 @@ pub async fn cancel_agent(
             "No agent running for this conversation".into(),
         )),
     }
+}
+
+/// Poll probe for a reconnecting frontend (after a refresh): is a run still
+/// active for this conversation?
+#[utoipa::path(
+    get,
+    path = "/conversations/{id}/run",
+    params(("id" = String, Path, description = "Conversation ID")),
+    responses(
+        (status = 200, description = "Whether an agent run is currently active", body = RunningStatus)
+    ),
+    tag = "chat"
+)]
+pub async fn get_run_status(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<RunningStatus>> {
+    Ok(Json(RunningStatus {
+        running: state.sessions.contains_key(&id),
+    }))
+}
+
+/// Reconnect to a running agent: replay the run's events from its start,
+/// then continue live. The frontend treats 404 as "the run already ended"
+/// and simply refreshes its history from the DB.
+#[utoipa::path(
+    get,
+    path = "/conversations/{id}/events",
+    params(("id" = String, Path, description = "Conversation ID")),
+    responses(
+        (status = 200, description = "SSE stream: a synthetic run_meta event (when the run records its start message) followed by the run's full event log replayed from its start, then live events"),
+        (status = 404, description = "No agent running for this conversation (the run has ended)")
+    ),
+    tag = "chat"
+)]
+pub async fn stream_run_events(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Response> {
+    // Clone what we need and drop the shard guard immediately; the returned
+    // SSE stream must NOT keep the run handle alive, or the hub would never
+    // be dropped when the run ends and the stream would never reach EOF.
+    let (hub, start_message_id) = {
+        let Some(handle) = state.sessions.get(&id) else {
+            return Err(AppError::NotFound(
+                "No agent running for this conversation".into(),
+            ));
+        };
+        (handle.hub.clone(), handle.start_message_id.clone())
+    };
+
+    // Synthetic boundary event for THIS subscriber only — never published to
+    // the hub. It tells the frontend where the run's event log begins so it
+    // can truncate its DB-loaded history before applying the replay.
+    let meta = start_message_id
+        .map(|start_message_id| AgentEvent::RunMeta { start_message_id });
+
+    let stream = futures_util::stream::iter(meta)
+        .chain(hub.subscribe())
+        .map(|e| Ok::<_, Infallible>(sse_event(&e)));
+
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()).into_response())
 }
 
 #[utoipa::path(

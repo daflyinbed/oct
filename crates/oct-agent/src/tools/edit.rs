@@ -325,10 +325,10 @@ mod tests {
     use crate::tools::write::WriteFileTool;
     use serde_json::json;
 
-    /// A ToolContext wired to a throwaway broadcast channel; edit_file does
+    /// A ToolContext wired to a throwaway event hub; edit_file does
     /// not stream, so the context is only needed for the trait signature.
     fn noop_ctx() -> ToolContext {
-        ToolContext::new("test", tokio::sync::broadcast::channel(1).0)
+        ToolContext::new("test", std::sync::Arc::new(crate::agent::EventHub::new()))
     }
 
     /// A temp working directory with the edit/read/write tools sharing one

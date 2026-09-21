@@ -5,9 +5,9 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
-use tokio::sync::broadcast;
 use utoipa::ToSchema;
 
+use crate::agent::events::EventHub;
 use crate::agent::AgentEvent;
 
 pub mod edit;
@@ -115,7 +115,7 @@ impl SmootherState {
 
     /// Emit `stream`'s pending buffer as ONE `ToolOutputDelta` event (when
     /// non-empty and the event cap allows) and reset its flush clock.
-    fn flush_stream(&mut self, call_id: &str, event_tx: &broadcast::Sender<AgentEvent>, stream: OutputStream) {
+    fn flush_stream(&mut self, call_id: &str, hub: &EventHub, stream: OutputStream) {
         if self.events_emitted >= SMOOTHER_MAX_EVENTS {
             // Over the cap: drop the buffered remainder without emitting.
             self.buffer_mut(stream).pending.clear();
@@ -128,7 +128,7 @@ impl SmootherState {
         let delta = std::mem::take(&mut buffer.pending);
         buffer.last_flush = Some(Instant::now());
         self.events_emitted += 1;
-        let _ = event_tx.send(AgentEvent::ToolOutputDelta {
+        hub.publish(AgentEvent::ToolOutputDelta {
             call_id: call_id.to_string(),
             stream,
             delta,
@@ -138,7 +138,7 @@ impl SmootherState {
 
 struct ToolContextInner {
     call_id: String,
-    event_tx: broadcast::Sender<AgentEvent>,
+    hub: Arc<EventHub>,
     state: Mutex<SmootherState>,
 }
 
@@ -154,11 +154,11 @@ pub struct ToolContext {
 }
 
 impl ToolContext {
-    pub fn new(call_id: impl Into<String>, event_tx: broadcast::Sender<AgentEvent>) -> Self {
+    pub fn new(call_id: impl Into<String>, hub: Arc<EventHub>) -> Self {
         Self {
             inner: Arc::new(ToolContextInner {
                 call_id: call_id.into(),
-                event_tx,
+                hub,
                 state: Mutex::new(SmootherState::default()),
             }),
         }
@@ -198,7 +198,7 @@ impl ToolContext {
                 .last_flush
                 .is_some_and(|t| t.elapsed() >= SMOOTHER_FLUSH_INTERVAL);
         if due {
-            state.flush_stream(&self.inner.call_id, &self.inner.event_tx, stream);
+            state.flush_stream(&self.inner.call_id, &self.inner.hub, stream);
         }
     }
 
@@ -212,7 +212,7 @@ impl ToolContext {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         for stream in [OutputStream::Stdout, OutputStream::Stderr] {
-            state.flush_stream(&self.inner.call_id, &self.inner.event_tx, stream);
+            state.flush_stream(&self.inner.call_id, &self.inner.hub, stream);
         }
     }
 }
@@ -277,136 +277,136 @@ pub fn default_tools(working_dir: std::path::PathBuf) -> Vec<Box<dyn AgentTool>>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::sync::broadcast::error::TryRecvError;
+    use futures_util::StreamExt;
 
-    /// Collect all currently buffered events from `rx`.
-    fn drain(rx: &mut broadcast::Receiver<AgentEvent>) -> Vec<AgentEvent> {
-        let mut out = Vec::new();
-        loop {
-            match rx.try_recv() {
-                Ok(e) => out.push(e),
-                Err(TryRecvError::Empty | TryRecvError::Closed) => break,
-                Err(TryRecvError::Lagged(_)) => continue,
-            }
-        }
-        out
+    /// Build a ToolContext over a fresh hub and subscribe to it BEFORE any
+    /// output is emitted, so every flushed delta is observed as it happens.
+    ///
+    /// Assertion model: publishing to the hub is synchronous, so after the
+    /// actions under test we drop every hub owner (context + local Arc) — the
+    /// subscription then reaches EOF and `collect()` returns exactly the
+    /// events that were published, with no timeouts or sleeps.
+    fn ctx_with_sub() -> (ToolContext, Arc<EventHub>, crate::agent::events::SubscribeStream) {
+        let hub = Arc::new(EventHub::new());
+        let stream = hub.subscribe();
+        (ToolContext::new("call-1", hub.clone()), hub, stream)
     }
 
-    fn deltas(events: &[AgentEvent]) -> Vec<(OutputStream, String)> {
+    fn deltas(events: Vec<AgentEvent>) -> Vec<(OutputStream, String)> {
         events
-            .iter()
+            .into_iter()
             .filter_map(|e| match e {
                 AgentEvent::ToolOutputDelta { stream, delta, .. } => {
-                    Some((*stream, delta.clone()))
+                    Some((stream, delta))
                 }
                 _ => None,
             })
             .collect()
     }
 
-    #[test]
-    fn smoother_emits_large_chunks_immediately() {
-        let (tx, mut rx) = broadcast::channel(64);
-        let ctx = ToolContext::new("call-1", tx);
+    #[tokio::test]
+    async fn smoother_emits_large_chunks_immediately() {
+        let (ctx, hub, stream) = ctx_with_sub();
 
         let big = "x".repeat(SMOOTHER_FLUSH_BYTES);
         ctx.emit_output_delta(OutputStream::Stdout, &big);
+        // No flush() call: the size threshold alone must have emitted it.
+        drop(ctx);
+        drop(hub);
 
-        let events = drain(&mut rx);
         assert_eq!(
-            deltas(&events),
+            deltas(stream.collect().await),
             vec![(OutputStream::Stdout, big)],
             "an 8KB chunk must flush right away"
         );
     }
 
-    #[test]
-    fn smoother_coalesces_small_bursts_until_flush() {
-        let (tx, mut rx) = broadcast::channel(64);
-        let ctx = ToolContext::new("call-1", tx);
+    #[tokio::test]
+    async fn smoother_coalesces_small_bursts_until_flush() {
+        let (ctx, hub, stream) = ctx_with_sub();
 
         for i in 0..10 {
             ctx.emit_output_delta(OutputStream::Stdout, &format!("chunk-{i};"));
         }
-        // Under both the size and time thresholds: nothing emitted yet.
-        assert!(drain(&mut rx).is_empty());
-
+        // Under both thresholds so far: exactly one event after the (idempotent)
+        // flush proves the ten bursts coalesced and the second flush no-oped.
         ctx.flush();
-        let events = drain(&mut rx);
+        ctx.flush();
+        drop(ctx);
+        drop(hub);
+
         assert_eq!(
-            deltas(&events),
+            deltas(stream.collect().await),
             vec![(
                 OutputStream::Stdout,
                 "chunk-0;chunk-1;chunk-2;chunk-3;chunk-4;chunk-5;chunk-6;chunk-7;chunk-8;chunk-9;"
                     .to_string()
             )]
         );
-
-        // flush() is idempotent.
-        ctx.flush();
-        assert!(drain(&mut rx).is_empty());
     }
 
-    #[test]
-    fn smoother_flushes_streams_independently() {
-        let (tx, mut rx) = broadcast::channel(64);
-        let ctx = ToolContext::new("call-1", tx);
+    #[tokio::test]
+    async fn smoother_flushes_streams_independently() {
+        let (ctx, hub, stream) = ctx_with_sub();
 
         let big_out = "o".repeat(SMOOTHER_FLUSH_BYTES);
+        // The 8KB stdout chunk flushes right away; the small stderr burst
+        // stays buffered (below both thresholds) until the explicit flush.
         ctx.emit_output_delta(OutputStream::Stdout, &big_out);
         ctx.emit_output_delta(OutputStream::Stderr, "small-err");
-
-        // The 8KB stdout chunk flushed right away; the small stderr burst
-        // stays buffered (below both thresholds).
-        let events = drain(&mut rx);
-        assert_eq!(deltas(&events), vec![(OutputStream::Stdout, big_out)]);
-
         ctx.flush();
-        let events = drain(&mut rx);
+        drop(ctx);
+        drop(hub);
+
         assert_eq!(
-            deltas(&events),
-            vec![(OutputStream::Stderr, "small-err".to_string())]
+            deltas(stream.collect().await),
+            vec![
+                (OutputStream::Stdout, big_out),
+                (OutputStream::Stderr, "small-err".to_string()),
+            ],
+            "stdout and stderr must flush in order, from independent buffers"
         );
     }
 
-    #[test]
-    fn smoother_flushes_slow_output_after_interval() {
-        let (tx, mut rx) = broadcast::channel(64);
-        let ctx = ToolContext::new("call-1", tx);
+    #[tokio::test]
+    async fn smoother_flushes_slow_output_after_interval() {
+        let (ctx, hub, stream) = ctx_with_sub();
 
         ctx.emit_output_delta(OutputStream::Stdout, "first ");
-        assert!(drain(&mut rx).is_empty());
 
         // Simulate a slow producer: the next emit arrives after the flush
         // interval, so the time condition holds at emit time.
         std::thread::sleep(SMOOTHER_FLUSH_INTERVAL + Duration::from_millis(20));
         ctx.emit_output_delta(OutputStream::Stdout, "second");
+        drop(ctx);
+        drop(hub);
 
-        let events = drain(&mut rx);
         assert_eq!(
-            deltas(&events),
+            deltas(stream.collect().await),
             vec![(OutputStream::Stdout, "first second".to_string())]
         );
     }
 
-    #[test]
-    fn smoother_caps_total_delta_events() {
-        let (tx, mut rx) = broadcast::channel(SMOOTHER_MAX_EVENTS + 8);
-        let ctx = ToolContext::new("call-1", tx);
+    #[tokio::test]
+    async fn smoother_caps_total_delta_events() {
+        let (ctx, hub, stream) = ctx_with_sub();
 
         let big = "x".repeat(SMOOTHER_FLUSH_BYTES);
         for _ in 0..(SMOOTHER_MAX_EVENTS + 5) {
             ctx.emit_output_delta(OutputStream::Stdout, &big);
         }
-        let count = drain(&mut rx)
+        // Past the cap even explicit flushes emit nothing.
+        ctx.emit_output_delta(OutputStream::Stderr, "tail");
+        ctx.flush();
+        drop(ctx);
+        drop(hub);
+
+        let count = stream
+            .collect::<Vec<AgentEvent>>()
+            .await
             .into_iter()
             .filter(|e| matches!(e, AgentEvent::ToolOutputDelta { .. }))
             .count();
         assert_eq!(count, SMOOTHER_MAX_EVENTS);
-
-        // Past the cap even explicit flushes emit nothing.
-        ctx.emit_output_delta(OutputStream::Stderr, "tail");
-        ctx.flush();
-        assert!(drain(&mut rx).is_empty());
     }
 }

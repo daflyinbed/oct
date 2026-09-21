@@ -15,6 +15,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use async_stream::stream;
 use axum::extract::State;
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
@@ -22,6 +23,7 @@ use axum::routing::post;
 use axum::{Json, Router};
 use futures_util::StreamExt;
 use serde_json::{Value, json};
+use tokio::sync::watch;
 
 /// One scripted LLM turn.
 pub enum LlmTurn {
@@ -33,6 +35,24 @@ pub enum LlmTurn {
     Hang(Vec<Value>),
     /// Respond with this HTTP status instead of a stream.
     Fail(u16),
+    /// Deterministic mid-stream pause: serve `pre`, then HOLD the stream
+    /// until the gate opens, then serve `post` and end normally. Used to
+    /// park a run mid-flight (e.g. reconnect tests assert the run status
+    /// and the event replay while the gate is closed, then open it to let
+    /// the run finish). No sleeps: the test holds the sending half of
+    /// [`gate`] and opens it explicitly.
+    Gated {
+        pre: Vec<Value>,
+        gate: watch::Receiver<bool>,
+        post: Vec<Value>,
+    },
+}
+
+/// Create a gate for [`LlmTurn::Gated`]: the returned sender opens the gate
+/// (`send(true)`); a gate opened before the turn starts is already open when
+/// the stream reaches it.
+pub fn gate() -> (watch::Sender<bool>, watch::Receiver<bool>) {
+    watch::channel(false)
 }
 
 struct LlmMockState {
@@ -112,6 +132,37 @@ async fn chat_completions(
                 .collect();
             // Stream the chunks, then never yield again and never end.
             let stream = futures_util::stream::iter(events).chain(futures_util::stream::pending());
+            Sse::new(stream).into_response()
+        }
+        Some(LlmTurn::Gated {
+            pre,
+            mut gate,
+            post,
+        }) => {
+            let pre_events: Vec<Result<Event, Infallible>> = pre
+                .into_iter()
+                .map(|c| Ok(Event::default().json_data(c).expect("serialize chunk")))
+                .collect();
+            let post_events: Vec<Result<Event, Infallible>> = post
+                .into_iter()
+                .map(|c| Ok(Event::default().json_data(c).expect("serialize chunk")))
+                .chain([Ok(Event::default().data("[DONE]"))])
+                .collect();
+            let stream = stream! {
+                for event in pre_events {
+                    yield event;
+                }
+                // Hold the stream until the test opens the gate (or the gate
+                // sender is dropped, which also releases the stream).
+                while !*gate.borrow() {
+                    if gate.changed().await.is_err() {
+                        break;
+                    }
+                }
+                for event in post_events {
+                    yield event;
+                }
+            };
             Sse::new(stream).into_response()
         }
     }

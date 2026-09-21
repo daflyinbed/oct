@@ -21,11 +21,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
+use oct_agent::agent::events::SubscribeStream;
 use oct_agent::agent::loop_runner::run_agent_loop;
-use oct_agent::agent::{AgentContext, AgentEvent, RunHandle};
+use oct_agent::agent::{AgentContext, AgentEvent, EventHub, RunHandle};
 use oct_agent::db;
 use oct_llm_provider::core::{FinishReason, ModelError, Role, StreamEvent, ToolCall, Usage};
 use oct_llm_provider::model::{ChatModel, ChatRequest, ChatResponse, ChatStream};
@@ -203,20 +203,23 @@ pub async fn new_conversation(pool: &sqlx::SqlitePool, working_dir: &std::path::
     conversation.expect("create conversation").id
 }
 
-/// Spawn the real agent loop against `model` and `tools`, returning the
-/// run handle plus a subscriber attached *before* the loop starts so no
-/// event can be missed.
+/// Spawn the real agent loop against `model` and `tools`, returning the run
+/// handle plus a subscriber attached *before* the loop starts so no event
+/// can be missed.
 pub async fn spawn_agent(
     model: ScriptedModel,
     tools: Vec<Box<dyn oct_agent::tools::AgentTool>>,
     pool: sqlx::SqlitePool,
     conv_id: &str,
     user_message: &str,
-) -> (RunHandle, broadcast::Receiver<AgentEvent>) {
-    let (event_tx, _) = broadcast::channel(256);
+) -> (RunHandle, SubscribeStream) {
     let cancel = CancellationToken::new();
-    let handle = RunHandle { event_tx, cancel };
-    let rx = handle.subscribe();
+    let handle = RunHandle {
+        hub: Arc::new(EventHub::new()),
+        cancel,
+        start_message_id: None,
+    };
+    let stream = handle.subscribe();
 
     let ctx = AgentContext {
         model: Arc::new(model),
@@ -238,23 +241,23 @@ pub async fn spawn_agent(
         .await;
     });
 
-    (handle, rx)
+    (handle, stream)
 }
 
-/// Receive events until `stop` matches (inclusive) or the channel closes.
-/// A generous timeout turns a hung loop into a test failure instead of a
+/// Receive events until `stop` matches (inclusive) or the stream ends. A
+/// generous timeout turns a hung loop into a test failure instead of a
 /// stuck test binary; no sleeps are used anywhere — every wait is parked on
 /// an event.
 pub async fn collect_events(
-    rx: &mut broadcast::Receiver<AgentEvent>,
+    stream: &mut (impl futures_util::Stream<Item = AgentEvent> + Unpin),
     stop: impl Fn(&AgentEvent) -> bool,
 ) -> Vec<AgentEvent> {
     let mut out = Vec::new();
     loop {
-        let event = tokio::time::timeout(Duration::from_secs(30), rx.recv())
+        let event = tokio::time::timeout(Duration::from_secs(30), stream.next())
             .await
             .expect("timed out waiting for agent event (loop hung?)")
-            .expect("agent event channel closed before a terminal event");
+            .expect("agent event stream ended before a terminal event");
         let done = stop(&event);
         out.push(event);
         if done {
@@ -444,6 +447,22 @@ impl TestApp {
             .expect("resume request should not fail at transport level")
     }
 
+    /// GET /api/conversations/{id}/run — the reconnect probe.
+    pub async fn run_status(&self, conv_id: &str) -> reqwest::Response {
+        self.get_json(&format!("/api/conversations/{conv_id}/run"))
+            .await
+    }
+
+    /// GET /api/conversations/{id}/events — reconnect to a running agent;
+    /// returns the response with headers received but the SSE body NOT yet
+    /// read (same contract as [`Self::send_message`]). The server-side
+    /// subscription is registered by the time headers arrive, which makes
+    /// the subsequent replay content deterministic.
+    pub async fn run_events(&self, conv_id: &str) -> reqwest::Response {
+        self.get_json(&format!("/api/conversations/{conv_id}/events"))
+            .await
+    }
+
     /// Drain an SSE response body and return the JSON payload of every
     /// `data:` line. Comment lines (keep-alives) are skipped.
     pub async fn read_sse(&self, response: reqwest::Response) -> Vec<serde_json::Value> {
@@ -456,4 +475,35 @@ impl TestApp {
             })
             .collect()
     }
+}
+
+/// Incrementally read SSE `data:` payloads from an open-ended response body
+/// as they arrive (keep-alive comments skipped). Unlike
+/// [`TestApp::read_sse`] this does not wait for body EOF, so a test can
+/// observe the events a stream has produced SO FAR while the run is still
+/// parked (e.g. behind an [`llm::gate`]).
+pub fn sse_payloads(
+    response: reqwest::Response,
+) -> futures_util::stream::BoxStream<'static, serde_json::Value> {
+    use futures_util::StreamExt;
+    Box::pin(async_stream::stream! {
+        let mut body = response.bytes_stream();
+        let mut buf = String::new();
+        while let Some(chunk) = body.next().await {
+            let chunk = chunk.expect("sse transport error");
+            buf.push_str(&String::from_utf8_lossy(&chunk));
+            while let Some(pos) = buf.find('\n') {
+                let line: String = buf.drain(..=pos).collect();
+                let line = line.trim_end_matches(['\n', '\r']);
+                if let Some(payload) = line.strip_prefix("data: ") {
+                    if payload == "[DONE]" {
+                        continue;
+                    }
+                    if let Ok(value) = serde_json::from_str(payload) {
+                        yield value;
+                    }
+                }
+            }
+        }
+    })
 }

@@ -20,6 +20,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/conversations/{id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Reconnect to a running agent: replay the run's events from its start,
+         *     then continue live. The frontend treats 404 as "the run already ended"
+         *     and simply refreshes its history from the DB.
+         */
+        get: operations["stream_run_events"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/conversations/{id}/messages": {
         parameters: {
             query?: never;
@@ -46,6 +67,26 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["resume_turn"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/conversations/{id}/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Poll probe for a reconnecting frontend (after a refresh): is a run still
+         *     active for this conversation?
+         */
+        get: operations["get_run_status"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -292,6 +333,19 @@ export interface components {
             data: string;
             /** @enum {string} */
             type: "error";
+        } | {
+            /**
+             * @description Run-boundary metadata for a reconnecting subscriber: the id of the
+             *     user message row that started this run. NEVER enters the hub's replay
+             *     log and is never published by the agent loop — the events endpoint
+             *     injects it (per subscriber) in front of the replay so the frontend can
+             *     truncate its DB-loaded history exactly at the run boundary.
+             */
+            data: {
+                start_message_id: string;
+            };
+            /** @enum {string} */
+            type: "run_meta";
         };
         Conversation: {
             /** Format: date-time */
@@ -455,6 +509,10 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        /** @description Whether an agent run is currently active for a conversation. */
+        RunningStatus: {
+            running: boolean;
+        };
         SendMessageRequest: {
             content: string;
             provider_spec: string;
@@ -551,6 +609,34 @@ export interface operations {
                 content?: never;
             };
             /** @description No agent running for this conversation */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    stream_run_events: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Conversation ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description SSE stream: a synthetic run_meta event (when the run records its start message) followed by the run's full event log replayed from its start, then live events */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No agent running for this conversation (the run has ended) */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -667,6 +753,29 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    get_run_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Conversation ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Whether an agent run is currently active */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunningStatus"];
+                };
             };
         };
     };

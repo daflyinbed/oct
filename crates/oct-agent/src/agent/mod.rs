@@ -1,15 +1,16 @@
+pub mod events;
 pub mod loop_runner;
 pub mod prompt;
 
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::sync::Arc;
-use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::tools::{AgentTool, OutputStream};
+pub use events::EventHub;
 use oct_llm_provider::model::ChatModel;
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq)]
@@ -74,6 +75,16 @@ pub enum AgentEvent {
 
     #[serde(rename = "error")]
     Error(String),
+
+    /// Run-boundary metadata for a reconnecting subscriber: the id of the
+    /// user message row that started this run. NEVER enters the hub's replay
+    /// log and is never published by the agent loop — the events endpoint
+    /// injects it (per subscriber) in front of the replay so the frontend can
+    /// truncate its DB-loaded history exactly at the run boundary.
+    #[serde(rename = "run_meta")]
+    RunMeta {
+        start_message_id: String,
+    },
 }
 
 pub struct AgentContext {
@@ -85,13 +96,20 @@ pub struct AgentContext {
 
 #[derive(Clone)]
 pub struct RunHandle {
-    pub event_tx: broadcast::Sender<AgentEvent>,
+    /// This run's event hub: replay log + live fan-out. Shared by the agent
+    /// loop (publisher), tool contexts (publisher) and every SSE subscriber.
+    pub hub: Arc<EventHub>,
     pub cancel: CancellationToken,
+    /// The user message row that started this run — the boundary between the
+    /// DB history (everything up to and including it) and this run's event
+    /// log (everything after it). `None` for resumed runs (no new user
+    /// message) and in the brief window before the user message is inserted.
+    pub start_message_id: Option<String>,
 }
 
 impl RunHandle {
-    pub fn subscribe(&self) -> broadcast::Receiver<AgentEvent> {
-        self.event_tx.subscribe()
+    pub fn subscribe(&self) -> events::SubscribeStream {
+        self.hub.subscribe()
     }
 
     pub fn cancel(&self) {

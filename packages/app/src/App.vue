@@ -172,7 +172,7 @@ const router = useRouter();
 const { projects, conversations, fetchProjects, createConversation } =
   useProjects();
 const { fetchProviders } = useProviders();
-const { sending, fetchMessages } = useChat();
+const { sending, fetchMessages, attachRun } = useChat();
 const {
   tabs,
   activeTab,
@@ -243,8 +243,10 @@ watch(activeTabId, (id, prevId) => {
     } else if (prevId != null && !prevWasChat && !sending.value) {
       // 从非 chat 标签切回本会话时路由不变（chat 区只是 v-show 隐藏），
       // route watch 不会触发：主动刷新，避免残留切换前的旧 live DOM。
-      // 流式进行中跳过——live 视图比库里的更完整。
-      fetchMessages(tab.payload);
+      // 流式进行中跳过——live 视图比库里的更完整；随后 attachRun 兜住
+      // "刷新瞬间 run 恰好还在后端跑着"的情况（如另一窗口发起的 run）。
+      const conversationId = tab.payload;
+      void fetchMessages(conversationId).then(() => attachRun(conversationId));
     }
   } else if (!tab && route.path !== "/") {
     router.push("/");

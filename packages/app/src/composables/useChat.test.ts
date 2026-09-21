@@ -19,6 +19,7 @@ const {
   fetchMessages,
   sendMessage,
   resumeTurn,
+  attachRun,
   clearMessages,
 } = useChat();
 
@@ -112,6 +113,15 @@ function toolResult(
 const finishEvent = { type: "finish" };
 const cancelledEvent = { type: "cancelled" };
 const errorEvent = (data: string) => ({ type: "error", data });
+// 重连重放的合成锚点事件（仅 events 端点注入，不进 reducer）
+function runMeta(start_message_id: string) {
+  return {
+    type: "run_meta",
+    data: { start_message_id },
+  };
+}
+// 重放重建的流式消息 id 前缀（attachRun 内约定）
+const RE_reattachedId = /^reattached-/;
 
 function toolCards(): DeepReadonly<ToolCallPart>[] {
   return messages.value.flatMap((m) =>
@@ -737,6 +747,259 @@ describe("中断恢复", () => {
     expect(GET).toHaveBeenCalledTimes(2);
     expect(messages.value.map((m) => m.role)).toEqual(["user", "assistant"]);
     expect(toolCards()[0]!.status).toBe("interrupted");
+    expect(sending.value).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 运行中重连重放（attachRun：前端刷新后重接运行中的 run）
+// ---------------------------------------------------------------------------
+
+describe("attachRun 重连重放", () => {
+  function stubFetch(...responses: Response[]) {
+    const fetchMock = vi.fn();
+    for (const r of responses) fetchMock.mockResolvedValueOnce(r);
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  /** 可暂停的 SSE（controller 手动放行），模拟重连后仍在增长的流。 */
+  function pausableSse() {
+    const encoder = new TextEncoder();
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        streamController = c;
+      },
+    });
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(stream, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    return {
+      fetchMock,
+      send: (...events: unknown[]) =>
+        streamController.enqueue(
+          encoder.encode(
+            `${events.map((e) => `data: ${JSON.stringify(e)}`).join("\n\n")}\n\n`,
+          ),
+        ),
+      end: () => streamController.close(),
+    };
+  }
+
+  /** GET 队列：初始历史 → /run 探测 →（终态）静默刷新。 */
+  function stubGetQueue(...results: unknown[]) {
+    for (const r of results) GET.mockResolvedValueOnce(r as never);
+  }
+
+  /** 终态刷新失败：保留重建视图以便断言重放结果（loadMessages 失败不动视图）。 */
+  const failedRefresh = { data: undefined, error: {} };
+
+  it("主路径：run_meta 锚点截断 → 事件重放重建 → 终态守卫刷新", async () => {
+    const conv = nextConvId();
+    // 刷新后从 DB 拉到的历史：run 的 user 消息（u2）之后已有轮次边界
+    // 落库的第一轮 assistant（a2）——属于 run 之内，重放前必须丢弃。
+    stubGetQueue(
+      {
+        data: [
+          storedMessage("user", '[{"Text":"第一问"}]', { id: "u1" }),
+          storedMessage("assistant", '[{"Text":"旧答"}]', { id: "a1" }),
+          storedMessage("user", '[{"Text":"run 的问题"}]', { id: "u2" }),
+          storedMessage(
+            "assistant",
+            String.raw`[{"ToolCall":{"id":"c1","name":"read_file","arguments":"{}"}}]`,
+            { id: "a2" },
+          ),
+        ],
+      },
+      { data: { running: true } },
+      failedRefresh,
+    );
+    const sse = pausableSse();
+
+    await fetchMessages(conv);
+    const attachPromise = attachRun(conv);
+    // 首个事件（run_meta）到达：截断已发生、重放流式消息已建立
+    sse.send(runMeta("u2"));
+    await vi.waitFor(() =>
+      expect(messages.value.some((m) => RE_reattachedId.test(m.id))).toBe(true),
+    );
+    expect(messages.value.map((m) => m.id)).toEqual([
+      "u1",
+      "a1",
+      "u2",
+      expect.stringMatching(RE_reattachedId),
+    ]);
+
+    // 重放 delta 经现有 reducer 重建（与 live 流同一套逻辑），直至 finish
+    sse.send(
+      reasoningDelta("想想"),
+      textDelta("重建"),
+      textDelta("答案"),
+      finishEvent,
+    );
+    sse.end();
+    await attachPromise;
+
+    const rebuilt = messages.value[3]!;
+    expect(rebuilt.parts).toEqual([
+      {
+        kind: "reasoning",
+        text: "想想",
+        startedAt: expect.any(Number),
+        durationMs: expect.any(Number),
+        ended: true,
+      },
+      { kind: "text", text: "重建答案" },
+    ]);
+    expect(rebuilt.isStreaming).toBe(false);
+    expect(sending.value).toBe(false);
+    // 订阅打到 events 端点；GET 轨迹：初始加载 → /run 探测 → 终态刷新
+    expect(sse.fetchMock.mock.calls[0]?.[0]).toBe(
+      `/api/conversations/${conv}/events`,
+    );
+    expect(GET).toHaveBeenCalledTimes(3);
+    expect(GET.mock.calls[1]?.[0]).toBe("/api/conversations/{id}/run");
+    expect(GET.mock.calls[2]?.[0]).toBe("/api/conversations/{id}/messages");
+  });
+
+  it("空闲会话：只静默刷新收敛，不订阅事件流、不悬挂", async () => {
+    const conv = nextConvId();
+    stubGetQueue(
+      { data: [storedMessage("user", '[{"Text":"问"}]', { id: "u1" })] },
+      { data: { running: false } },
+      {
+        data: [
+          storedMessage("user", '[{"Text":"问"}]', { id: "u1" }),
+          storedMessage("assistant", '[{"Text":"答"}]'),
+        ],
+      },
+    );
+    const fetchMock = stubFetch();
+
+    await fetchMessages(conv);
+    await attachRun(conv);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(GET).toHaveBeenCalledTimes(3); // 初始 + 探测 + 静默刷新
+    expect(messages.value.at(-1)?.parts).toEqual([
+      { kind: "text", text: "答" },
+    ]);
+    expect(sending.value).toBe(false);
+  });
+
+  it("无 run_meta 的兜底：锚点退回最后一条 user 消息（含）", async () => {
+    const conv = nextConvId();
+    // resume 续跑的 run 没有新 user 消息：DB 尾部是悬空的第一轮 assistant
+    stubGetQueue(
+      {
+        data: [
+          storedMessage("user", '[{"Text":"恢复的请求"}]', { id: "u1" }),
+          storedMessage("assistant", '[{"Text":"中断的半截回答"}]', {
+            id: "a1",
+          }),
+        ],
+      },
+      { data: { running: true } },
+      failedRefresh,
+    );
+    stubFetch(sse([textDelta("续答"), finishEvent]));
+    await fetchMessages(conv);
+    await attachRun(conv);
+
+    // 兜底锚到 u1：a1 丢弃，重放从零重建
+    expect(messages.value.map((m) => m.id)).toEqual([
+      "u1",
+      expect.stringMatching(RE_reattachedId),
+    ]);
+    expect(messages.value[1]!.parts).toEqual([{ kind: "text", text: "续答" }]);
+    expect(sending.value).toBe(false);
+  });
+
+  it("探测与订阅之间 run 结束（events 404）：静默刷新收敛，不追加重放消息", async () => {
+    const conv = nextConvId();
+    stubGetQueue(
+      { data: [storedMessage("user", '[{"Text":"问"}]', { id: "u1" })] },
+      { data: { running: true } },
+      {
+        data: [
+          storedMessage("user", '[{"Text":"问"}]', { id: "u1" }),
+          storedMessage("assistant", '[{"Text":"答"}]'),
+        ],
+      },
+    );
+    stubFetch(new Response("gone", { status: 404 }));
+    await fetchMessages(conv);
+    await attachRun(conv);
+
+    expect(messages.value.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(messages.value.some((m) => RE_reattachedId.test(m.id))).toBe(false);
+    expect(GET).toHaveBeenCalledTimes(3);
+    expect(sending.value).toBe(false);
+  });
+
+  it("流 EOF 无终态事件：finalize 收敛，不悬挂流式态", async () => {
+    const conv = nextConvId();
+    stubGetQueue(
+      {
+        data: [
+          storedMessage("user", '[{"Text":"问"}]', { id: "u1" }),
+          storedMessage("user", '[{"Text":"run 的问题"}]', { id: "u2" }),
+        ],
+      },
+      { data: { running: true } },
+      failedRefresh,
+    );
+    // 中途 run 结束（hub drop ⟹ 流关闭）且最后一截没带终态事件
+    stubFetch(sse([runMeta("u2"), textDelta("部分")]));
+    await fetchMessages(conv);
+    await attachRun(conv);
+
+    const rebuilt = messages.value[2]!;
+    expect(rebuilt.id).toMatch(RE_reattachedId);
+    expect(rebuilt.parts).toEqual([{ kind: "text", text: "部分" }]);
+    expect(rebuilt.isStreaming).toBe(false);
+    expect(sending.value).toBe(false);
+  });
+
+  it("attach 进行中切走会话：事件不落在别的会话视图上，收尾刷新被守卫拦下", async () => {
+    const convA = nextConvId();
+    stubGetQueue(
+      {
+        data: [
+          storedMessage("user", '[{"Text":"A 的问题"}]', { id: "u1" }),
+          storedMessage("user", '[{"Text":"run 的问题"}]', { id: "u2" }),
+        ],
+      },
+      { data: { running: true } },
+    );
+    const sse = pausableSse();
+
+    await fetchMessages(convA);
+    const attachPromise = attachRun(convA);
+    sse.send(runMeta("u2"));
+    await vi.waitFor(() =>
+      expect(messages.value.some((m) => RE_reattachedId.test(m.id))).toBe(true),
+    );
+
+    // 切换到会话 B（GET#3：B 的加载）
+    const convB = nextConvId();
+    stubGetQueue({
+      data: [storedMessage("user", '[{"Text":"B会话"}]', { id: "b1" })],
+    });
+    await fetchMessages(convB);
+
+    // 放行 A 的余下事件：截断/追加绝不能改写 B 的视图
+    sse.send(textDelta("A 的重放"), finishEvent);
+    sse.end();
+    await attachPromise;
+
+    expect(messages.value.map((m) => m.id)).toEqual(["b1"]);
+    expect(GET).toHaveBeenCalledTimes(3); // A 初始 + A 探测 + B 切换（A 收尾刷新被拦）
     expect(sending.value).toBe(false);
   });
 });

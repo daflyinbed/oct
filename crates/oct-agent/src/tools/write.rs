@@ -201,10 +201,10 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// A ToolContext wired to a throwaway broadcast channel; write_file does
+    /// A ToolContext wired to a throwaway event hub; write_file does
     /// not stream, so the context is only needed for the trait signature.
     fn noop_ctx() -> ToolContext {
-        ToolContext::new("test", tokio::sync::broadcast::channel(1).0)
+        ToolContext::new("test", std::sync::Arc::new(crate::agent::EventHub::new()))
     }
 
     struct Fixture {

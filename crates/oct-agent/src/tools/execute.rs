@@ -430,23 +430,26 @@ impl AgentTool for ExecuteCommandTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::StreamExt;
     use serde_json::json;
     use serde_json::Value;
-    use tokio::sync::broadcast;
 
-    /// A ToolContext wired to a broadcast channel so tests can observe the
-    /// emitted live-delta events.
+    use crate::agent::events::EventHub;
+
+    /// A ToolContext wired to a throwaway event hub so tests can observe the
+    /// emitted live-delta events (publishing is synchronous, so subscribing
+    /// after the run reads the full snapshot).
     struct TestCtx {
         ctx: ToolContext,
-        rx: broadcast::Receiver<crate::agent::AgentEvent>,
+        hub: Arc<EventHub>,
     }
 
     impl TestCtx {
         fn new() -> Self {
-            let (tx, rx) = broadcast::channel(4096);
+            let hub = Arc::new(EventHub::new());
             Self {
-                ctx: ToolContext::new("test-call", tx),
-                rx,
+                ctx: ToolContext::new("test-call", hub.clone()),
+                hub,
             }
         }
     }
@@ -580,7 +583,7 @@ mod tests {
     #[tokio::test]
     async fn streams_decoded_output_as_deltas() {
         let tool = ExecuteCommandTool::new(std::env::temp_dir());
-        let mut test_ctx = TestCtx::new();
+        let test_ctx = TestCtx::new();
 
         let out = tool
             .execute(json!({ "command": "echo live-output" }), &test_ctx.ctx)
@@ -592,9 +595,16 @@ mod tests {
         // does before the final ToolResult.
         test_ctx.ctx.flush();
 
+        // Subscribe now (snapshot = everything published so far), then drop
+        // both hub owners so the stream reaches EOF and collect() terminates.
+        let stream = test_ctx.hub.subscribe();
+        let TestCtx { ctx, hub } = test_ctx;
+        drop(ctx);
+        drop(hub);
+
         let mut stdout = String::new();
         let mut stderr = String::new();
-        while let Ok(event) = test_ctx.rx.try_recv() {
+        for event in stream.collect::<Vec<crate::agent::AgentEvent>>().await {
             if let crate::agent::AgentEvent::ToolOutputDelta { stream, delta, .. } = event {
                 match stream {
                     OutputStream::Stdout => stdout.push_str(&delta),

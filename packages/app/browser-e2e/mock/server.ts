@@ -129,6 +129,7 @@ const RE_CONVERSATION_DELETE =
   /^\/api\/projects\/([^/]+)\/conversations\/([^/]+)$/;
 const RE_CONVERSATION_MESSAGES = /^\/api\/conversations\/([^/]+)\/messages$/;
 const RE_CONVERSATION_CANCEL = /^\/api\/conversations\/([^/]+)\/cancel$/;
+const RE_CONVERSATION_RUN = /^\/api\/conversations\/([^/]+)\/run$/;
 const RE_GATE_OPEN = /^\/__mock\/gates\/([^/]+)\/open$/;
 
 function resetState() {
@@ -383,6 +384,15 @@ async function handleApi(
     res.writeHead(204);
     res.end();
     return;
+  }
+
+  // GET /api/conversations/:id/run —— 重连探测：会话存在未关闭的 SSE 流
+  // 即视为运行中（真实后端以 sessions entry 的存续为准）。
+  m = pathname.match(RE_CONVERSATION_RUN);
+  if (m && req.method === "GET") {
+    const id = decodeURIComponent(m[1]);
+    const running = (state.streams.get(id) ?? []).size > 0;
+    return sendJson(res, 200, { running });
   }
 
   // GET /api/providers

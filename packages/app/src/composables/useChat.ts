@@ -589,11 +589,14 @@ function applyStreamEvent(event: AgentEvent) {
 // ---------------------------------------------------------------------------
 
 /**
- * 读取一个 SSE Response 直到流 EOF，把每个 data: 事件交给
- * applyStreamEvent。网络分片可能在任意字节边界断开（含 data: 前缀与
- * JSON 中间），逐行缓冲解析。
+ * 读取一个 SSE Response 直到流 EOF，把每个 data: 事件交给回调（默认
+ * applyStreamEvent；attachRun 借此拦截 run_meta）。网络分片可能在任意
+ * 字节边界断开（含 data: 前缀与 JSON 中间），逐行缓冲解析。
  */
-async function consumeSseStream(res: Response): Promise<void> {
+async function consumeSseStream(
+  res: Response,
+  onEvent: (event: AgentEvent) => void = applyStreamEvent,
+): Promise<void> {
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -613,7 +616,7 @@ async function consumeSseStream(res: Response): Promise<void> {
 
       try {
         const event: AgentEvent = JSON.parse(payload);
-        applyStreamEvent(event);
+        onEvent(event);
       } catch {
         // skip malformed SSE
       }
@@ -784,6 +787,102 @@ export function useChat() {
   };
 
   /**
+   * 重连运行中的 run（前端刷新后）：先探测 /run，运行中则订阅 /events，
+   * 从 run 起点完整重放事件流，用现有 reducer 重建视图后继续实时增长。
+   * run 的 user 消息行是 DB 历史与事件流的分界点：重放前先按 run_meta
+   * 锚点截断 messages（保留锚点及之前的所有消息、丢弃之后的），保证
+   * "DB 历史 + 事件重放"恰好拼出完整视图、不重不漏。与 resumeTurn
+   * （后端崩溃后的续跑）不同：run 仍在本进程内跑着，内存事件日志即可
+   * 覆盖全部事件。终态/EOF/失败统一走 finally 的静默刷新收敛。
+   */
+  const attachRun = async (conversationId: string) => {
+    if (sending.value) return;
+    sending.value = true;
+
+    try {
+      // 先探状态（404/请求失败按空闲处理，交给 finally 的静默刷新兜底）。
+      const { data, error } = await client.GET("/api/conversations/{id}/run", {
+        params: { path: { id: conversationId } },
+      });
+      if (error || !data?.running) {
+        // 空闲：静默刷新后解锁返回（也兜住"查状态与订阅之间刚好结束"
+        // 的竞态——刷新拿到 DB 终态）。
+        return;
+      }
+
+      const res = await fetch(`/api/conversations/${conversationId}/events`);
+      if (!res.ok || !res.body) {
+        // 404：探测与订阅之间 run 结束——回到 DB 历史（finally 刷新）。
+        throw new Error(`HTTP ${res.status}`);
+      }
+
+      // 截断锚点：run_meta.start_message_id 对应的 user 消息行；后端没记
+      // 录（如 resume 续跑的 run，无新 user 消息）时兜底锚到最后一条
+      // user 消息。截断必须在应用任何 delta 之前完成，因此放在注入回调
+      // 里、随首个事件执行恰好一次。
+      let truncated = false;
+      const lastUserIndex = () => {
+        for (let i = messages.value.length - 1; i >= 0; i--) {
+          if (messages.value[i]?.role === "user") return i;
+        }
+        // 没有 user 消息（异常历史）：无从截断，全部保留。
+        return messages.value.length - 1;
+      };
+      const truncate = (anchorIndex: number) => {
+        messages.value = messages.value.slice(0, anchorIndex + 1);
+        const assistantId = `reattached-${Date.now()}`;
+        messages.value = [
+          ...messages.value,
+          { id: assistantId, role: "assistant", parts: [], isStreaming: true },
+        ];
+        streamState = { messageId: assistantId, parts: [], isStreaming: true };
+        startFlushing();
+      };
+
+      await consumeSseStream(res, (event) => {
+        // 会话守卫：切走后（activeConversationId 已变）本流的事件不再进
+        // 视图——尤其截断会改写 messages，绝不能落在别的会话头上。收尾
+        // 刷新同样被守卫拦下，旧会话的重拉由路由 watch 负责。
+        if (activeConversationId !== conversationId) return;
+        if (!truncated) {
+          if (event.type === "run_meta") {
+            const idx = messages.value.findIndex(
+              (m) => m.id === event.data.start_message_id,
+            );
+            truncate(idx !== -1 ? idx : lastUserIndex());
+            truncated = true;
+            return; // 合成事件，不进 reducer
+          }
+          truncate(lastUserIndex());
+          truncated = true;
+        }
+        applyStreamEvent(event);
+      });
+    } catch {
+      // 网络失败：静默（与 resumeTurn 一致的最小处理），finally 统一收敛。
+    } finally {
+      stopFlushing();
+      if (streamState) {
+        finalizeUnconvergedCards();
+        streamState.isStreaming = false;
+        flushStream();
+        streamState = null;
+      }
+      // 静默刷新：以服务端持久化的终态为准。仅当视图仍停留在本会话——
+      // 切走后由路由 watch 负责重新拉取，这里不能用旧会话的历史覆盖
+      // 当前视图。刷新失败不影响终态，静默即可。
+      if (activeConversationId === conversationId) {
+        try {
+          await loadMessages(conversationId);
+        } catch {
+          // ignore: cosmetic refresh
+        }
+      }
+      sending.value = false;
+    }
+  };
+
+  /**
    * 请求取消该会话正在运行的 agent。UI 状态由 SSE 流（cancelled 事件 +
    * 流关闭）落定而非本响应；错误（如 run 已结束时的 404）忽略即可。
    */
@@ -816,6 +915,7 @@ export function useChat() {
     fetchMessages,
     sendMessage,
     resumeTurn,
+    attachRun,
     cancelConversation,
     clearMessages,
   };

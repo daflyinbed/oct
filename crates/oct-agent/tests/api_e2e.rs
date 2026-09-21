@@ -7,12 +7,16 @@
 
 mod support;
 
+use std::time::Duration;
+
+use futures_util::StreamExt;
 use serde_json::Value;
 
 use oct_agent::db::messages as msg_db;
 use oct_llm_provider::core::{ContentPart, Message, Role, ToolCall};
 use support::TestApp;
 use support::llm::{self, LlmTurn, finish_chunk, text_chunk, tool_call_chunk};
+use support::sse_payloads;
 
 fn event_types(events: &[Value]) -> Vec<&str> {
     events
@@ -541,4 +545,198 @@ async fn resume_without_recorded_provider_spec_is_a_bad_request() {
 
     let resp = app.resume(&conv_id).await;
     assert_eq!(resp.status(), 400);
+}
+
+// --- 重连重放（前端刷新后 attach 运行中的 run） ----------------------------------
+
+/// Take the next event from an incremental SSE stream with a timeout
+/// backstop; None means the stream reached EOF.
+async fn next_event(
+    stream: &mut (impl futures_util::Stream<Item = Value> + Unpin),
+) -> Option<Value> {
+    tokio::time::timeout(Duration::from_secs(30), stream.next())
+        .await
+        .expect("timed out waiting for sse event (run stalled?)")
+}
+
+#[tokio::test]
+async fn run_status_and_events_when_idle() {
+    let app = TestApp::new().await;
+    let project_id = app.create_project().await;
+    let conv_id = app.create_conversation(&project_id).await;
+
+    let resp = app.run_status(&conv_id).await;
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.json::<Value>().await.unwrap()["running"], false);
+
+    // No run → 404 (the frontend reads this as "already finished").
+    let resp = app.run_events(&conv_id).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn reconnect_replays_from_run_start_and_continues_live() {
+    let app = TestApp::new().await;
+    let (gate_tx, gate_rx) = llm::gate();
+    let llm_server = llm::spawn_llm_mock(vec![LlmTurn::Gated {
+        pre: vec![text_chunk("你好")],
+        gate: gate_rx,
+        post: vec![text_chunk("，世界"), finish_chunk("stop")],
+    }])
+    .await;
+    app.register_llm_provider(&llm_server).await;
+    let project_id = app.create_project().await;
+    let conv_id = app.create_conversation(&project_id).await;
+
+    // 原连接：run 启动，先吐一段 delta，随后被 gate 挂住。
+    let first = app.send_message(&conv_id, "hi").await;
+    assert_eq!(first.status(), 200);
+    let mut original = sse_payloads(first);
+    // 确定性地等 pre delta 已发布：原连接收到它 ⟺ hub 日志已记录它。
+    let pre = next_event(&mut original)
+        .await
+        .expect("original stream should deliver the pre delta");
+    assert_eq!(pre["type"], "text_delta");
+    assert_eq!(pre["data"], "你好");
+
+    // gate 仍关着：run 确实还在跑。
+    let resp = app.run_status(&conv_id).await;
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.json::<Value>().await.unwrap()["running"], true);
+
+    // 前端刷新后重连。响应头到达 ⟹ 服务端订阅已建立，快照已定。
+    let reconnected_resp = app.run_events(&conv_id).await;
+    assert_eq!(reconnected_resp.status(), 200);
+    let mut reconnected = sse_payloads(reconnected_resp);
+
+    // 重放部分：run_meta（锚定本次 run 的 user 消息行）+ 已发布的 delta。
+    let meta = next_event(&mut reconnected).await.expect("run_meta first");
+    assert_eq!(meta["type"], "run_meta");
+    let user_id = stored_messages(&app, &conv_id).await[0]["id"].clone();
+    assert_eq!(meta["data"]["start_message_id"], user_id);
+    let replayed = next_event(&mut reconnected).await.expect("replayed delta");
+    assert_eq!(replayed, pre, "replay must contain exactly the published delta");
+
+    // 放行 gate：增量续播到 finish，随后 run 结束 ⟹ hub drop ⟹ 流 EOF。
+    gate_tx.send(true).expect("gate receiver alive");
+
+    let mut reconnected_events = vec![meta, replayed];
+    while let Some(e) = next_event(&mut reconnected).await {
+        reconnected_events.push(e);
+    }
+    assert_eq!(
+        event_types(&reconnected_events),
+        vec!["run_meta", "text_delta", "text_delta", "finish"],
+        "快照 + 增量无重复、无缺口"
+    );
+    assert_eq!(text_of(&reconnected_events), "你好，世界");
+
+    // 原连接与重连并存（多订阅者），各自完整地收到增量，且原连接不含 run_meta。
+    let mut original_events = vec![pre];
+    while let Some(e) = next_event(&mut original).await {
+        original_events.push(e);
+    }
+    assert_eq!(
+        event_types(&original_events),
+        vec!["text_delta", "text_delta", "finish"]
+    );
+    assert_eq!(text_of(&original_events), "你好，世界");
+
+    // 持久化完整，session 已释放。
+    let stored = stored_messages(&app, &conv_id).await;
+    let roles: Vec<&str> = stored.iter().map(|m| m["role"].as_str().unwrap()).collect();
+    assert_eq!(roles, vec!["user", "assistant"]);
+    assert!(stored[1]["parts_json"].as_str().unwrap().contains("你好，世界"));
+
+    let resp = app.run_status(&conv_id).await;
+    assert_eq!(resp.json::<Value>().await.unwrap()["running"], false);
+}
+
+#[tokio::test]
+async fn reconnect_supports_multiple_concurrent_event_subscribers() {
+    let app = TestApp::new().await;
+    let (gate_tx, gate_rx) = llm::gate();
+    let llm_server = llm::spawn_llm_mock(vec![LlmTurn::Gated {
+        pre: vec![text_chunk("部分")],
+        gate: gate_rx,
+        post: vec![text_chunk("回答"), finish_chunk("stop")],
+    }])
+    .await;
+    app.register_llm_provider(&llm_server).await;
+    let project_id = app.create_project().await;
+    let conv_id = app.create_conversation(&project_id).await;
+
+    let first = app.send_message(&conv_id, "hi").await;
+    assert_eq!(first.status(), 200);
+    let mut original = sse_payloads(first);
+    let pre = next_event(&mut original).await.expect("pre delta");
+    assert_eq!(pre["data"], "部分");
+
+    // 两个先后到达的重连订阅者（都在 gate 关闭期间）。
+    let mut sub2 = sse_payloads(app.run_events(&conv_id).await);
+    let mut sub3 = sse_payloads(app.run_events(&conv_id).await);
+
+    gate_tx.send(true).expect("gate receiver alive");
+
+    let mut sub2_events = Vec::new();
+    while let Some(e) = next_event(&mut sub2).await {
+        sub2_events.push(e);
+    }
+    let mut sub3_events = Vec::new();
+    while let Some(e) = next_event(&mut sub3).await {
+        sub3_events.push(e);
+    }
+
+    // 各自独立收全量：run_meta + 完整重放 + 增量，序列一致。
+    assert_eq!(sub2_events, sub3_events);
+    assert_eq!(text_of(&sub2_events), "部分回答");
+    assert_eq!(*event_types(&sub2_events).last().unwrap(), "finish");
+
+    // 原连接也完整结束。
+    let mut original_events = vec![pre];
+    while let Some(e) = next_event(&mut original).await {
+        original_events.push(e);
+    }
+    assert_eq!(*event_types(&original_events).last().unwrap(), "finish");
+}
+
+#[tokio::test]
+async fn reconnect_stream_receives_cancelled() {
+    let app = TestApp::new().await;
+    let llm_server = llm::spawn_llm_mock(vec![LlmTurn::Hang(vec![text_chunk("part")])]).await;
+    app.register_llm_provider(&llm_server).await;
+    let project_id = app.create_project().await;
+    let conv_id = app.create_conversation(&project_id).await;
+
+    let first = app.send_message(&conv_id, "slow one").await;
+    assert_eq!(first.status(), 200);
+    let mut original = sse_payloads(first);
+    let pre = next_event(&mut original).await.expect("pre delta");
+    assert_eq!(pre["data"], "part");
+
+    // 重连后再取消：取消事件要出现在重连后的流上。
+    let mut reconnected = sse_payloads(app.run_events(&conv_id).await);
+    let meta = next_event(&mut reconnected).await.expect("run_meta");
+    assert_eq!(meta["type"], "run_meta");
+    let replayed = next_event(&mut reconnected).await.expect("replayed delta");
+    assert_eq!(replayed, pre);
+
+    let cancel = app.cancel(&conv_id).await;
+    assert_eq!(cancel.status(), 200);
+
+    let mut reconnected_events = vec![meta, replayed];
+    while let Some(e) = next_event(&mut reconnected).await {
+        reconnected_events.push(e);
+    }
+    assert_eq!(*event_types(&reconnected_events).last().unwrap(), "cancelled");
+
+    // 原连接同样以 cancelled 收尾，session 释放。
+    let mut original_events = vec![pre];
+    while let Some(e) = next_event(&mut original).await {
+        original_events.push(e);
+    }
+    assert_eq!(*event_types(&original_events).last().unwrap(), "cancelled");
+
+    let resp = app.run_status(&conv_id).await;
+    assert_eq!(resp.json::<Value>().await.unwrap()["running"], false);
 }

@@ -42,6 +42,7 @@ pub struct AppState {
         crate::db::models::CreateModelRequest,
         crate::db::models::UpdateModelRequest,
         chat::SendMessageRequest,
+        chat::RunningStatus,
         files::FileContent,
         files::FileEntry,
         files::FileEntryKind,
@@ -96,5 +97,8 @@ fn api_routes(state: AppState) -> OpenApiRouter<AppState> {
         .routes(utoipa_axum::routes!(chat::get_messages))
         .routes(utoipa_axum::routes!(chat::cancel_agent))
         .routes(utoipa_axum::routes!(chat::resume_turn))
+        // Run reconnection (frontend refresh while a run is in flight)
+        .routes(utoipa_axum::routes!(chat::get_run_status))
+        .routes(utoipa_axum::routes!(chat::stream_run_events))
         .with_state(state)
 }

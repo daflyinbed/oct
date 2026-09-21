@@ -33,7 +33,7 @@ pub async fn run_agent_loop(
 
     loop {
         if handle.cancel.is_cancelled() {
-            let _ = handle.event_tx.send(AgentEvent::Cancelled);
+            handle.hub.publish(AgentEvent::Cancelled);
             return;
         }
 
@@ -48,9 +48,9 @@ pub async fn run_agent_loop(
             Ok(s) => s,
             Err(e) => {
                 error!("Failed to start stream: {e}");
-                let _ = handle
-                    .event_tx
-                    .send(AgentEvent::Error(format!("LLM error: {e}")));
+                handle
+                    .hub
+                    .publish(AgentEvent::Error(format!("LLM error: {e}")));
                 return;
             }
         };
@@ -79,14 +79,12 @@ pub async fn run_agent_loop(
                     match event {
                         Ok(StreamEvent::TextDelta(text)) => {
                             current_text.push_str(&text);
-                            let _ = handle.event_tx.send(AgentEvent::TextDelta(text));
+                            handle.hub.publish(AgentEvent::TextDelta(text));
                         }
                         Ok(StreamEvent::ReasoningDelta(text)) => {
                             reasoning_started_at.get_or_insert_with(Instant::now);
                             reasoning_text.push_str(&text);
-                            let _ = handle
-                                .event_tx
-                                .send(AgentEvent::ReasoningDelta(text));
+                            handle.hub.publish(AgentEvent::ReasoningDelta(text));
                         }
                         Ok(StreamEvent::ToolCallDelta {
                             call_id,
@@ -95,7 +93,7 @@ pub async fn run_agent_loop(
                         }) => {
                             // Forward partial tool-call arguments verbatim so
                             // the frontend can render the call as it streams.
-                            let _ = handle.event_tx.send(AgentEvent::ToolCallDelta {
+                            handle.hub.publish(AgentEvent::ToolCallDelta {
                                 call_id,
                                 name,
                                 arguments_delta,
@@ -110,7 +108,7 @@ pub async fn run_agent_loop(
                                 usage.output_tokens,
                                 usage.reasoning_tokens,
                             ));
-                            let _ = handle.event_tx.send(AgentEvent::Usage {
+                            handle.hub.publish(AgentEvent::Usage {
                                 input_tokens: usage.input_tokens,
                                 output_tokens: usage.output_tokens,
                                 reasoning_tokens: usage.reasoning_tokens,
@@ -122,7 +120,7 @@ pub async fn run_agent_loop(
                         Ok(StreamEvent::ToolResult(_)) => {}
                         Err(e) => {
                             error!("Stream error: {e}");
-                            let _ = handle.event_tx.send(AgentEvent::Error(format!(
+                            handle.hub.publish(AgentEvent::Error(format!(
                                 "Stream error: {e}"
                             )));
                             return;
@@ -131,7 +129,7 @@ pub async fn run_agent_loop(
                 }
                 _ = handle.cancel.cancelled() => {
                     info!("Agent loop cancelled during LLM streaming");
-                    let _ = handle.event_tx.send(AgentEvent::Cancelled);
+                    handle.hub.publish(AgentEvent::Cancelled);
                     return;
                 }
             }
@@ -201,7 +199,7 @@ pub async fn run_agent_loop(
 
         if !has_tool_calls {
             info!("Agent loop finished with reason: {:?}", finish_reason);
-            let _ = handle.event_tx.send(AgentEvent::Finish);
+            handle.hub.publish(AgentEvent::Finish);
             return;
         }
 
@@ -231,12 +229,12 @@ pub async fn run_agent_loop(
                 .find(|t| t.name() == tc.name)
                 .map_or_else(|| tc.name.clone(), |t| t.title(&args));
 
-            let tool_ctx = tools::ToolContext::new(tc.id.clone(), handle.event_tx.clone());
+            let tool_ctx = tools::ToolContext::new(tc.id.clone(), handle.hub.clone());
             contexts.push(tool_ctx.clone());
 
             // Announce the call at dispatch time so the frontend learns the tool
             // has started before (not after) its result arrives.
-            let _ = handle.event_tx.send(AgentEvent::ToolCallStart {
+            handle.hub.publish(AgentEvent::ToolCallStart {
                 id: tool_ctx.call_id().to_string(),
                 name: tc.name.clone(),
                 arguments: tc.arguments.clone(),
@@ -272,7 +270,7 @@ pub async fn run_agent_loop(
                             // the closing ToolResult arrives.
                             contexts[idx].flush();
 
-                            let _ = handle.event_tx.send(AgentEvent::ToolResult {
+                            handle.hub.publish(AgentEvent::ToolResult {
                                 call_id: tc.id.clone(),
                                 content: output.content.clone(),
                                 is_error: output.is_error,
@@ -336,7 +334,7 @@ pub async fn run_agent_loop(
                     }
                 }
             }
-            let _ = handle.event_tx.send(AgentEvent::Cancelled);
+            handle.hub.publish(AgentEvent::Cancelled);
             return;
         }
     }
