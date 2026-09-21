@@ -92,9 +92,7 @@ pub enum AgentEvent {
     /// injects it (per subscriber) in front of the replay so the frontend can
     /// truncate its DB-loaded history exactly at the run boundary.
     #[serde(rename = "run_meta")]
-    RunMeta {
-        start_message_id: String,
-    },
+    RunMeta { start_message_id: String },
 }
 
 pub struct AgentContext {

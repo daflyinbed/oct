@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::path::PathBuf;
 
-use super::truncate::{truncate_middle, MAX_TOOL_OUTPUT_BYTES};
+use super::truncate::{MAX_TOOL_OUTPUT_BYTES, truncate_middle};
 use super::{AgentTool, ToolContext, ToolOutput};
 
 pub struct ListDirTool {
@@ -86,7 +86,14 @@ async fn list_recursive(
             } else {
                 format!("{prefix}│   ")
             };
-            Box::pin(list_recursive(path, &next_prefix, depth + 1, max_depth, output)).await?;
+            Box::pin(list_recursive(
+                path,
+                &next_prefix,
+                depth + 1,
+                max_depth,
+                output,
+            ))
+            .await?;
         }
     }
 

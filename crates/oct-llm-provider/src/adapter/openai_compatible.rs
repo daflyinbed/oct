@@ -1,9 +1,9 @@
-use async_trait::async_trait;
 use async_stream::try_stream;
+use async_trait::async_trait;
 use futures_util::StreamExt;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 
 use crate::core::{
@@ -255,9 +255,15 @@ pub enum ChatCompletionToolChoiceOption {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RequestMessageContent {
-    Text { text: String },
-    ImageUrl { image_url: ChatCompletionImageUrl },
-    InputAudio { input_audio: ChatCompletionInputAudio },
+    Text {
+        text: String,
+    },
+    ImageUrl {
+        image_url: ChatCompletionImageUrl,
+    },
+    InputAudio {
+        input_audio: ChatCompletionInputAudio,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -305,9 +311,15 @@ pub enum RequestMessageContentValue {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RequestMessageContentPart {
-    Text { text: String },
-    ImageUrl { image_url: ChatCompletionImageUrl },
-    InputAudio { input_audio: ChatCompletionInputAudio },
+    Text {
+        text: String,
+    },
+    ImageUrl {
+        image_url: ChatCompletionImageUrl,
+    },
+    InputAudio {
+        input_audio: ChatCompletionInputAudio,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -353,7 +365,11 @@ impl OpenAiCompatibleChatModel {
         }
     }
 
-    pub fn new_with_api_key(config: OpenAiCompatibleConfig, api_key: String, client: reqwest::Client) -> Self {
+    pub fn new_with_api_key(
+        config: OpenAiCompatibleConfig,
+        api_key: String,
+        client: reqwest::Client,
+    ) -> Self {
         Self {
             config,
             client,
@@ -373,7 +389,9 @@ impl OpenAiCompatibleChatModel {
     fn auth_header_value(&self) -> Result<HeaderValue, ModelError> {
         let api_key = match &self.api_key {
             Some(key) => key.clone(),
-            None => std::env::var(&self.config.api_key_env).map_err(|_| ModelError::Authentication)?,
+            None => {
+                std::env::var(&self.config.api_key_env).map_err(|_| ModelError::Authentication)?
+            }
         };
         HeaderValue::from_str(&format!("Bearer {api_key}"))
             .map_err(|err| ModelError::transport(format!("invalid auth header: {err}")))
@@ -385,13 +403,15 @@ impl OpenAiCompatibleChatModel {
         headers.insert(AUTHORIZATION, self.auth_header_value()?);
 
         for (key, value) in &self.config.default_headers {
-            let value = value
-                .as_str()
-                .ok_or_else(|| ModelError::provider(format!("default header {key} must be a string")))?;
-            let name = HeaderName::from_bytes(key.as_bytes())
-                .map_err(|err| ModelError::transport(format!("invalid header name {key}: {err}")))?;
-            let value = HeaderValue::from_str(value)
-                .map_err(|err| ModelError::transport(format!("invalid header value for {key}: {err}")))?;
+            let value = value.as_str().ok_or_else(|| {
+                ModelError::provider(format!("default header {key} must be a string"))
+            })?;
+            let name = HeaderName::from_bytes(key.as_bytes()).map_err(|err| {
+                ModelError::transport(format!("invalid header name {key}: {err}"))
+            })?;
+            let value = HeaderValue::from_str(value).map_err(|err| {
+                ModelError::transport(format!("invalid header value for {key}: {err}"))
+            })?;
             headers.insert(name, value);
         }
 
@@ -407,10 +427,14 @@ impl OpenAiCompatibleChatModel {
 
         let tools = req.tools.iter().map(map_tool).collect();
         let tool_choice = req.options.tool_choice.as_ref().map(map_tool_choice);
-        let response_format = req.options.json_schema.clone().map(|schema| ChatCompletionResponseFormat {
-            kind: "json_schema".to_string(),
-            json_schema: Some(schema),
-        });
+        let response_format =
+            req.options
+                .json_schema
+                .clone()
+                .map(|schema| ChatCompletionResponseFormat {
+                    kind: "json_schema".to_string(),
+                    json_schema: Some(schema),
+                });
 
         Ok(ChatCompletionRequest {
             model: self.config.model_info.model_id.clone(),
@@ -432,10 +456,15 @@ impl OpenAiCompatibleChatModel {
         })
     }
 
-    fn to_streaming_wire_request(&self, req: &ChatRequest) -> Result<ChatCompletionRequest, ModelError> {
+    fn to_streaming_wire_request(
+        &self,
+        req: &ChatRequest,
+    ) -> Result<ChatCompletionRequest, ModelError> {
         let mut wire = self.to_wire_request(req)?;
         wire.stream = true;
-        wire.stream_options = Some(ChatCompletionStreamOptions { include_usage: true });
+        wire.stream_options = Some(ChatCompletionStreamOptions {
+            include_usage: true,
+        });
         Ok(wire)
     }
 }
@@ -546,11 +575,16 @@ impl ChatModel for OpenAiCompatibleChatModel {
     }
 }
 
-pub fn map_chat_completion_response(payload: ChatCompletionResponse) -> Result<ChatResponse, ModelError> {
+pub fn map_chat_completion_response(
+    payload: ChatCompletionResponse,
+) -> Result<ChatResponse, ModelError> {
     let usage = payload.usage.as_ref().map(map_chat_completion_usage);
     let mut provider_metadata = Map::new();
     if let Some(ref raw_usage) = payload.usage {
-        provider_metadata.insert("raw_usage".to_string(), serde_json::to_value(raw_usage).unwrap_or(Value::Null));
+        provider_metadata.insert(
+            "raw_usage".to_string(),
+            serde_json::to_value(raw_usage).unwrap_or(Value::Null),
+        );
     }
 
     let choice = payload
@@ -619,7 +653,10 @@ fn map_message(message: &Message) -> Result<ChatCompletionRequestMessage, ModelE
             }
             ContentPart::ImageUrl { url } => {
                 text_parts.push(RequestMessageContentPart::ImageUrl {
-                    image_url: ChatCompletionImageUrl { url: url.clone(), detail: None },
+                    image_url: ChatCompletionImageUrl {
+                        url: url.clone(),
+                        detail: None,
+                    },
                 });
             }
             ContentPart::Reasoning(text) => {
@@ -653,7 +690,9 @@ fn map_message(message: &Message) -> Result<ChatCompletionRequestMessage, ModelE
         None
     } else if text_parts.len() == 1 {
         match text_parts.into_iter().next().unwrap() {
-            RequestMessageContentPart::Text { text } => Some(RequestMessageContentValue::String(text)),
+            RequestMessageContentPart::Text { text } => {
+                Some(RequestMessageContentValue::String(text))
+            }
             part => Some(RequestMessageContentValue::Parts(vec![part])),
         }
     } else {
@@ -691,16 +730,18 @@ fn map_response_message(message: ChatCompletionResponseMessage) -> Result<Messag
         other => {
             return Err(ModelError::provider(format!(
                 "unsupported openai response role: {other}"
-            )))
+            )));
         }
     };
 
     let mut parts = Vec::new();
 
-    let reasoning = message.reasoning_content.as_ref()
+    let reasoning = message
+        .reasoning_content
+        .as_ref()
         .or(message.reasoning.as_ref())
         .filter(|s| !s.is_empty());
-    
+
     if let Some(reasoning) = reasoning {
         parts.push(ContentPart::Reasoning(reasoning.clone()));
     }
@@ -749,10 +790,12 @@ fn map_tool_choice(choice: &ToolChoice) -> ChatCompletionToolChoiceOption {
         ToolChoice::Auto => ChatCompletionToolChoiceOption::String("auto".to_string()),
         ToolChoice::None => ChatCompletionToolChoiceOption::String("none".to_string()),
         ToolChoice::Required => ChatCompletionToolChoiceOption::String("required".to_string()),
-        ToolChoice::Named(name) => ChatCompletionToolChoiceOption::Named(ChatCompletionNamedToolChoice {
-            kind: "function".to_string(),
-            function: ChatCompletionNamedToolChoiceFunction { name: name.clone() },
-        }),
+        ToolChoice::Named(name) => {
+            ChatCompletionToolChoiceOption::Named(ChatCompletionNamedToolChoice {
+                kind: "function".to_string(),
+                function: ChatCompletionNamedToolChoiceFunction { name: name.clone() },
+            })
+        }
     }
 }
 
@@ -766,8 +809,14 @@ pub fn map_chat_completion_usage(usage: &ChatCompletionUsage) -> Usage {
         input_tokens: Some(usage.prompt_tokens),
         output_tokens: Some(usage.completion_tokens),
         total_tokens: Some(usage.total_tokens),
-        reasoning_tokens: usage.completion_tokens_details.as_ref().and_then(|d| d.reasoning_tokens),
-        cached_input_tokens: usage.prompt_tokens_details.as_ref().and_then(|d| d.cached_tokens),
+        reasoning_tokens: usage
+            .completion_tokens_details
+            .as_ref()
+            .and_then(|d| d.reasoning_tokens),
+        cached_input_tokens: usage
+            .prompt_tokens_details
+            .as_ref()
+            .and_then(|d| d.cached_tokens),
         provider_details,
     }
 }
@@ -844,7 +893,10 @@ pub fn parse_openai_sse_transcript(transcript: &str) -> Result<Vec<StreamEvent>,
 
     for remainder in flush_sse_buffer(&mut buffer) {
         let remainder = String::from_utf8_lossy(&remainder).into_owned();
-        events.extend(parse_openai_sse_event_with_state(&remainder, &mut tool_state)?);
+        events.extend(parse_openai_sse_event_with_state(
+            &remainder,
+            &mut tool_state,
+        )?);
     }
 
     Ok(events)
@@ -876,7 +928,9 @@ fn parse_openai_sse_event_with_state(
     normalize_chat_completion_chunk_with_state(chunk, tool_state)
 }
 
-pub fn normalize_chat_completion_chunk(chunk: ChatCompletionChunk) -> Result<Vec<StreamEvent>, ModelError> {
+pub fn normalize_chat_completion_chunk(
+    chunk: ChatCompletionChunk,
+) -> Result<Vec<StreamEvent>, ModelError> {
     normalize_chat_completion_chunk_with_state(chunk, &mut HashMap::new())
 }
 
@@ -891,10 +945,13 @@ fn normalize_chat_completion_chunk_with_state(
     }
 
     for choice in chunk.choices {
-        let reasoning = choice.delta.reasoning_content.as_ref()
+        let reasoning = choice
+            .delta
+            .reasoning_content
+            .as_ref()
             .or(choice.delta.reasoning.as_ref())
             .filter(|s| !s.is_empty());
-        
+
         if let Some(reasoning) = reasoning {
             events.push(StreamEvent::ReasoningDelta(reasoning.clone()));
         }
@@ -967,10 +1024,7 @@ fn parse_tool_call_delta(
     // first delta of a call; every later delta must reuse the id established
     // for this index, otherwise downstream delta/dispatch matching by call_id
     // breaks and the deltas split across two ids.
-    let delta_call_id = accumulator
-        .id
-        .clone()
-        .unwrap_or_else(|| index.clone());
+    let delta_call_id = accumulator.id.clone().unwrap_or_else(|| index.clone());
 
     Ok((
         StreamEvent::ToolCallDelta {
@@ -992,7 +1046,9 @@ pub type OpenAiStreamChunk = ChatCompletionChunk;
 pub type OpenAiStreamChunkChoice = ChatCompletionChunkChoice;
 pub type OpenAiStreamChunkChoiceDelta = ChatCompletionChunkDelta;
 
-pub fn map_openai_generate_response(payload: OpenAiGenerateResponse) -> Result<ChatResponse, ModelError> {
+pub fn map_openai_generate_response(
+    payload: OpenAiGenerateResponse,
+) -> Result<ChatResponse, ModelError> {
     map_chat_completion_response(payload)
 }
 
@@ -1000,7 +1056,9 @@ pub fn map_openai_usage(raw: &ChatCompletionUsage) -> Usage {
     map_chat_completion_usage(raw)
 }
 
-pub fn normalize_openai_stream_chunk(chunk: OpenAiStreamChunk) -> Result<Vec<StreamEvent>, ModelError> {
+pub fn normalize_openai_stream_chunk(
+    chunk: OpenAiStreamChunk,
+) -> Result<Vec<StreamEvent>, ModelError> {
     normalize_chat_completion_chunk(chunk)
 }
 

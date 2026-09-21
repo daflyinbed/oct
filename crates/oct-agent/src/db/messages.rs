@@ -99,10 +99,7 @@ pub async fn insert_message(
     })
 }
 
-pub async fn list_messages(
-    pool: &SqlitePool,
-    conversation_id: &str,
-) -> Result<Vec<StoredMessage>> {
+pub async fn list_messages(pool: &SqlitePool, conversation_id: &str) -> Result<Vec<StoredMessage>> {
     let rows = sqlx::query_as!(
         StoredMessage,
         "SELECT id, conversation_id, role, parts_json, details_json, ordering, provider_id, model_id, input_tokens, output_tokens, reasoning_tokens, created_at FROM messages WHERE conversation_id = $1 ORDER BY ordering ASC",
@@ -117,10 +114,7 @@ pub async fn list_messages(
 /// How many user messages the conversation already holds. Title generation
 /// uses this as its one-shot guard: it only ever fires on the FIRST user
 /// message, so a failed attempt is never retried on later turns.
-pub async fn count_user_messages(
-    pool: &SqlitePool,
-    conversation_id: &str,
-) -> Result<i64> {
+pub async fn count_user_messages(pool: &SqlitePool, conversation_id: &str) -> Result<i64> {
     let count = sqlx::query_scalar!(
         "SELECT COUNT(*) FROM messages WHERE conversation_id = $1 AND role = 'user'",
         conversation_id
@@ -151,11 +145,9 @@ pub async fn get_last_provider_spec(
     .fetch_optional(pool)
     .await?;
 
-    Ok(row.and_then(|m| {
-        match (m.provider_id, m.model_id) {
-            (Some(p), Some(m)) => Some((p, m)),
-            _ => None,
-        }
+    Ok(row.and_then(|m| match (m.provider_id, m.model_id) {
+        (Some(p), Some(m)) => Some((p, m)),
+        _ => None,
     }))
 }
 
@@ -175,7 +167,9 @@ pub async fn find_dangling_tool_calls(
         // Unparseable rows (corrupt parts_json) can neither contribute calls
         // nor answer them; skipping keeps repair additive instead of failing
         // the whole request.
-        let Ok(parsed) = msg.to_message() else { continue };
+        let Ok(parsed) = msg.to_message() else {
+            continue;
+        };
         for part in parsed.parts {
             match part {
                 ContentPart::ToolCall(tc) => call_ids.push(tc.id),
@@ -195,8 +189,7 @@ pub async fn find_dangling_tool_calls(
 /// Placeholder content for a tool call whose execution was interrupted by a
 /// backend restart: the workspace state after the crash is unknown, so the
 /// model is told as much instead of a fabricated result.
-pub const INTERRUPTED_TOOL_RESULT_CONTENT: &str =
-    "工具执行被中断（后端重启），工作区状态未知。";
+pub const INTERRUPTED_TOOL_RESULT_CONTENT: &str = "工具执行被中断（后端重启），工作区状态未知。";
 
 /// Persist a synthetic error ToolResult for every dangling ToolCall (see
 /// [`find_dangling_tool_calls`]), mirroring what the cancel path writes for

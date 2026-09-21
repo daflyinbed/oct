@@ -1,12 +1,12 @@
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::Json;
 use chrono::NaiveDateTime;
 use serde::Serialize;
 use utoipa::ToSchema;
 
 use super::AppState;
-use super::error::{AppError, ApiResult};
+use super::error::{ApiResult, AppError};
 use crate::db::{models as model_db, providers as db};
 
 #[derive(Debug, Serialize, ToSchema)]

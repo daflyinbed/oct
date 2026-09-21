@@ -111,7 +111,12 @@ mod tests {
     #[test]
     fn truncate_middle_is_utf8_boundary_safe_with_cjk() {
         // 3-byte chars at both cut points: 100x 中 (300B) + 100x 👍 (400B) + 20x 末 (60B).
-        let s = format!("{}{}{}", "中".repeat(100), "👍".repeat(100), "末".repeat(20));
+        let s = format!(
+            "{}{}{}",
+            "中".repeat(100),
+            "👍".repeat(100),
+            "末".repeat(20)
+        );
         assert_eq!(s.len(), 760);
 
         let out = truncate_middle(&s, 100);

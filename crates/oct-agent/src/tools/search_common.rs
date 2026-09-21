@@ -2,10 +2,10 @@
 //! walker with sandbox-safe, rg-like ignore defaults plus a path display
 //! helper. Both tools walk the same way so they agree on what is searchable.
 
+use ignore::WalkBuilder;
+use ignore::overrides::OverrideBuilder;
 use std::path::Path;
 use std::time::Duration;
-use ignore::overrides::OverrideBuilder;
-use ignore::WalkBuilder;
 
 /// Junk directory names that are always skipped by the search walker, even
 /// when they are not covered by a gitignore file. Keep in sync with
@@ -75,7 +75,10 @@ mod tests {
     #[test]
     fn relativize_strips_working_dir_prefix() {
         let wd = Path::new("/tmp/oct-project");
-        assert_eq!(relativize(wd, Path::new("/tmp/oct-project/src/main.rs")), "src/main.rs");
+        assert_eq!(
+            relativize(wd, Path::new("/tmp/oct-project/src/main.rs")),
+            "src/main.rs"
+        );
         assert_eq!(relativize(wd, Path::new("/tmp/oct-project")), "");
 
         // Paths outside the working directory stay absolute.

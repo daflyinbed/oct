@@ -453,10 +453,7 @@ async fn send_message_repairs_dangling_history_before_calling_the_llm() {
     assert_eq!(llm_requests.len(), 1);
     let msgs = llm_requests[0]["messages"].as_array().unwrap();
     let roles: Vec<&str> = msgs.iter().map(|m| m["role"].as_str().unwrap()).collect();
-    assert_eq!(
-        roles,
-        vec!["system", "user", "assistant", "tool", "user"]
-    );
+    assert_eq!(roles, vec!["system", "user", "assistant", "tool", "user"]);
     let tool_message = &msgs[3];
     assert_eq!(tool_message["tool_call_id"], "call-1");
     assert!(
@@ -486,14 +483,20 @@ async fn resume_conflicts_when_nothing_to_resume() {
     // A fully answered conversation is not resumable either.
     let resp = app.send_message(&conv_id, "hi").await;
     assert_eq!(resp.status(), 200);
-    assert_eq!(*event_types(&app.read_sse(resp).await).last().unwrap(), "finish");
+    assert_eq!(
+        *event_types(&app.read_sse(resp).await).last().unwrap(),
+        "finish"
+    );
     let resp = app.resume(&conv_id).await;
     assert_eq!(resp.status(), 409);
 
     // The rejected resumes did not leave the session stuck.
     let resp = app.send_message(&conv_id, "again").await;
     assert_eq!(resp.status(), 200);
-    assert_eq!(*event_types(&app.read_sse(resp).await).last().unwrap(), "finish");
+    assert_eq!(
+        *event_types(&app.read_sse(resp).await).last().unwrap(),
+        "finish"
+    );
 }
 
 #[tokio::test]
@@ -615,7 +618,10 @@ async fn reconnect_replays_from_run_start_and_continues_live() {
     let user_id = stored_messages(&app, &conv_id).await[0]["id"].clone();
     assert_eq!(meta["data"]["start_message_id"], user_id);
     let replayed = next_event(&mut reconnected).await.expect("replayed delta");
-    assert_eq!(replayed, pre, "replay must contain exactly the published delta");
+    assert_eq!(
+        replayed, pre,
+        "replay must contain exactly the published delta"
+    );
 
     // 放行 gate：增量续播到 finish，随后 run 结束 ⟹ hub drop ⟹ 流 EOF。
     gate_tx.send(true).expect("gate receiver alive");
@@ -646,7 +652,12 @@ async fn reconnect_replays_from_run_start_and_continues_live() {
     let stored = stored_messages(&app, &conv_id).await;
     let roles: Vec<&str> = stored.iter().map(|m| m["role"].as_str().unwrap()).collect();
     assert_eq!(roles, vec!["user", "assistant"]);
-    assert!(stored[1]["parts_json"].as_str().unwrap().contains("你好，世界"));
+    assert!(
+        stored[1]["parts_json"]
+            .as_str()
+            .unwrap()
+            .contains("你好，世界")
+    );
 
     let resp = app.run_status(&conv_id).await;
     assert_eq!(resp.json::<Value>().await.unwrap()["running"], false);
@@ -728,7 +739,10 @@ async fn reconnect_stream_receives_cancelled() {
     while let Some(e) = next_event(&mut reconnected).await {
         reconnected_events.push(e);
     }
-    assert_eq!(*event_types(&reconnected_events).last().unwrap(), "cancelled");
+    assert_eq!(
+        *event_types(&reconnected_events).last().unwrap(),
+        "cancelled"
+    );
 
     // 原连接同样以 cancelled 收尾，session 释放。
     let mut original_events = vec![pre];
@@ -761,7 +775,9 @@ async fn create_untitled_conversation(app: &TestApp, project_id: &str) -> String
 
 async fn get_conversation(app: &TestApp, project_id: &str, conv_id: &str) -> Value {
     let resp = app
-        .get_json(&format!("/api/projects/{project_id}/conversations/{conv_id}"))
+        .get_json(&format!(
+            "/api/projects/{project_id}/conversations/{conv_id}"
+        ))
         .await;
     assert_eq!(resp.status(), 200);
     resp.json().await.expect("conversation json")
@@ -807,10 +823,9 @@ async fn first_message_generates_title_and_streams_event() {
         LlmTurn::Complete(vec![text_chunk("done"), finish_chunk("stop")]),
     ])
     .await;
-    llm_server
-        .push_title_turns([llm::TitleTurn::Text(
-            "  \"修复登录按钮\"  \n(unused second line)".to_string(),
-        )]);
+    llm_server.push_title_turns([llm::TitleTurn::Text(
+        "  \"修复登录按钮\"  \n(unused second line)".to_string(),
+    )]);
     app.register_llm_provider(&llm_server).await;
     let project_id = app.create_project().await;
     let conv_id = create_untitled_conversation(&app, &project_id).await;
@@ -828,8 +843,8 @@ async fn first_message_generates_title_and_streams_event() {
     let mut saw_title_event = false;
     let mut events = Vec::new();
     while let Some(event) = next_event(&mut stream).await {
-        saw_title_event |= event["type"] == "title_updated"
-            && event["data"]["title"] == "修复登录按钮";
+        saw_title_event |=
+            event["type"] == "title_updated" && event["data"]["title"] == "修复登录按钮";
         events.push(event);
         if saw_title_event {
             break;
@@ -850,9 +865,11 @@ async fn first_message_generates_title_and_streams_event() {
         .find(|r| r.get("stream") != Some(&serde_json::json!(true)))
         .expect("a non-streaming title request");
     // An empty tool list is omitted from the wire request entirely.
-    assert!(title_request
-        .get("tools")
-        .is_none_or(|t| t.as_array().is_none_or(Vec::is_empty)));
+    assert!(
+        title_request
+            .get("tools")
+            .is_none_or(|t| t.as_array().is_none_or(Vec::is_empty))
+    );
     assert_eq!(title_request["max_tokens"], 100);
     let roles: Vec<&str> = title_request["messages"]
         .as_array()
@@ -916,8 +933,7 @@ async fn title_failure_falls_back_to_first_message() {
     let project_id = app.create_project().await;
     let conv_id = create_untitled_conversation(&app, &project_id).await;
 
-    let long_content =
-        "这条用户消息故意写得超过五十个字符,这样回退标题就必须走截断分支并追加省略号,从而验证按字符边界截断的行为";
+    let long_content = "这条用户消息故意写得超过五十个字符,这样回退标题就必须走截断分支并追加省略号,从而验证按字符边界截断的行为";
     assert!(long_content.chars().count() > 50);
     let resp = app.send_message(&conv_id, long_content).await;
     assert_eq!(resp.status(), 200);

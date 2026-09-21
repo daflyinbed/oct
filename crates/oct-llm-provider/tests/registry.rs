@@ -1,10 +1,12 @@
 mod common;
 
 use common::StubProvider;
-use oct_llm_provider::adapter::{map_openai_usage, ChatCompletionUsage};
+use oct_llm_provider::adapter::{ChatCompletionUsage, map_openai_usage};
 use oct_llm_provider::core::ModelError;
 use oct_llm_provider::provider::ProviderRegistry;
-use oct_llm_provider::providers::{default_registry, map_anthropic_usage, AnthropicUsage, MoonshotAIProvider};
+use oct_llm_provider::providers::{
+    AnthropicUsage, MoonshotAIProvider, default_registry, map_anthropic_usage,
+};
 
 #[test]
 fn resolves_registered_model_specs() {

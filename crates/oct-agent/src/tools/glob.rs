@@ -16,7 +16,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use super::read::validate_path_within;
 use super::search_common::{relativize, search_walk_builder, timeout_note};
-use super::truncate::{truncate_middle, MAX_TOOL_OUTPUT_BYTES};
+use super::truncate::{MAX_TOOL_OUTPUT_BYTES, truncate_middle};
 use super::{AgentTool, ToolContext, ToolOutput};
 
 /// Wall-clock budget for one glob run.
@@ -88,8 +88,7 @@ impl AgentTool for GlobTool {
     }
 
     async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ToolOutput> {
-        let args: GlobArgs =
-            serde_json::from_value(args).context("Invalid arguments for glob")?;
+        let args: GlobArgs = serde_json::from_value(args).context("Invalid arguments for glob")?;
 
         let root = match args.path.as_deref() {
             Some(path) => match validate_path_within(&self.working_dir, path) {
@@ -168,7 +167,8 @@ fn run_glob(
         // When the root itself is a single file the relative path is empty;
         // match the pattern against the file name instead.
         let matched = if rel.as_os_str().is_empty() {
-            path.file_name().is_some_and(|name| matcher.is_match(Path::new(name)))
+            path.file_name()
+                .is_some_and(|name| matcher.is_match(Path::new(name)))
         } else {
             matcher.is_match(rel)
         };
@@ -252,7 +252,8 @@ mod tests {
     /// Pin a file's mtime for deterministic sort order.
     fn set_mtime(path: &Path, mtime: SystemTime) {
         let file = std::fs::File::options().write(true).open(path).unwrap();
-        file.set_times(std::fs::FileTimes::new().set_modified(mtime)).unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(mtime))
+            .unwrap();
     }
 
     fn unix_time(secs: u64) -> SystemTime {
@@ -333,18 +334,17 @@ mod tests {
         std::fs::write(wd.join("c.txt"), "c").unwrap();
 
         let out = GlobTool::new(wd.clone())
-            .execute(serde_json::json!({ "pattern": "**/*.txt", "limit": 2 }), &noop_ctx())
+            .execute(
+                serde_json::json!({ "pattern": "**/*.txt", "limit": 2 }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
 
         assert!(!out.is_error);
         assert!(out.content.contains("Found at least 2 files"));
         assert!(out.content.contains("... [1 more matches truncated] ..."));
-        let listed = out
-            .content
-            .lines()
-            .filter(|l| l.ends_with(".txt"))
-            .count();
+        let listed = out.content.lines().filter(|l| l.ends_with(".txt")).count();
         assert_eq!(listed, 2);
 
         std::fs::remove_dir_all(&wd).unwrap();
@@ -356,7 +356,10 @@ mod tests {
         std::fs::write(wd.join("a.txt"), "x").unwrap();
 
         let out = GlobTool::new(wd.clone())
-            .execute(serde_json::json!({ "pattern": "*.txt", "path": "a.txt" }), &noop_ctx())
+            .execute(
+                serde_json::json!({ "pattern": "*.txt", "path": "a.txt" }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
         assert!(!out.is_error);

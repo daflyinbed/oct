@@ -156,12 +156,10 @@ pub async fn run(database_url: &str) -> Result<()> {
             let limit_context = model.limit.as_ref().and_then(|l| l.context);
             let limit_output = model.limit.as_ref().and_then(|l| l.output);
 
-            let existing_model = sqlx::query_scalar!(
-                "SELECT COUNT(*) FROM models WHERE id = $1",
-                model_row_id,
-            )
-            .fetch_one(&pool)
-            .await?;
+            let existing_model =
+                sqlx::query_scalar!("SELECT COUNT(*) FROM models WHERE id = $1", model_row_id,)
+                    .fetch_one(&pool)
+                    .await?;
 
             if existing_model > 0 {
                 sqlx::query!(

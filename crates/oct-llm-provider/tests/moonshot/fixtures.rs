@@ -3,7 +3,7 @@ use oct_llm_provider::core::{ContentPart, Message, Role};
 use std::fs;
 
 fn load_fixture(path: &str) -> String {
-    fs::read_to_string(path).expect(&format!("Failed to read fixture: {}", path))
+    fs::read_to_string(path).unwrap_or_else(|_| panic!("Failed to read fixture: {}", path))
 }
 
 fn extract_request_body(fixture: &str) -> serde_json::Value {
@@ -35,16 +35,16 @@ fn parse_messages_from_request(body: &serde_json::Value) -> Vec<Message> {
             };
             let mut parts = Vec::new();
 
-            if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
-                if !content.is_empty() {
-                    parts.push(ContentPart::Text(content.to_string()));
-                }
+            if let Some(content) = msg.get("content").and_then(|c| c.as_str())
+                && !content.is_empty()
+            {
+                parts.push(ContentPart::Text(content.to_string()));
             }
 
-            if let Some(reasoning) = msg.get("reasoning_content").and_then(|c| c.as_str()) {
-                if !reasoning.is_empty() {
-                    parts.push(ContentPart::Reasoning(reasoning.to_string()));
-                }
+            if let Some(reasoning) = msg.get("reasoning_content").and_then(|c| c.as_str())
+                && !reasoning.is_empty()
+            {
+                parts.push(ContentPart::Reasoning(reasoning.to_string()));
             }
 
             if let Some(tool_calls) = msg.get("tool_calls").and_then(|c| c.as_array()) {
@@ -66,12 +66,14 @@ fn parse_messages_from_request(body: &serde_json::Value) -> Vec<Message> {
             if role == Role::Tool {
                 let tool_call_id = msg["tool_call_id"].as_str().unwrap_or_default().to_string();
                 let content = msg["content"].as_str().unwrap_or_default();
-                parts.push(ContentPart::ToolResult(oct_llm_provider::core::ToolResult {
-                    call_id: tool_call_id,
-                    content: serde_json::from_str(content)
-                        .unwrap_or_else(|_| serde_json::Value::String(content.to_string())),
-                    is_error: false,
-                }));
+                parts.push(ContentPart::ToolResult(
+                    oct_llm_provider::core::ToolResult {
+                        call_id: tool_call_id,
+                        content: serde_json::from_str(content)
+                            .unwrap_or_else(|_| serde_json::Value::String(content.to_string())),
+                        is_error: false,
+                    },
+                ));
             }
 
             Message { role, parts }

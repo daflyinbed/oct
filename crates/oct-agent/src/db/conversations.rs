@@ -91,23 +91,24 @@ pub async fn get_conversation(pool: &SqlitePool, id: &str) -> Result<Option<Conv
 }
 
 pub async fn delete_conversation(pool: &SqlitePool, id: &str) -> Result<bool> {
-    let result: sqlx::sqlite::SqliteQueryResult = sqlx::query!("DELETE FROM conversations WHERE id = $1", id)
-        .execute(pool)
-        .await?;
+    let result: sqlx::sqlite::SqliteQueryResult =
+        sqlx::query!("DELETE FROM conversations WHERE id = $1", id)
+            .execute(pool)
+            .await?;
 
     Ok(result.rows_affected() > 0)
 }
 
-pub async fn update_conversation_title(
-    pool: &SqlitePool,
-    id: &str,
-    title: &str,
-) -> Result<bool> {
+pub async fn update_conversation_title(pool: &SqlitePool, id: &str, title: &str) -> Result<bool> {
     let now = chrono::Utc::now().naive_utc();
-    let result: sqlx::sqlite::SqliteQueryResult =
-        sqlx::query!("UPDATE conversations SET title = $1, title_source = 'user', updated_at = $2 WHERE id = $3", title, now, id)
-        .execute(pool)
-        .await?;
+    let result: sqlx::sqlite::SqliteQueryResult = sqlx::query!(
+        "UPDATE conversations SET title = $1, title_source = 'user', updated_at = $2 WHERE id = $3",
+        title,
+        now,
+        id
+    )
+    .execute(pool)
+    .await?;
 
     Ok(result.rows_affected() > 0)
 }

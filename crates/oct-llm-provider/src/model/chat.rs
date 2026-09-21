@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::pin::Pin;
 
-use crate::core::{FinishReason, GenerateOptions, Message, ModelError, StreamEvent, ToolSpec, Usage};
+use crate::core::{
+    FinishReason, GenerateOptions, Message, ModelError, StreamEvent, ToolSpec, Usage,
+};
 use crate::provider::ModelInfo;
 
 pub type ChatStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, ModelError>> + Send>>;

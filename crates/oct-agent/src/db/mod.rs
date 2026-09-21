@@ -5,8 +5,8 @@ pub mod projects;
 pub mod providers;
 
 use anyhow::Result;
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::SqlitePool;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use std::{str::FromStr, time::Duration};
 
 pub async fn init_pool(database_url: &str) -> Result<SqlitePool> {

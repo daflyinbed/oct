@@ -7,8 +7,8 @@ use std::time::Duration;
 use std::time::Instant;
 use utoipa::ToSchema;
 
-use crate::agent::events::EventHub;
 use crate::agent::AgentEvent;
+use crate::agent::events::EventHub;
 
 pub mod edit;
 pub mod execute;
@@ -286,7 +286,11 @@ mod tests {
     /// actions under test we drop every hub owner (context + local Arc) — the
     /// subscription then reaches EOF and `collect()` returns exactly the
     /// events that were published, with no timeouts or sleeps.
-    fn ctx_with_sub() -> (ToolContext, Arc<EventHub>, crate::agent::events::SubscribeStream) {
+    fn ctx_with_sub() -> (
+        ToolContext,
+        Arc<EventHub>,
+        crate::agent::events::SubscribeStream,
+    ) {
         let hub = Arc::new(EventHub::new());
         let stream = hub.subscribe();
         (ToolContext::new("call-1", hub.clone()), hub, stream)
@@ -296,9 +300,7 @@ mod tests {
         events
             .into_iter()
             .filter_map(|e| match e {
-                AgentEvent::ToolOutputDelta { stream, delta, .. } => {
-                    Some((stream, delta))
-                }
+                AgentEvent::ToolOutputDelta { stream, delta, .. } => Some((stream, delta)),
                 _ => None,
             })
             .collect()

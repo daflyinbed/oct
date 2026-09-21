@@ -103,7 +103,9 @@ pub async fn update_provider(
     .fetch_optional(pool)
     .await?;
 
-    let Some(existing) = existing else { return Ok(false) };
+    let Some(existing) = existing else {
+        return Ok(false);
+    };
 
     let now = chrono::Utc::now().naive_utc();
     let name = req.name.as_deref().unwrap_or(&existing.name);

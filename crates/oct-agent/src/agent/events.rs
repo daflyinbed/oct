@@ -70,7 +70,10 @@ impl EventHub {
     /// moment this returns, which is what lets tests subscribe afterwards and
     /// read the merged snapshot deterministically.
     pub fn publish(&self, ev: AgentEvent) {
-        let mut inner = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         Self::merge_into_log(&mut inner.log, &ev);
         // Fan out to live subscribers; a failed send means the receiver was
         // dropped (disconnected client) — remove it.
@@ -113,20 +116,20 @@ impl EventHub {
                         ..
                     }) if tail_call == call_id && tail_stream == stream
                 );
-                if merges {
-                    if let Some(AgentEvent::ToolOutputDelta { delta: tail, .. }) = log.last_mut() {
-                        tail.push_str(delta);
-                        // Trim from the front, landing on a char boundary so
-                        // the String stays valid UTF-8.
-                        let mut excess = tail.len().saturating_sub(REPLAY_TOOL_OUTPUT_MAX_CHARS);
-                        while excess < tail.len() && !tail.is_char_boundary(excess) {
-                            excess += 1;
-                        }
-                        if excess > 0 {
-                            tail.drain(..excess);
-                        }
-                        return;
+                if merges
+                    && let Some(AgentEvent::ToolOutputDelta { delta: tail, .. }) = log.last_mut()
+                {
+                    tail.push_str(delta);
+                    // Trim from the front, landing on a char boundary so
+                    // the String stays valid UTF-8.
+                    let mut excess = tail.len().saturating_sub(REPLAY_TOOL_OUTPUT_MAX_CHARS);
+                    while excess < tail.len() && !tail.is_char_boundary(excess) {
+                        excess += 1;
                     }
+                    if excess > 0 {
+                        tail.drain(..excess);
+                    }
+                    return;
                 }
                 log.push(ev.clone());
             }
@@ -143,7 +146,10 @@ impl EventHub {
     /// the last hub reference drops, the stream reaches EOF.
     pub fn subscribe(&self) -> SubscribeStream {
         let (tx, rx) = mpsc::unbounded_channel();
-        let mut inner = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let snapshot = inner.log.clone();
         inner.subs.push(tx);
         stream::iter(snapshot).chain(UnboundedReceiverStream::new(rx))
@@ -182,9 +188,7 @@ mod tests {
             }
         };
         let payload = |name: &str, i: usize| format!("{name}-{i}");
-        let batch = |name: &str, n: usize| {
-            (0..n).map(|i| payload(name, i)).collect::<String>()
-        };
+        let batch = |name: &str, n: usize| (0..n).map(|i| payload(name, i)).collect::<String>();
 
         publish("pre", 3);
         publish("p1", 10);
@@ -297,12 +301,10 @@ mod tests {
     async fn tool_output_deltas_merge_only_for_same_call_and_stream() {
         use crate::tools::OutputStream;
 
-        let delta = |call_id: &str, stream: OutputStream, text: &str| {
-            AgentEvent::ToolOutputDelta {
-                call_id: call_id.to_string(),
-                stream,
-                delta: text.to_string(),
-            }
+        let delta = |call_id: &str, stream: OutputStream, text: &str| AgentEvent::ToolOutputDelta {
+            call_id: call_id.to_string(),
+            stream,
+            delta: text.to_string(),
         };
 
         let hub = EventHub::new();

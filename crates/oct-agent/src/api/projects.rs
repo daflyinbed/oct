@@ -1,9 +1,9 @@
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::Json;
 
 use super::AppState;
-use super::error::{AppError, ApiResult};
+use super::error::{ApiResult, AppError};
 use crate::db::projects as db;
 
 #[utoipa::path(
@@ -14,9 +14,7 @@ use crate::db::projects as db;
     ),
     tag = "projects"
 )]
-pub async fn list_projects(
-    State(state): State<AppState>,
-) -> ApiResult<Json<Vec<db::Project>>> {
+pub async fn list_projects(State(state): State<AppState>) -> ApiResult<Json<Vec<db::Project>>> {
     let projects = db::list_projects(&state.pool).await?;
     Ok(Json(projects))
 }

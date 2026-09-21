@@ -13,8 +13,8 @@ use oct_agent::tools::{self, AgentTool, ToolContext, ToolOutput};
 use oct_llm_provider::core::{ContentPart, FinishReason, ModelError, Role, ToolCall, ToolResult};
 
 use support::{
-    ScriptedModel, TestEnv, Turn, collect_events, finish, is_terminal, new_conversation,
-    reasoning, spawn_agent, text, tool_call, usage,
+    ScriptedModel, TestEnv, Turn, collect_events, finish, is_terminal, new_conversation, reasoning,
+    spawn_agent, text, tool_call, usage,
 };
 
 /// Decode a stored message's parts_json back into content parts.
@@ -167,13 +167,20 @@ async fn reasoning_deltas_persist_and_feed_back_into_next_request() {
             }),
         ]
     );
-    let details: serde_json::Value =
-        serde_json::from_str(stored[0].details_json.as_deref().expect("assistant details"))
-            .expect("details_json should deserialize");
+    let details: serde_json::Value = serde_json::from_str(
+        stored[0]
+            .details_json
+            .as_deref()
+            .expect("assistant details"),
+    )
+    .expect("details_json should deserialize");
     let ms = details["reasoning_duration_ms"]
         .as_u64()
         .expect("reasoning_duration_ms should be a number");
-    assert!(ms < 30_000, "scripted stream finishes instantly, got {ms}ms");
+    assert!(
+        ms < 30_000,
+        "scripted stream finishes instantly, got {ms}ms"
+    );
 
     // The persisted reasoning flows back into the next round's request.
     let second = &observer.requests()[1];

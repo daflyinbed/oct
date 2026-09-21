@@ -1,9 +1,11 @@
 use clap::Parser;
 use futures_util::StreamExt;
-use oct_llm_provider::core::{ContentPart, FinishReason, Message, Role, StreamEvent, ToolCall, ToolResult, ToolSpec};
+use oct_llm_provider::Provider;
+use oct_llm_provider::core::{
+    ContentPart, FinishReason, Message, Role, StreamEvent, ToolCall, ToolResult, ToolSpec,
+};
 use oct_llm_provider::model::ChatRequest;
 use oct_llm_provider::providers::MoonshotAIProvider;
-use oct_llm_provider::Provider;
 use serde_json::json;
 
 #[derive(Parser, Debug)]
@@ -85,11 +87,15 @@ async fn main() {
     let args = Args::parse();
 
     if let Some(key) = &args.api_key {
-        unsafe { std::env::set_var("KIMI_API_KEY", key); }
+        unsafe {
+            std::env::set_var("KIMI_API_KEY", key);
+        }
     }
 
     let provider = MoonshotAIProvider::new("https://api.moonshot.cn/v1", "KIMI_API_KEY");
-    let chat_model = provider.chat_model(&args.model).expect("Failed to create chat model");
+    let chat_model = provider
+        .chat_model(&args.model)
+        .expect("Failed to create chat model");
 
     let tools = get_tools();
 
@@ -103,7 +109,10 @@ async fn main() {
         };
 
         if args.stream {
-            let mut stream = chat_model.stream(request).await.expect("Failed to start stream");
+            let mut stream = chat_model
+                .stream(request)
+                .await
+                .expect("Failed to start stream");
 
             let mut current_text = String::new();
             let mut current_reasoning = String::new();
@@ -120,17 +129,20 @@ async fn main() {
                         current_reasoning.push_str(&text);
                         eprint!("[reasoning] {}", text);
                     }
-                    Ok(StreamEvent::ToolCallDelta { call_id, name, arguments_delta }) => {
-                        if let Some(name) = name {
-                            if !call_id.is_empty() {
-                                if !tool_calls.iter().any(|c| c.id == call_id) {
-                                    tool_calls.push(ToolCall {
-                                        id: call_id.clone(),
-                                        name: name.clone(),
-                                        arguments: arguments_delta.clone(),
-                                    });
-                                }
-                            }
+                    Ok(StreamEvent::ToolCallDelta {
+                        call_id,
+                        name,
+                        arguments_delta,
+                    }) => {
+                        if let Some(name) = name
+                            && !call_id.is_empty()
+                            && !tool_calls.iter().any(|c| c.id == call_id)
+                        {
+                            tool_calls.push(ToolCall {
+                                id: call_id.clone(),
+                                name: name.clone(),
+                                arguments: arguments_delta.clone(),
+                            });
                         }
                         eprintln!("\n[tool delta] {}: {:?}", call_id, arguments_delta);
                     }
@@ -155,7 +167,8 @@ async fn main() {
                                 assistant_parts.push(ContentPart::Text(current_text.clone()));
                             }
                             if !current_reasoning.is_empty() {
-                                assistant_parts.push(ContentPart::Reasoning(current_reasoning.clone()));
+                                assistant_parts
+                                    .push(ContentPart::Reasoning(current_reasoning.clone()));
                             }
                             for call in &tool_calls {
                                 assistant_parts.push(ContentPart::ToolCall(call.clone()));
@@ -164,16 +177,21 @@ async fn main() {
 
                             for result in tool_results {
                                 eprintln!("[tool result] {:?}", result.content);
-                                messages.push(Message::new(Role::Tool, vec![ContentPart::ToolResult(result)]));
+                                messages.push(Message::new(
+                                    Role::Tool,
+                                    vec![ContentPart::ToolResult(result)],
+                                ));
                             }
 
                             break;
                         }
                     }
                     Ok(StreamEvent::Usage(usage)) => {
-                        eprintln!("[usage: input={}, output={}]",
+                        eprintln!(
+                            "[usage: input={}, output={}]",
                             usage.input_tokens.unwrap_or(0),
-                            usage.output_tokens.unwrap_or(0));
+                            usage.output_tokens.unwrap_or(0)
+                        );
                     }
                     Ok(other) => eprintln!("\n{:?}", other),
                     Err(e) => {
@@ -215,9 +233,11 @@ async fn main() {
 
             if tool_calls.is_empty() {
                 if let Some(usage) = response.usage {
-                    eprintln!("\n[usage: input={}, output={}]",
+                    eprintln!(
+                        "\n[usage: input={}, output={}]",
                         usage.input_tokens.unwrap_or(0),
-                        usage.output_tokens.unwrap_or(0));
+                        usage.output_tokens.unwrap_or(0)
+                    );
                 }
                 break;
             }
@@ -231,18 +251,28 @@ async fn main() {
                 tool_results.push(result);
             }
 
-            messages.push(Message::new(Role::Assistant,
-                tool_calls.iter().map(|c| ContentPart::ToolCall(c.clone())).collect()));
+            messages.push(Message::new(
+                Role::Assistant,
+                tool_calls
+                    .iter()
+                    .map(|c| ContentPart::ToolCall(c.clone()))
+                    .collect(),
+            ));
 
             for result in tool_results {
-                messages.push(Message::new(Role::Tool, vec![ContentPart::ToolResult(result)]));
+                messages.push(Message::new(
+                    Role::Tool,
+                    vec![ContentPart::ToolResult(result)],
+                ));
             }
 
             if response.finish_reason == FinishReason::Stop {
                 if let Some(usage) = response.usage {
-                    eprintln!("\n[usage: input={}, output={}]",
+                    eprintln!(
+                        "\n[usage: input={}, output={}]",
                         usage.input_tokens.unwrap_or(0),
-                        usage.output_tokens.unwrap_or(0));
+                        usage.output_tokens.unwrap_or(0)
+                    );
                 }
                 break;
             }

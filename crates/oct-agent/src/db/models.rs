@@ -195,7 +195,9 @@ pub async fn update_model(
     req: &UpdateModelRequest,
 ) -> Result<bool> {
     let existing = get_model(pool, provider_id, model_id).await?;
-    let Some(existing) = existing else { return Ok(false) };
+    let Some(existing) = existing else {
+        return Ok(false);
+    };
 
     let name = req.name.as_deref().unwrap_or(&existing.name);
     let family = req.family.as_deref().or(existing.family.as_deref());
@@ -205,7 +207,10 @@ pub async fn update_model(
     let structured_output = req.structured_output.unwrap_or(existing.structured_output);
     let temperature = req.temperature.unwrap_or(existing.temperature);
     let knowledge = req.knowledge.as_deref().or(existing.knowledge.as_deref());
-    let release_date = req.release_date.as_deref().or(existing.release_date.as_deref());
+    let release_date = req
+        .release_date
+        .as_deref()
+        .or(existing.release_date.as_deref());
     let open_weights = req.open_weights.unwrap_or(existing.open_weights);
     let cost_input = req.cost_input.or(existing.cost_input);
     let cost_output = req.cost_output.or(existing.cost_output);
@@ -213,8 +218,14 @@ pub async fn update_model(
     let cost_cache_write = req.cost_cache_write.or(existing.cost_cache_write);
     let limit_context = req.limit_context.or(existing.limit_context);
     let limit_output = req.limit_output.or(existing.limit_output);
-    let modalities_input = req.modalities_input.as_deref().or(existing.modalities_input.as_deref());
-    let modalities_output = req.modalities_output.as_deref().or(existing.modalities_output.as_deref());
+    let modalities_input = req
+        .modalities_input
+        .as_deref()
+        .or(existing.modalities_input.as_deref());
+    let modalities_output = req
+        .modalities_output
+        .as_deref()
+        .or(existing.modalities_output.as_deref());
     let is_enabled = req.is_enabled.unwrap_or(existing.is_enabled);
 
     let result: sqlx::sqlite::SqliteQueryResult = sqlx::query!(

@@ -249,11 +249,17 @@ mod tests {
         let fx = Fixture::new("basic");
         let out = fx.write("a.txt", "hello").await;
         assert!(!out.is_error, "{}", out.content);
-        assert_eq!(std::fs::read_to_string(fx.dir.join("a.txt")).unwrap(), "hello");
+        assert_eq!(
+            std::fs::read_to_string(fx.dir.join("a.txt")).unwrap(),
+            "hello"
+        );
 
         let out = fx.write("a.txt", "world").await;
         assert!(!out.is_error, "{}", out.content);
-        assert_eq!(std::fs::read_to_string(fx.dir.join("a.txt")).unwrap(), "world");
+        assert_eq!(
+            std::fs::read_to_string(fx.dir.join("a.txt")).unwrap(),
+            "world"
+        );
     }
 
     #[tokio::test]
@@ -284,7 +290,10 @@ mod tests {
         let shared = Arc::new(ToolSharedState::new());
         let tool = WriteFileTool::new(base.join("wd"), shared);
         let out = tool
-            .execute(json!({ "path": "link/new.txt", "content": "x" }), &noop_ctx())
+            .execute(
+                json!({ "path": "link/new.txt", "content": "x" }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
         assert!(out.is_error);

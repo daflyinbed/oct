@@ -1,15 +1,15 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
-use futures_util::stream::FuturesUnordered;
 use futures_util::StreamExt;
+use futures_util::stream::FuturesUnordered;
 use serde_json::{Value, json};
 use tracing::{error, info};
 
+use oct_llm_provider::core::GenerateOptions;
 use oct_llm_provider::core::{
     ContentPart, FinishReason, Message, Role, StreamEvent, ToolCall, ToolResult,
 };
-use oct_llm_provider::core::GenerateOptions;
 use oct_llm_provider::model::ChatRequest;
 
 use crate::agent::{AgentContext, AgentEvent, RunHandle};
@@ -174,20 +174,16 @@ pub async fn run_agent_loop(
                 None,
                 reasoning_details.as_ref(),
             )
-            .await {
+            .await
+            {
                 Ok(stored) => {
-                    if let Some((input, output, reasoning)) = last_usage {
-                        if let Err(e) = msg_db::update_message_usage(
-                            &ctx.pool,
-                            &stored.id,
-                            input,
-                            output,
-                            reasoning,
+                    if let Some((input, output, reasoning)) = last_usage
+                        && let Err(e) = msg_db::update_message_usage(
+                            &ctx.pool, &stored.id, input, output, reasoning,
                         )
                         .await
-                        {
-                            error!("Failed to persist usage for message {}: {e}", stored.id);
-                        }
+                    {
+                        error!("Failed to persist usage for message {}: {e}", stored.id);
                     }
                 }
                 Err(e) => {
@@ -203,10 +199,8 @@ pub async fn run_agent_loop(
             return;
         }
 
-        let indexed_calls: Vec<(usize, ToolCall)> = pending_tool_calls
-            .into_iter()
-            .enumerate()
-            .collect();
+        let indexed_calls: Vec<(usize, ToolCall)> =
+            pending_tool_calls.into_iter().enumerate().collect();
         let total = indexed_calls.len();
 
         let mut futures = FuturesUnordered::new();
@@ -219,8 +213,8 @@ pub async fn run_agent_loop(
             let tc = tc.clone();
             let idx = *idx;
             let tools = ctx.tools.clone();
-            let args: Value = serde_json::from_str(&tc.arguments)
-                .unwrap_or(Value::Object(Default::default()));
+            let args: Value =
+                serde_json::from_str(&tc.arguments).unwrap_or(Value::Object(Default::default()));
 
             // Best-effort human-readable title for the UI; falls back to the
             // tool name (unknown tool, unparseable args).
@@ -246,13 +240,11 @@ pub async fn run_agent_loop(
                 let output = match tool {
                     Some(t) => match t.execute(args, &tool_ctx).await {
                         Ok(o) => o,
-                        Err(e) => crate::tools::ToolOutput::error(format!(
-                            "Tool execution error: {e}"
-                        )),
+                        Err(e) => {
+                            crate::tools::ToolOutput::error(format!("Tool execution error: {e}"))
+                        }
                     },
-                    None => {
-                        crate::tools::ToolOutput::error(format!("Unknown tool: {}", tc.name))
-                    }
+                    None => crate::tools::ToolOutput::error(format!("Unknown tool: {}", tc.name)),
                 };
                 (idx, tc, output)
             });
@@ -328,7 +320,8 @@ pub async fn run_agent_loop(
                         })],
                     };
                     if let Err(e) =
-                        msg_db::insert_message(&ctx.pool, &conv_id, &cancel_msg, None, None, None).await
+                        msg_db::insert_message(&ctx.pool, &conv_id, &cancel_msg, None, None, None)
+                            .await
                     {
                         error!("Failed to persist cancel result: {e}");
                     }

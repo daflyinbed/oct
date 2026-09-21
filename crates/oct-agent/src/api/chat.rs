@@ -1,8 +1,8 @@
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
@@ -15,12 +15,14 @@ use oct_llm_provider::core::{Message, Role};
 use tracing::debug;
 
 use super::AppState;
-use super::error::{AppError, ApiResult};
+use super::error::{ApiResult, AppError};
 use crate::agent::loop_runner::run_agent_loop;
 use crate::agent::prompt::system_prompt;
 use crate::agent::title;
 use crate::agent::{AgentContext, AgentEvent, EventHub, RunHandle};
-use crate::db::{conversations as conv_db, messages as msg_db, providers as provider_db, projects as project_db};
+use crate::db::{
+    conversations as conv_db, messages as msg_db, projects as project_db, providers as provider_db,
+};
 use crate::tools;
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -36,8 +38,12 @@ pub struct RunningStatus {
 }
 
 fn parse_provider_spec(spec: &str) -> Result<(&str, &str), AppError> {
-    spec.split_once(':')
-        .ok_or_else(|| AppError::BadRequest(format!("Invalid provider_spec format: '{}'. Expected 'provider_id:model_id'", spec)))
+    spec.split_once(':').ok_or_else(|| {
+        AppError::BadRequest(format!(
+            "Invalid provider_spec format: '{}'. Expected 'provider_id:model_id'",
+            spec
+        ))
+    })
 }
 
 async fn resolve_model(
@@ -126,7 +132,9 @@ fn start_agent_run(
         sessions.remove(&conv_id);
     });
 
-    Ok(Sse::new(stream).keep_alive(KeepAlive::default()).into_response())
+    Ok(Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response())
 }
 
 /// Serialize an AgentEvent as an SSE `data:` payload.
@@ -194,14 +202,14 @@ pub async fn send_message(
             AppError::NotFound("Project not found".into())
         })?;
 
-    let (chat_model, provider_id, model_id) =
-        match resolve_model(&state, &req.provider_spec).await {
-            Ok(m) => m,
-            Err(e) => {
-                state.sessions.remove(&id);
-                return Err(e);
-            }
-        };
+    let (chat_model, provider_id, model_id) = match resolve_model(&state, &req.provider_spec).await
+    {
+        Ok(m) => m,
+        Err(e) => {
+            state.sessions.remove(&id);
+            return Err(e);
+        }
+    };
 
     // Poison guard: a previous run interrupted mid-tool (e.g. backend crash)
     // leaves assistant ToolCalls without tool messages; repairing BEFORE the
@@ -361,14 +369,13 @@ pub async fn resume_turn(
         }
     };
 
-    let (chat_model, _provider_id, _model_id) =
-        match resolve_model(&state, &provider_spec).await {
-            Ok(m) => m,
-            Err(e) => {
-                state.sessions.remove(&id);
-                return Err(e);
-            }
-        };
+    let (chat_model, _provider_id, _model_id) = match resolve_model(&state, &provider_spec).await {
+        Ok(m) => m,
+        Err(e) => {
+            state.sessions.remove(&id);
+            return Err(e);
+        }
+    };
 
     // Only now persist the repair (idempotent): placeholder ToolResults for
     // the dangling calls found above.
@@ -466,14 +473,15 @@ pub async fn stream_run_events(
     // Synthetic boundary event for THIS subscriber only — never published to
     // the hub. It tells the frontend where the run's event log begins so it
     // can truncate its DB-loaded history before applying the replay.
-    let meta = start_message_id
-        .map(|start_message_id| AgentEvent::RunMeta { start_message_id });
+    let meta = start_message_id.map(|start_message_id| AgentEvent::RunMeta { start_message_id });
 
     let stream = futures_util::stream::iter(meta)
         .chain(hub.subscribe())
         .map(|e| Ok::<_, Infallible>(sse_event(&e)));
 
-    Ok(Sse::new(stream).keep_alive(KeepAlive::default()).into_response())
+    Ok(Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response())
 }
 
 #[utoipa::path(

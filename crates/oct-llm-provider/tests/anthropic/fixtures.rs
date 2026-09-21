@@ -3,7 +3,7 @@ use oct_llm_provider::providers::{parse_anthropic_generate_body, parse_anthropic
 use std::fs;
 
 fn load_fixture(path: &str) -> String {
-    fs::read_to_string(path).expect(&format!("Failed to read fixture: {}", path))
+    fs::read_to_string(path).unwrap_or_else(|_| panic!("Failed to read fixture: {}", path))
 }
 
 fn extract_request_body(fixture: &str) -> serde_json::Value {
@@ -56,11 +56,14 @@ fn parse_anthropic_messages_from_request(body: &serde_json::Value) -> Vec<Messag
                                     .get("input")
                                     .cloned()
                                     .unwrap_or(serde_json::Value::Null);
-                                parts.push(ContentPart::ToolCall(oct_llm_provider::core::ToolCall {
-                                    id,
-                                    name,
-                                    arguments: serde_json::to_string(&input).unwrap_or_default(),
-                                }));
+                                parts.push(ContentPart::ToolCall(
+                                    oct_llm_provider::core::ToolCall {
+                                        id,
+                                        name,
+                                        arguments: serde_json::to_string(&input)
+                                            .unwrap_or_default(),
+                                    },
+                                ));
                             }
                             "tool_result" => {
                                 let call_id =
@@ -69,11 +72,13 @@ fn parse_anthropic_messages_from_request(body: &serde_json::Value) -> Vec<Messag
                                     .get("content")
                                     .cloned()
                                     .unwrap_or(serde_json::Value::Null);
-                                parts.push(ContentPart::ToolResult(oct_llm_provider::core::ToolResult {
-                                    call_id,
-                                    content,
-                                    is_error: false,
-                                }));
+                                parts.push(ContentPart::ToolResult(
+                                    oct_llm_provider::core::ToolResult {
+                                        call_id,
+                                        content,
+                                        is_error: false,
+                                    },
+                                ));
                             }
                             _ => {}
                         }

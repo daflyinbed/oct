@@ -2,11 +2,11 @@ use serde_json::json;
 
 use oct_llm_provider::provider::Provider;
 use oct_llm_provider::providers::{
-    aggregate_anthropic_stream, anthropic_finish_reason, map_anthropic_response,
-    map_anthropic_usage, normalize_anthropic_stream_event, parse_anthropic_generate_body,
-    parse_anthropic_sse_event, parse_anthropic_sse_transcript, AnthropicContentBlock,
-    AnthropicContentBlockDelta, AnthropicProvider, AnthropicResponse, AnthropicStreamEvent,
-    AnthropicToolUseBlock, AnthropicUsage,
+    AnthropicContentBlock, AnthropicContentBlockDelta, AnthropicProvider, AnthropicResponse,
+    AnthropicStreamEvent, AnthropicToolUseBlock, AnthropicUsage, aggregate_anthropic_stream,
+    anthropic_finish_reason, map_anthropic_response, map_anthropic_usage,
+    normalize_anthropic_stream_event, parse_anthropic_generate_body, parse_anthropic_sse_event,
+    parse_anthropic_sse_transcript,
 };
 
 #[test]
@@ -46,10 +46,12 @@ fn normalizes_anthropic_response() {
         role: "assistant".to_string(),
         model: "claude-sonnet-4".to_string(),
         content: vec![
-            AnthropicContentBlock::Text(oct_llm_provider::providers::anthropic::AnthropicTextBlock {
-                text: "hello".to_string(),
-                citations: None,
-            }),
+            AnthropicContentBlock::Text(
+                oct_llm_provider::providers::anthropic::AnthropicTextBlock {
+                    text: "hello".to_string(),
+                    citations: None,
+                },
+            ),
             AnthropicContentBlock::ToolUse(AnthropicToolUseBlock {
                 id: "toolu_1".to_string(),
                 name: "lookup".to_string(),
@@ -73,7 +75,10 @@ fn normalizes_anthropic_response() {
     .unwrap();
 
     assert_eq!(response.provider_response_id.as_deref(), Some("msg_123"));
-    assert_eq!(response.finish_reason, oct_llm_provider::core::FinishReason::ToolCalls);
+    assert_eq!(
+        response.finish_reason,
+        oct_llm_provider::core::FinishReason::ToolCalls
+    );
     assert_eq!(
         response.usage.as_ref().and_then(|u| u.total_tokens),
         Some(21)
@@ -92,7 +97,9 @@ fn normalizes_anthropic_stream_events() {
     })
     .unwrap();
 
-    assert!(matches!(&events[0], oct_llm_provider::core::StreamEvent::TextDelta(text) if text == "hello"));
+    assert!(
+        matches!(&events[0], oct_llm_provider::core::StreamEvent::TextDelta(text) if text == "hello")
+    );
 }
 
 #[test]
@@ -116,7 +123,9 @@ fn emits_final_anthropic_tool_call_on_block_stop() {
     )
     .unwrap();
 
-    assert!(matches!(&events[0], oct_llm_provider::core::StreamEvent::ToolCall(call) if call.name == "lookup"));
+    assert!(
+        matches!(&events[0], oct_llm_provider::core::StreamEvent::ToolCall(call) if call.name == "lookup")
+    );
 }
 
 #[test]
@@ -143,7 +152,10 @@ fn parses_anthropic_generate_body_text() {
         response.provider_response_id.as_deref(),
         Some("msg_realistic")
     );
-    assert_eq!(response.finish_reason, oct_llm_provider::core::FinishReason::Stop);
+    assert_eq!(
+        response.finish_reason,
+        oct_llm_provider::core::FinishReason::Stop
+    );
     assert_eq!(
         response.usage.as_ref().and_then(|u| u.total_tokens),
         Some(19)
@@ -164,7 +176,9 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
         &events[0],
         oct_llm_provider::core::StreamEvent::ToolCallDelta { .. }
     ));
-    assert!(matches!(&events[1], oct_llm_provider::core::StreamEvent::ToolCall(call) if call.name == "lookup"));
+    assert!(
+        matches!(&events[1], oct_llm_provider::core::StreamEvent::ToolCall(call) if call.name == "lookup")
+    );
     assert!(matches!(
         &events[2],
         oct_llm_provider::core::StreamEvent::Finish(oct_llm_provider::core::FinishReason::Stop)
@@ -175,7 +189,11 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
 fn aggregates_anthropic_stream_usage() {
     let events = vec![
         oct_llm_provider::core::StreamEvent::TextDelta("hello".to_string()),
-        oct_llm_provider::core::StreamEvent::Usage(oct_llm_provider::core::Usage::new(Some(10), Some(5), Some(15))),
+        oct_llm_provider::core::StreamEvent::Usage(oct_llm_provider::core::Usage::new(
+            Some(10),
+            Some(5),
+            Some(15),
+        )),
     ];
     let usage = aggregate_anthropic_stream(&events);
     assert!(usage.is_some());

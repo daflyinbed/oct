@@ -1,9 +1,9 @@
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::Json;
 
 use super::AppState;
-use super::error::{AppError, ApiResult};
+use super::error::{ApiResult, AppError};
 use crate::db::{conversations as db, projects as project_db};
 
 #[utoipa::path(

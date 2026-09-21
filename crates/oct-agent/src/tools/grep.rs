@@ -10,9 +10,7 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use grep_regex::RegexMatcherBuilder;
-use grep_searcher::{
-    BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch,
-};
+use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
@@ -22,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use super::read::validate_path_within;
 use super::search_common::{relativize, search_walk_builder, timeout_note};
-use super::truncate::{truncate_line, truncate_middle, MAX_TOOL_OUTPUT_BYTES};
+use super::truncate::{MAX_TOOL_OUTPUT_BYTES, truncate_line, truncate_middle};
 use super::{AgentTool, ToolContext, ToolOutput};
 
 /// Wall-clock budget for one grep run.
@@ -145,8 +143,7 @@ impl AgentTool for GrepTool {
     }
 
     async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ToolOutput> {
-        let args: GrepArgs =
-            serde_json::from_value(args).context("Invalid arguments for grep")?;
+        let args: GrepArgs = serde_json::from_value(args).context("Invalid arguments for grep")?;
 
         let root = match args.path.as_deref() {
             Some(path) => match validate_path_within(&self.working_dir, path) {
@@ -266,11 +263,7 @@ impl ContentSink<'_> {
 impl Sink for ContentSink<'_> {
     type Error = io::Error;
 
-    fn matched(
-        &mut self,
-        _searcher: &Searcher,
-        mat: &SinkMatch<'_>,
-    ) -> Result<bool, io::Error> {
+    fn matched(&mut self, _searcher: &Searcher, mat: &SinkMatch<'_>) -> Result<bool, io::Error> {
         if self.deadline_hit() {
             return Ok(false);
         }
@@ -299,11 +292,7 @@ impl Sink for ContentSink<'_> {
         Ok(true)
     }
 
-    fn context(
-        &mut self,
-        _searcher: &Searcher,
-        ctx: &SinkContext<'_>,
-    ) -> Result<bool, io::Error> {
+    fn context(&mut self, _searcher: &Searcher, ctx: &SinkContext<'_>) -> Result<bool, io::Error> {
         if self.deadline_hit() {
             return Ok(false);
         }
@@ -337,11 +326,7 @@ struct FoundSink {
 impl Sink for FoundSink {
     type Error = io::Error;
 
-    fn matched(
-        &mut self,
-        _searcher: &Searcher,
-        _mat: &SinkMatch<'_>,
-    ) -> Result<bool, io::Error> {
+    fn matched(&mut self, _searcher: &Searcher, _mat: &SinkMatch<'_>) -> Result<bool, io::Error> {
         self.found = true;
         Ok(false)
     }
@@ -356,11 +341,7 @@ struct CountSink {
 impl Sink for CountSink {
     type Error = io::Error;
 
-    fn matched(
-        &mut self,
-        _searcher: &Searcher,
-        _mat: &SinkMatch<'_>,
-    ) -> Result<bool, io::Error> {
+    fn matched(&mut self, _searcher: &Searcher, _mat: &SinkMatch<'_>) -> Result<bool, io::Error> {
         self.count += 1;
         Ok(true)
     }
@@ -422,7 +403,8 @@ fn run_search(
             // When the root itself is a single file the relative path is
             // empty; match the filter against the file name instead.
             let matched = if rel.as_os_str().is_empty() {
-                path.file_name().is_some_and(|name| glob.is_match(Path::new(name)))
+                path.file_name()
+                    .is_some_and(|name| glob.is_match(Path::new(name)))
             } else {
                 glob.is_match(rel)
             };
@@ -430,7 +412,10 @@ fn run_search(
                 continue;
             }
         }
-        if entry.metadata().map_or(true, |m| m.len() > MAX_FILE_SIZE_BYTES) {
+        if entry
+            .metadata()
+            .map_or(true, |m| m.len() > MAX_FILE_SIZE_BYTES)
+        {
             continue;
         }
 
@@ -610,10 +595,13 @@ mod tests {
         assert!(sensitive.content.contains("Found 0 matching lines"));
 
         let insensitive = GrepTool::new(wd.clone())
-            .execute(serde_json::json!({
-                "pattern": "hello world",
-                "case_insensitive": true
-            }), &noop_ctx())
+            .execute(
+                serde_json::json!({
+                    "pattern": "hello world",
+                    "case_insensitive": true
+                }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
         assert!(!insensitive.is_error);
@@ -632,7 +620,10 @@ mod tests {
         std::fs::write(wd.join("sub/c.rs"), "NEEDLE\n").unwrap();
 
         let out = GrepTool::new(wd.clone())
-            .execute(serde_json::json!({ "pattern": "NEEDLE", "glob": "*.rs" }), &noop_ctx())
+            .execute(
+                serde_json::json!({ "pattern": "NEEDLE", "glob": "*.rs" }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
 
@@ -656,10 +647,13 @@ mod tests {
         std::fs::write(wd.join("c.txt"), "nothing here\n").unwrap();
 
         let out = GrepTool::new(wd.clone())
-            .execute(serde_json::json!({
-                "pattern": "NEEDLE",
-                "output_mode": "files_with_matches"
-            }), &noop_ctx())
+            .execute(
+                serde_json::json!({
+                    "pattern": "NEEDLE",
+                    "output_mode": "files_with_matches"
+                }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
 
@@ -681,7 +675,10 @@ mod tests {
         std::fs::write(wd.join("b.txt"), "one\n").unwrap();
 
         let out = GrepTool::new(wd.clone())
-            .execute(serde_json::json!({ "pattern": "one", "output_mode": "count" }), &noop_ctx())
+            .execute(
+                serde_json::json!({ "pattern": "one", "output_mode": "count" }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
 
@@ -701,18 +698,17 @@ mod tests {
         }
 
         let out = GrepTool::new(wd.clone())
-            .execute(serde_json::json!({ "pattern": "NEEDLE", "head_limit": 2 }), &noop_ctx())
+            .execute(
+                serde_json::json!({ "pattern": "NEEDLE", "head_limit": 2 }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
 
         assert!(!out.is_error);
         assert!(out.content.contains("Found at least 2 matching lines"));
         assert!(out.content.contains("... [more matches truncated] ..."));
-        let result_lines = out
-            .content
-            .lines()
-            .filter(|l| l.contains("NEEDLE"))
-            .count();
+        let result_lines = out.content.lines().filter(|l| l.contains("NEEDLE")).count();
         assert_eq!(result_lines, 2);
 
         std::fs::remove_dir_all(&wd).unwrap();
@@ -740,10 +736,13 @@ mod tests {
         std::fs::write(wd.join("sub/node_modules/nested.js"), "NEEDLE\n").unwrap();
 
         let out = GrepTool::new(wd.clone())
-            .execute(serde_json::json!({
-                "pattern": "NEEDLE",
-                "output_mode": "files_with_matches"
-            }), &noop_ctx())
+            .execute(
+                serde_json::json!({
+                    "pattern": "NEEDLE",
+                    "output_mode": "files_with_matches"
+                }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
 
@@ -763,10 +762,13 @@ mod tests {
         std::fs::write(wd.join("text.txt"), "NEEDLE\n").unwrap();
 
         let out = GrepTool::new(wd.clone())
-            .execute(serde_json::json!({
-                "pattern": "NEEDLE",
-                "output_mode": "files_with_matches"
-            }), &noop_ctx())
+            .execute(
+                serde_json::json!({
+                    "pattern": "NEEDLE",
+                    "output_mode": "files_with_matches"
+                }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
 
@@ -784,10 +786,13 @@ mod tests {
         let outside = wd.parent().unwrap().to_path_buf();
 
         let out = GrepTool::new(wd.clone())
-            .execute(serde_json::json!({
-                "pattern": "anything",
-                "path": outside.display().to_string()
-            }), &noop_ctx())
+            .execute(
+                serde_json::json!({
+                    "pattern": "anything",
+                    "path": outside.display().to_string()
+                }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
 
@@ -803,9 +808,12 @@ mod tests {
         std::fs::write(wd.join("a.rs"), "NEEDLE\n").unwrap();
 
         let out = GrepTool::new(wd.clone())
-            .execute(serde_json::json!({
-                "pattern": "NEEDLE", "path": "a.rs", "glob": "*.rs"
-            }), &noop_ctx())
+            .execute(
+                serde_json::json!({
+                    "pattern": "NEEDLE", "path": "a.rs", "glob": "*.rs"
+                }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
         assert!(!out.is_error);
@@ -813,9 +821,12 @@ mod tests {
 
         // A filter that does not match the file name yields zero results.
         let out = GrepTool::new(wd.clone())
-            .execute(serde_json::json!({
-                "pattern": "NEEDLE", "path": "a.rs", "glob": "*.txt"
-            }), &noop_ctx())
+            .execute(
+                serde_json::json!({
+                    "pattern": "NEEDLE", "path": "a.rs", "glob": "*.txt"
+                }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
         assert!(out.content.contains("Found 0 matching lines"));

@@ -73,7 +73,11 @@ pub async fn create_project(pool: &SqlitePool, req: &CreateProjectRequest) -> Re
     })
 }
 
-pub async fn update_project(pool: &SqlitePool, id: &str, req: &UpdateProjectRequest) -> Result<bool> {
+pub async fn update_project(
+    pool: &SqlitePool,
+    id: &str,
+    req: &UpdateProjectRequest,
+) -> Result<bool> {
     let existing = sqlx::query_as!(
         Project,
         "SELECT id, name, working_dir, created_at, updated_at FROM projects WHERE id = $1",
@@ -82,7 +86,9 @@ pub async fn update_project(pool: &SqlitePool, id: &str, req: &UpdateProjectRequ
     .fetch_optional(pool)
     .await?;
 
-    let Some(existing) = existing else { return Ok(false) };
+    let Some(existing) = existing else {
+        return Ok(false);
+    };
 
     let now = chrono::Utc::now().naive_utc();
     let name = req.name.as_deref().unwrap_or(&existing.name);
@@ -102,9 +108,10 @@ pub async fn update_project(pool: &SqlitePool, id: &str, req: &UpdateProjectRequ
 }
 
 pub async fn delete_project(pool: &SqlitePool, id: &str) -> Result<bool> {
-    let result: sqlx::sqlite::SqliteQueryResult = sqlx::query!("DELETE FROM projects WHERE id = $1", id)
-        .execute(pool)
-        .await?;
+    let result: sqlx::sqlite::SqliteQueryResult =
+        sqlx::query!("DELETE FROM projects WHERE id = $1", id)
+            .execute(pool)
+            .await?;
 
     Ok(result.rows_affected() > 0)
 }

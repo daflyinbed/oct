@@ -1,5 +1,5 @@
-use axum::extract::{Path, Query, State};
 use axum::Json;
+use axum::extract::{Path, Query, State};
 use serde::{Deserialize, Serialize};
 use std::path::{Path as FsPath, PathBuf};
 use tokio::io::AsyncReadExt;
@@ -7,7 +7,7 @@ use utoipa::IntoParams;
 use utoipa::ToSchema;
 
 use super::AppState;
-use super::error::{AppError, ApiResult};
+use super::error::{ApiResult, AppError};
 use crate::db::projects as db;
 use crate::tools::listdir::should_ignore;
 
@@ -116,11 +116,7 @@ pub async fn list_project_files(
     if !target.is_dir() {
         return Err(AppError::BadRequest(format!(
             "{} is not a directory",
-            if requested.is_empty() {
-                "."
-            } else {
-                requested
-            }
+            if requested.is_empty() { "." } else { requested }
         )));
     }
 
@@ -153,8 +149,8 @@ pub async fn list_project_files(
     }
 
     entries.sort_by(|a, b| {
-        let dir_first =
-            usize::from(b.kind == FileEntryKind::Dir).cmp(&usize::from(a.kind == FileEntryKind::Dir));
+        let dir_first = usize::from(b.kind == FileEntryKind::Dir)
+            .cmp(&usize::from(a.kind == FileEntryKind::Dir));
         dir_first.then_with(|| a.name.cmp(&b.name))
     });
 
@@ -213,7 +209,10 @@ pub async fn read_project_file(
     // Read limit+1 bytes so truncation is detectable without loading huge files.
     let mut reader = tokio::io::BufReader::new(file).take(MAX_CONTENT_BYTES + 1);
     let mut buf = Vec::new();
-    reader.read_to_end(&mut buf).await.map_err(anyhow::Error::from)?;
+    reader
+        .read_to_end(&mut buf)
+        .await
+        .map_err(anyhow::Error::from)?;
     let truncated = buf.len() as u64 > MAX_CONTENT_BYTES;
     if truncated {
         buf.truncate(MAX_CONTENT_BYTES as usize);

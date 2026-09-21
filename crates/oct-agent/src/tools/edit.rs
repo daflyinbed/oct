@@ -388,11 +388,14 @@ mod tests {
 
         let out = fx
             .edit
-            .execute(json!({
-                "file_path": "a.txt",
-                "old_string": "beta",
-                "new_string": "BETA"
-            }), &noop_ctx())
+            .execute(
+                json!({
+                    "file_path": "a.txt",
+                    "old_string": "beta",
+                    "new_string": "BETA"
+                }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
 
@@ -412,11 +415,14 @@ mod tests {
 
         let out = fx
             .edit
-            .execute(json!({
-                "file_path": "a.txt",
-                "old_string": "content",
-                "new_string": "content"
-            }), &noop_ctx())
+            .execute(
+                json!({
+                    "file_path": "a.txt",
+                    "old_string": "content",
+                    "new_string": "content"
+                }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
 
@@ -436,11 +442,14 @@ mod tests {
 
         let out = fx
             .edit
-            .execute(json!({
-                "file_path": "a.txt",
-                "old_string": "fn main() {}\n",
-                "new_string": "fn main() { return }\n"
-            }), &noop_ctx())
+            .execute(
+                json!({
+                    "file_path": "a.txt",
+                    "old_string": "fn main() {}\n",
+                    "new_string": "fn main() { return }\n"
+                }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
 
@@ -468,11 +477,14 @@ mod tests {
 
         let out = fx
             .edit
-            .execute(json!({
-                "file_path": "a.txt",
-                "old_string": "zebra",
-                "new_string": "horse"
-            }), &noop_ctx())
+            .execute(
+                json!({
+                    "file_path": "a.txt",
+                    "old_string": "zebra",
+                    "new_string": "horse"
+                }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
 
@@ -489,11 +501,14 @@ mod tests {
 
         let out = fx
             .edit
-            .execute(json!({
-                "file_path": "a.txt",
-                "old_string": "= 1",
-                "new_string": "= 10"
-            }), &noop_ctx())
+            .execute(
+                json!({
+                    "file_path": "a.txt",
+                    "old_string": "= 1",
+                    "new_string": "= 10"
+                }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
 
@@ -507,12 +522,15 @@ mod tests {
         // With replace_all both occurrences are replaced and the message says so.
         let out = fx
             .edit
-            .execute(json!({
-                "file_path": "a.txt",
-                "old_string": "= 1",
-                "new_string": "= 10",
-                "replace_all": true
-            }), &noop_ctx())
+            .execute(
+                json!({
+                    "file_path": "a.txt",
+                    "old_string": "= 1",
+                    "new_string": "= 10",
+                    "replace_all": true
+                }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
 
@@ -535,12 +553,15 @@ mod tests {
 
         let out = fx
             .edit
-            .execute(json!({
-                "file_path": "a.txt",
-                "old_string": "one",
-                "new_string": "1",
-                "replace_all": true
-            }), &noop_ctx())
+            .execute(
+                json!({
+                    "file_path": "a.txt",
+                    "old_string": "one",
+                    "new_string": "1",
+                    "replace_all": true
+                }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
 
@@ -554,11 +575,14 @@ mod tests {
 
         let out = fx
             .edit
-            .execute(json!({
-                "file_path": "new.txt",
-                "old_string": "",
-                "new_string": "brand new\n"
-            }), &noop_ctx())
+            .execute(
+                json!({
+                    "file_path": "new.txt",
+                    "old_string": "",
+                    "new_string": "brand new\n"
+                }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
 
@@ -575,11 +599,14 @@ mod tests {
         // Creating over an existing NON-empty file is an error.
         let out = fx
             .edit
-            .execute(json!({
-                "file_path": "new.txt",
-                "old_string": "",
-                "new_string": "other\n"
-            }), &noop_ctx())
+            .execute(
+                json!({
+                    "file_path": "new.txt",
+                    "old_string": "",
+                    "new_string": "other\n"
+                }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
         assert!(out.is_error);
@@ -589,11 +616,14 @@ mod tests {
         std::fs::write(fx.file("empty.txt"), "").unwrap();
         let out = fx
             .edit
-            .execute(json!({
-                "file_path": "empty.txt",
-                "old_string": "",
-                "new_string": "filled\n"
-            }), &noop_ctx())
+            .execute(
+                json!({
+                    "file_path": "empty.txt",
+                    "old_string": "",
+                    "new_string": "filled\n"
+                }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
         assert!(!out.is_error);
@@ -610,11 +640,14 @@ mod tests {
 
         let out = fx
             .edit
-            .execute(json!({
-                "file_path": "missing_dir/new.txt",
-                "old_string": "",
-                "new_string": "content\n"
-            }), &noop_ctx())
+            .execute(
+                json!({
+                    "file_path": "missing_dir/new.txt",
+                    "old_string": "",
+                    "new_string": "content\n"
+                }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
 
@@ -630,11 +663,14 @@ mod tests {
 
         let out = fx
             .edit
-            .execute(json!({
-                "file_path": "a.txt",
-                "old_string": "line2",
-                "new_string": "LINE2"
-            }), &noop_ctx())
+            .execute(
+                json!({
+                    "file_path": "a.txt",
+                    "old_string": "line2",
+                    "new_string": "LINE2"
+                }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
 
@@ -652,11 +688,14 @@ mod tests {
 
         let out = fx
             .edit
-            .execute(json!({
-                "file_path": "a.txt",
-                "old_string": "hello",
-                "new_string": "goodbye"
-            }), &noop_ctx())
+            .execute(
+                json!({
+                    "file_path": "a.txt",
+                    "old_string": "hello",
+                    "new_string": "goodbye"
+                }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
 
@@ -670,11 +709,14 @@ mod tests {
         fx.read("a.txt").await;
         let out = fx
             .edit
-            .execute(json!({
-                "file_path": "a.txt",
-                "old_string": "hello",
-                "new_string": "goodbye"
-            }), &noop_ctx())
+            .execute(
+                json!({
+                    "file_path": "a.txt",
+                    "old_string": "hello",
+                    "new_string": "goodbye"
+                }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
         assert!(!out.is_error);
@@ -690,10 +732,13 @@ mod tests {
 
         let out = fx
             .write
-            .execute(json!({
-                "path": "a.txt",
-                "content": "count = 1\n"
-            }), &noop_ctx())
+            .execute(
+                json!({
+                    "path": "a.txt",
+                    "content": "count = 1\n"
+                }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
         assert!(!out.is_error);
@@ -701,11 +746,14 @@ mod tests {
         // write_file recorded the fresh mtime, so no read is required first.
         let out = fx
             .edit
-            .execute(json!({
-                "file_path": "a.txt",
-                "old_string": "count = 1",
-                "new_string": "count = 2"
-            }), &noop_ctx())
+            .execute(
+                json!({
+                    "file_path": "a.txt",
+                    "old_string": "count = 1",
+                    "new_string": "count = 2"
+                }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
 
@@ -738,11 +786,14 @@ mod tests {
 
         let out = fx
             .edit
-            .execute(json!({
-                "file_path": "a.txt",
-                "old_string": "original",
-                "new_string": "edited"
-            }), &noop_ctx())
+            .execute(
+                json!({
+                    "file_path": "a.txt",
+                    "old_string": "original",
+                    "new_string": "edited"
+                }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
 
@@ -761,11 +812,14 @@ mod tests {
 
         let out = fx
             .edit
-            .execute(json!({
-                "file_path": "subdir",
-                "old_string": "a",
-                "new_string": "b"
-            }), &noop_ctx())
+            .execute(
+                json!({
+                    "file_path": "subdir",
+                    "old_string": "a",
+                    "new_string": "b"
+                }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
 
@@ -790,11 +844,14 @@ mod tests {
 
         let out = fx
             .edit
-            .execute(json!({
-                "file_path": format!("../{}", outside.file_name().unwrap().to_string_lossy()),
-                "old_string": "secret",
-                "new_string": "b"
-            }), &noop_ctx())
+            .execute(
+                json!({
+                    "file_path": format!("../{}", outside.file_name().unwrap().to_string_lossy()),
+                    "old_string": "secret",
+                    "new_string": "b"
+                }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
 
@@ -815,13 +872,16 @@ mod tests {
 
         let out = fx
             .edit
-            .execute(json!({
-                "file_path": "a.txt",
-                // Longest token of the first line is "token", which only
-                // appears on the over-long line 2.
-                "old_string": "token\nrest of the missing text",
-                "new_string": "x"
-            }), &noop_ctx())
+            .execute(
+                json!({
+                    "file_path": "a.txt",
+                    // Longest token of the first line is "token", which only
+                    // appears on the over-long line 2.
+                    "old_string": "token\nrest of the missing text",
+                    "new_string": "x"
+                }),
+                &noop_ctx(),
+            )
             .await
             .unwrap();
 

@@ -1,14 +1,16 @@
 use oct_llm_provider::adapter::{
+    ChatCompletionChoice, ChatCompletionChunk, ChatCompletionChunkChoice, ChatCompletionChunkDelta,
+    ChatCompletionChunkDeltaToolCall, ChatCompletionChunkDeltaToolCallFunction,
+    ChatCompletionMessageToolCall, ChatCompletionMessageToolCallFunction,
+    ChatCompletionResponseMessage, ChatCompletionUsage, ChatCompletionUsageCompletionDetails,
+    ChatCompletionUsagePromptDetails, OpenAiCompatibleChatModel, OpenAiCompatibleConfig,
     map_openai_finish_reason, map_openai_generate_response, map_openai_usage,
     normalize_openai_stream_chunk, parse_openai_generate_body, parse_openai_sse_event,
-    parse_openai_sse_transcript, ChatCompletionChoice, ChatCompletionChunk,
-    ChatCompletionChunkChoice, ChatCompletionChunkDelta, ChatCompletionChunkDeltaToolCall,
-    ChatCompletionChunkDeltaToolCallFunction, ChatCompletionMessageToolCall,
-    ChatCompletionMessageToolCallFunction, ChatCompletionResponseMessage, ChatCompletionUsage,
-    ChatCompletionUsageCompletionDetails, ChatCompletionUsagePromptDetails,
-    OpenAiCompatibleChatModel, OpenAiCompatibleConfig,
+    parse_openai_sse_transcript,
 };
-use oct_llm_provider::core::{ContentPart, FinishReason, GenerateOptions, Message, Role, ToolChoice, ToolSpec};
+use oct_llm_provider::core::{
+    ContentPart, FinishReason, GenerateOptions, Message, Role, ToolChoice, ToolSpec,
+};
 use oct_llm_provider::model::ChatRequest;
 use oct_llm_provider::provider::{ModelCapabilities, ModelInfo, ModelLimits};
 use serde_json::json;
@@ -193,13 +195,20 @@ fn normalizes_openai_stream_chunks() {
     })
     .unwrap();
 
-    assert!(matches!(&events[0], oct_llm_provider::core::StreamEvent::Usage(_)));
-    assert!(matches!(&events[1], oct_llm_provider::core::StreamEvent::TextDelta(text) if text == "hel"));
+    assert!(matches!(
+        &events[0],
+        oct_llm_provider::core::StreamEvent::Usage(_)
+    ));
+    assert!(
+        matches!(&events[1], oct_llm_provider::core::StreamEvent::TextDelta(text) if text == "hel")
+    );
     assert!(matches!(
         &events[2],
         oct_llm_provider::core::StreamEvent::ToolCallDelta { .. }
     ));
-    assert!(matches!(&events[3], oct_llm_provider::core::StreamEvent::ToolCall(call) if call.name == "lookup"));
+    assert!(
+        matches!(&events[3], oct_llm_provider::core::StreamEvent::ToolCall(call) if call.name == "lookup")
+    );
     assert!(matches!(
         &events[4],
         oct_llm_provider::core::StreamEvent::Finish(FinishReason::ToolCalls)
@@ -250,7 +259,9 @@ fn emits_final_openai_tool_call_when_done() {
         &events[0],
         oct_llm_provider::core::StreamEvent::ToolCallDelta { .. }
     ));
-    assert!(matches!(&events[1], oct_llm_provider::core::StreamEvent::ToolCall(call) if call.name == "lookup"));
+    assert!(
+        matches!(&events[1], oct_llm_provider::core::StreamEvent::ToolCall(call) if call.name == "lookup")
+    );
 }
 
 #[test]
@@ -297,13 +308,20 @@ data: [DONE]\n\n",
     )
     .unwrap();
 
-    assert!(matches!(&events[0], oct_llm_provider::core::StreamEvent::TextDelta(text) if text == "hel"));
-    assert!(matches!(&events[1], oct_llm_provider::core::StreamEvent::Usage(_)));
+    assert!(
+        matches!(&events[0], oct_llm_provider::core::StreamEvent::TextDelta(text) if text == "hel")
+    );
+    assert!(matches!(
+        &events[1],
+        oct_llm_provider::core::StreamEvent::Usage(_)
+    ));
     assert!(matches!(
         &events[2],
         oct_llm_provider::core::StreamEvent::ToolCallDelta { .. }
     ));
-    assert!(matches!(&events[3], oct_llm_provider::core::StreamEvent::ToolCall(call) if call.name == "lookup"));
+    assert!(
+        matches!(&events[3], oct_llm_provider::core::StreamEvent::ToolCall(call) if call.name == "lookup")
+    );
 }
 
 #[test]
@@ -437,7 +455,9 @@ fn parses_reasoning_in_stream_delta() {
     .unwrap();
 
     assert_eq!(events.len(), 1);
-    assert!(matches!(&events[0], oct_llm_provider::core::StreamEvent::ReasoningDelta(t) if t == "thinking..."));
+    assert!(
+        matches!(&events[0], oct_llm_provider::core::StreamEvent::ReasoningDelta(t) if t == "thinking...")
+    );
 }
 
 #[test]

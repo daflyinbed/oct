@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::time::Instant;
 
-use super::truncate::{truncate_middle, MAX_TOOL_OUTPUT_BYTES};
+use super::truncate::{MAX_TOOL_OUTPUT_BYTES, truncate_middle};
 use super::{AgentTool, OutputStream, ToolContext, ToolOutput};
 
 /// Timeout applied when the caller does not request one.
@@ -356,7 +356,9 @@ impl AgentTool for ExecuteCommandTool {
                 -1
             }
             Err(_) => {
-                tracing::warn!("child survived SIGKILL for {KILL_REAP_TIMEOUT:?}; giving up on reaping");
+                tracing::warn!(
+                    "child survived SIGKILL for {KILL_REAP_TIMEOUT:?}; giving up on reaping"
+                );
                 -1
             }
         };
@@ -431,8 +433,8 @@ impl AgentTool for ExecuteCommandTool {
 mod tests {
     use super::*;
     use futures_util::StreamExt;
-    use serde_json::json;
     use serde_json::Value;
+    use serde_json::json;
 
     use crate::agent::events::EventHub;
 
@@ -458,10 +460,7 @@ mod tests {
     async fn captures_output_and_exit_code() {
         let tool = ExecuteCommandTool::new(std::env::temp_dir());
         let out = tool
-            .execute(
-                json!({ "command": "echo hello" }),
-                &TestCtx::new().ctx,
-            )
+            .execute(json!({ "command": "echo hello" }), &TestCtx::new().ctx)
             .await
             .unwrap();
         assert!(!out.is_error);
