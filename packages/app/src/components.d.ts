@@ -44,6 +44,7 @@ declare module 'vue' {
     ILucideMoon: typeof import('~icons/lucide/moon')['default']
     ILucidePanelLeft: typeof import('~icons/lucide/panel-left')['default']
     ILucidePlus: typeof import('~icons/lucide/plus')['default']
+    ILucideRotateCcw: typeof import('~icons/lucide/rotate-ccw')['default']
     ILucideSearch: typeof import('~icons/lucide/search')['default']
     ILucideSettings: typeof import('~icons/lucide/settings')['default']
     ILucideSlidersHorizontal: typeof import('~icons/lucide/sliders-horizontal')['default']

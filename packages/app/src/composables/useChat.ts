@@ -1,4 +1,4 @@
-import { readonly, ref } from "vue";
+import { computed, readonly, ref } from "vue";
 import client from "@/api/client";
 import type { components } from "@/api/schema";
 
@@ -26,7 +26,11 @@ export interface ToolCallPart {
   title: string | null;
   /** Accumulated (generating) or canonical (tool_call_start onwards) JSON text. */
   arguments: string;
-  status: "generating" | "running" | "done";
+  /**
+   * "interrupted"：历史里始终没有等到配对 ToolResult 的调用（后端中断，
+   * 如崩溃重启），由 storedToDisplayList 标注。
+   */
+  status: "generating" | "running" | "done" | "interrupted";
   /**
    * Live execution output; never persisted, live view only. Segments keep the
    * arrival order of stdout/stderr chunks (capped to the tail). Readonly so
@@ -81,6 +85,13 @@ const sending = ref(false);
  * switch while a non-chat tab is active); collapse repeats into one request.
  */
 let lastFetch: { id: string; at: number } | null = null;
+
+/**
+ * `messages` 当前展示的会话 id（null = 空态）。流式收尾的静默刷新以它
+ * 判断视图是否仍在该会话上：resume/send 进行中用户可能已切走，无条件
+ * 刷新会用旧会话的历史覆盖当前视图。
+ */
+let activeConversationId: string | null = null;
 
 /** Tail cap per tool call for live output kept in the DOM. */
 const LIVE_OUTPUT_MAX_CHARS = 32_768;
@@ -291,6 +302,12 @@ function storedToDisplayList(stored: StoredMessage[]): DisplayMessage[] {
         }
       }
     }
+  }
+
+  // 悬空调用：始终没等到配对 ToolResult（fillCard 未被调用，content 仍为
+  // null）的卡片标注为已中断——后端崩溃留下的历史，恢复前 UI 的可见信号。
+  for (const card of cardsByCallId.values()) {
+    if (card.content === null) card.status = "interrupted";
   }
 
   return out;
@@ -567,7 +584,59 @@ function applyStreamEvent(event: AgentEvent) {
 
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// SSE 消费（sendMessage / resumeTurn 共用）
+// ---------------------------------------------------------------------------
+
+/**
+ * 读取一个 SSE Response 直到流 EOF，把每个 data: 事件交给
+ * applyStreamEvent。网络分片可能在任意字节边界断开（含 data: 前缀与
+ * JSON 中间），逐行缓冲解析。
+ */
+async function consumeSseStream(res: Response): Promise<void> {
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      const payload = line.slice(6).trim();
+      if (payload === "[DONE]") continue;
+
+      try {
+        const event: AgentEvent = JSON.parse(payload);
+        applyStreamEvent(event);
+      } catch {
+        // skip malformed SSE
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+
 export function useChat() {
+  /** 实际拉取并重建 messages（绕过 fetchMessages 的 200ms 去重守卫）。 */
+  const loadMessages = async (conversationId: string) => {
+    lastFetch = { id: conversationId, at: Date.now() };
+    const { data, error } = await client.GET(
+      "/api/conversations/{id}/messages",
+      { params: { path: { id: conversationId } } },
+    );
+    if (!error && data) {
+      messages.value = storedToDisplayList(data);
+      activeConversationId = conversationId;
+    }
+  };
+
   const fetchMessages = async (conversationId: string) => {
     const now = Date.now();
     if (
@@ -577,14 +646,7 @@ export function useChat() {
     ) {
       return;
     }
-    lastFetch = { id: conversationId, at: now };
-    const { data, error } = await client.GET(
-      "/api/conversations/{id}/messages",
-      { params: { path: { id: conversationId } } },
-    );
-    if (!error && data) {
-      messages.value = storedToDisplayList(data);
-    }
+    await loadMessages(conversationId);
   };
 
   const sendMessage = async (
@@ -594,6 +656,13 @@ export function useChat() {
   ) => {
     if (!content.trim() || sending.value) return;
     sending.value = true;
+
+    // 后端在 send 时会顺带修复悬空调用并落占位行：发送前若存在中断卡片，
+    // 结束后需刷新一次历史让占位结果回填，否则 interrupted/resumable
+    // 状态过期（按钮残留，点击只得静默 409）。
+    const hadInterruptedCards = messages.value.some((m) =>
+      m.parts.some((p) => p.kind === "tool_call" && p.status === "interrupted"),
+    );
 
     messages.value = [
       ...messages.value,
@@ -625,31 +694,7 @@ export function useChat() {
         throw new Error(`HTTP ${res.status}`);
       }
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const payload = line.slice(6).trim();
-          if (payload === "[DONE]") continue;
-
-          try {
-            const event: AgentEvent = JSON.parse(payload);
-            applyStreamEvent(event);
-          } catch {
-            // skip malformed SSE
-          }
-        }
-      }
+      await consumeSseStream(res);
     } catch {
       if (streamState) {
         streamState.parts.push({
@@ -665,6 +710,74 @@ export function useChat() {
         streamState.isStreaming = false;
         flushStream();
         streamState = null;
+      }
+      // 刷新失败不影响流式终态（下次 fetch 自会收敛），静默即可。
+      if (hadInterruptedCards && activeConversationId === conversationId) {
+        try {
+          await loadMessages(conversationId);
+        } catch {
+          // ignore: cosmetic refresh
+        }
+      }
+      sending.value = false;
+    }
+  };
+
+  /**
+   * 恢复被中断的轮次（后端崩溃等）：修复悬空工具调用后不追加 user 消息，
+   * 直接以现有历史续跑 agent loop。发送中（sending）时忽略。
+   */
+  const resumeTurn = async (conversationId: string) => {
+    if (sending.value) return;
+    sending.value = true;
+
+    try {
+      const res = await fetch(`/api/conversations/${conversationId}/resume`, {
+        method: "POST",
+      });
+
+      if (!res.ok || !res.body) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+
+      // 后端已把占位 tool 行持久化：先拉取让悬空卡片落定，再开始消费
+      // 事件（SSE 事件在开始读取前由浏览器缓冲，不会丢失）。
+      await loadMessages(conversationId);
+
+      const assistantId = `resumed-${Date.now()}`;
+      messages.value = [
+        ...messages.value,
+        { id: assistantId, role: "assistant", parts: [], isStreaming: true },
+      ];
+      streamState = { messageId: assistantId, parts: [], isStreaming: true };
+      startFlushing();
+
+      await consumeSseStream(res);
+    } catch {
+      if (streamState) {
+        streamState.parts.push({
+          kind: "text",
+          text: "Failed to resume turn.",
+        });
+        streamDirty = true;
+      }
+    } finally {
+      stopFlushing();
+      if (streamState) {
+        finalizeUnconvergedCards();
+        streamState.isStreaming = false;
+        flushStream();
+        streamState = null;
+      }
+      // 静默刷新：以服务端持久化的终态为准（也顺带清掉过期的可恢复标记）。
+      // 仅当视图仍停留在本会话：切走后由路由 watch 负责重新拉取，这里
+      // 不能用旧会话的历史覆盖当前视图。刷新失败不影响终态，静默即可。
+      if (activeConversationId === conversationId) {
+        try {
+          await loadMessages(conversationId);
+        } catch {
+          // ignore: cosmetic refresh
+        }
       }
       sending.value = false;
     }
@@ -682,13 +795,27 @@ export function useChat() {
 
   const clearMessages = () => {
     messages.value = [];
+    activeConversationId = null;
   };
+
+  /** 存在被中断的轮次可恢复：悬空工具卡片，或最后一条消息是 user。 */
+  const resumable = computed(() => {
+    if (messages.value.length === 0) return false;
+    if (messages.value.at(-1)?.role === "user") {
+      return true;
+    }
+    return messages.value.some((m) =>
+      m.parts.some((p) => p.kind === "tool_call" && p.status === "interrupted"),
+    );
+  });
 
   return {
     messages: readonly(messages),
     sending: readonly(sending),
+    resumable,
     fetchMessages,
     sendMessage,
+    resumeTurn,
     cancelConversation,
     clearMessages,
   };

@@ -1,7 +1,7 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use futures_util::StreamExt;
 use serde::Deserialize;
@@ -75,6 +75,56 @@ async fn resolve_model(
     Ok((model, provider_id.to_string(), model_id.to_string()))
 }
 
+/// Shared tail of the chat endpoints: replace the placeholder session entry
+/// with the real run handle, spawn the agent loop, and return the SSE stream
+/// of its broadcast events. `state.sessions` must already hold a placeholder
+/// entry for `id` (so concurrent starts get a 409).
+fn start_agent_run(
+    state: &AppState,
+    id: &str,
+    project: &project_db::Project,
+    chat_model: Box<dyn oct_llm_provider::model::ChatModel>,
+    messages: Vec<Message>,
+) -> ApiResult<Response> {
+    let (event_tx, _) = broadcast::channel(256);
+    let cancel = CancellationToken::new();
+    let handle = RunHandle {
+        event_tx: event_tx.clone(),
+        cancel,
+    };
+
+    let rx = handle.subscribe();
+    if let Some(mut entry) = state.sessions.get_mut(id) {
+        *entry.value_mut() = handle.clone();
+    }
+
+    let ctx = AgentContext {
+        model: Arc::from(chat_model),
+        tools: Arc::new(tools::default_tools(PathBuf::from(&project.working_dir))),
+        pool: state.pool.clone(),
+        system_prompt: system_prompt(&PathBuf::from(&project.working_dir)),
+    };
+
+    let conv_id = id.to_string();
+    let sessions = state.sessions.clone();
+
+    tokio::spawn(async move {
+        run_agent_loop(ctx, conv_id.clone(), messages, handle).await;
+        sessions.remove(&conv_id);
+    });
+
+    let stream = BroadcastStream::new(rx).map(|e| match e {
+        Ok(e) => Ok::<_, Infallible>(
+            Event::default()
+                .json_data(&e)
+                .unwrap_or_else(|_| Event::default()),
+        ),
+        Err(_) => Ok(Event::default()),
+    });
+
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()).into_response())
+}
+
 #[utoipa::path(
     post,
     path = "/conversations/{id}/messages",
@@ -91,7 +141,7 @@ pub async fn send_message(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(req): Json<SendMessageRequest>,
-) -> ApiResult<impl IntoResponse> {
+) -> ApiResult<Response> {
     let placeholder_cancel = CancellationToken::new();
     match state.sessions.entry(id.clone()) {
         dashmap::mapref::entry::Entry::Occupied(_) => {
@@ -135,6 +185,15 @@ pub async fn send_message(
             }
         };
 
+    // Poison guard: a previous run interrupted mid-tool (e.g. backend crash)
+    // leaves assistant ToolCalls without tool messages; repairing BEFORE the
+    // new user message is appended keeps the stored history a legal
+    // conversation for the provider.
+    if let Err(e) = msg_db::repair_dangling_tool_calls(&state.pool, &id).await {
+        state.sessions.remove(&id);
+        return Err(AppError::from(e));
+    }
+
     let user_msg = Message::text(Role::User, &req.content);
     if let Err(e) = msg_db::insert_message(
         &state.pool,
@@ -158,43 +217,127 @@ pub async fn send_message(
         }
     };
 
-    let (event_tx, _) = broadcast::channel(256);
-    let cancel = CancellationToken::new();
-    let handle = RunHandle {
-        event_tx: event_tx.clone(),
-        cancel,
-    };
+    start_agent_run(&state, &id, &project, chat_model, messages)
+}
 
-    let rx = handle.subscribe();
-    if let Some(mut entry) = state.sessions.get_mut(&id) {
-        *entry.value_mut() = handle.clone();
+#[utoipa::path(
+    post,
+    path = "/conversations/{id}/resume",
+    params(("id" = String, Path, description = "Conversation ID")),
+    responses(
+        (status = 200, description = "SSE stream of agent events for the resumed turn"),
+        (status = 400, description = "No provider/model recorded for the conversation"),
+        (status = 404, description = "Conversation not found"),
+        (status = 409, description = "Nothing to resume, or agent is already running")
+    ),
+    tag = "chat"
+)]
+pub async fn resume_turn(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Response> {
+    let placeholder_cancel = CancellationToken::new();
+    match state.sessions.entry(id.clone()) {
+        dashmap::mapref::entry::Entry::Occupied(_) => {
+            return Err(AppError::Conflict(
+                "Agent is already running for this conversation".into(),
+            ));
+        }
+        dashmap::mapref::entry::Entry::Vacant(entry) => {
+            entry.insert(RunHandle {
+                event_tx: broadcast::channel(256).0,
+                cancel: placeholder_cancel.clone(),
+            });
+        }
     }
 
-    let ctx = AgentContext {
-        model: Arc::from(chat_model),
-        tools: Arc::new(tools::default_tools(PathBuf::from(&project.working_dir))),
-        pool: state.pool.clone(),
-        system_prompt: system_prompt(&PathBuf::from(&project.working_dir)),
+    let conversation = conv_db::get_conversation(&state.pool, &id)
+        .await
+        .map_err(AppError::from)?
+        .ok_or_else(|| {
+            state.sessions.remove(&id);
+            AppError::NotFound("Conversation not found".into())
+        })?;
+
+    let project = project_db::get_project(&state.pool, &conversation.project_id)
+        .await
+        .map_err(|e| {
+            state.sessions.remove(&id);
+            AppError::from(e)
+        })?
+        .ok_or_else(|| {
+            state.sessions.remove(&id);
+            AppError::NotFound("Project not found".into())
+        })?;
+
+    // Read-only resumability probe: a dangling ToolCall OR a trailing
+    // unanswered user message both mean the last turn never completed.
+    // Nothing is persisted yet — an empty/answered conversation must 409
+    // regardless of provider state.
+    let dangling = match msg_db::find_dangling_tool_calls(&state.pool, &id).await {
+        Ok(d) => d,
+        Err(e) => {
+            state.sessions.remove(&id);
+            return Err(AppError::from(e));
+        }
+    };
+    let last_is_user = match msg_db::last_message_is_user(&state.pool, &id).await {
+        Ok(v) => v,
+        Err(e) => {
+            state.sessions.remove(&id);
+            return Err(AppError::from(e));
+        }
+    };
+    if dangling.is_empty() && !last_is_user {
+        state.sessions.remove(&id);
+        return Err(AppError::Conflict("Nothing to resume".into()));
+    }
+
+    // The resumed turn reuses the provider/model the conversation last ran
+    // with; there is no request body to carry a fresh spec. Resolved before
+    // the repair below: persisting placeholder rows and then failing to
+    // resolve would leave the conversation permanently unresumable (nothing
+    // dangling anymore, last message now a tool row → "Nothing to resume").
+    let provider_spec = match msg_db::get_last_provider_spec(&state.pool, &id).await {
+        Ok(Some((provider_id, model_id))) => format!("{provider_id}:{model_id}"),
+        Ok(None) => {
+            state.sessions.remove(&id);
+            return Err(AppError::BadRequest(
+                "Conversation has no recorded provider/model to resume with".into(),
+            ));
+        }
+        Err(e) => {
+            state.sessions.remove(&id);
+            return Err(AppError::from(e));
+        }
     };
 
-    let conv_id = id.clone();
-    let sessions = state.sessions.clone();
+    let (chat_model, _provider_id, _model_id) =
+        match resolve_model(&state, &provider_spec).await {
+            Ok(m) => m,
+            Err(e) => {
+                state.sessions.remove(&id);
+                return Err(e);
+            }
+        };
 
-    tokio::spawn(async move {
-        run_agent_loop(ctx, conv_id.clone(), messages, handle).await;
-        sessions.remove(&conv_id);
-    });
+    // Only now persist the repair (idempotent): placeholder ToolResults for
+    // the dangling calls found above.
+    if let Err(e) = msg_db::repair_dangling_tool_calls(&state.pool, &id).await {
+        state.sessions.remove(&id);
+        return Err(AppError::from(e));
+    }
 
-    let stream = BroadcastStream::new(rx).map(|e| match e {
-        Ok(e) => Ok::<_, Infallible>(
-            Event::default()
-                .json_data(&e)
-                .unwrap_or_else(|_| Event::default()),
-        ),
-        Err(_) => Ok(Event::default()),
-    });
+    // No new user message: the loop continues from the existing history.
+    let messages = match msg_db::load_messages_for_llm(&state.pool, &id).await {
+        Ok(m) => m,
+        Err(e) => {
+            state.sessions.remove(&id);
+            return Err(AppError::from(e));
+        }
+    };
 
-    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+    start_agent_run(&state, &id, &project, chat_model, messages)
 }
 
 #[utoipa::path(

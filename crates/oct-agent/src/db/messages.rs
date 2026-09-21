@@ -1,11 +1,13 @@
 use anyhow::Result;
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use sqlx::SqlitePool;
+use std::collections::HashSet;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use oct_llm_provider::core::{ContentPart, Message, Role};
+use oct_llm_provider::core::{ContentPart, Message, Role, ToolResult};
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, ToSchema)]
 pub struct StoredMessage {
@@ -138,6 +140,88 @@ pub async fn get_last_provider_spec(
             _ => None,
         }
     }))
+}
+
+/// Ids of assistant ToolCalls that have no matching ToolResult anywhere in
+/// the conversation — the persisted history of a run interrupted mid-tool
+/// (e.g. backend crash). Sending that history to a provider as-is is a
+/// protocol violation (400), so callers repair it via
+/// [`repair_dangling_tool_calls`] before building an LLM request.
+pub async fn find_dangling_tool_calls(
+    pool: &SqlitePool,
+    conversation_id: &str,
+) -> Result<Vec<String>> {
+    let stored = list_messages(pool, conversation_id).await?;
+    let mut call_ids: Vec<String> = Vec::new();
+    let mut answered: HashSet<String> = HashSet::new();
+    for msg in &stored {
+        // Unparseable rows (corrupt parts_json) can neither contribute calls
+        // nor answer them; skipping keeps repair additive instead of failing
+        // the whole request.
+        let Ok(parsed) = msg.to_message() else { continue };
+        for part in parsed.parts {
+            match part {
+                ContentPart::ToolCall(tc) => call_ids.push(tc.id),
+                ContentPart::ToolResult(tr) => {
+                    answered.insert(tr.call_id);
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(call_ids
+        .into_iter()
+        .filter(|id| !answered.contains(id))
+        .collect())
+}
+
+/// Placeholder content for a tool call whose execution was interrupted by a
+/// backend restart: the workspace state after the crash is unknown, so the
+/// model is told as much instead of a fabricated result.
+pub const INTERRUPTED_TOOL_RESULT_CONTENT: &str =
+    "工具执行被中断（后端重启），工作区状态未知。";
+
+/// Persist a synthetic error ToolResult for every dangling ToolCall (see
+/// [`find_dangling_tool_calls`]), mirroring what the cancel path writes for
+/// cancelled calls. Returns the repaired call ids. Idempotent: calls answered
+/// by a real tool message (including partially-completed parallel batches)
+/// are skipped.
+pub async fn repair_dangling_tool_calls(
+    pool: &SqlitePool,
+    conversation_id: &str,
+) -> Result<Vec<String>> {
+    let dangling = find_dangling_tool_calls(pool, conversation_id).await?;
+    for call_id in &dangling {
+        let placeholder = Message {
+            role: Role::Tool,
+            parts: vec![ContentPart::ToolResult(ToolResult {
+                call_id: call_id.clone(),
+                content: Value::String(INTERRUPTED_TOOL_RESULT_CONTENT.into()),
+                is_error: true,
+            })],
+        };
+        // details carry UI-only metadata ("执行被中断" title), never anything
+        // model-visible.
+        insert_message(
+            pool,
+            conversation_id,
+            &placeholder,
+            None,
+            None,
+            Some(&json!({ "title": "执行被中断" })),
+        )
+        .await?;
+    }
+    Ok(dangling)
+}
+
+/// Whether the conversation's last message (by ordering) is a user message —
+/// i.e. a turn was sent but never got any reply.
+pub async fn last_message_is_user(pool: &SqlitePool, conversation_id: &str) -> Result<bool> {
+    Ok(list_messages(pool, conversation_id)
+        .await?
+        .last()
+        .is_some_and(|m| m.role == "user"))
 }
 
 pub async fn update_message_usage(

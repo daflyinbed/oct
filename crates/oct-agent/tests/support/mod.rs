@@ -280,6 +280,9 @@ pub fn is_terminal(event: &AgentEvent) -> bool {
 pub struct TestApp {
     pub dir: tempfile::TempDir,
     pub base_url: String,
+    /// Handle onto the server's own database: lets tests seed persisted
+    /// state (e.g. an interrupted turn's dangling history) directly.
+    pub pool: sqlx::SqlitePool,
     http: reqwest::Client,
 }
 
@@ -290,7 +293,7 @@ impl TestApp {
         let pool = db::init_pool(&db_url).await.expect("init test database");
 
         let state = oct_agent::api::AppState {
-            pool,
+            pool: pool.clone(),
             registry: Arc::new(default_registry()),
             sessions: Arc::new(dashmap::DashMap::new()),
         };
@@ -307,6 +310,7 @@ impl TestApp {
         Self {
             dir,
             base_url: format!("http://127.0.0.1:{port}"),
+            pool,
             http: reqwest::Client::new(),
         }
     }
@@ -424,6 +428,20 @@ impl TestApp {
             .send()
             .await
             .expect("cancel request should not fail at transport level")
+    }
+
+    /// POST /api/conversations/{id}/resume; returns the response with headers
+    /// received but the SSE body NOT yet read (same contract as
+    /// [`Self::send_message`]).
+    pub async fn resume(&self, conv_id: &str) -> reqwest::Response {
+        self.http
+            .post(format!(
+                "{}/api/conversations/{conv_id}/resume",
+                self.base_url
+            ))
+            .send()
+            .await
+            .expect("resume request should not fail at transport level")
     }
 
     /// Drain an SSE response body and return the JSON payload of every

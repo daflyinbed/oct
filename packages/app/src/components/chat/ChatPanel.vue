@@ -12,6 +12,26 @@
       </div>
     </div>
 
+    <!-- 中断轮次的恢复提示条：悬空工具卡片 / 未获回答的 user 消息时出现 -->
+    <div v-if="resumable && !sending" class="flex-none px-7 pt-2.5">
+      <div
+        class="mx-auto max-w-[760px] flex items-center gap-2 border border-warning-6 rounded-[10px] bg-warning-1 px-3 py-2"
+      >
+        <i-lucide-rotate-ccw class="h-3.5 w-3.5 flex-none text-warning-10" />
+        <span class="min-w-0 flex-1 text-[12.5px] text-dim">
+          上一轮被中断，未得到回复
+        </span>
+        <button
+          type="button"
+          class="h-7 flex-none rounded-[7px] bg-warning-7 px-2.5 text-[12px] text-warning-10 font-medium control-focus transition-[filter] hover:brightness-110"
+          title="修复中断的工具调用并继续此轮"
+          @click="$emit('resume')"
+        >
+          恢复此轮
+        </button>
+      </div>
+    </div>
+
     <!-- 输入区：模型选择器内嵌在输入框内（Zed agent 面板的做法） -->
     <div class="flex-none px-7 pb-3.5 pt-2.5">
       <div
@@ -99,6 +119,8 @@ const props = defineProps<{
   messages: readonly DisplayMessage[];
   conversationId: string | null;
   sending: boolean;
+  /** 存在被中断的轮次（悬空工具卡片或未获回答的 user 消息）。 */
+  resumable: boolean;
   providers: readonly ProviderResponse[];
   selectedProviderId: string | null;
   selectedModelId: string | null;
@@ -106,6 +128,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   send: [content: string];
   stop: [];
+  resume: [];
   selectProvider: [providerId: string];
   selectModel: [modelId: string];
 }>();

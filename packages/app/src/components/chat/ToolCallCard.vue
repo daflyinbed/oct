@@ -15,7 +15,13 @@
     >
       <span
         class="h-3.5 w-3.5 flex-none"
-        :class="errorTone ? 'text-danger-10' : 'text-dim'"
+        :class="
+          errorTone
+            ? 'text-danger-10'
+            : interrupted
+              ? 'text-warning-10'
+              : 'text-dim'
+        "
       >
         <span class="block h-full w-full" :class="iconClass" />
       </span>
@@ -76,6 +82,12 @@
           v-else-if="part.status === 'running'"
           class="h-3.5 w-3.5 animate-spin text-accent-7"
         />
+        <!-- 已中断：后端崩溃等原因未拿到结果的调用，提示可恢复此轮 -->
+        <span
+          v-else-if="interrupted"
+          class="h-[16px] inline-flex items-center whitespace-nowrap rounded-full bg-warning-7 px-1.5 text-[10.5px] text-warning-10 font-medium leading-none"
+          >已中断</span
+        >
         <template v-else-if="open">
           <span
             v-for="chip in chips"
@@ -100,7 +112,13 @@
     <div
       v-if="open"
       class="min-w-0 border-t px-3 py-2 space-y-2"
-      :class="errorTone ? 'border-danger-6' : 'border-line-soft'"
+      :class="
+        errorTone
+          ? 'border-danger-6'
+          : interrupted
+            ? 'border-warning-6'
+            : 'border-line-soft'
+      "
     >
       <!-- 生成中：参数流式累积， pulsing cursor，不解析半截 JSON -->
       <div
@@ -260,10 +278,17 @@ const errorTone = computed(
   () => props.part.status === "done" && props.part.isError,
 );
 
-// 折叠时无边框卡片；展开后为带边框的完整卡片（出错时红色边框）
+const interrupted = computed(() => props.part.status === "interrupted");
+
+// 折叠时无边框卡片；展开后为带边框的完整卡片（出错红边、中断黄边）
 const frameClass = computed(() => {
   if (!open.value) return "";
-  return `rounded-[10px] border bg-panel ${errorTone.value ? "border-danger-6" : "border-line-soft"}`;
+  const border = errorTone.value
+    ? "border-danger-6"
+    : interrupted.value
+      ? "border-warning-6"
+      : "border-line-soft";
+  return `rounded-[10px] border bg-panel ${border}`;
 });
 
 // --- details 徽标 -----------------------------------------------------------

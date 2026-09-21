@@ -9,6 +9,8 @@ mod support;
 
 use serde_json::Value;
 
+use oct_agent::db::messages as msg_db;
+use oct_llm_provider::core::{ContentPart, Message, Role, ToolCall};
 use support::TestApp;
 use support::llm::{self, LlmTurn, finish_chunk, text_chunk, tool_call_chunk};
 
@@ -33,6 +35,41 @@ async fn stored_messages(app: &TestApp, conv_id: &str) -> Vec<Value> {
         .await;
     assert_eq!(resp.status(), 200);
     resp.json::<Vec<Value>>().await.expect("messages json")
+}
+
+/// Persist the state a backend crash leaves behind: an assistant message
+/// with a ToolCall whose tool result was never written (and the user turn
+/// that asked for it, recording the provider so resume can re-resolve it).
+async fn seed_dangling_tool_call(app: &TestApp, conv_id: &str) {
+    msg_db::insert_message(
+        &app.pool,
+        conv_id,
+        &Message::text(Role::User, "run it"),
+        Some("mock-llm"),
+        Some("test-model"),
+        None,
+    )
+    .await
+    .expect("seed user message");
+
+    let assistant = Message {
+        role: Role::Assistant,
+        parts: vec![ContentPart::ToolCall(ToolCall {
+            id: "call-1".to_string(),
+            name: "read_file".to_string(),
+            arguments: r#"{"path":"a.txt"}"#.to_string(),
+        })],
+    };
+    msg_db::insert_message(
+        &app.pool,
+        conv_id,
+        &assistant,
+        Some("mock-llm"),
+        Some("test-model"),
+        None,
+    )
+    .await
+    .expect("seed dangling assistant message");
 }
 
 // --- CRUD --------------------------------------------------------------------
@@ -337,4 +374,171 @@ async fn chat_surfaces_llm_failure_as_error_event() {
     let last = events.last().expect("at least one event");
     assert_eq!(last["type"], "error");
     assert!(last["data"].as_str().unwrap().contains("LLM error"));
+}
+
+// --- Resume of interrupted turns ----------------------------------------------
+
+#[tokio::test]
+async fn resume_repairs_dangling_tool_call_and_streams_the_turn() {
+    let app = TestApp::new().await;
+    let llm_server = llm::spawn_llm_mock(vec![LlmTurn::Complete(vec![
+        text_chunk("已恢复"),
+        finish_chunk("stop"),
+    ])])
+    .await;
+    app.register_llm_provider(&llm_server).await;
+    let project_id = app.create_project().await;
+    let conv_id = app.create_conversation(&project_id).await;
+    seed_dangling_tool_call(&app, &conv_id).await;
+
+    let resp = app.resume(&conv_id).await;
+    assert_eq!(resp.status(), 200);
+    let events = app.read_sse(resp).await;
+
+    assert!(text_of(&events).contains("已恢复"));
+    assert_eq!(*event_types(&events).last().unwrap(), "finish");
+
+    // The placeholder tool row was persisted between the dangling call and
+    // the new assistant reply, carrying an error result + UI title.
+    let stored = stored_messages(&app, &conv_id).await;
+    let roles: Vec<&str> = stored.iter().map(|m| m["role"].as_str().unwrap()).collect();
+    assert_eq!(roles, vec!["user", "assistant", "tool", "assistant"]);
+    let tool_row = &stored[2];
+    let parts = tool_row["parts_json"].as_str().unwrap();
+    assert!(parts.contains("call-1"));
+    assert!(parts.contains("is_error\":true"));
+    assert!(
+        tool_row["details_json"]
+            .as_str()
+            .unwrap()
+            .contains("执行被中断")
+    );
+    assert!(stored[3]["parts_json"].as_str().unwrap().contains("已恢复"));
+
+    // The LLM request carried a legal conversation: the tool call is paired
+    // with a tool result, and no new user message was appended for a resume.
+    let llm_requests = llm_server.requests();
+    assert_eq!(llm_requests.len(), 1);
+    let msgs = llm_requests[0]["messages"].as_array().unwrap();
+    let roles: Vec<&str> = msgs.iter().map(|m| m["role"].as_str().unwrap()).collect();
+    assert_eq!(roles, vec!["system", "user", "assistant", "tool"]);
+    assert_eq!(msgs[3]["tool_call_id"], "call-1");
+}
+
+#[tokio::test]
+async fn send_message_repairs_dangling_history_before_calling_the_llm() {
+    let app = TestApp::new().await;
+    let llm_server = llm::spawn_llm_mock(vec![LlmTurn::Complete(vec![
+        text_chunk("done"),
+        finish_chunk("stop"),
+    ])])
+    .await;
+    app.register_llm_provider(&llm_server).await;
+    let project_id = app.create_project().await;
+    let conv_id = app.create_conversation(&project_id).await;
+    seed_dangling_tool_call(&app, &conv_id).await;
+
+    // Not resuming — just sending a new message must not hand the provider
+    // the dangling (illegal) history either.
+    let resp = app.send_message(&conv_id, "next question").await;
+    assert_eq!(resp.status(), 200);
+    let events = app.read_sse(resp).await;
+    assert_eq!(*event_types(&events).last().unwrap(), "finish");
+
+    let llm_requests = llm_server.requests();
+    assert_eq!(llm_requests.len(), 1);
+    let msgs = llm_requests[0]["messages"].as_array().unwrap();
+    let roles: Vec<&str> = msgs.iter().map(|m| m["role"].as_str().unwrap()).collect();
+    assert_eq!(
+        roles,
+        vec!["system", "user", "assistant", "tool", "user"]
+    );
+    let tool_message = &msgs[3];
+    assert_eq!(tool_message["tool_call_id"], "call-1");
+    assert!(
+        tool_message["content"]
+            .as_str()
+            .unwrap()
+            .contains("工具执行被中断")
+    );
+}
+
+#[tokio::test]
+async fn resume_conflicts_when_nothing_to_resume() {
+    let app = TestApp::new().await;
+    let llm_server = llm::spawn_llm_mock(vec![
+        LlmTurn::Complete(vec![text_chunk("ok"), finish_chunk("stop")]),
+        LlmTurn::Complete(vec![text_chunk("again"), finish_chunk("stop")]),
+    ])
+    .await;
+    app.register_llm_provider(&llm_server).await;
+    let project_id = app.create_project().await;
+    let conv_id = app.create_conversation(&project_id).await;
+
+    // Empty conversation: nothing to resume.
+    let resp = app.resume(&conv_id).await;
+    assert_eq!(resp.status(), 409);
+
+    // A fully answered conversation is not resumable either.
+    let resp = app.send_message(&conv_id, "hi").await;
+    assert_eq!(resp.status(), 200);
+    assert_eq!(*event_types(&app.read_sse(resp).await).last().unwrap(), "finish");
+    let resp = app.resume(&conv_id).await;
+    assert_eq!(resp.status(), 409);
+
+    // The rejected resumes did not leave the session stuck.
+    let resp = app.send_message(&conv_id, "again").await;
+    assert_eq!(resp.status(), 200);
+    assert_eq!(*event_types(&app.read_sse(resp).await).last().unwrap(), "finish");
+}
+
+#[tokio::test]
+async fn resume_conflicts_while_a_run_is_in_progress() {
+    let app = TestApp::new().await;
+    let llm_server = llm::spawn_llm_mock(vec![
+        LlmTurn::Hang(vec![text_chunk("part")]),
+        LlmTurn::Complete(vec![finish_chunk("stop")]),
+    ])
+    .await;
+    app.register_llm_provider(&llm_server).await;
+    let project_id = app.create_project().await;
+    let conv_id = app.create_conversation(&project_id).await;
+
+    // The history would be resumable (trailing unanswered user message), but
+    // a run is already live for the conversation.
+    let first = app.send_message(&conv_id, "slow one").await;
+    assert_eq!(first.status(), 200);
+    let resp = app.resume(&conv_id).await;
+    assert_eq!(resp.status(), 409);
+
+    // The live run is unaffected: cancel still ends it and frees the session.
+    let cancel = app.cancel(&conv_id).await;
+    assert_eq!(cancel.status(), 200);
+    let events = app.read_sse(first).await;
+    assert_eq!(*event_types(&events).last().unwrap(), "cancelled");
+}
+
+#[tokio::test]
+async fn resume_without_recorded_provider_spec_is_a_bad_request() {
+    let app = TestApp::new().await;
+    let llm_server = llm::spawn_llm_mock(vec![]).await;
+    app.register_llm_provider(&llm_server).await;
+    let project_id = app.create_project().await;
+    let conv_id = app.create_conversation(&project_id).await;
+
+    // Resumable history (trailing user message) but no provider/model ever
+    // recorded on any message.
+    msg_db::insert_message(
+        &app.pool,
+        &conv_id,
+        &Message::text(Role::User, "orphan turn"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("seed user message");
+
+    let resp = app.resume(&conv_id).await;
+    assert_eq!(resp.status(), 400);
 }

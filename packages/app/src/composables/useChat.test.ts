@@ -12,8 +12,15 @@ vi.mock("@/api/client", () => ({
 
 const GET = vi.mocked(client.GET);
 
-const { messages, sending, fetchMessages, sendMessage, clearMessages } =
-  useChat();
+const {
+  messages,
+  sending,
+  resumable,
+  fetchMessages,
+  sendMessage,
+  resumeTurn,
+  clearMessages,
+} = useChat();
 
 // ---------------------------------------------------------------------------
 // 测试数据构造
@@ -257,6 +264,36 @@ describe("fetchMessages 历史回放", () => {
     ]);
   });
 
+  it("悬空 ToolCall（无配对 ToolResult）渲染为 interrupted 状态", async () => {
+    GET.mockResolvedValue({
+      data: [
+        storedMessage("user", '[{"Text":"读一下"}]'),
+        storedMessage(
+          "assistant",
+          String.raw`[{"ToolCall":{"id":"c1","name":"read_file","arguments":"{\"path\":\"a.txt\"}"}}]`,
+        ),
+        // 同批已完成配对的调用不受影响
+        storedMessage(
+          "assistant",
+          String.raw`[{"ToolCall":{"id":"c2","name":"list_dir","arguments":"{}"}}]`,
+        ),
+        storedMessage(
+          "tool",
+          '[{"ToolResult":{"call_id":"c2","content":"ok","is_error":false}}]',
+        ),
+      ],
+    } as never);
+
+    await fetchMessages(nextConvId());
+
+    const cards = toolCards().sort((a, b) => a.callId.localeCompare(b.callId));
+    expect(cards).toHaveLength(2);
+    expect(cards[0]!.status).toBe("interrupted"); // c1：始终没等到结果
+    expect(cards[0]!.content).toBeNull();
+    expect(cards[1]!.status).toBe("done"); // c2：已配对
+    expect(cards[1]!.content).toBe("ok");
+  });
+
   it("请求失败时保持现有消息不变", async () => {
     GET.mockResolvedValue({ data: undefined, error: {} } as never);
     await fetchMessages(nextConvId());
@@ -497,5 +534,209 @@ describe("sendMessage 实时流", () => {
     );
     expect(kept).toBe(32768);
     expect(card.liveOutput.droppedChars).toBe(40 * 1024 - 32768);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 中断恢复（resumable / resumeTurn）
+// ---------------------------------------------------------------------------
+
+describe("中断恢复", () => {
+  function stubFetch(...responses: Response[]) {
+    const fetchMock = vi.fn();
+    for (const r of responses) fetchMock.mockResolvedValueOnce(r);
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  /** 带悬空 ToolCall 的历史（后端崩溃后留下的形状）。 */
+  function danglingHistory() {
+    return [
+      storedMessage("user", '[{"Text":"读一下"}]'),
+      storedMessage(
+        "assistant",
+        String.raw`[{"ToolCall":{"id":"c1","name":"read_file","arguments":"{\"path\":\"a.txt\"}"}}]`,
+      ),
+    ];
+  }
+
+  it("resumable：悬空卡片或最后一条是 user 时为真", async () => {
+    // 完整问答：不可恢复
+    GET.mockResolvedValue({
+      data: [
+        storedMessage("user", '[{"Text":"问"}]'),
+        storedMessage("assistant", '[{"Text":"答"}]'),
+      ],
+    } as never);
+    await fetchMessages(nextConvId());
+    expect(resumable.value).toBe(false);
+
+    // 悬空工具卡片：可恢复
+    GET.mockResolvedValue({ data: danglingHistory() } as never);
+    await fetchMessages(nextConvId());
+    expect(resumable.value).toBe(true);
+
+    // 最后一条是 user（发了没得到回答）：可恢复
+    GET.mockResolvedValue({
+      data: [
+        storedMessage("user", '[{"Text":"问"}]'),
+        storedMessage("assistant", '[{"Text":"答"}]'),
+        storedMessage("user", '[{"Text":"追问"}]'),
+      ],
+    } as never);
+    await fetchMessages(nextConvId());
+    expect(resumable.value).toBe(true);
+
+    // 空会话：不可恢复
+    GET.mockResolvedValue({ data: [] } as never);
+    await fetchMessages(nextConvId());
+    expect(resumable.value).toBe(false);
+  });
+
+  it("resumeTurn：先拉取占位行，再消费 SSE，终态静默刷新", async () => {
+    const fetchMock = stubFetch(sse([textDelta("续答"), finishEvent]));
+
+    // 第一次 GET（恢复后拿占位 tool 行）：悬空历史；
+    // 第二次 GET（终态刷新）：后端已持久化 assistant 回复
+    GET.mockResolvedValueOnce({
+      data: danglingHistory(),
+    } as never);
+    GET.mockResolvedValueOnce({
+      data: [
+        ...danglingHistory(),
+        storedMessage(
+          "tool",
+          '[{"ToolResult":{"call_id":"c1","content":"工具执行被中断（后端重启），工作区状态未知。","is_error":true}}]',
+        ),
+        storedMessage("assistant", '[{"Text":"续答"}]'),
+      ],
+    } as never);
+
+    const conv = nextConvId();
+    await resumeTurn(conv);
+
+    // POST 到 resume 端点，不携带请求体
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe(`/api/conversations/${conv}/resume`);
+    expect(init).toEqual({ method: "POST" });
+
+    // 两次 GET：占位行拉取 + 终态刷新
+    expect(GET).toHaveBeenCalledTimes(2);
+
+    // 终态来自服务端刷新：占位结果回填了悬空卡片，回复也在，不再可恢复
+    expect(GET.mock.calls[1]?.[0]).toBe("/api/conversations/{id}/messages");
+    const card = toolCards()[0]!;
+    expect(card.status).toBe("done");
+    expect(card.isError).toBe(true);
+    expect(card.content).toContain("工具执行被中断");
+    expect(messages.value.at(-1)?.parts).toEqual([
+      { kind: "text", text: "续答" },
+    ]);
+    // 终态消息来自历史刷新，不在流式态
+    expect(messages.value.at(-1)?.isStreaming).toBeFalsy();
+    expect(resumable.value).toBe(false);
+    expect(sending.value).toBe(false);
+  });
+
+  it("sendMessage：发送前有中断卡片时，结束后刷新历史回填占位结果", async () => {
+    const conv = nextConvId();
+    // 初始视图带悬空工具卡片（后端 send 时会顺带修复并落占位行）
+    GET.mockResolvedValueOnce({ data: danglingHistory() } as never);
+    await fetchMessages(conv);
+    expect(toolCards()[0]!.status).toBe("interrupted");
+
+    stubFetch(sse([textDelta("新答"), finishEvent]));
+    // 终态刷新：占位 tool 行与新的问答都已持久化
+    GET.mockResolvedValueOnce({
+      data: [
+        ...danglingHistory(),
+        storedMessage(
+          "tool",
+          '[{"ToolResult":{"call_id":"c1","content":"工具执行被中断（后端重启），工作区状态未知。","is_error":true}}]',
+        ),
+        storedMessage("user", '[{"Text":"继续"}]'),
+        storedMessage("assistant", '[{"Text":"新答"}]'),
+      ],
+    } as never);
+
+    await sendMessage(conv, "继续");
+
+    // 初始加载 + 终态刷新共两次 GET；中断卡片被占位结果回填，不再可恢复
+    expect(GET).toHaveBeenCalledTimes(2);
+    const card = toolCards()[0]!;
+    expect(card.status).toBe("done");
+    expect(card.isError).toBe(true);
+    expect(resumable.value).toBe(false);
+  });
+
+  it("resumeTurn：流式进行中切走会话，收尾刷新不覆盖当前视图", async () => {
+    // 可暂停的 SSE：读取先挂起，等切换会话后再放行收尾
+    const encoder = new TextEncoder();
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        streamController = c;
+      },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValueOnce(
+        new Response(stream, {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        }),
+      ),
+    );
+
+    const convA = nextConvId();
+    // resume 成功后的占位行拉取
+    GET.mockResolvedValueOnce({ data: danglingHistory() } as never);
+    const resumePromise = resumeTurn(convA);
+    // 占位行拉取完成、流式消息已建立（读取挂起中）
+    await vi.waitFor(() =>
+      expect(messages.value.some((m) => m.id.startsWith("resumed-"))).toBe(
+        true,
+      ),
+    );
+
+    // 切换到会话 B
+    const convB = nextConvId();
+    GET.mockResolvedValueOnce({
+      data: [storedMessage("user", '[{"Text":"B会话"}]')],
+    } as never);
+    await fetchMessages(convB);
+
+    // 放行 A 的流并结束
+    streamController.enqueue(
+      encoder.encode(`data: ${JSON.stringify(textDelta("续答"))}\n\n`),
+    );
+    streamController.enqueue(
+      encoder.encode(`data: ${JSON.stringify(finishEvent)}\n\n`),
+    );
+    streamController.close();
+    await resumePromise;
+
+    // 视图仍是 B：收尾刷新被会话守卫拦下（A 的重拉由路由 watch 负责）
+    expect(messages.value.map((m) => m.role)).toEqual(["user"]);
+    expect(messages.value[0]!.parts).toEqual([{ kind: "text", text: "B会话" }]);
+    expect(GET).toHaveBeenCalledTimes(2); // A 占位行 + B 切换加载
+    expect(sending.value).toBe(false);
+  });
+
+  it("resumeTurn：409 等错误不追加消息、不悬挂 sending，仍刷新历史", async () => {
+    stubFetch(new Response("conflict", { status: 409 }));
+    GET.mockResolvedValue({ data: danglingHistory() } as never);
+
+    // 先建立视图（恢复按钮只在会话展示时出现），否则收尾刷新的会话
+    // 守卫不生效
+    const conv = nextConvId();
+    await fetchMessages(conv);
+    await resumeTurn(conv);
+
+    // 初始加载 + 失败路径的终态刷新共两次 GET；不追加 streaming 消息
+    expect(GET).toHaveBeenCalledTimes(2);
+    expect(messages.value.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(toolCards()[0]!.status).toBe("interrupted");
+    expect(sending.value).toBe(false);
   });
 });
