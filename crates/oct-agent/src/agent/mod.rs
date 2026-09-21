@@ -1,6 +1,7 @@
 pub mod events;
 pub mod loop_runner;
 pub mod prompt;
+pub mod title;
 
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -69,6 +70,15 @@ pub enum AgentEvent {
 
     #[serde(rename = "finish")]
     Finish,
+
+    /// The background title task (see [`title`]) landed an auto-generated
+    /// conversation title. Published on the run's hub — not by the agent loop
+    /// — so live subscribers and reconnecting replays both see it; handling
+    /// must be idempotent (a replay delivers it again). Conversation
+    /// metadata, not message content: consumers update the conversation
+    /// list, not the message stream.
+    #[serde(rename = "title_updated")]
+    TitleUpdated { title: String },
 
     #[serde(rename = "cancelled")]
     Cancelled,

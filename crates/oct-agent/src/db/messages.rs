@@ -114,6 +114,23 @@ pub async fn list_messages(
     Ok(rows)
 }
 
+/// How many user messages the conversation already holds. Title generation
+/// uses this as its one-shot guard: it only ever fires on the FIRST user
+/// message, so a failed attempt is never retried on later turns.
+pub async fn count_user_messages(
+    pool: &SqlitePool,
+    conversation_id: &str,
+) -> Result<i64> {
+    let count = sqlx::query_scalar!(
+        "SELECT COUNT(*) FROM messages WHERE conversation_id = $1 AND role = 'user'",
+        conversation_id
+    )
+    .fetch_one(pool)
+    .await?;
+
+    Ok(count)
+}
+
 pub async fn load_messages_for_llm(
     pool: &SqlitePool,
     conversation_id: &str,

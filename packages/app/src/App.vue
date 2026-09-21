@@ -148,7 +148,7 @@
 
 <script setup lang="ts">
 import { SplitterGroup, SplitterPanel, SplitterResizeHandle } from "reka-ui";
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onScopeDispose, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import BottomBar from "@/components/BottomBar.vue";
 import DiffPanel from "@/components/diff/DiffPanel.vue";
@@ -160,7 +160,7 @@ import ProjectSidebar from "@/components/sidebar/ProjectSidebar.vue";
 import DiffTabView from "@/components/views/DiffTabView.vue";
 import FileTabView from "@/components/views/FileTabView.vue";
 import GitGraphTabView from "@/components/views/GitGraphTabView.vue";
-import { useChat } from "@/composables/useChat";
+import { onTitleUpdated, useChat } from "@/composables/useChat";
 import { useProjects } from "@/composables/useProjects";
 import { useProviders } from "@/composables/useProviders";
 import { useTabs } from "@/composables/useTabs";
@@ -169,10 +169,25 @@ import type { TabAction } from "@/components/layout/WorkspaceTabBar.vue";
 const route = useRoute();
 const router = useRouter();
 
-const { projects, conversations, fetchProjects, createConversation } =
-  useProjects();
+const {
+  projects,
+  conversations,
+  fetchProjects,
+  createConversation,
+  updateConversationTitle,
+} = useProjects();
 const { fetchProviders } = useProviders();
 const { sending, fetchMessages, attachRun } = useChat();
+
+// 后台标题生成落地 → 会话列表/标签页标题即时跟上（title_updated 是会话
+// 元数据事件，useChat 在 SSE 消费层派发；重连重放会重复到达，覆盖即幂等）。
+// 随组件作用域销毁退订：生产环境 App 只挂载一次，e2e 里每次挂载新 App 时
+// 不残留上一轮的监听器。
+onScopeDispose(
+  onTitleUpdated((conversationId, title) => {
+    updateConversationTitle(conversationId, title);
+  }),
+);
 const {
   tabs,
   activeTab,

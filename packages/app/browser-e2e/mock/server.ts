@@ -338,6 +338,8 @@ async function handleApi(
         id: queued ?? `c-auto-${++state.autoId}`,
         project_id: pid,
         title: body?.title ?? null,
+        // 与 schema.d.ts 对齐：显式命名即 user 来源，未命名为 default。
+        title_source: body?.title ? "user" : "default",
         created_at: nowIso(),
         updated_at: nowIso(),
       };

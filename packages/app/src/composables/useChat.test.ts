@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import client from "@/api/client";
-import { useChat } from "@/composables/useChat";
+import { onTitleUpdated, useChat } from "@/composables/useChat";
 
 import type { ReasoningPart, ToolCallPart } from "@/composables/useChat";
 import type { DeepReadonly } from "vue";
@@ -1002,4 +1002,94 @@ describe("attachRun 重连重放", () => {
     expect(GET).toHaveBeenCalledTimes(3); // A 初始 + A 探测 + B 切换（A 收尾刷新被拦）
     expect(sending.value).toBe(false);
   });
+});
+
+// ---------------------------------------------------------------------------
+// title_updated：会话元数据事件 → 监听器派发（不进消息 reducer）
+// ---------------------------------------------------------------------------
+
+describe("title_updated 事件派发", () => {
+  const titleUpdated = (title: string) => ({
+    type: "title_updated",
+    data: { title },
+  });
+
+  it("在 SSE 消费层派发给监听器，携带会话 id 与新标题", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          sse([textDelta("ok"), titleUpdated("修复登录按钮"), finishEvent]),
+        ),
+    );
+
+    const seen: Array<[string, string]> = [];
+    const unsubscribe = onTitleUpdated((conversationId, title) => {
+      seen.push([conversationId, title]);
+    });
+
+    const convId = nextConvId();
+    await sendMessage(convId, "hi");
+
+    expect(seen).toEqual([[convId, "修复登录按钮"]]);
+    // 元数据事件不产生消息内容
+    expect(
+      messages.value.some((m) =>
+        m.parts.some(
+          (p) => p.kind === "text" && p.text.includes("修复登录按钮"),
+        ),
+      ),
+    ).toBe(false);
+
+    unsubscribe();
+  });
+
+  it("取消订阅后不再收到事件；未命中监听器静默", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(sse([titleUpdated("无人在听"), finishEvent])),
+    );
+
+    const seen: string[] = [];
+    const unsubscribe = onTitleUpdated((_id, title) => seen.push(title));
+    unsubscribe();
+
+    await sendMessage(nextConvId(), "hi");
+    expect(seen).toEqual([]);
+  });
+});
+
+it("视图停留在其他会话时派发不受影响（侧栏更新不依赖当前视图）", async () => {
+  // 先加载会话 B，让 activeConversationId 指向 B。
+  GET.mockResolvedValueOnce({
+    data: [storedMessage("user", '[{"Text":"B会话"}]', { id: "b1" })],
+    error: undefined,
+  });
+  await fetchMessages("conv-view-b");
+
+  // A 上发消息（不切视图），流中带来 A 的 title_updated。
+  vi.stubGlobal(
+    "fetch",
+    vi
+      .fn()
+      .mockResolvedValue(
+        sse([
+          { type: "title_updated", data: { title: "A 的新标题" } },
+          finishEvent,
+        ]),
+      ),
+  );
+  const seen: Array<[string, string]> = [];
+  const unsubscribe = onTitleUpdated((conversationId, title) => {
+    seen.push([conversationId, title]);
+  });
+
+  await sendMessage("conv-a", "hi");
+
+  expect(seen).toEqual([["conv-a", "A 的新标题"]]);
+  // 视图仍停留在 B：A 的历史从未被拉取（GET 只有加载 B 那一次）。
+  expect(GET).toHaveBeenCalledTimes(1);
+
+  unsubscribe();
 });

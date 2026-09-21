@@ -80,6 +80,24 @@ const messages = ref<DisplayMessage[]>([]);
 const sending = ref(false);
 
 /**
+ * title_updated 事件监听器。标题是会话元数据而非消息内容：在 SSE 消费层
+ * 拦截后直接派发给宿主（App.vue 接线到 useProjects 的会话列表），不进
+ * applyStreamEvent 的消息 reducer，也不受"视图是否停留本会话"的守卫影响
+ * ——侧栏里其他会话的标题更新同样要反映出来。
+ */
+const titleListeners = new Set<
+  (conversationId: string, title: string) => void
+>();
+
+/** 订阅 title_updated 事件；返回取消订阅函数。 */
+export function onTitleUpdated(
+  listener: (conversationId: string, title: string) => void,
+): () => void {
+  titleListeners.add(listener);
+  return () => titleListeners.delete(listener);
+}
+
+/**
  * Dedupe guard: the route watch in [id].vue and the tab-return refresh in
  * App.vue can fire for the same conversation within one tick (sidebar
  * switch while a non-chat tab is active); collapse repeats into one request.
@@ -590,11 +608,13 @@ function applyStreamEvent(event: AgentEvent) {
 
 /**
  * 读取一个 SSE Response 直到流 EOF，把每个 data: 事件交给回调（默认
- * applyStreamEvent；attachRun 借此拦截 run_meta）。网络分片可能在任意
+ * applyStreamEvent；attachRun 借此拦截 run_meta）。title_updated 是会话
+ * 元数据更新，在此直接派发给监听器、不进回调。网络分片可能在任意
  * 字节边界断开（含 data: 前缀与 JSON 中间），逐行缓冲解析。
  */
 async function consumeSseStream(
   res: Response,
+  conversationId: string,
   onEvent: (event: AgentEvent) => void = applyStreamEvent,
 ): Promise<void> {
   const reader = res.body!.getReader();
@@ -614,12 +634,22 @@ async function consumeSseStream(
       const payload = line.slice(6).trim();
       if (payload === "[DONE]") continue;
 
+      let event: AgentEvent;
       try {
-        const event: AgentEvent = JSON.parse(payload);
-        onEvent(event);
+        event = JSON.parse(payload);
       } catch {
         // skip malformed SSE
+        continue;
       }
+      if (event.type === "title_updated") {
+        // 派发放在 parse 的 try 之外：监听器异常不该被当成坏帧吞掉，
+        // 也不该中断其余监听器收到本事件。
+        for (const listener of titleListeners) {
+          listener(conversationId, event.data.title);
+        }
+        continue;
+      }
+      onEvent(event);
     }
   }
 }
@@ -697,7 +727,7 @@ export function useChat() {
         throw new Error(`HTTP ${res.status}`);
       }
 
-      await consumeSseStream(res);
+      await consumeSseStream(res, conversationId);
     } catch {
       if (streamState) {
         streamState.parts.push({
@@ -755,7 +785,7 @@ export function useChat() {
       streamState = { messageId: assistantId, parts: [], isStreaming: true };
       startFlushing();
 
-      await consumeSseStream(res);
+      await consumeSseStream(res, conversationId);
     } catch {
       if (streamState) {
         streamState.parts.push({
@@ -839,7 +869,7 @@ export function useChat() {
         startFlushing();
       };
 
-      await consumeSseStream(res, (event) => {
+      await consumeSseStream(res, conversationId, (event) => {
         // 会话守卫：切走后（activeConversationId 已变）本流的事件不再进
         // 视图——尤其截断会改写 messages，绝不能落在别的会话头上。收尾
         // 刷新同样被守卫拦下，旧会话的重拉由路由 watch 负责。

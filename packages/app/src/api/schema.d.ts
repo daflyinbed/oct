@@ -327,6 +327,20 @@ export interface components {
             /** @enum {string} */
             type: "finish";
         } | {
+            /**
+             * @description The background title task (see [`title`]) landed an auto-generated
+             *     conversation title. Published on the run's hub — not by the agent loop
+             *     — so live subscribers and reconnecting replays both see it; handling
+             *     must be idempotent (a replay delivers it again). Conversation
+             *     metadata, not message content: consumers update the conversation
+             *     list, not the message stream.
+             */
+            data: {
+                title: string;
+            };
+            /** @enum {string} */
+            type: "title_updated";
+        } | {
             /** @enum {string} */
             type: "cancelled";
         } | {
@@ -353,6 +367,13 @@ export interface components {
             id: string;
             project_id: string;
             title: string;
+            /**
+             * @description Where `title` came from: `default` (untitled placeholder), `ai`
+             *     (auto-generated), `user` (explicitly set via API). Manual names must
+             *     win over automatic ones, so the distinction is data, not string
+             *     matching on the default title.
+             */
+            title_source: string;
             /** Format: date-time */
             updated_at: string;
         };

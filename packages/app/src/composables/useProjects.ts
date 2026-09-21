@@ -80,6 +80,25 @@ export function useProjects() {
     }
   };
 
+  /**
+   * 本地更新某个会话的标题（title_updated 事件到达时）。后端保证手动命名
+   * 永不被自动标题覆盖，所以这里无条件覆盖即可。不命中任何列表则忽略——
+   * 该会话尚未在侧栏加载，下次 fetchConversations 自然带上新标题。
+   */
+  const updateConversationTitle = (conversationId: string, title: string) => {
+    for (const [projectId, list] of conversations.value) {
+      const index = list.findIndex((c) => c.id === conversationId);
+      if (index !== -1) {
+        const next = [...list];
+        // title_source 一并补上：来源字段的价值在数据里，不留"default 配 AI
+        // 标题"的矛盾状态（当前无读取方，但保持与后端落库结果一致）。
+        next[index] = { ...next[index]!, title, title_source: "ai" };
+        conversations.value = new Map(conversations.value).set(projectId, next);
+        return;
+      }
+    }
+  };
+
   return {
     projects: readonly(projects),
     conversations: readonly(conversations),
@@ -89,5 +108,6 @@ export function useProjects() {
     createProject,
     createConversation,
     deleteConversation,
+    updateConversationTitle,
   };
 }

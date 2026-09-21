@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE conversations SET title = $1, title_source = 'ai' WHERE id = $2 AND title_source = 'default'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "2db38500a0943077e6450b7b2829bf059eb6632a5486d251f81e834856678c74"
+}

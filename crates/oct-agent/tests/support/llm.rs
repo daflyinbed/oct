@@ -55,9 +55,21 @@ pub fn gate() -> (watch::Sender<bool>, watch::Receiver<bool>) {
     watch::channel(false)
 }
 
+/// One scripted response for a NON-streaming call (the background title
+/// generation task's `generate()` request). Routed by request shape: the
+/// agent loop always streams (`stream: true`), the title call never does.
+pub enum TitleTurn {
+    /// 200 with this string as the assistant message content.
+    Text(String),
+    /// Respond with this HTTP status instead of a completion.
+    Fail(u16),
+}
+
 struct LlmMockState {
-    /// One turn popped per incoming request.
+    /// One turn popped per incoming STREAMING request.
     turns: Mutex<VecDeque<LlmTurn>>,
+    /// One turn popped per incoming NON-streaming request.
+    title_turns: Mutex<VecDeque<TitleTurn>>,
     /// Captured request bodies, in arrival order.
     requests: Mutex<Vec<Value>>,
 }
@@ -70,6 +82,14 @@ pub struct LlmMock {
 }
 
 impl LlmMock {
+    /// Queue scripted responses for non-streaming (title-generation) calls,
+    /// consumed in order. A non-streaming request with an empty queue gets a
+    /// 500 — tests that never trigger title generation never see it, and
+    /// ones that do script the outcome explicitly.
+    pub fn push_title_turns(&self, turns: impl IntoIterator<Item = TitleTurn>) {
+        self.state.title_turns.lock().unwrap().extend(turns);
+    }
+
     /// Request bodies the agent sent, in arrival order.
     pub fn requests(&self) -> Vec<Value> {
         self.state.requests.lock().unwrap().clone()
@@ -79,6 +99,7 @@ impl LlmMock {
 pub async fn spawn_llm_mock(turns: Vec<LlmTurn>) -> LlmMock {
     let state = Arc::new(LlmMockState {
         turns: Mutex::new(turns.into()),
+        title_turns: Mutex::new(VecDeque::new()),
         requests: Mutex::new(Vec::new()),
     });
     let app = Router::new()
@@ -103,7 +124,35 @@ async fn chat_completions(
     State(state): State<Arc<LlmMockState>>,
     Json(body): Json<Value>,
 ) -> Response {
-    state.requests.lock().unwrap().push(body);
+    state.requests.lock().unwrap().push(body.clone());
+
+    // Non-streaming requests are the background title generation (the agent
+    // loop always streams). Serve them from the title queue as plain
+    // chat.completion JSON.
+    if body.get("stream") != Some(&json!(true)) {
+        return match state.title_turns.lock().unwrap().pop_front() {
+            None => (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "no scripted title turns",
+            )
+                .into_response(),
+            Some(TitleTurn::Fail(status)) => (
+                axum::http::StatusCode::from_u16(status).unwrap(),
+                "scripted title failure",
+            )
+                .into_response(),
+            Some(TitleTurn::Text(content)) => Json(json!({
+                "id": "chatcmpl-mock-title",
+                "object": "chat.completion",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": content},
+                    "finish_reason": "stop",
+                }],
+            }))
+            .into_response(),
+        };
+    }
 
     let turn = state.turns.lock().unwrap().pop_front();
     match turn {

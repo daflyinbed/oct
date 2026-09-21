@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, project_id, title, created_at, updated_at FROM conversations WHERE project_id = $1 ORDER BY updated_at DESC",
+  "query": "SELECT id, project_id, title, title_source, created_at, updated_at FROM conversations WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -19,13 +19,18 @@
         "type_info": "Text"
       },
       {
-        "name": "created_at",
+        "name": "title_source",
         "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 4,
         "type_info": "Datetime"
       },
       {
         "name": "updated_at",
-        "ordinal": 4,
+        "ordinal": 5,
         "type_info": "Datetime"
       }
     ],
@@ -37,8 +42,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "c692de9d9ba32077c256fdcb6034e52dd4df4f3cbcae5565afc29f583b52bd83"
+  "hash": "e08a1ba600ca7f20d8a331cee2b6a1484d65ac5addf036dc6f39e19c68b7c61f"
 }

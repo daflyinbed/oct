@@ -32,6 +32,7 @@ export function conversationFixture(
     id,
     project_id: projectId,
     title,
+    title_source: "default",
     created_at: T0,
     updated_at: T0,
   };
@@ -157,3 +158,11 @@ export function toolResult(
 export const finishEvent = (): AgentEvent => ({ type: "finish" });
 
 export const cancelledEvent = (): AgentEvent => ({ type: "cancelled" });
+
+/** 后台标题生成落地事件（会话元数据，消费层直接派发，不进消息 reducer）。 */
+export function titleUpdated(title: string): AgentEvent {
+  return {
+    type: "title_updated",
+    data: { title },
+  };
+}

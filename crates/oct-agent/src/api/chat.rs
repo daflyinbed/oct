@@ -12,11 +12,13 @@ use tokio_util::sync::CancellationToken;
 use utoipa::ToSchema;
 
 use oct_llm_provider::core::{Message, Role};
+use tracing::debug;
 
 use super::AppState;
 use super::error::{AppError, ApiResult};
 use crate::agent::loop_runner::run_agent_loop;
 use crate::agent::prompt::system_prompt;
+use crate::agent::title;
 use crate::agent::{AgentContext, AgentEvent, EventHub, RunHandle};
 use crate::db::{conversations as conv_db, messages as msg_db, providers as provider_db, projects as project_db};
 use crate::tools;
@@ -243,6 +245,39 @@ pub async fn send_message(
             return Err(AppError::from(e));
         }
     };
+
+    // One-shot title generation: an independent background task firing
+    // alongside the run (never inside it). Guards: the conversation still
+    // carries its default title, and the user message just persisted is its
+    // first — a failed attempt is not retried on later turns. Spawned only
+    // after every fallible step has succeeded, so an aborted send never
+    // burns the one-shot on a message that was never stored. The weak hub
+    // reference keeps a slow title call from delaying SSE EOF past the
+    // run's end.
+    if conversation.title_source == "default"
+        && matches!(msg_db::count_user_messages(&state.pool, &id).await, Ok(1))
+    {
+        let hub = state
+            .sessions
+            .get(&id)
+            .map(|entry| Arc::downgrade(&entry.value().hub));
+        match resolve_model(&state, &req.provider_spec).await {
+            Ok((model, _, _)) => {
+                if let Some(hub) = hub {
+                    title::spawn(title::TitleJob {
+                        model,
+                        pool: state.pool.clone(),
+                        conversation_id: id.clone(),
+                        first_user_content: req.content.clone(),
+                        hub,
+                    });
+                }
+            }
+            // The run's own resolution succeeded above, so this is exotic
+            // (e.g. the provider row vanished between calls) — skip quietly.
+            Err(e) => debug!("skipping title generation: {e}"),
+        }
+    }
 
     start_agent_run(&state, &id, &project, chat_model, messages)
 }

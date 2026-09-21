@@ -740,3 +740,194 @@ async fn reconnect_stream_receives_cancelled() {
     let resp = app.run_status(&conv_id).await;
     assert_eq!(resp.json::<Value>().await.unwrap()["running"], false);
 }
+
+// --- Title generation (background, one-shot) ----------------------------------
+
+/// POST a conversation WITHOUT a title — the state title generation fires
+/// for (an explicit title marks the row user-named and skips generation).
+async fn create_untitled_conversation(app: &TestApp, project_id: &str) -> String {
+    let resp = app
+        .post_json(
+            &format!("/api/projects/{project_id}/conversations"),
+            serde_json::json!({"title": null}),
+        )
+        .await;
+    assert_eq!(resp.status(), 201);
+    let conv: Value = resp.json().await.expect("conversation json");
+    assert_eq!(conv["title"], "New conversation");
+    assert_eq!(conv["title_source"], "default");
+    conv["id"].as_str().expect("conversation id").to_string()
+}
+
+async fn get_conversation(app: &TestApp, project_id: &str, conv_id: &str) -> Value {
+    let resp = app
+        .get_json(&format!("/api/projects/{project_id}/conversations/{conv_id}"))
+        .await;
+    assert_eq!(resp.status(), 200);
+    resp.json().await.expect("conversation json")
+}
+
+/// Bounded poll of the conversation row until `pred` holds. The title task
+/// is a detached background job with no test-visible channel, so its only
+/// observable effects are the row and (when the run still lives) the SSE
+/// stream.
+async fn wait_conversation(
+    app: &TestApp,
+    project_id: &str,
+    conv_id: &str,
+    pred: impl Fn(&Value) -> bool,
+) -> Value {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let conv = get_conversation(app, project_id, conv_id).await;
+        if pred(&conv) {
+            return conv;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for conversation state, last: {conv}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn first_message_generates_title_and_streams_event() {
+    let app = TestApp::new().await;
+    let (gate_tx, gate_rx) = llm::gate();
+    // The run parks mid-stream so the title task is guaranteed to finish
+    // while the run's hub (and its SSE subscribers) is still alive.
+    let llm_server = llm::spawn_llm_mock(vec![
+        LlmTurn::Gated {
+            pre: vec![text_chunk("working")],
+            gate: gate_rx,
+            post: vec![finish_chunk("stop")],
+        },
+        // 第二轮(下方 one-shot 断言用)正常完成。
+        LlmTurn::Complete(vec![text_chunk("done"), finish_chunk("stop")]),
+    ])
+    .await;
+    llm_server
+        .push_title_turns([llm::TitleTurn::Text(
+            "  \"修复登录按钮\"  \n(unused second line)".to_string(),
+        )]);
+    app.register_llm_provider(&llm_server).await;
+    let project_id = app.create_project().await;
+    let conv_id = create_untitled_conversation(&app, &project_id).await;
+
+    let resp = app.send_message(&conv_id, "登录按钮坏了,帮我修一下").await;
+    assert_eq!(resp.status(), 200);
+    let mut stream = sse_payloads(resp);
+
+    // Title lands while the run is parked: quoted/multiline reply cleaned up.
+    let conv = wait_conversation(&app, &project_id, &conv_id, |c| c["title_source"] == "ai").await;
+    assert_eq!(conv["title"], "修复登录按钮");
+
+    // The published event is buffered on the already-open subscriber; drain
+    // until it appears, then release the run.
+    let mut saw_title_event = false;
+    let mut events = Vec::new();
+    while let Some(event) = next_event(&mut stream).await {
+        saw_title_event |= event["type"] == "title_updated"
+            && event["data"]["title"] == "修复登录按钮";
+        events.push(event);
+        if saw_title_event {
+            break;
+        }
+    }
+    assert!(saw_title_event, "title_updated must reach live subscribers");
+
+    gate_tx.send(true).unwrap();
+    while let Some(event) = next_event(&mut stream).await {
+        events.push(event);
+    }
+    assert_eq!(*event_types(&events).last().unwrap(), "finish");
+
+    // The title request was tool-less, two messages, capped output.
+    let title_request = llm_server
+        .requests()
+        .into_iter()
+        .find(|r| r.get("stream") != Some(&serde_json::json!(true)))
+        .expect("a non-streaming title request");
+    // An empty tool list is omitted from the wire request entirely.
+    assert!(title_request
+        .get("tools")
+        .is_none_or(|t| t.as_array().is_none_or(Vec::is_empty)));
+    assert_eq!(title_request["max_tokens"], 100);
+    let roles: Vec<&str> = title_request["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["role"].as_str().unwrap())
+        .collect();
+    assert_eq!(roles, vec!["system", "user"]);
+
+    // One-shot: a second message must not touch the title again.
+    let resp = app.send_message(&conv_id, "thanks").await;
+    assert_eq!(resp.status(), 200);
+    let _ = app.read_sse(resp).await;
+    let conv = get_conversation(&app, &project_id, &conv_id).await;
+    assert_eq!(conv["title"], "修复登录按钮");
+    assert_eq!(conv["title_source"], "ai");
+}
+
+#[tokio::test]
+async fn manual_rename_blocks_title_generation() {
+    let app = TestApp::new().await;
+    let llm_server = llm::spawn_llm_mock(vec![LlmTurn::Complete(vec![
+        text_chunk("ok"),
+        finish_chunk("stop"),
+    ])])
+    .await;
+    app.register_llm_provider(&llm_server).await;
+    let project_id = app.create_project().await;
+    let conv_id = create_untitled_conversation(&app, &project_id).await;
+
+    // Rename BEFORE the first message flips title_source to user.
+    let resp = app
+        .patch_json(
+            &format!("/api/projects/{project_id}/conversations/{conv_id}"),
+            serde_json::json!({"title": "我的名字"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 200);
+
+    let resp = app.send_message(&conv_id, "hi").await;
+    assert_eq!(resp.status(), 200);
+    let _ = app.read_sse(resp).await;
+
+    let conv = get_conversation(&app, &project_id, &conv_id).await;
+    assert_eq!(conv["title"], "我的名字");
+    assert_eq!(conv["title_source"], "user");
+    // No title request was made (only the run's streaming call).
+    assert_eq!(llm_server.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn title_failure_falls_back_to_first_message() {
+    let app = TestApp::new().await;
+    let llm_server = llm::spawn_llm_mock(vec![LlmTurn::Complete(vec![
+        text_chunk("done"),
+        finish_chunk("stop"),
+    ])])
+    .await;
+    llm_server.push_title_turns([llm::TitleTurn::Fail(500)]);
+    app.register_llm_provider(&llm_server).await;
+    let project_id = app.create_project().await;
+    let conv_id = create_untitled_conversation(&app, &project_id).await;
+
+    let long_content =
+        "这条用户消息故意写得超过五十个字符,这样回退标题就必须走截断分支并追加省略号,从而验证按字符边界截断的行为";
+    assert!(long_content.chars().count() > 50);
+    let resp = app.send_message(&conv_id, long_content).await;
+    assert_eq!(resp.status(), 200);
+    let _ = app.read_sse(resp).await;
+
+    // Fallback: whitespace-collapsed first message capped at 50 chars + ….
+    let conv = wait_conversation(&app, &project_id, &conv_id, |c| c["title_source"] == "ai").await;
+    let title = conv["title"].as_str().unwrap();
+    let chars: Vec<char> = title.chars().collect();
+    assert_eq!(chars.last(), Some(&'…'));
+    assert_eq!(chars.len(), 51);
+    assert!(title.starts_with("这条用户消息故意写得超过五十个字符"));
+}
