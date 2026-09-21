@@ -7,3 +7,6 @@ packages/*/dist
 packages/oct-design
 .zcode/
 .vitest/
+# docs/ 下只保留 adr/;调查报告等探索性文档不入库
+docs/*
+!docs/adr/
