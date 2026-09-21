@@ -166,14 +166,14 @@ watch(
   () => scrollToBottom(),
 );
 
-// 消息内容增长（文本/工具参数/实时输出）时跟随滚动到底部
+// 消息内容增长（文本/思考/工具参数/实时输出）时跟随滚动到底部
 watch(
   () => {
     const last = props.messages.at(-1);
     if (!last) return 0;
     let size = 0;
     for (const part of last.parts) {
-      if (part.kind === "text") {
+      if (part.kind === "text" || part.kind === "reasoning") {
         size += part.text.length;
       } else {
         size += part.arguments.length + part.liveOutput.droppedChars;

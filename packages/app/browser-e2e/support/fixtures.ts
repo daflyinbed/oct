@@ -96,6 +96,13 @@ export function textDelta(data: string): AgentEvent {
   };
 }
 
+export function reasoningDelta(data: string): AgentEvent {
+  return {
+    type: "reasoning_delta",
+    data,
+  };
+}
+
 export function toolCallDelta(
   callId: string,
   argumentsDelta: string,

@@ -1,8 +1,9 @@
 use std::collections::HashSet;
+use std::time::Instant;
 
 use futures_util::stream::FuturesUnordered;
 use futures_util::StreamExt;
-use serde_json::Value;
+use serde_json::{Value, json};
 use tracing::{error, info};
 
 use oct_llm_provider::core::{
@@ -55,6 +56,9 @@ pub async fn run_agent_loop(
         };
 
         let mut current_text = String::new();
+        let mut reasoning_text = String::new();
+        let mut reasoning_started_at: Option<Instant> = None;
+        let mut reasoning_ended_at: Option<Instant> = None;
         let mut pending_tool_calls: Vec<ToolCall> = Vec::new();
         let mut finish_reason = FinishReason::Stop;
         let mut last_usage: Option<(Option<u32>, Option<u32>, Option<u32>)> = None;
@@ -63,12 +67,23 @@ pub async fn run_agent_loop(
             tokio::select! {
                 event = event_stream.next() => {
                     let Some(event) = event else { break };
+                    // Thinking ends at the first non-reasoning stream event so
+                    // the UI duration covers thinking only, not the answer
+                    // that follows it.
+                    if reasoning_started_at.is_some()
+                        && reasoning_ended_at.is_none()
+                        && !matches!(event, Ok(StreamEvent::ReasoningDelta(_)))
+                    {
+                        reasoning_ended_at = Some(Instant::now());
+                    }
                     match event {
                         Ok(StreamEvent::TextDelta(text)) => {
                             current_text.push_str(&text);
                             let _ = handle.event_tx.send(AgentEvent::TextDelta(text));
                         }
                         Ok(StreamEvent::ReasoningDelta(text)) => {
+                            reasoning_started_at.get_or_insert_with(Instant::now);
+                            reasoning_text.push_str(&text);
                             let _ = handle
                                 .event_tx
                                 .send(AgentEvent::ReasoningDelta(text));
@@ -123,6 +138,20 @@ pub async fn run_agent_loop(
         }
 
         let mut assistant_parts: Vec<ContentPart> = Vec::new();
+        let reasoning_details = reasoning_started_at
+            .filter(|_| !reasoning_text.is_empty())
+            .map(|started| {
+                let ms = reasoning_ended_at
+                    .unwrap_or_else(Instant::now)
+                    .saturating_duration_since(started)
+                    .as_millis() as u64;
+                // UI-only thinking duration for the frontend card; stored in
+                // details_json so it never enters the model-visible parts.
+                json!({ "reasoning_duration_ms": ms })
+            });
+        if !reasoning_text.is_empty() {
+            assistant_parts.push(ContentPart::Reasoning(reasoning_text));
+        }
         if !current_text.is_empty() {
             assistant_parts.push(ContentPart::Text(current_text));
         }
@@ -139,7 +168,15 @@ pub async fn run_agent_loop(
                 role: Role::Assistant,
                 parts: assistant_parts,
             };
-            match msg_db::insert_message(&ctx.pool, &conv_id, &assistant_msg, None, None, None).await {
+            match msg_db::insert_message(
+                &ctx.pool,
+                &conv_id,
+                &assistant_msg,
+                None,
+                None,
+                reasoning_details.as_ref(),
+            )
+            .await {
                 Ok(stored) => {
                     if let Some((input, output, reasoning)) = last_usage {
                         if let Err(e) = msg_db::update_message_usage(

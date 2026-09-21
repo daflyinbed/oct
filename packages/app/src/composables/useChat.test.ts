@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import client from "@/api/client";
 import { useChat } from "@/composables/useChat";
 
-import type { ToolCallPart } from "@/composables/useChat";
+import type { ReasoningPart, ToolCallPart } from "@/composables/useChat";
 import type { DeepReadonly } from "vue";
 
 // fetchMessages 走 openapi-fetch client，这里整体 mock 掉。
@@ -114,6 +114,14 @@ function toolCards(): DeepReadonly<ToolCallPart>[] {
   );
 }
 
+function reasoningParts(): DeepReadonly<ReasoningPart>[] {
+  return messages.value.flatMap((m) =>
+    m.parts.filter(
+      (p): p is DeepReadonly<ReasoningPart> => p.kind === "reasoning",
+    ),
+  );
+}
+
 let convSeq = 0;
 /** 每个用例用独立会话 id，避开 fetchMessages 的 200ms 去重守卫。 */
 function nextConvId(): string {
@@ -181,6 +189,41 @@ describe("fetchMessages 历史回放", () => {
     expect(card.details).toEqual({ title: "a.txt", total_lines: 1 });
   });
 
+  it("历史里的 Reasoning part 渲染为思考卡片，时长来自 details_json", async () => {
+    GET.mockResolvedValue({
+      data: [
+        storedMessage("user", '[{"Text":"问"}]'),
+        storedMessage("assistant", '[{"Reasoning":"历史思考"},{"Text":"答"}]', {
+          details_json: '{"reasoning_duration_ms":4200}',
+        }),
+        // 无 details 的旧数据：卡片仍在，只是不显示时长
+        storedMessage("assistant", '[{"Reasoning":"旧思考"}]'),
+      ],
+    } as never);
+
+    await fetchMessages(nextConvId());
+
+    expect(messages.value[1]?.parts).toEqual([
+      {
+        kind: "reasoning",
+        text: "历史思考",
+        startedAt: null,
+        durationMs: 4200,
+        ended: true,
+      },
+      { kind: "text", text: "答" },
+    ]);
+    expect(messages.value[2]?.parts).toEqual([
+      {
+        kind: "reasoning",
+        text: "旧思考",
+        startedAt: null,
+        durationMs: null,
+        ended: true,
+      },
+    ]);
+  });
+
   it("孤儿 tool result（无匹配卡片）落到最近的 assistant 消息上", async () => {
     GET.mockResolvedValue({
       data: [
@@ -238,7 +281,7 @@ describe("sendMessage 实时流", () => {
       sse([
         textDelta("你好"),
         textDelta("，世界"),
-        reasoningDelta("思考中"), // 不渲染，但不应破坏状态
+        reasoningDelta("思考中"), // 文本之后到来的思考独立成卡片，不打断文本
         {
           type: "usage",
           data: { input_tokens: 1, output_tokens: 2, reasoning_tokens: null },
@@ -254,9 +297,71 @@ describe("sendMessage 实时流", () => {
     expect(messages.value[0]?.role).toBe("user");
     const assistant = messages.value[1]!;
     expect(assistant.role).toBe("assistant");
-    expect(assistant.parts).toEqual([{ kind: "text", text: "你好，世界" }]);
+    expect(assistant.parts[0]).toEqual({ kind: "text", text: "你好，世界" });
+    expect(assistant.parts[1]).toMatchObject({
+      kind: "reasoning",
+      text: "思考中",
+      ended: true,
+    });
     expect(assistant.isStreaming).toBe(false);
     expect(sending.value).toBe(false);
+  });
+
+  it("思考 delta 累积为一个 part，文本到来时结束并记时长", async () => {
+    stubFetch(
+      sse([
+        reasoningDelta("想一想"),
+        reasoningDelta("，再想想"),
+        textDelta("答"),
+        finishEvent,
+      ]),
+    );
+
+    await sendMessage(nextConvId(), "hi");
+
+    const assistant = messages.value[1]!;
+    expect(assistant.parts).toHaveLength(2);
+    const blocks = reasoningParts();
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]!.text).toBe("想一想，再想想");
+    expect(blocks[0]!.ended).toBe(true);
+    expect(blocks[0]!.durationMs).toBeTypeOf("number");
+    expect(assistant.parts[1]).toEqual({ kind: "text", text: "答" });
+  });
+
+  it("多轮工具循环各有一个思考块，互不合并", async () => {
+    stubFetch(
+      sse([
+        reasoningDelta("第一轮"),
+        toolCallDelta("c1", "{}", "list_dir"),
+        toolCallStart("c1", "list_dir", ".", "{}"),
+        toolResult("c1", "ok"),
+        reasoningDelta("第二轮"),
+        textDelta("答"),
+        finishEvent,
+      ]),
+    );
+
+    await sendMessage(nextConvId(), "hi");
+
+    const blocks = reasoningParts();
+    expect(blocks.map((b) => b.text)).toEqual(["第一轮", "第二轮"]);
+    expect(blocks.every((b) => b.ended)).toBe(true);
+  });
+
+  it("只有思考没有正文时也保留思考卡片", async () => {
+    stubFetch(sse([reasoningDelta("纯思考"), finishEvent]));
+
+    await sendMessage(nextConvId(), "hi");
+
+    const assistant = messages.value[1]!;
+    expect(assistant.parts).toHaveLength(1);
+    expect(assistant.parts[0]).toMatchObject({
+      kind: "reasoning",
+      text: "纯思考",
+      ended: true,
+    });
+    expect(assistant.isStreaming).toBe(false);
   });
 
   it("sSE 行在网络分片中间断开仍能正确解析", async () => {

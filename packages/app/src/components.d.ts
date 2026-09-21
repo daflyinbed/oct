@@ -55,6 +55,7 @@ declare module 'vue' {
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     SettingsModal: typeof import('./components/settings/SettingsModal.vue')['default']
+    ThinkingCard: typeof import('./components/chat/ThinkingCard.vue')['default']
     TitleBar: typeof import('./components/layout/TitleBar.vue')['default']
     ToolCallCard: typeof import('./components/chat/ToolCallCard.vue')['default']
     WorkspaceTabBar: typeof import('./components/layout/WorkspaceTabBar.vue')['default']

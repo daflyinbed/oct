@@ -27,6 +27,7 @@
           >▌</span
         >
       </div>
+      <ThinkingCard v-else-if="part.kind === 'reasoning'" :part="part" />
       <ToolCallCard v-else :part="part" />
     </template>
     <!-- 尚无任何内容时的流式占位光标 -->
@@ -37,6 +38,7 @@
 </template>
 
 <script setup lang="ts">
+import ThinkingCard from "./ThinkingCard.vue";
 import ToolCallCard from "./ToolCallCard.vue";
 import type { DisplayMessage, DisplayPart } from "@/composables/useChat";
 

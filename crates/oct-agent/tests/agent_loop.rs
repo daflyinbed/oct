@@ -10,11 +10,11 @@ use serde_json::json;
 use oct_agent::agent::AgentEvent;
 use oct_agent::db;
 use oct_agent::tools::{self, AgentTool, ToolContext, ToolOutput};
-use oct_llm_provider::core::{ContentPart, FinishReason, ModelError, Role, ToolResult};
+use oct_llm_provider::core::{ContentPart, FinishReason, ModelError, Role, ToolCall, ToolResult};
 
 use support::{
     ScriptedModel, TestEnv, Turn, collect_events, finish, is_terminal, new_conversation,
-    spawn_agent, text, tool_call, usage,
+    reasoning, spawn_agent, text, tool_call, usage,
 };
 
 /// Decode a stored message's parts_json back into content parts.
@@ -112,6 +112,75 @@ async fn plain_text_turn_streams_and_persists_assistant_message() {
     // Usage is persisted onto the assistant message.
     assert_eq!(stored[0].input_tokens, Some(3));
     assert_eq!(stored[0].output_tokens, Some(5));
+}
+
+#[tokio::test]
+async fn reasoning_deltas_persist_and_feed_back_into_next_request() {
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+
+    let model = ScriptedModel::new(vec![
+        Turn::Stream(vec![
+            reasoning("想一想"),
+            reasoning("，再想想"),
+            tool_call("call-1", "list_dir", json!({"path": "."})),
+            finish(FinishReason::ToolCalls),
+        ]),
+        Turn::Stream(vec![text("done"), finish(FinishReason::Stop)]),
+    ]);
+    let observer = model.observer();
+
+    let (_handle, mut rx) = spawn_agent(
+        model,
+        tools::default_tools(env.dir.path().to_path_buf()),
+        env.pool.clone(),
+        &conv_id,
+        "look around",
+    )
+    .await;
+    let events = collect_events(&mut rx, is_terminal).await;
+
+    // Reasoning deltas are forwarded to the SSE stream verbatim.
+    let reasoning_of: String = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ReasoningDelta(t) => Some(t.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reasoning_of, "想一想，再想想");
+
+    // The assistant turn persists Reasoning (first) + ToolCall; the thinking
+    // duration lands in details_json, never inside parts_json.
+    let stored = db::messages::list_messages(&env.pool, &conv_id)
+        .await
+        .unwrap();
+    assert_eq!(stored[0].role, "assistant");
+    assert_eq!(
+        parts_of(&stored[0]),
+        vec![
+            ContentPart::Reasoning("想一想，再想想".to_string()),
+            ContentPart::ToolCall(ToolCall {
+                id: "call-1".to_string(),
+                name: "list_dir".to_string(),
+                arguments: r#"{"path":"."}"#.to_string(),
+            }),
+        ]
+    );
+    let details: serde_json::Value =
+        serde_json::from_str(stored[0].details_json.as_deref().expect("assistant details"))
+            .expect("details_json should deserialize");
+    let ms = details["reasoning_duration_ms"]
+        .as_u64()
+        .expect("reasoning_duration_ms should be a number");
+    assert!(ms < 30_000, "scripted stream finishes instantly, got {ms}ms");
+
+    // The persisted reasoning flows back into the next round's request.
+    let second = &observer.requests()[1];
+    assert!(matches!(
+        &second.messages[2].parts[0],
+        ContentPart::Reasoning(text) if text == "想一想，再想想"
+    ));
 }
 
 #[tokio::test]

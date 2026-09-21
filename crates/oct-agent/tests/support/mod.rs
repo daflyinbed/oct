@@ -141,6 +141,10 @@ pub fn text(delta: &str) -> Result<StreamEvent, ModelError> {
     Ok(StreamEvent::TextDelta(delta.to_string()))
 }
 
+pub fn reasoning(delta: &str) -> Result<StreamEvent, ModelError> {
+    Ok(StreamEvent::ReasoningDelta(delta.to_string()))
+}
+
 pub fn tool_call(id: &str, name: &str, args: serde_json::Value) -> Result<StreamEvent, ModelError> {
     Ok(StreamEvent::ToolCall(ToolCall {
         id: id.to_string(),

@@ -41,7 +41,21 @@ export interface ToolCallPart {
   isError: boolean;
 }
 
-export type DisplayPart = TextPart | ToolCallPart;
+export interface ReasoningPart {
+  kind: "reasoning";
+  text: string;
+  /** Epoch ms of the first delta; null for history-replayed parts. */
+  startedAt: number | null;
+  /**
+   * Thinking duration in ms; null while the block is still receiving deltas
+   * or when a history row has no stored duration.
+   */
+  durationMs: number | null;
+  /** False only while the live block is still receiving deltas. */
+  ended: boolean;
+}
+
+export type DisplayPart = TextPart | ToolCallPart | ReasoningPart;
 
 export interface DisplayMessage {
   id: string;
@@ -220,9 +234,24 @@ function storedToDisplayList(stored: StoredMessage[]): DisplayMessage[] {
 
     if (m.role === "assistant") {
       const msg: BuildableMessage = { id: m.id, role: "assistant", parts: [] };
+      // Thinking duration is UI metadata persisted alongside the message
+      // (details_json), not a message part.
+      const details = detailsFromJson(m.details_json ?? null);
+      const storedDurationMs =
+        typeof details?.reasoning_duration_ms === "number"
+          ? details.reasoning_duration_ms
+          : null;
       for (const raw of parseStoredParts(m.parts_json)) {
         if (typeof raw.Text === "string") {
           pushText(msg, raw.Text);
+        } else if (typeof raw.Reasoning === "string") {
+          msg.parts.push({
+            kind: "reasoning",
+            text: raw.Reasoning,
+            startedAt: null,
+            durationMs: storedDurationMs,
+            ended: true,
+          });
         } else if (raw.ToolCall && typeof raw.ToolCall === "object") {
           const call = raw.ToolCall as StoredToolCallShape;
           const card = newToolCard(call.id, call.name);
@@ -233,7 +262,7 @@ function storedToDisplayList(stored: StoredMessage[]): DisplayMessage[] {
           msg.parts.push(card);
           cardsByCallId.set(card.callId, card);
         }
-        // Reasoning/ImageUrl parts are not displayed (unchanged behavior).
+        // ImageUrl parts are not displayed (no UI for them).
       }
       out.push(msg);
       lastAssistant = msg;
@@ -273,7 +302,7 @@ function storedToDisplayList(stored: StoredMessage[]): DisplayMessage[] {
 
 interface StreamState {
   messageId: string;
-  parts: (TextPart | ToolCallPart)[];
+  parts: DisplayPart[];
   isStreaming: boolean;
 }
 
@@ -285,15 +314,17 @@ let streamDirty = false;
 
 const FLUSH_INTERVAL_MS = 50;
 
-function clonePart(part: TextPart | ToolCallPart): DisplayPart {
-  if (part.kind === "text") return { ...part };
-  return {
-    ...part,
-    liveOutput: {
-      segments: part.liveOutput.segments.map((seg) => ({ ...seg })),
-      droppedChars: part.liveOutput.droppedChars,
-    },
-  };
+function clonePart(part: DisplayPart): DisplayPart {
+  if (part.kind === "tool_call") {
+    return {
+      ...part,
+      liveOutput: {
+        segments: part.liveOutput.segments.map((seg) => ({ ...seg })),
+        droppedChars: part.liveOutput.droppedChars,
+      },
+    };
+  }
+  return { ...part };
 }
 
 /** Write the buffered stream state into the reactive messages array. */
@@ -348,16 +379,34 @@ function findCard(callId: string): ToolCallPart | null {
 }
 
 /**
+ * Close any still-open reasoning block, stamping its duration. Only the last
+ * part can be open, but scanning all parts keeps this idempotent.
+ */
+function closeOpenReasoning(parts: DisplayPart[]): void {
+  for (const part of parts) {
+    if (part.kind === "reasoning" && !part.ended) {
+      part.ended = true;
+      if (part.startedAt !== null) {
+        part.durationMs = Date.now() - part.startedAt;
+      }
+    }
+  }
+}
+
+/**
  * Terminal events may leave cards that never reached tool_result: drop
  * still-generating cards (never dispatched and not persisted — dropping keeps
  * the live view identical to history replay) and settle running ones as
- * errored so no spinner pulses forever. Idempotent; also called from the
- * sendMessage finally block to cover streams that die without a terminal
- * event (e.g. connection reset). Cancellation is covered here too: the
- * backend persists a ToolResult for cancelled calls but does not stream one.
+ * errored so no spinner pulses forever. An open thinking block is closed with
+ * its duration so the card stops showing its streaming state. Idempotent;
+ * also called from the sendMessage finally block to cover streams that die
+ * without a terminal event (e.g. connection reset). Cancellation is covered
+ * here too: the backend persists a ToolResult for cancelled calls but does
+ * not stream one.
  */
 function finalizeUnconvergedCards() {
   if (!streamState) return;
+  closeOpenReasoning(streamState.parts);
   streamState.parts = streamState.parts.filter(
     (part) => !(part.kind === "tool_call" && part.status === "generating"),
   );
@@ -371,12 +420,35 @@ function finalizeUnconvergedCards() {
 
 function applyStreamEvent(event: AgentEvent) {
   if (!streamState) return;
-  // Mark dirty even for ignored events (usage/reasoning_delta): one extra
-  // 50ms flush at most, and far simpler than tracking per-branch mutations.
+  // Mark dirty even for ignored events (usage): one extra 50ms flush at
+  // most, and far simpler than tracking per-branch mutations.
   streamDirty = true;
   const parts = streamState.parts;
 
+  // Any non-reasoning event ends the open thinking block (text/tool calls/
+  // terminal state all mean the model stopped reasoning).
+  if (event.type !== "reasoning_delta") {
+    closeOpenReasoning(parts);
+  }
+
   switch (event.type) {
+    case "reasoning_delta": {
+      const last = parts.at(-1);
+      if (last?.kind === "reasoning" && !last.ended) {
+        last.text += event.data;
+      } else {
+        // A new agent-loop round opens a fresh thinking block.
+        parts.push({
+          kind: "reasoning",
+          text: event.data,
+          startedAt: Date.now(),
+          durationMs: null,
+          ended: false,
+        });
+      }
+      break;
+    }
+
     case "text_delta": {
       const last = parts.at(-1);
       if (last?.kind === "text") {
@@ -489,7 +561,7 @@ function applyStreamEvent(event: AgentEvent) {
       break;
     }
 
-    // usage / reasoning_delta: intentionally not displayed (unchanged).
+    // usage: intentionally not displayed.
   }
 }
 

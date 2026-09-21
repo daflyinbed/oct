@@ -5,6 +5,7 @@ import {
   finishEvent,
   projectFixture,
   providerFixture,
+  reasoningDelta,
   storedMessage,
   textDelta,
   toolCallStart,
@@ -20,6 +21,7 @@ import { setScenario } from "./support/mock";
 // 解析路径的等价性。
 it("history replay renders identically to the finished live stream", async () => {
   const mounted = await bootConversation([
+    { type: "events", events: [reasoningDelta("让我想想")] },
     { type: "events", events: [textDelta("Done.")] },
     {
       type: "events",
@@ -45,7 +47,8 @@ it("history replay renders identically to the finished live stream", async () =>
   ]);
 
   await sendChatMessage("hi");
-  // live 结束态:文本 + 卡片头(读取文件 a.txt),光标消失
+  // live 结束态:思考摘要(已折叠) + 文本 + 卡片头(读取文件 a.txt),光标消失
+  await expect.poll(chatText).toContain("持续了几秒");
   await expect.poll(chatText).toContain("Done.");
   await expect.poll(chatText).toContain("读取文件");
   await expect.poll(chatText).toContain("a.txt");
@@ -63,6 +66,7 @@ it("history replay renders identically to the finished live stream", async () =>
         storedMessage(
           "assistant",
           JSON.stringify([
+            { Reasoning: "让我想想" },
             { Text: "Done." },
             {
               ToolCall: {
@@ -72,6 +76,9 @@ it("history replay renders identically to the finished live stream", async () =>
               },
             },
           ]),
+          // 与 live 结束态渲染一致:live 时长是几毫秒 →「几秒」,
+          // 这里存 5000ms 同样落在模糊文案区间。
+          { details_json: JSON.stringify({ reasoning_duration_ms: 5000 }) },
         ),
         storedMessage(
           "tool",
