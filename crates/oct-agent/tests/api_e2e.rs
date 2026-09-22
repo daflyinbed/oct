@@ -282,6 +282,231 @@ async fn chat_tool_round_trip_over_http() {
 }
 
 #[tokio::test]
+async fn chat_reads_file_in_additional_dir_over_http() {
+    let app = TestApp::new().await;
+    let extra = tempfile::tempdir().expect("additional dir");
+    tokio::fs::write(extra.path().join("shared.md"), "shared\nnotes\n")
+        .await
+        .unwrap();
+    let extra_path = extra.path().display().to_string();
+    let llm_server = llm::spawn_llm_mock(vec![
+        LlmTurn::Complete(vec![
+            tool_call_chunk(
+                "call-1",
+                "read_file",
+                &format!(r#"{{"path":"{extra_path}/shared.md"}}"#),
+            ),
+            finish_chunk("tool_calls"),
+        ]),
+        LlmTurn::Complete(vec![text_chunk("done"), finish_chunk("stop")]),
+    ])
+    .await;
+    app.register_llm_provider(&llm_server).await;
+
+    // The project's sandbox spans the primary temp dir plus the extra dir.
+    let resp = app
+        .post_json(
+            "/api/projects",
+            serde_json::json!({
+                "name": "multi",
+                "working_dir": app.dir.path().to_string_lossy(),
+                "additional_dirs": [extra_path],
+            }),
+        )
+        .await;
+    assert_eq!(resp.status(), 201);
+    let project: Value = resp.json().await.unwrap();
+    assert_eq!(
+        project["additional_dirs"],
+        serde_json::json!([extra_path]),
+        "create must return the normalized list"
+    );
+    let project_id = project["id"].as_str().unwrap().to_string();
+    let conv_id = app.create_conversation(&project_id).await;
+
+    let resp = app.send_message(&conv_id, "read the shared notes").await;
+    assert_eq!(resp.status(), 200);
+    let events = app.read_sse(resp).await;
+
+    let tool_result = events
+        .iter()
+        .find(|e| e["type"] == "tool_result")
+        .expect("tool_result in stream");
+    assert_eq!(tool_result["data"]["is_error"], false);
+    assert!(
+        tool_result["data"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("1. shared")
+    );
+
+    // The system prompt announced the additional root and the absolute-path
+    // rule for it.
+    let llm_requests = llm_server.requests();
+    let system = llm_requests[0]["messages"][0]["content"]
+        .as_str()
+        .expect("system message");
+    assert!(system.contains(&extra_path));
+    assert!(system.contains("absolute paths"));
+}
+
+#[tokio::test]
+async fn project_additional_dirs_roundtrip_and_normalize() {
+    let app = TestApp::new().await;
+    let working = app.dir.path().to_string_lossy().to_string();
+    let extra = tempfile::tempdir().expect("additional dir");
+    let extra_path = extra.path().display().to_string();
+
+    // Duplicates, blanks and the primary working dir itself are dropped.
+    let resp = app
+        .post_json(
+            "/api/projects",
+            serde_json::json!({
+                "name": "p",
+                "working_dir": working,
+                "additional_dirs": [extra_path, "  ", extra_path, working],
+            }),
+        )
+        .await;
+    assert_eq!(resp.status(), 201);
+    let project: Value = resp.json().await.unwrap();
+    assert_eq!(project["additional_dirs"], serde_json::json!([extra_path]));
+    let id = project["id"].as_str().unwrap().to_string();
+
+    // Omitting the field on PATCH leaves the list unchanged.
+    let resp = app
+        .patch_json(
+            &format!("/api/projects/{id}"),
+            serde_json::json!({"name": "renamed"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 200);
+    let resp = app.get_json(&format!("/api/projects/{id}")).await;
+    let fetched: Value = resp.json().await.unwrap();
+    assert_eq!(fetched["name"], "renamed");
+    assert_eq!(fetched["additional_dirs"], serde_json::json!([extra_path]));
+
+    // An explicit empty list clears it.
+    let resp = app
+        .patch_json(
+            &format!("/api/projects/{id}"),
+            serde_json::json!({"additional_dirs": []}),
+        )
+        .await;
+    assert_eq!(resp.status(), 200);
+    let resp = app.get_json(&format!("/api/projects/{id}")).await;
+    let fetched: Value = resp.json().await.unwrap();
+    assert_eq!(fetched["additional_dirs"], serde_json::json!([]));
+
+    // Relative entries are rejected loudly at the API boundary: a relative
+    // path would anchor to the SERVER process's CWD, silently widening the
+    // sandbox to a directory the user never named.
+    let resp = app
+        .post_json(
+            "/api/projects",
+            serde_json::json!({
+                "name": "rel",
+                "working_dir": working,
+                "additional_dirs": ["../sibling"],
+            }),
+        )
+        .await;
+    assert_eq!(resp.status(), 400);
+    let resp = app
+        .patch_json(
+            &format!("/api/projects/{id}"),
+            serde_json::json!({"additional_dirs": ["/abs", "relative/dir"]}),
+        )
+        .await;
+    assert_eq!(resp.status(), 400);
+
+    // Changing working_dir re-normalizes the kept list: an entry that now
+    // equals the new primary is dropped instead of lingering as a duplicate
+    // root.
+    let resp = app
+        .patch_json(
+            &format!("/api/projects/{id}"),
+            serde_json::json!({"additional_dirs": [extra_path]}),
+        )
+        .await;
+    assert_eq!(resp.status(), 200);
+    let resp = app
+        .patch_json(
+            &format!("/api/projects/{id}"),
+            serde_json::json!({"working_dir": extra_path}),
+        )
+        .await;
+    assert_eq!(resp.status(), 200);
+    let resp = app.get_json(&format!("/api/projects/{id}")).await;
+    let fetched: Value = resp.json().await.unwrap();
+    assert_eq!(fetched["working_dir"], extra_path);
+    assert_eq!(fetched["additional_dirs"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn files_endpoints_serve_additional_dirs_via_absolute_path() {
+    let app = TestApp::new().await;
+    let extra = tempfile::tempdir().expect("additional dir");
+    tokio::fs::write(extra.path().join("readme.txt"), "extra content")
+        .await
+        .unwrap();
+    let outside = tempfile::tempdir().expect("outside dir");
+    tokio::fs::write(outside.path().join("secret.txt"), "nope")
+        .await
+        .unwrap();
+    let extra_path = extra.path().display().to_string();
+    let outside_file = outside.path().join("secret.txt").display().to_string();
+
+    let resp = app
+        .post_json(
+            "/api/projects",
+            serde_json::json!({
+                "name": "p",
+                "working_dir": app.dir.path().to_string_lossy(),
+                "additional_dirs": [extra_path],
+            }),
+        )
+        .await;
+    assert_eq!(resp.status(), 201);
+    let project: Value = resp.json().await.unwrap();
+    let id = project["id"].as_str().unwrap().to_string();
+
+    // Listing the additional root: entries stay addressable by absolute path.
+    let resp = app
+        .get_json(&format!("/api/projects/{id}/files?path={extra_path}"))
+        .await;
+    assert_eq!(resp.status(), 200);
+    let entries: Vec<Value> = resp.json().await.unwrap();
+    let readme = entries
+        .iter()
+        .find(|e| e["name"] == "readme.txt")
+        .expect("readme.txt in the additional root");
+    assert_eq!(readme["path"], format!("{extra_path}/readme.txt"));
+
+    // Reading a file inside the additional root works.
+    let resp = app
+        .get_json(&format!(
+            "/api/projects/{id}/files/content?path={extra_path}/readme.txt"
+        ))
+        .await;
+    assert_eq!(resp.status(), 200);
+    let content: Value = resp.json().await.unwrap();
+    assert_eq!(content["content"], "extra content");
+
+    // Paths outside every root are rejected, list and content alike.
+    let resp = app
+        .get_json(&format!("/api/projects/{id}/files?path={outside_file}"))
+        .await;
+    assert_eq!(resp.status(), 400);
+    let resp = app
+        .get_json(&format!(
+            "/api/projects/{id}/files/content?path={outside_file}"
+        ))
+        .await;
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
 async fn chat_conflict_cancel_then_session_frees() {
     let app = TestApp::new().await;
     let llm_server = llm::spawn_llm_mock(vec![

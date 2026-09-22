@@ -89,6 +89,11 @@
               v-if="item.value.kind === 'file'"
               class="h-3.5 w-3.5 shrink-0"
             />
+            <!-- 附加工作目录的顶层根：图标与主目录区分 -->
+            <i-lucide-folder-git-2
+              v-if="item.value.additionalRoot"
+              class="h-3.5 w-3.5 shrink-0 text-dim"
+            />
             <span class="truncate">{{ item.value.name }}</span>
           </div>
         </TreeItem>
@@ -107,6 +112,8 @@ import type { TreeNode } from "@/composables/useFileTree";
 const props = defineProps<{
   visible: boolean;
   projectId: string | null;
+  /** 附加工作目录（绝对路径）：渲染为主目录树之后的顶层根节点。 */
+  additionalDirs?: readonly string[];
 }>();
 
 defineEmits<{
@@ -137,10 +144,12 @@ function getChildren(item: TreeNode): TreeNode[] | undefined {
   return item.kind === "dir" ? (item.children ?? []) : undefined;
 }
 
+// 项目切换或附加目录列表变化（编辑项目后）都整树重建：loadRoot 会清空
+// 懒加载缓存，语义简单且不会有陈旧根残留。
 watch(
-  () => props.projectId,
-  (id) => {
-    if (id) loadRoot(id);
+  () => [props.projectId, props.additionalDirs ?? []] as const,
+  ([id, dirs]) => {
+    if (id) loadRoot(id, dirs);
   },
   { immediate: true },
 );

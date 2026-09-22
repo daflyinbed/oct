@@ -14,9 +14,9 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
-use super::read::validate_path_within;
-use super::search_common::{relativize, search_walk_builder, timeout_note};
+use super::search_common::{search_walk_builder, timeout_note};
 use super::truncate::{MAX_TOOL_OUTPUT_BYTES, truncate_middle};
+use super::workspace::{WorkspaceRoots, relativize_roots};
 use super::{AgentTool, ToolContext, ToolOutput};
 
 /// Wall-clock budget for one glob run.
@@ -26,12 +26,12 @@ const DEFAULT_LIMIT: usize = 100;
 const MAX_LIMIT: usize = 1_000;
 
 pub struct GlobTool {
-    working_dir: PathBuf,
+    roots: WorkspaceRoots,
 }
 
 impl GlobTool {
-    pub fn new(working_dir: PathBuf) -> Self {
-        Self { working_dir }
+    pub fn new(roots: WorkspaceRoots) -> Self {
+        Self { roots }
     }
 }
 
@@ -91,19 +91,19 @@ impl AgentTool for GlobTool {
         let args: GlobArgs = serde_json::from_value(args).context("Invalid arguments for glob")?;
 
         let root = match args.path.as_deref() {
-            Some(path) => match validate_path_within(&self.working_dir, path) {
+            Some(path) => match self.roots.validate_path(path) {
                 Ok(resolved) => resolved,
                 Err(output) => return Ok(output),
             },
             None => self
-                .working_dir
+                .roots
+                .primary()
                 .canonicalize()
-                .unwrap_or_else(|_| self.working_dir.clone()),
+                .unwrap_or_else(|_| self.roots.primary().to_path_buf()),
         };
-        let working_canonical = self
-            .working_dir
-            .canonicalize()
-            .unwrap_or_else(|_| self.working_dir.clone());
+        // Canonicalize the display roots once so the walk does not hit the
+        // filesystem again for every rendered match.
+        let display_roots = self.roots.display_roots();
 
         // Literal separators: standard glob syntax where `*` does not cross
         // `/`, so `**/` is what makes a pattern recursive (e.g. `*.ts` is
@@ -121,7 +121,7 @@ impl AgentTool for GlobTool {
                 Ok(glob) => glob.compile_matcher(),
                 Err(e) => return ToolOutput::error(format!("Invalid glob pattern: {e}")),
             };
-            let (mut output, stats) = run_glob(working_canonical, root, matcher, limit);
+            let (mut output, stats) = run_glob(display_roots, root, matcher, limit);
             output.details = serde_json::to_value(GlobDetails {
                 title: pattern.clone(),
                 pattern,
@@ -142,7 +142,7 @@ impl AgentTool for GlobTool {
 /// Walk the search root, collect paths matching the glob, and render them.
 /// Runs entirely on a blocking thread. Also returns the UI-facing stats.
 fn run_glob(
-    working_canonical: PathBuf,
+    display_roots: Vec<PathBuf>,
     root: PathBuf,
     matcher: globset::GlobMatcher,
     limit: usize,
@@ -180,7 +180,7 @@ fn run_glob(
             .ok()
             .and_then(|m| m.modified().ok())
             .unwrap_or(SystemTime::UNIX_EPOCH);
-        matches.push((mtime, relativize(&working_canonical, path)));
+        matches.push((mtime, relativize_roots(&display_roots, path)));
     }
 
     // Most recently modified first. Ties keep walk order (stable sort).
@@ -274,7 +274,7 @@ mod tests {
         set_mtime(&wd.join("sub/deep.txt"), unix_time(4_000));
 
         // `**/` matches at any depth; newest file first.
-        let recursive = GlobTool::new(wd.clone())
+        let recursive = GlobTool::new(WorkspaceRoots::new(wd.clone(), vec![]))
             .execute(serde_json::json!({ "pattern": "**/*.txt" }), &noop_ctx())
             .await
             .unwrap();
@@ -287,7 +287,7 @@ mod tests {
         assert_eq!(lines[4], "old.txt");
 
         // Literal separators: `*.txt` stays at the top level.
-        let top_level = GlobTool::new(wd.clone())
+        let top_level = GlobTool::new(WorkspaceRoots::new(wd.clone(), vec![]))
             .execute(serde_json::json!({ "pattern": "*.txt" }), &noop_ctx())
             .await
             .unwrap();
@@ -313,7 +313,7 @@ mod tests {
         std::fs::write(wd.join("ignored_file.txt"), "x").unwrap();
         std::fs::write(wd.join("keep_file.txt"), "x").unwrap();
 
-        let out = GlobTool::new(wd.clone())
+        let out = GlobTool::new(WorkspaceRoots::new(wd.clone(), vec![]))
             .execute(serde_json::json!({ "pattern": "**/*.txt" }), &noop_ctx())
             .await
             .unwrap();
@@ -333,7 +333,7 @@ mod tests {
         std::fs::write(wd.join("b.txt"), "b").unwrap();
         std::fs::write(wd.join("c.txt"), "c").unwrap();
 
-        let out = GlobTool::new(wd.clone())
+        let out = GlobTool::new(WorkspaceRoots::new(wd.clone(), vec![]))
             .execute(
                 serde_json::json!({ "pattern": "**/*.txt", "limit": 2 }),
                 &noop_ctx(),
@@ -355,7 +355,7 @@ mod tests {
         let wd = temp_workspace("fileroot");
         std::fs::write(wd.join("a.txt"), "x").unwrap();
 
-        let out = GlobTool::new(wd.clone())
+        let out = GlobTool::new(WorkspaceRoots::new(wd.clone(), vec![]))
             .execute(
                 serde_json::json!({ "pattern": "*.txt", "path": "a.txt" }),
                 &noop_ctx(),
@@ -373,7 +373,7 @@ mod tests {
     async fn bad_pattern_is_an_error() {
         let wd = temp_workspace("badpattern");
 
-        let out = GlobTool::new(wd.clone())
+        let out = GlobTool::new(WorkspaceRoots::new(wd.clone(), vec![]))
             .execute(serde_json::json!({ "pattern": "[" }), &noop_ctx())
             .await
             .unwrap();

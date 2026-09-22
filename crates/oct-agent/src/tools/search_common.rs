@@ -1,6 +1,7 @@
 //! Shared plumbing for the search tools (`grep` and `glob`): a directory
-//! walker with sandbox-safe, rg-like ignore defaults plus a path display
-//! helper. Both tools walk the same way so they agree on what is searchable.
+//! walker with sandbox-safe, rg-like ignore defaults. Both tools walk the
+//! same way so they agree on what is searchable. (Path display lives on
+//! [`super::workspace::WorkspaceRoots`].)
 
 use ignore::WalkBuilder;
 use ignore::overrides::OverrideBuilder;
@@ -49,39 +50,10 @@ pub(crate) fn search_walk_builder(root: &Path) -> WalkBuilder {
     builder
 }
 
-/// Render `path` for tool output: relative to `working_dir` when it lives
-/// under it, otherwise absolute. This matches read_file's habit of echoing
-/// user-relative paths. `working_dir` must be canonicalized, and `path` is
-/// expected to be canonical too (both hold for search-tool results).
-pub(crate) fn relativize(working_dir: &Path, path: &Path) -> String {
-    match path.strip_prefix(working_dir) {
-        Ok(rel) => rel.display().to_string(),
-        Err(_) => path.display().to_string(),
-    }
-}
-
 /// Trailing line appended when a search exceeds its wall-clock budget.
 pub(crate) fn timeout_note(timeout: Duration) -> String {
     format!(
         "Search timed out after {} seconds. Results may be incomplete - try a more specific path or pattern.",
         timeout.as_secs()
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn relativize_strips_working_dir_prefix() {
-        let wd = Path::new("/tmp/oct-project");
-        assert_eq!(
-            relativize(wd, Path::new("/tmp/oct-project/src/main.rs")),
-            "src/main.rs"
-        );
-        assert_eq!(relativize(wd, Path::new("/tmp/oct-project")), "");
-
-        // Paths outside the working directory stay absolute.
-        assert_eq!(relativize(wd, Path::new("/etc/hosts")), "/etc/hosts");
-    }
 }

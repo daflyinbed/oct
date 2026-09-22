@@ -24,6 +24,7 @@ use crate::db::{
     conversations as conv_db, messages as msg_db, projects as project_db, providers as provider_db,
 };
 use crate::tools;
+use crate::tools::workspace::WorkspaceRoots;
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SendMessageRequest {
@@ -114,11 +115,22 @@ fn start_agent_run(
         .subscribe()
         .map(|e| Ok::<_, Infallible>(sse_event(&e)));
 
+    // Re-resolved from the project row on every send/resume, so edits to a
+    // project's working directories take effect on the next turn. Additional
+    // directories are accessible to the tools via absolute paths only.
+    let additional: Vec<PathBuf> = project
+        .additional_dirs
+        .0
+        .iter()
+        .map(PathBuf::from)
+        .collect();
+    let roots = WorkspaceRoots::new(PathBuf::from(&project.working_dir), additional.clone());
+
     let ctx = AgentContext {
         model: Arc::from(chat_model),
-        tools: Arc::new(tools::default_tools(PathBuf::from(&project.working_dir))),
+        tools: Arc::new(tools::default_tools(roots)),
         pool: state.pool.clone(),
-        system_prompt: system_prompt(&PathBuf::from(&project.working_dir)),
+        system_prompt: system_prompt(&PathBuf::from(&project.working_dir), &additional),
     };
 
     let conv_id = id.to_string();

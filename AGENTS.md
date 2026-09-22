@@ -90,7 +90,7 @@ pnpm -r exec eslint .                 # ESLint with @xwbx/eslint-config flat con
 
 - `providers`: id, name, adapter_type, base_url, api_key, doc_url, source (`seeded`/`custom`), timestamps
 - `models`: id, provider*id, model_id, name, family, reasoning, tool_call, attachment, structured_output, temperature, knowledge, release_date, open_weights, cost*\_, limit\_\_, modalities\_\*, source, is_enabled, timestamps
-- `projects`: id, name, working_dir, timestamps
+- `projects`: id, name, working_dir, additional_dirs (JSON 数组；附加工作目录，绝对路径 only，工具沙箱多根「任一根内即放行」，相对路径仍锚定 working_dir), timestamps
 - `conversations`: id, project_id, title, title_source (`default`/`ai`/`user`；手动命名永不被自动标题覆盖，自动标题只在 `default` 时条件写入), timestamps
 - `messages`: id, conversation_id, role, parts_json, ordering, provider_id, model_id, input_tokens, output_tokens, reasoning_tokens, created_at
 

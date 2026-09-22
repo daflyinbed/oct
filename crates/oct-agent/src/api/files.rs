@@ -10,6 +10,7 @@ use super::AppState;
 use super::error::{ApiResult, AppError};
 use crate::db::projects as db;
 use crate::tools::listdir::should_ignore;
+use crate::tools::workspace::WorkspaceRoots;
 
 #[derive(Debug, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
@@ -21,20 +22,24 @@ pub enum FileEntryKind {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct FileEntry {
     pub name: String,
-    /// Path relative to the project working directory (forward slashes)
+    /// Path relative to the project working directory (forward slashes), or
+    /// the absolute path for entries inside an additional working directory
     pub path: String,
     pub kind: FileEntryKind,
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct ListFilesQuery {
-    /// Directory path relative to the project working directory. Defaults to the root.
+    /// Directory path: relative to the project working directory, or an
+    /// absolute path inside one of its additional working directories.
+    /// Defaults to the working directory root.
     pub path: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct FileContent {
-    /// Path relative to the project working directory (forward slashes)
+    /// Path relative to the project working directory (forward slashes), or
+    /// the absolute path for files inside an additional working directory
     pub path: String,
     /// UTF-8 text content, truncated to the preview size limit
     pub content: String,
@@ -46,36 +51,60 @@ pub struct FileContent {
 
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct ReadFileQuery {
-    /// File path relative to the project working directory
+    /// File path: relative to the project working directory, or an absolute
+    /// path inside one of its additional working directories
     pub path: String,
 }
 
-/// Resolve a requested relative path inside the canonicalized working directory,
-/// rejecting anything that escapes it (e.g. via `..`).
-fn resolve_within(working_resolved: &FsPath, requested: &str) -> Result<PathBuf, AppError> {
-    if requested.is_empty() || requested == "." {
-        return Ok(working_resolved.to_path_buf());
-    }
-
-    let candidate = working_resolved.join(requested);
-    let resolved = candidate
-        .canonicalize()
-        .map_err(|e| AppError::BadRequest(format!("Path not found: {requested} ({e})")))?;
-
-    if !resolved.starts_with(working_resolved) {
-        return Err(AppError::BadRequest(format!(
-            "Access denied: {requested} is outside the working directory"
-        )));
-    }
-
-    Ok(resolved)
+/// Build the project's sandbox roots plus the CANONICALIZED primary root.
+/// The canonical form is what validation resolves paths to, so display code
+/// must strip it (not the raw configured string) or a symlinked/`..`-laden
+/// working_dir would make every entry path degrade to absolute. An invalid
+/// primary is a bad request, as in the single-root era. Additional roots are
+/// canonicalized lazily by the validation helpers.
+fn project_roots(project: &db::Project) -> Result<(WorkspaceRoots, PathBuf), AppError> {
+    let primary = PathBuf::from(&project.working_dir);
+    let canonical = primary.canonicalize().map_err(|e| {
+        AppError::BadRequest(format!(
+            "Invalid working directory {}: {e}",
+            project.working_dir
+        ))
+    })?;
+    let roots = WorkspaceRoots::new(
+        primary,
+        project
+            .additional_dirs
+            .0
+            .iter()
+            .map(PathBuf::from)
+            .collect(),
+    );
+    Ok((roots, canonical))
 }
 
-fn relative_path(working_resolved: &FsPath, absolute: &FsPath) -> String {
+/// Resolve a requested path inside the canonicalized workspace roots,
+/// rejecting anything that escapes them (e.g. via `..`). Relative paths join
+/// the primary root (note: `Path::join` REPLACES the base when given an
+/// absolute path, hence the explicit branch); absolute paths must land inside
+/// any root.
+fn resolve_within(roots: &WorkspaceRoots, requested: &str) -> Result<PathBuf, AppError> {
+    if requested.is_empty() || requested == "." {
+        return Ok(roots.primary().to_path_buf());
+    }
+    roots
+        .validate_path(requested)
+        .map_err(|output| AppError::BadRequest(output.content))
+}
+
+/// Display path for API consumers: relative to the primary working directory
+/// when inside it (forward slashes), otherwise the absolute path. Entries in
+/// additional working directories therefore stay addressable by the absolute
+/// paths the API expects for them.
+fn display_path(primary: &FsPath, absolute: &FsPath) -> String {
     absolute
-        .strip_prefix(working_resolved)
-        .unwrap_or(absolute)
-        .to_string_lossy()
+        .strip_prefix(primary)
+        .map(|rel| rel.display().to_string())
+        .unwrap_or_else(|_| absolute.display().to_string())
         .replace(std::path::MAIN_SEPARATOR, "/")
 }
 
@@ -102,17 +131,10 @@ pub async fn list_project_files(
         .await?
         .ok_or_else(|| AppError::NotFound("Project not found".into()))?;
 
-    let working_resolved = PathBuf::from(&project.working_dir)
-        .canonicalize()
-        .map_err(|e| {
-            AppError::BadRequest(format!(
-                "Invalid working directory {}: {e}",
-                project.working_dir
-            ))
-        })?;
+    let (roots, primary) = project_roots(&project)?;
 
     let requested = query.path.as_deref().map(str::trim).unwrap_or("");
-    let target = resolve_within(&working_resolved, requested)?;
+    let target = resolve_within(&roots, requested)?;
     if !target.is_dir() {
         return Err(AppError::BadRequest(format!(
             "{} is not a directory",
@@ -139,7 +161,7 @@ pub async fn list_project_files(
             .is_dir();
         entries.push(FileEntry {
             name,
-            path: relative_path(&working_resolved, &entry.path()),
+            path: display_path(&primary, &entry.path()),
             kind: if is_dir {
                 FileEntryKind::Dir
             } else {
@@ -183,20 +205,13 @@ pub async fn read_project_file(
         .await?
         .ok_or_else(|| AppError::NotFound("Project not found".into()))?;
 
-    let working_resolved = PathBuf::from(&project.working_dir)
-        .canonicalize()
-        .map_err(|e| {
-            AppError::BadRequest(format!(
-                "Invalid working directory {}: {e}",
-                project.working_dir
-            ))
-        })?;
+    let (roots, primary) = project_roots(&project)?;
 
     let requested = query.path.trim();
     if requested.is_empty() {
         return Err(AppError::BadRequest("Missing file path".into()));
     }
-    let target = resolve_within(&working_resolved, requested)?;
+    let target = resolve_within(&roots, requested)?;
     if !target.is_file() {
         return Err(AppError::BadRequest(format!("{requested} is not a file")));
     }
@@ -240,7 +255,7 @@ pub async fn read_project_file(
     };
 
     Ok(Json(FileContent {
-        path: relative_path(&working_resolved, &target),
+        path: display_path(&primary, &target),
         content,
         size,
         truncated,

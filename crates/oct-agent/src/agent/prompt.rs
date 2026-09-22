@@ -1,6 +1,9 @@
 /// Build the system prompt for the coding agent.
-pub fn system_prompt(working_dir: &std::path::Path) -> String {
-    format!(
+pub fn system_prompt(
+    working_dir: &std::path::Path,
+    additional_dirs: &[std::path::PathBuf],
+) -> String {
+    let mut prompt = format!(
         r#"You are a coding agent working in the directory: {working_dir}
 
 You have access to the following tools:
@@ -23,5 +26,18 @@ Guidelines:
 - If you encounter an error, try to diagnose and fix it.
 "#,
         working_dir = working_dir.display()
-    )
+    );
+
+    if !additional_dirs.is_empty() {
+        let list = additional_dirs
+            .iter()
+            .map(|dir| format!("- {}", dir.display()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        prompt.push_str(&format!(
+            "\nAdditional working directories you may also read and write:\n{list}\nAlways refer to these with absolute paths; relative paths are resolved against the main working directory above.\n"
+        ));
+    }
+
+    prompt
 }

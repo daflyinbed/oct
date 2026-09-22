@@ -19,6 +19,7 @@ pub mod read;
 pub mod search_common;
 pub mod shared;
 pub mod truncate;
+pub mod workspace;
 pub mod write;
 
 /// Output from a tool execution.
@@ -253,24 +254,21 @@ pub fn to_tool_spec(tool: &dyn AgentTool) -> oct_llm_provider::core::ToolSpec {
     }
 }
 
-/// Create all default tools for a given working directory.
+/// Create all default tools for a workspace's root directories.
 ///
 /// The file-manipulating tools (read/write/edit) share one
 /// [`shared::ToolSharedState`] so read-before-edit tracking and per-file locks
 /// work across all of them within a single agent run.
-pub fn default_tools(working_dir: std::path::PathBuf) -> Vec<Box<dyn AgentTool>> {
+pub fn default_tools(roots: workspace::WorkspaceRoots) -> Vec<Box<dyn AgentTool>> {
     let shared = std::sync::Arc::new(shared::ToolSharedState::new());
     vec![
-        Box::new(read::ReadFileTool::new(working_dir.clone(), shared.clone())),
-        Box::new(listdir::ListDirTool::new(working_dir.clone())),
-        Box::new(grep::GrepTool::new(working_dir.clone())),
-        Box::new(glob::GlobTool::new(working_dir.clone())),
-        Box::new(write::WriteFileTool::new(
-            working_dir.clone(),
-            shared.clone(),
-        )),
-        Box::new(edit::EditFileTool::new(working_dir.clone(), shared)),
-        Box::new(execute::ExecuteCommandTool::new(working_dir)),
+        Box::new(read::ReadFileTool::new(roots.clone(), shared.clone())),
+        Box::new(listdir::ListDirTool::new(roots.clone())),
+        Box::new(grep::GrepTool::new(roots.clone())),
+        Box::new(glob::GlobTool::new(roots.clone())),
+        Box::new(write::WriteFileTool::new(roots.clone(), shared.clone())),
+        Box::new(edit::EditFileTool::new(roots.clone(), shared)),
+        Box::new(execute::ExecuteCommandTool::new(roots)),
     ]
 }
 

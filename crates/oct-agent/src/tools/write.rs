@@ -3,23 +3,20 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::shared::{ToolSharedState, file_mtime};
+use super::workspace::WorkspaceRoots;
 use super::{AgentTool, ToolContext, ToolOutput};
 
 pub struct WriteFileTool {
-    working_dir: PathBuf,
+    roots: WorkspaceRoots,
     shared: Arc<ToolSharedState>,
 }
 
 impl WriteFileTool {
-    pub fn new(working_dir: PathBuf, shared: Arc<ToolSharedState>) -> Self {
-        Self {
-            working_dir,
-            shared,
-        }
+    pub fn new(roots: WorkspaceRoots, shared: Arc<ToolSharedState>) -> Self {
+        Self { roots, shared }
     }
 }
 
@@ -42,82 +39,12 @@ struct WriteFileArgs {
     create_dirs: Option<bool>,
 }
 
-/// Validate that the target path would be within the working directory.
-/// Unlike read's validate_path, this doesn't require the file to exist already:
-/// for paths that don't exist yet, the deepest existing ancestor is resolved
+/// Validation for write targets lives on [`WorkspaceRoots`]:
+/// `validate_write_path` doesn't require the file to exist already — for
+/// paths that don't exist yet, the deepest existing ancestor is resolved
 /// via canonicalize (following symlinks) and the remaining components are
 /// re-appended, refusing to traverse any symlink in the non-existent tail (it
 /// could redirect the write outside the sandbox).
-pub(crate) fn validate_write_path(
-    working_dir: &Path,
-    requested: &str,
-) -> Result<PathBuf, ToolOutput> {
-    let candidate = if Path::new(requested).is_absolute() {
-        PathBuf::from(requested)
-    } else {
-        working_dir.join(requested)
-    };
-
-    let working_resolved = working_dir
-        .canonicalize()
-        .map_err(|e| ToolOutput::error(format!("Working directory error: {e}")))?;
-
-    // For new files, we check the parent directory
-    let check_path = if candidate.exists() {
-        candidate
-            .canonicalize()
-            .map_err(|e| ToolOutput::error(format!("Path resolution error: {e}")))?
-    } else {
-        // For files that don't exist yet, walk up to the deepest existing
-        // ancestor and canonicalize it so symlinked directories cannot point
-        // outside the sandbox.
-        let mut ancestor = candidate.clone();
-        let mut rest: Vec<std::ffi::OsString> = Vec::new();
-        while !ancestor.exists() {
-            let Some(name) = ancestor.file_name().map(|n| n.to_os_string()) else {
-                break;
-            };
-            let Some(parent) = ancestor.parent().map(Path::to_path_buf) else {
-                break;
-            };
-            rest.push(name);
-            ancestor = parent;
-        }
-        let resolved_ancestor = ancestor
-            .canonicalize()
-            .map_err(|e| ToolOutput::error(format!("Path resolution error: {e}")))?;
-        let mut resolved = resolved_ancestor;
-        // Once a component does not exist, deeper ones cannot either, so only
-        // symlink-check the existing prefix but keep appending the rest.
-        let mut exists_so_far = true;
-        for name in rest.iter().rev() {
-            resolved.push(name);
-            if !exists_so_far {
-                continue;
-            }
-            match std::fs::symlink_metadata(&resolved) {
-                // Refuse to write through a symlink (existing or dangling);
-                // its target could be outside the working directory.
-                Ok(m) if m.file_type().is_symlink() => {
-                    return Err(ToolOutput::error(format!(
-                        "Access denied: {requested} traverses a symbolic link"
-                    )));
-                }
-                Ok(_) => {}
-                Err(_) => exists_so_far = false,
-            }
-        }
-        resolved
-    };
-
-    if !check_path.starts_with(&working_resolved) {
-        return Err(ToolOutput::error(format!(
-            "Access denied: {requested} is outside the working directory"
-        )));
-    }
-
-    Ok(check_path)
-}
 
 #[async_trait]
 impl AgentTool for WriteFileTool {
@@ -145,7 +72,7 @@ impl AgentTool for WriteFileTool {
         let args: WriteFileArgs =
             serde_json::from_value(args).context("Invalid arguments for write_file")?;
 
-        let resolved = match validate_write_path(&self.working_dir, &args.path) {
+        let resolved = match self.roots.validate_write_path(&args.path) {
             Ok(p) => p,
             Err(output) => return Ok(output),
         };
@@ -200,6 +127,7 @@ impl AgentTool for WriteFileTool {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::path::PathBuf;
 
     /// A ToolContext wired to a throwaway event hub; write_file does
     /// not stream, so the context is only needed for the trait signature.
@@ -225,7 +153,7 @@ mod tests {
             std::fs::create_dir_all(&dir).unwrap();
             let shared = Arc::new(ToolSharedState::new());
             Self {
-                write: WriteFileTool::new(dir.clone(), shared),
+                write: WriteFileTool::new(WorkspaceRoots::new(dir.clone(), vec![]), shared),
                 dir,
             }
         }
@@ -288,7 +216,7 @@ mod tests {
         std::os::unix::fs::symlink("../outside", base.join("wd/link")).unwrap();
 
         let shared = Arc::new(ToolSharedState::new());
-        let tool = WriteFileTool::new(base.join("wd"), shared);
+        let tool = WriteFileTool::new(WorkspaceRoots::new(base.join("wd"), vec![]), shared);
         let out = tool
             .execute(
                 json!({ "path": "link/new.txt", "content": "x" }),
@@ -330,7 +258,7 @@ mod tests {
         std::os::unix::fs::symlink("../outside/f.txt", base.join("wd/f.txt")).unwrap();
 
         let shared = Arc::new(ToolSharedState::new());
-        let tool = WriteFileTool::new(base.join("wd"), shared);
+        let tool = WriteFileTool::new(WorkspaceRoots::new(base.join("wd"), vec![]), shared);
         let out = tool
             .execute(json!({ "path": "f.txt", "content": "x" }), &noop_ctx())
             .await

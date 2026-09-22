@@ -3,12 +3,12 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::time::Instant;
 
 use super::truncate::{MAX_TOOL_OUTPUT_BYTES, truncate_middle};
+use super::workspace::WorkspaceRoots;
 use super::{AgentTool, OutputStream, ToolContext, ToolOutput};
 
 /// Timeout applied when the caller does not request one.
@@ -32,12 +32,12 @@ const READ_CHUNK_SIZE: usize = 8192;
 const TIMEOUT_EXIT_CODE: i32 = 124;
 
 pub struct ExecuteCommandTool {
-    working_dir: PathBuf,
+    roots: WorkspaceRoots,
 }
 
 impl ExecuteCommandTool {
-    pub fn new(working_dir: PathBuf) -> Self {
-        Self { working_dir }
+    pub fn new(roots: WorkspaceRoots) -> Self {
+        Self { roots }
     }
 }
 
@@ -263,12 +263,12 @@ impl AgentTool for ExecuteCommandTool {
             serde_json::from_value(args).context("Invalid arguments for execute_command")?;
 
         let cwd = if let Some(ref dir) = args.working_dir {
-            match super::read::validate_path_within(&self.working_dir, dir) {
+            match self.roots.validate_path(dir) {
                 Ok(p) => p,
                 Err(output) => return Ok(output),
             }
         } else {
-            self.working_dir.clone()
+            self.roots.primary().to_path_buf()
         };
 
         let timeout_secs = args
@@ -458,7 +458,7 @@ mod tests {
 
     #[tokio::test]
     async fn captures_output_and_exit_code() {
-        let tool = ExecuteCommandTool::new(std::env::temp_dir());
+        let tool = ExecuteCommandTool::new(WorkspaceRoots::new(std::env::temp_dir(), vec![]));
         let out = tool
             .execute(json!({ "command": "echo hello" }), &TestCtx::new().ctx)
             .await
@@ -470,7 +470,7 @@ mod tests {
 
     #[tokio::test]
     async fn reports_stderr_and_nonzero_exit() {
-        let tool = ExecuteCommandTool::new(std::env::temp_dir());
+        let tool = ExecuteCommandTool::new(WorkspaceRoots::new(std::env::temp_dir(), vec![]));
         let out = tool
             .execute(
                 json!({ "command": "echo oops >&2; exit 3" }),
@@ -489,7 +489,7 @@ mod tests {
 
     #[tokio::test]
     async fn zero_timeout_is_floored_to_one_second() {
-        let tool = ExecuteCommandTool::new(std::env::temp_dir());
+        let tool = ExecuteCommandTool::new(WorkspaceRoots::new(std::env::temp_dir(), vec![]));
         let out = tool
             .execute(
                 json!({ "command": "echo hi", "timeout_secs": 0 }),
@@ -506,7 +506,7 @@ mod tests {
 
     #[tokio::test]
     async fn timeout_kills_process_group_and_reports_124() {
-        let tool = ExecuteCommandTool::new(std::env::temp_dir());
+        let tool = ExecuteCommandTool::new(WorkspaceRoots::new(std::env::temp_dir(), vec![]));
         let started = std::time::Instant::now();
         // The backgrounded grandchild holds the pipe open; only a process-group
         // kill (not just killing sh) makes this return promptly.
@@ -535,7 +535,7 @@ mod tests {
 
     #[tokio::test]
     async fn details_describe_a_successful_run() {
-        let tool = ExecuteCommandTool::new(std::env::temp_dir());
+        let tool = ExecuteCommandTool::new(WorkspaceRoots::new(std::env::temp_dir(), vec![]));
         let out = tool
             .execute(json!({ "command": "echo hi" }), &TestCtx::new().ctx)
             .await
@@ -557,7 +557,7 @@ mod tests {
 
     #[tokio::test]
     async fn details_flag_middle_truncation_of_huge_output() {
-        let tool = ExecuteCommandTool::new(std::env::temp_dir());
+        let tool = ExecuteCommandTool::new(WorkspaceRoots::new(std::env::temp_dir(), vec![]));
         // `seq 1 20000` produces ~108KB, well past the 50KB content cap.
         let out = tool
             .execute(json!({ "command": "seq 1 20000" }), &TestCtx::new().ctx)
@@ -581,7 +581,7 @@ mod tests {
 
     #[tokio::test]
     async fn streams_decoded_output_as_deltas() {
-        let tool = ExecuteCommandTool::new(std::env::temp_dir());
+        let tool = ExecuteCommandTool::new(WorkspaceRoots::new(std::env::temp_dir(), vec![]));
         let test_ctx = TestCtx::new();
 
         let out = tool

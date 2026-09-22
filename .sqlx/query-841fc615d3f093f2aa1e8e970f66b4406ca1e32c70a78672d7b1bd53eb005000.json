@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, name, working_dir, created_at, updated_at FROM projects ORDER BY updated_at DESC",
+  "query": "SELECT id, name, working_dir, additional_dirs AS \"additional_dirs: _\", created_at, updated_at FROM projects ORDER BY updated_at DESC",
   "describe": {
     "columns": [
       {
@@ -19,13 +19,18 @@
         "type_info": "Text"
       },
       {
-        "name": "created_at",
+        "name": "additional_dirs: _",
         "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 4,
         "type_info": "Datetime"
       },
       {
         "name": "updated_at",
-        "ordinal": 4,
+        "ordinal": 5,
         "type_info": "Datetime"
       }
     ],
@@ -37,8 +42,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "0e044f006cdce9e19a18bc06b07211f99dea7516d935c3a0be39b00ee94bca44"
+  "hash": "841fc615d3f093f2aa1e8e970f66b4406ca1e32c70a78672d7b1bd53eb005000"
 }

@@ -18,9 +18,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use super::read::validate_path_within;
-use super::search_common::{relativize, search_walk_builder, timeout_note};
+use super::search_common::{search_walk_builder, timeout_note};
 use super::truncate::{MAX_TOOL_OUTPUT_BYTES, truncate_line, truncate_middle};
+use super::workspace::{WorkspaceRoots, relativize_roots};
 use super::{AgentTool, ToolContext, ToolOutput};
 
 /// Wall-clock budget for one grep run.
@@ -43,12 +43,12 @@ const MAX_FILES_LIMIT: usize = 10_000;
 const CONTENT_COLLECT_CAP_BYTES: usize = 400_000;
 
 pub struct GrepTool {
-    working_dir: PathBuf,
+    roots: WorkspaceRoots,
 }
 
 impl GrepTool {
-    pub fn new(working_dir: PathBuf) -> Self {
-        Self { working_dir }
+    pub fn new(roots: WorkspaceRoots) -> Self {
+        Self { roots }
     }
 }
 
@@ -146,19 +146,19 @@ impl AgentTool for GrepTool {
         let args: GrepArgs = serde_json::from_value(args).context("Invalid arguments for grep")?;
 
         let root = match args.path.as_deref() {
-            Some(path) => match validate_path_within(&self.working_dir, path) {
+            Some(path) => match self.roots.validate_path(path) {
                 Ok(resolved) => resolved,
                 Err(output) => return Ok(output),
             },
             None => self
-                .working_dir
+                .roots
+                .primary()
                 .canonicalize()
-                .unwrap_or_else(|_| self.working_dir.clone()),
+                .unwrap_or_else(|_| self.roots.primary().to_path_buf()),
         };
-        let working_canonical = self
-            .working_dir
-            .canonicalize()
-            .unwrap_or_else(|_| self.working_dir.clone());
+        // Canonicalize the display roots once so the walk does not hit the
+        // filesystem again for every rendered match.
+        let display_roots = self.roots.display_roots();
 
         let mode = match args.output_mode.as_deref() {
             None | Some("content") => OutputMode::Content,
@@ -211,7 +211,7 @@ impl AgentTool for GrepTool {
             };
             let mode_str = config.mode.as_str().to_string();
             let (mut output, stats) =
-                run_search(working_canonical, root, matcher, glob_matcher, config);
+                run_search(display_roots, root, matcher, glob_matcher, config);
             output.details = serde_json::to_value(GrepDetails {
                 title: pattern.clone(),
                 pattern,
@@ -357,7 +357,7 @@ fn line_text(bytes: &[u8]) -> String {
 /// Walk the search root and collect results for the requested output mode.
 /// Runs entirely on a blocking thread. Also returns the UI-facing stats.
 fn run_search(
-    working_canonical: PathBuf,
+    display_roots: Vec<PathBuf>,
     root: PathBuf,
     matcher: grep_regex::RegexMatcher,
     glob_matcher: Option<globset::GlobMatcher>,
@@ -419,7 +419,7 @@ fn run_search(
             continue;
         }
 
-        let display = relativize(&working_canonical, path);
+        let display = relativize_roots(&display_roots, path);
         match config.mode {
             OutputMode::Content => {
                 let mut sink = ContentSink {
@@ -569,7 +569,7 @@ mod tests {
         std::fs::create_dir_all(wd.join("sub")).unwrap();
         std::fs::write(wd.join("sub/b.rs"), "let x = 1; // TODO: here\n").unwrap();
 
-        let out = GrepTool::new(wd.clone())
+        let out = GrepTool::new(WorkspaceRoots::new(wd.clone(), vec![]))
             .execute(serde_json::json!({ "pattern": "TODO" }), &noop_ctx())
             .await
             .unwrap();
@@ -587,14 +587,14 @@ mod tests {
         let wd = temp_workspace("case");
         std::fs::write(wd.join("greet.txt"), "Hello World\n").unwrap();
 
-        let sensitive = GrepTool::new(wd.clone())
+        let sensitive = GrepTool::new(WorkspaceRoots::new(wd.clone(), vec![]))
             .execute(serde_json::json!({ "pattern": "hello world" }), &noop_ctx())
             .await
             .unwrap();
         assert!(!sensitive.is_error);
         assert!(sensitive.content.contains("Found 0 matching lines"));
 
-        let insensitive = GrepTool::new(wd.clone())
+        let insensitive = GrepTool::new(WorkspaceRoots::new(wd.clone(), vec![]))
             .execute(
                 serde_json::json!({
                     "pattern": "hello world",
@@ -619,7 +619,7 @@ mod tests {
         std::fs::create_dir_all(wd.join("sub")).unwrap();
         std::fs::write(wd.join("sub/c.rs"), "NEEDLE\n").unwrap();
 
-        let out = GrepTool::new(wd.clone())
+        let out = GrepTool::new(WorkspaceRoots::new(wd.clone(), vec![]))
             .execute(
                 serde_json::json!({ "pattern": "NEEDLE", "glob": "*.rs" }),
                 &noop_ctx(),
@@ -646,7 +646,7 @@ mod tests {
         std::fs::write(wd.join("sub/b.txt"), "NEEDLE\nelsewhere\n").unwrap();
         std::fs::write(wd.join("c.txt"), "nothing here\n").unwrap();
 
-        let out = GrepTool::new(wd.clone())
+        let out = GrepTool::new(WorkspaceRoots::new(wd.clone(), vec![]))
             .execute(
                 serde_json::json!({
                     "pattern": "NEEDLE",
@@ -674,7 +674,7 @@ mod tests {
         std::fs::write(wd.join("a.txt"), "one\ntwo\none\n").unwrap();
         std::fs::write(wd.join("b.txt"), "one\n").unwrap();
 
-        let out = GrepTool::new(wd.clone())
+        let out = GrepTool::new(WorkspaceRoots::new(wd.clone(), vec![]))
             .execute(
                 serde_json::json!({ "pattern": "one", "output_mode": "count" }),
                 &noop_ctx(),
@@ -697,7 +697,7 @@ mod tests {
             std::fs::write(wd.join(format!("f{i}.txt")), "NEEDLE\n").unwrap();
         }
 
-        let out = GrepTool::new(wd.clone())
+        let out = GrepTool::new(WorkspaceRoots::new(wd.clone(), vec![]))
             .execute(
                 serde_json::json!({ "pattern": "NEEDLE", "head_limit": 2 }),
                 &noop_ctx(),
@@ -735,7 +735,7 @@ mod tests {
         std::fs::create_dir_all(wd.join("sub/node_modules")).unwrap();
         std::fs::write(wd.join("sub/node_modules/nested.js"), "NEEDLE\n").unwrap();
 
-        let out = GrepTool::new(wd.clone())
+        let out = GrepTool::new(WorkspaceRoots::new(wd.clone(), vec![]))
             .execute(
                 serde_json::json!({
                     "pattern": "NEEDLE",
@@ -761,7 +761,7 @@ mod tests {
         std::fs::write(wd.join("blob.bin"), b"\x00NEEDLE\x00binary data\n").unwrap();
         std::fs::write(wd.join("text.txt"), "NEEDLE\n").unwrap();
 
-        let out = GrepTool::new(wd.clone())
+        let out = GrepTool::new(WorkspaceRoots::new(wd.clone(), vec![]))
             .execute(
                 serde_json::json!({
                     "pattern": "NEEDLE",
@@ -785,7 +785,7 @@ mod tests {
         let wd = temp_workspace("outside");
         let outside = wd.parent().unwrap().to_path_buf();
 
-        let out = GrepTool::new(wd.clone())
+        let out = GrepTool::new(WorkspaceRoots::new(wd.clone(), vec![]))
             .execute(
                 serde_json::json!({
                     "pattern": "anything",
@@ -807,7 +807,7 @@ mod tests {
         let wd = temp_workspace("fileglob");
         std::fs::write(wd.join("a.rs"), "NEEDLE\n").unwrap();
 
-        let out = GrepTool::new(wd.clone())
+        let out = GrepTool::new(WorkspaceRoots::new(wd.clone(), vec![]))
             .execute(
                 serde_json::json!({
                     "pattern": "NEEDLE", "path": "a.rs", "glob": "*.rs"
@@ -820,7 +820,7 @@ mod tests {
         assert!(out.content.contains("Found 1 matching lines"));
 
         // A filter that does not match the file name yields zero results.
-        let out = GrepTool::new(wd.clone())
+        let out = GrepTool::new(WorkspaceRoots::new(wd.clone(), vec![]))
             .execute(
                 serde_json::json!({
                     "pattern": "NEEDLE", "path": "a.rs", "glob": "*.txt"
@@ -838,7 +838,7 @@ mod tests {
     async fn invalid_regex_is_an_error() {
         let wd = temp_workspace("badregex");
 
-        let out = GrepTool::new(wd.clone())
+        let out = GrepTool::new(WorkspaceRoots::new(wd.clone(), vec![]))
             .execute(serde_json::json!({ "pattern": "([" }), &noop_ctx())
             .await
             .unwrap();

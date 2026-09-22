@@ -3,24 +3,21 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::shared::{ToolSharedState, file_mtime};
 use super::truncate::{MAX_LINE_CHARS, MAX_TOOL_OUTPUT_BYTES, truncate_line, truncate_middle};
+use super::workspace::WorkspaceRoots;
 use super::{AgentTool, ToolContext, ToolOutput};
 
 pub struct ReadFileTool {
-    working_dir: PathBuf,
+    roots: WorkspaceRoots,
     shared: Arc<ToolSharedState>,
 }
 
 impl ReadFileTool {
-    pub fn new(working_dir: PathBuf, shared: Arc<ToolSharedState>) -> Self {
-        Self {
-            working_dir,
-            shared,
-        }
+    pub fn new(roots: WorkspaceRoots, shared: Arc<ToolSharedState>) -> Self {
+        Self { roots, shared }
     }
 }
 
@@ -45,31 +42,6 @@ struct ReadFileArgs {
     start_line: Option<usize>,
     /// End line number (1-indexed, inclusive). Omit to read until end.
     end_line: Option<usize>,
-}
-
-/// Validate that the resolved path is within the working directory.
-pub(crate) fn validate_path(working_dir: &Path, requested: &str) -> Result<PathBuf, ToolOutput> {
-    let candidate = if Path::new(requested).is_absolute() {
-        PathBuf::from(requested)
-    } else {
-        working_dir.join(requested)
-    };
-
-    let resolved = candidate
-        .canonicalize()
-        .map_err(|e| ToolOutput::error(format!("Path not found: {requested} ({e})")))?;
-
-    let working_resolved = working_dir
-        .canonicalize()
-        .map_err(|e| ToolOutput::error(format!("Working directory error: {e}")))?;
-
-    if !resolved.starts_with(&working_resolved) {
-        return Err(ToolOutput::error(format!(
-            "Access denied: {requested} is outside the working directory"
-        )));
-    }
-
-    Ok(resolved)
 }
 
 #[async_trait]
@@ -98,7 +70,7 @@ impl AgentTool for ReadFileTool {
         let args: ReadFileArgs =
             serde_json::from_value(args).context("Invalid arguments for read_file")?;
 
-        let resolved = match validate_path(&self.working_dir, &args.path) {
+        let resolved = match self.roots.validate_path(&args.path) {
             Ok(p) => p,
             Err(output) => return Ok(output),
         };
@@ -178,6 +150,3 @@ impl AgentTool for ReadFileTool {
         ))
     }
 }
-
-// Re-export for other tools
-pub(crate) use validate_path as validate_path_within;

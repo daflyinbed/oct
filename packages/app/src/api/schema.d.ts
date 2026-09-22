@@ -408,6 +408,8 @@ export interface components {
             tool_call?: boolean | null;
         };
         CreateProjectRequest: {
+            /** @description Additional working directories (absolute paths). Defaults to empty. */
+            additional_dirs?: string[] | null;
             name: string;
             working_dir: string;
         };
@@ -421,7 +423,10 @@ export interface components {
         FileContent: {
             /** @description UTF-8 text content, truncated to the preview size limit */
             content: string;
-            /** @description Path relative to the project working directory (forward slashes) */
+            /**
+             * @description Path relative to the project working directory (forward slashes), or
+             *     the absolute path for files inside an additional working directory
+             */
             path: string;
             /**
              * Format: int64
@@ -434,7 +439,10 @@ export interface components {
         FileEntry: {
             kind: components["schemas"]["FileEntryKind"];
             name: string;
-            /** @description Path relative to the project working directory (forward slashes) */
+            /**
+             * @description Path relative to the project working directory (forward slashes), or
+             *     the absolute path for entries inside an additional working directory
+             */
             path: string;
         };
         /** @enum {string} */
@@ -496,6 +504,12 @@ export interface components {
          */
         OutputStream: "stdout" | "stderr";
         Project: {
+            /**
+             * @description Additional directories the agent may access via absolute paths,
+             *     stored as a JSON array. Relative paths always anchor to
+             *     `working_dir`; these roots are absolute-only.
+             */
+            additional_dirs?: string[];
             /** Format: date-time */
             created_at: string;
             id: string;
@@ -592,6 +606,11 @@ export interface components {
             tool_call?: boolean | null;
         };
         UpdateProjectRequest: {
+            /**
+             * @description Additional working directories (absolute paths). `None` leaves the
+             *     list unchanged; `Some(vec![])` clears it.
+             */
+            additional_dirs?: string[] | null;
             name?: string | null;
             working_dir?: string | null;
         };
@@ -842,6 +861,13 @@ export interface operations {
                     "application/json": components["schemas"]["Project"];
                 };
             };
+            /** @description Relative additional_dirs entry */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     get_project: {
@@ -920,6 +946,13 @@ export interface operations {
         responses: {
             /** @description Project updated */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Relative additional_dirs entry */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1097,7 +1130,11 @@ export interface operations {
     list_project_files: {
         parameters: {
             query?: {
-                /** @description Directory path relative to the project working directory. Defaults to the root. */
+                /**
+                 * @description Directory path: relative to the project working directory, or an
+                 *     absolute path inside one of its additional working directories.
+                 *     Defaults to the working directory root.
+                 */
                 path?: string | null;
             };
             header?: never;
@@ -1137,7 +1174,10 @@ export interface operations {
     read_project_file: {
         parameters: {
             query: {
-                /** @description File path relative to the project working directory */
+                /**
+                 * @description File path: relative to the project working directory, or an absolute
+                 *     path inside one of its additional working directories
+                 */
                 path: string;
             };
             header?: never;

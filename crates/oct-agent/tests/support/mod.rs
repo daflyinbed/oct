@@ -193,6 +193,7 @@ pub async fn new_conversation(pool: &sqlx::SqlitePool, working_dir: &std::path::
         &db::projects::CreateProjectRequest {
             name: "test-project".to_string(),
             working_dir: working_dir.to_string_lossy().into_owned(),
+            additional_dirs: None,
         },
     )
     .await

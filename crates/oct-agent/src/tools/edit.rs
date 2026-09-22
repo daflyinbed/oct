@@ -3,12 +3,11 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
-use super::read::validate_path_within;
 use super::shared::{ReadCheck, ToolSharedState, file_mtime};
-use super::write::validate_write_path;
+use super::workspace::WorkspaceRoots;
 use super::{AgentTool, ToolContext, ToolOutput};
 
 /// Cap for the file line quoted in the nearest-match hint, in bytes.
@@ -26,22 +25,19 @@ struct EditFileDetails {
 }
 
 pub struct EditFileTool {
-    working_dir: PathBuf,
+    roots: WorkspaceRoots,
     shared: Arc<ToolSharedState>,
 }
 
 impl EditFileTool {
-    pub fn new(working_dir: PathBuf, shared: Arc<ToolSharedState>) -> Self {
-        Self {
-            working_dir,
-            shared,
-        }
+    pub fn new(roots: WorkspaceRoots, shared: Arc<ToolSharedState>) -> Self {
+        Self { roots, shared }
     }
 
     /// Create-new-file path (empty `old_string`). The whole exists-check and
     /// write runs under the per-file lock so concurrent creates cannot race.
     async fn create_file(&self, args: &EditFileArgs) -> Result<ToolOutput> {
-        let resolved = match validate_write_path(&self.working_dir, &args.file_path) {
+        let resolved = match self.roots.validate_write_path(&args.file_path) {
             Ok(p) => p,
             Err(output) => return Ok(output),
         };
@@ -298,7 +294,7 @@ impl AgentTool for EditFileTool {
             return self.create_file(&args).await;
         }
 
-        let resolved = match validate_path_within(&self.working_dir, &args.file_path) {
+        let resolved = match self.roots.validate_path(&args.file_path) {
             Ok(p) => p,
             Err(output) => return Ok(output),
         };
@@ -324,6 +320,7 @@ mod tests {
     use crate::tools::read::ReadFileTool;
     use crate::tools::write::WriteFileTool;
     use serde_json::json;
+    use std::path::PathBuf;
 
     /// A ToolContext wired to a throwaway event hub; edit_file does
     /// not stream, so the context is only needed for the trait signature.
@@ -353,9 +350,9 @@ mod tests {
             std::fs::create_dir_all(&dir).unwrap();
             let shared = Arc::new(ToolSharedState::new());
             Self {
-                edit: EditFileTool::new(dir.clone(), shared.clone()),
-                read: ReadFileTool::new(dir.clone(), shared.clone()),
-                write: WriteFileTool::new(dir.clone(), shared),
+                edit: EditFileTool::new(WorkspaceRoots::new(dir.clone(), vec![]), shared.clone()),
+                read: ReadFileTool::new(WorkspaceRoots::new(dir.clone(), vec![]), shared.clone()),
+                write: WriteFileTool::new(WorkspaceRoots::new(dir.clone(), vec![]), shared),
                 dir,
             }
         }

@@ -1,4 +1,4 @@
-import { readonly, ref } from "vue";
+import { readonly, ref, shallowReadonly } from "vue";
 import client from "@/api/client";
 import type { components } from "@/api/schema";
 
@@ -32,9 +32,17 @@ export function useProjects() {
     loading.value = false;
   };
 
-  const createProject = async (name: string, workingDir: string) => {
+  const createProject = async (
+    name: string,
+    workingDir: string,
+    additionalDirs?: string[],
+  ) => {
     const { data, error } = await client.POST("/api/projects", {
-      body: { name, working_dir: workingDir },
+      body: {
+        name,
+        working_dir: workingDir,
+        ...(additionalDirs ? { additional_dirs: additionalDirs } : {}),
+      },
     });
     if (!error && data) {
       projects.value = [...projects.value, data];
@@ -42,6 +50,35 @@ export function useProjects() {
       return data;
     }
     return null;
+  };
+
+  /**
+   * 编辑项目（名称/主目录/附加目录）。PATCH 成功后重新 GET 单个项目来
+   * 更新本地列表——服务端会对附加目录做归一化（去重、剔除与主目录相同
+   * 的条目），以落库结果为准而不是本地拼接。
+   */
+  const updateProject = async (
+    projectId: string,
+    patch: {
+      name?: string;
+      working_dir?: string;
+      additional_dirs?: string[];
+    },
+  ) => {
+    const { error } = await client.PATCH("/api/projects/{id}", {
+      params: { path: { id: projectId } },
+      body: patch,
+    });
+    if (error) return false;
+    const { data } = await client.GET("/api/projects/{id}", {
+      params: { path: { id: projectId } },
+    });
+    if (data) {
+      projects.value = projects.value.map((p) =>
+        p.id === projectId ? data : p,
+      );
+    }
+    return true;
   };
 
   const createConversation = async (
@@ -100,12 +137,16 @@ export function useProjects() {
   };
 
   return {
-    projects: readonly(projects),
+    // shallowReadonly 而非 readonly：additional_dirs 是数组字段，DeepReadonly
+    // 会把它变成 readonly string[]，与各组件 Project prop 的 string[] 不兼容。
+    // 数组本身仍受只读守卫（不能整体替换/增删项目）。
+    projects: shallowReadonly(projects),
     conversations: readonly(conversations),
     loading: readonly(loading),
     fetchProjects,
     fetchConversations,
     createProject,
+    updateProject,
     createConversation,
     deleteConversation,
     updateConversationTitle,

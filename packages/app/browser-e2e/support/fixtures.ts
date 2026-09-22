@@ -18,6 +18,7 @@ export function projectFixture(id = "p1", name = "demo"): Project {
     id,
     name,
     working_dir: "/tmp/demo",
+    additional_dirs: [],
     created_at: T0,
     updated_at: T0,
   };

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE projects SET name = $1, working_dir = $2, additional_dirs = $3, updated_at = $4 WHERE id = $5",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "ac74e6af19feafda4b43d829cdf7bd5ecee82a249257945fb11bdeda28389a4a"
+}

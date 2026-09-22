@@ -3,13 +3,21 @@ import client from "@/api/client";
 import { useProjects } from "@/composables/useProjects";
 
 vi.mock("@/api/client", () => ({
-  default: { GET: vi.fn(), POST: vi.fn(), DELETE: vi.fn() },
+  default: { GET: vi.fn(), POST: vi.fn(), PATCH: vi.fn(), DELETE: vi.fn() },
 }));
 
 const GET = vi.mocked(client.GET);
+const POST = vi.mocked(client.POST);
+const PATCH = vi.mocked(client.PATCH);
 
-const { conversations, fetchConversations, updateConversationTitle } =
-  useProjects();
+const {
+  projects,
+  conversations,
+  fetchConversations,
+  createProject,
+  updateProject,
+  updateConversationTitle,
+} = useProjects();
 
 function conversation(id: string, title: string) {
   return {
@@ -22,12 +30,116 @@ function conversation(id: string, title: string) {
   };
 }
 
+const T0 = "2026-09-21T00:00:00";
+
+function project(
+  id: string,
+  overrides: Partial<{
+    name: string;
+    working_dir: string;
+    additional_dirs: string[];
+  }> = {},
+) {
+  return {
+    id,
+    name: id,
+    working_dir: `/tmp/${id}`,
+    additional_dirs: [],
+    created_at: T0,
+    updated_at: T0,
+    ...overrides,
+  };
+}
+
 function stubList(list: unknown[]) {
-  GET.mockResolvedValue({ data: list, error: undefined });
+  // openapi-fetch 的 GET 是按路径的重载集合，vi.mocked 只取其中一个签名，
+  // 与实际请求的端点对不上——按仓库惯例整体 as never 绕开。
+  GET.mockResolvedValue({ data: list, error: undefined } as never);
 }
 
 beforeEach(() => {
   GET.mockReset();
+  POST.mockReset();
+  PATCH.mockReset();
+});
+
+describe("createProject / updateProject（附加目录）", () => {
+  it("带附加目录时透传 additional_dirs，成功后追加进项目列表", async () => {
+    POST.mockResolvedValue({
+      data: project("p-create", { additional_dirs: ["/ext"] }),
+      error: undefined,
+    } as never);
+
+    const created = await createProject("multi", "/tmp/multi", ["/ext"]);
+
+    expect(POST).toHaveBeenCalledWith("/api/projects", {
+      body: {
+        name: "multi",
+        working_dir: "/tmp/multi",
+        additional_dirs: ["/ext"],
+      },
+    });
+    expect(created?.id).toBe("p-create");
+    expect(projects.value.some((p) => p.id === "p-create")).toBe(true);
+  });
+
+  it("不传附加目录时请求体不带该字段", async () => {
+    POST.mockResolvedValue({
+      data: project("p-solo"),
+      error: undefined,
+    } as never);
+
+    await createProject("solo", "/tmp/solo");
+
+    const body = (POST.mock.calls[0]?.[1] as unknown as { body: object })
+      ?.body as Record<string, unknown>;
+    expect("additional_dirs" in body).toBe(false);
+  });
+
+  it("updateProject PATCH 成功后重 GET，以服务端归一化结果替换本地条目", async () => {
+    POST.mockResolvedValue({
+      data: project("p-edit", { name: "old" }),
+      error: undefined,
+    } as never);
+    await createProject("old", "/tmp/p-edit");
+
+    PATCH.mockResolvedValue({ data: undefined, error: undefined } as never);
+    // 服务端归一化：去重、剔除与主目录相同的条目。
+    GET.mockResolvedValue({
+      data: project("p-edit", { name: "new", additional_dirs: ["/ext"] }),
+      error: undefined,
+    } as never);
+
+    const ok = await updateProject("p-edit", {
+      name: "new",
+      additional_dirs: ["/ext", "/ext", "/tmp/p-edit"],
+    });
+
+    expect(ok).toBe(true);
+    expect(PATCH).toHaveBeenCalledWith("/api/projects/{id}", {
+      params: { path: { id: "p-edit" } },
+      body: { name: "new", additional_dirs: ["/ext", "/ext", "/tmp/p-edit"] },
+    });
+    const updated = projects.value.find((p) => p.id === "p-edit");
+    expect(updated?.name).toBe("new");
+    expect(updated?.additional_dirs).toEqual(["/ext"]);
+  });
+
+  it("updateProject PATCH 失败返回 false，本地列表不变", async () => {
+    POST.mockResolvedValue({
+      data: project("p-fail", { name: "keep" }),
+      error: undefined,
+    } as never);
+    await createProject("keep", "/tmp/p-fail");
+
+    PATCH.mockResolvedValue({ data: undefined, error: {} } as never);
+
+    const ok = await updateProject("p-fail", { name: "x" });
+
+    expect(ok).toBe(false);
+    expect(projects.value.find((p) => p.id === "p-fail")?.name).toBe("keep");
+    expect(GET).not.toHaveBeenCalled();
+  });
 });
 
 describe("updateConversationTitle（title_updated 事件落地）", () => {

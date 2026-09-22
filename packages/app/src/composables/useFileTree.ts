@@ -11,6 +11,8 @@ export interface TreeNode {
   /** Directories carry an (initially empty) array so reka-ui allows toggling
    * them before their children are lazily fetched; files stay undefined. */
   children?: TreeNode[];
+  /** 附加工作目录的顶层根节点（path 为绝对路径），渲染时以图标区分。 */
+  additionalRoot?: boolean;
 }
 
 const items = ref<TreeNode[]>([]);
@@ -70,7 +72,31 @@ function findNode(path: string): TreeNode | null {
   return null;
 }
 
-async function loadRoot(projectId: string) {
+/** 路径最后一段（"/ext/repo/" → "repo"）；没有非空段时回退原字符串。 */
+function lastSegment(dir: string): string {
+  const segments = dir.split("/").filter(Boolean);
+  return segments.at(-1) ?? dir;
+}
+
+/** 附加目录 → 顶层树节点：名字取路径最后一段，path 保持绝对路径（后端
+ * files 端点按「任一工作目录内的绝对路径」解析）。 */
+function additionalRootNodes(dirs: readonly string[]): TreeNode[] {
+  return dirs
+    .map((dir) => dir.trim())
+    .filter(Boolean)
+    .map((dir) => ({
+      name: lastSegment(dir),
+      path: dir,
+      kind: "dir" as const,
+      children: [],
+      additionalRoot: true,
+    }));
+}
+
+async function loadRoot(
+  projectId: string,
+  additionalDirs: readonly string[] = [],
+) {
   const seq = ++loadSeq;
   currentProjectId = projectId;
   loading.value = true;
@@ -83,7 +109,8 @@ async function loadRoot(projectId: string) {
   try {
     const nodes = await fetchEntries(projectId, "");
     if (seq !== loadSeq) return;
-    items.value = nodes;
+    // 主目录树在前，附加目录作为兄弟的顶层根节点排在后面。
+    items.value = [...nodes, ...additionalRootNodes(additionalDirs)];
     loadedDirs.add("");
   } catch (error_) {
     if (seq === loadSeq)

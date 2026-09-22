@@ -309,11 +309,13 @@ async function handleApi(
     const body = (await readBody(req)) as {
       name?: string;
       working_dir?: string;
+      additional_dirs?: string[];
     };
     const project = {
       id: `p-auto-${++state.autoId}`,
       name: body?.name ?? "Untitled",
       working_dir: body?.working_dir ?? "/tmp",
+      additional_dirs: body?.additional_dirs ?? [],
       created_at: nowIso(),
       updated_at: nowIso(),
     };

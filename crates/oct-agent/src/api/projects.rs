@@ -6,6 +6,24 @@ use super::AppState;
 use super::error::{ApiResult, AppError};
 use crate::db::projects as db;
 
+/// Additional working directories are an absolute-path contract: a relative
+/// entry would otherwise be resolved against the SERVER process's CWD,
+/// silently widening the sandbox to a directory the user never named. Reject
+/// loudly at the API boundary instead of storing or dropping it.
+fn validate_additional_dirs(dirs: &[String]) -> Result<(), AppError> {
+    // Blank entries are accidental noise — normalization drops them; only a
+    // non-empty relative path is a contract violation worth rejecting.
+    if let Some(dir) = dirs.iter().find_map(|d| {
+        let d = d.trim();
+        (!d.is_empty() && !std::path::Path::new(d).is_absolute()).then(|| d)
+    }) {
+        return Err(AppError::BadRequest(format!(
+            "additional_dirs entries must be absolute paths: '{dir}'"
+        )));
+    }
+    Ok(())
+}
+
 #[utoipa::path(
     get,
     path = "/projects",
@@ -24,7 +42,8 @@ pub async fn list_projects(State(state): State<AppState>) -> ApiResult<Json<Vec<
     path = "/projects",
     request_body = db::CreateProjectRequest,
     responses(
-        (status = 201, description = "Created project", body = db::Project)
+        (status = 201, description = "Created project", body = db::Project),
+        (status = 400, description = "Relative additional_dirs entry")
     ),
     tag = "projects"
 )]
@@ -32,6 +51,7 @@ pub async fn create_project(
     State(state): State<AppState>,
     Json(req): Json<db::CreateProjectRequest>,
 ) -> ApiResult<(StatusCode, Json<db::Project>)> {
+    validate_additional_dirs(req.additional_dirs.as_deref().unwrap_or(&[]))?;
     let project = db::create_project(&state.pool, &req).await?;
     Ok((StatusCode::CREATED, Json(project)))
 }
@@ -63,6 +83,7 @@ pub async fn get_project(
     request_body = db::UpdateProjectRequest,
     responses(
         (status = 200, description = "Project updated"),
+        (status = 400, description = "Relative additional_dirs entry"),
         (status = 404, description = "Project not found")
     ),
     tag = "projects"
@@ -72,6 +93,9 @@ pub async fn update_project(
     Path(id): Path<String>,
     Json(req): Json<db::UpdateProjectRequest>,
 ) -> ApiResult<StatusCode> {
+    if let Some(dirs) = req.additional_dirs.as_deref() {
+        validate_additional_dirs(dirs)?;
+    }
     let updated = db::update_project(&state.pool, &id, &req).await?;
     if updated {
         Ok(StatusCode::OK)

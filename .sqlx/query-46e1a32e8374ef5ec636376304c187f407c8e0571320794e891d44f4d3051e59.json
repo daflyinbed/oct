@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO projects (id, name, working_dir, additional_dirs, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "46e1a32e8374ef5ec636376304c187f407c8e0571320794e891d44f4d3051e59"
+}

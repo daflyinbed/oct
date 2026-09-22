@@ -92,7 +92,7 @@
       <DropdownMenuRoot>
         <DropdownMenuTrigger
           class="h-[26px] inline-flex items-center gap-1.5 rounded-md px-2 text-[12.5px] text-neutral-10 font-medium outline-none transition-colors data-[state=open]:bg-neutral-1 hover:bg-neutral-1"
-          :title="activeProject?.working_dir"
+          :title="activeProjectTooltip"
         >
           <i-lucide-folder class="h-3.5 w-3.5 text-dim" />
           <span class="max-w-[180px] truncate">{{
@@ -119,11 +119,25 @@
             >
               <span class="truncate">{{ project.name }}</span>
               <span
+                v-if="additionalCount(project) > 0"
+                class="text-[10px] text-faint"
+                :title="(project.additional_dirs ?? []).join('\n')"
+              >
+                +{{ additionalCount(project) }}
+              </span>
+              <span
                 class="ml-auto max-w-[140px] flex-none truncate text-[11px] text-faint font-mono"
                 >{{ project.working_dir }}</span
               >
             </DropdownMenuItem>
             <DropdownMenuSeparator class="mx-1 my-1 h-px bg-line-soft" />
+            <DropdownMenuItem
+              class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-[12.5px] text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
+              @select="$emit('editProject')"
+            >
+              <i-lucide-sliders-horizontal class="h-3.5 w-3.5 text-dim" />
+              Project Settings…
+            </DropdownMenuItem>
             <DropdownMenuItem
               class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-[12.5px] text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
               @select="$emit('createProject')"
@@ -193,12 +207,26 @@ const props = defineProps<{
 defineEmits<{
   selectProject: [projectId: string];
   createProject: [];
+  editProject: [];
   openSettings: [];
 }>();
 
 const activeProject = computed(() =>
   props.projects.find((project) => project.id === props.activeProjectId),
 );
+
+/** 附加工作目录数量；0 表示项目只有主目录。 */
+function additionalCount(project: Project): number {
+  return project.additional_dirs?.length ?? 0;
+}
+
+/** 悬浮提示：主目录 + 各附加目录，一行一个。 */
+const activeProjectTooltip = computed(() => {
+  const project = activeProject.value;
+  if (!project) return undefined;
+  const dirs = [project.working_dir, ...(project.additional_dirs ?? [])];
+  return dirs.join("\n");
+});
 
 function focusComposer() {
   // 菜单关闭时 reka-ui 会在下一帧把焦点还给触发按钮，排在其后同帧再聚焦输入框

@@ -5,6 +5,7 @@
       :active-project-id="activeProjectId"
       @select-project="handleSelectProject"
       @create-project="showNewProject = true"
+      @edit-project="editingProject = activeProject ?? null"
       @open-settings="showSettings = true"
     />
 
@@ -112,6 +113,7 @@
         <FileTreePanel
           :visible="showFileTree"
           :project-id="activeProjectId"
+          :additional-dirs="activeProject?.additional_dirs ?? []"
           @close="showFileTree = false"
           @open-file="handleOpenFile"
         />
@@ -139,9 +141,11 @@
     />
 
     <SettingsModal :visible="showSettings" @close="showSettings = false" />
-    <NewProjectDialog
-      :visible="showNewProject"
-      @close="showNewProject = false"
+    <!-- 新建与编辑共用一个对话框：project 为 null 时是新建模式。 -->
+    <ProjectDialog
+      :visible="showNewProject || editingProject !== null"
+      :project="editingProject"
+      @close="closeProjectDialog"
     />
   </div>
 </template>
@@ -153,7 +157,7 @@ import { useRoute, useRouter } from "vue-router";
 import BottomBar from "@/components/BottomBar.vue";
 import DiffPanel from "@/components/diff/DiffPanel.vue";
 import FileTreePanel from "@/components/file-tree/FileTreePanel.vue";
-import NewProjectDialog from "@/components/layout/NewProjectDialog.vue";
+import ProjectDialog from "@/components/layout/ProjectDialog.vue";
 import WorkspaceTabBar from "@/components/layout/WorkspaceTabBar.vue";
 import SettingsModal from "@/components/settings/SettingsModal.vue";
 import ProjectSidebar from "@/components/sidebar/ProjectSidebar.vue";
@@ -164,6 +168,7 @@ import { onTitleUpdated, useChat } from "@/composables/useChat";
 import { useProjects } from "@/composables/useProjects";
 import { useProviders } from "@/composables/useProviders";
 import { useTabs } from "@/composables/useTabs";
+import type { components } from "@/api/schema";
 import type { TabAction } from "@/components/layout/WorkspaceTabBar.vue";
 
 const route = useRoute();
@@ -214,12 +219,23 @@ const activeProjectId = computed(() => {
   return null;
 });
 
+const activeProject = computed(() =>
+  projects.value.find((project) => project.id === activeProjectId.value),
+);
+
 const showSidebar = ref(true);
 const showChat = ref(true);
 const showDiffPanel = ref(true);
 const showFileTree = ref(true);
 const showSettings = ref(false);
 const showNewProject = ref(false);
+/** 非空 = 编辑该项目；与 showNewProject 共用 ProjectDialog。 */
+const editingProject = ref<components["schemas"]["Project"] | null>(null);
+
+function closeProjectDialog() {
+  showNewProject.value = false;
+  editingProject.value = null;
+}
 
 const hasVisiblePanel = computed(
   () =>

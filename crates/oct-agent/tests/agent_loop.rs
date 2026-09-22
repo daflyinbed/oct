@@ -75,7 +75,10 @@ async fn plain_text_turn_streams_and_persists_assistant_message() {
 
     let (_handle, mut rx) = spawn_agent(
         model,
-        tools::default_tools(env.dir.path().to_path_buf()),
+        tools::default_tools(tools::workspace::WorkspaceRoots::new(
+            env.dir.path().to_path_buf(),
+            vec![],
+        )),
         env.pool.clone(),
         &conv_id,
         "hi",
@@ -132,7 +135,10 @@ async fn reasoning_deltas_persist_and_feed_back_into_next_request() {
 
     let (_handle, mut rx) = spawn_agent(
         model,
-        tools::default_tools(env.dir.path().to_path_buf()),
+        tools::default_tools(tools::workspace::WorkspaceRoots::new(
+            env.dir.path().to_path_buf(),
+            vec![],
+        )),
         env.pool.clone(),
         &conv_id,
         "look around",
@@ -209,7 +215,10 @@ async fn tool_call_round_trip_executes_tool_and_feeds_result_back() {
 
     let (_handle, mut rx) = spawn_agent(
         model,
-        tools::default_tools(env.dir.path().to_path_buf()),
+        tools::default_tools(tools::workspace::WorkspaceRoots::new(
+            env.dir.path().to_path_buf(),
+            vec![],
+        )),
         env.pool.clone(),
         &conv_id,
         "read a.txt",
@@ -299,6 +308,55 @@ async fn tool_call_round_trip_executes_tool_and_feeds_result_back() {
 }
 
 #[tokio::test]
+async fn tool_reads_additional_dir_file_via_absolute_path() {
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+    // A second temp dir plays the role of the project's additional working
+    // directory: reachable only through its absolute path.
+    let extra = tempfile::tempdir().expect("additional temp dir");
+    tokio::fs::write(extra.path().join("notes.md"), "extra\ncontext\n")
+        .await
+        .unwrap();
+    let abs = extra.path().join("notes.md").display().to_string();
+
+    let model = ScriptedModel::new(vec![
+        Turn::Stream(vec![
+            tool_call("call-1", "read_file", json!({"path": abs})),
+            finish(FinishReason::ToolCalls),
+        ]),
+        Turn::Stream(vec![text("done"), finish(FinishReason::Stop)]),
+    ]);
+
+    let (_handle, mut rx) = spawn_agent(
+        model,
+        tools::default_tools(tools::workspace::WorkspaceRoots::new(
+            env.dir.path().to_path_buf(),
+            vec![extra.path().to_path_buf()],
+        )),
+        env.pool.clone(),
+        &conv_id,
+        "read the notes in the additional dir",
+    )
+    .await;
+    let events = collect_events(&mut rx, is_terminal).await;
+
+    let (content, is_error) = events
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::ToolResult {
+                call_id,
+                content,
+                is_error,
+                ..
+            } if call_id == "call-1" => Some((content.clone(), *is_error)),
+            _ => None,
+        })
+        .expect("tool result for the additional-dir read");
+    assert!(!is_error);
+    assert_eq!(content, "1. extra\n2. context");
+}
+
+#[tokio::test]
 async fn tool_call_without_tool_calls_finish_reason_ends_loop_without_executing() {
     let env = TestEnv::new().await;
     let conv_id = new_conversation(&env.pool, env.dir.path()).await;
@@ -313,7 +371,10 @@ async fn tool_call_without_tool_calls_finish_reason_ends_loop_without_executing(
 
     let (_handle, mut rx) = spawn_agent(
         model,
-        tools::default_tools(env.dir.path().to_path_buf()),
+        tools::default_tools(tools::workspace::WorkspaceRoots::new(
+            env.dir.path().to_path_buf(),
+            vec![],
+        )),
         env.pool.clone(),
         &conv_id,
         "hi",
@@ -356,7 +417,10 @@ async fn unknown_tool_reports_error_back_to_model() {
 
     let (_handle, mut rx) = spawn_agent(
         model,
-        tools::default_tools(env.dir.path().to_path_buf()),
+        tools::default_tools(tools::workspace::WorkspaceRoots::new(
+            env.dir.path().to_path_buf(),
+            vec![],
+        )),
         env.pool.clone(),
         &conv_id,
         "hi",
@@ -408,7 +472,10 @@ async fn parallel_tool_calls_all_execute_and_feed_back() {
 
     let (_handle, mut rx) = spawn_agent(
         model,
-        tools::default_tools(env.dir.path().to_path_buf()),
+        tools::default_tools(tools::workspace::WorkspaceRoots::new(
+            env.dir.path().to_path_buf(),
+            vec![],
+        )),
         env.pool.clone(),
         &conv_id,
         "hi",
@@ -456,7 +523,10 @@ async fn cancel_before_loop_starts_sends_no_request() {
 
     let (handle, mut rx) = spawn_agent(
         model,
-        tools::default_tools(env.dir.path().to_path_buf()),
+        tools::default_tools(tools::workspace::WorkspaceRoots::new(
+            env.dir.path().to_path_buf(),
+            vec![],
+        )),
         env.pool.clone(),
         &conv_id,
         "hi",
@@ -481,7 +551,10 @@ async fn cancel_during_streaming_emits_cancelled_without_finish() {
 
     let (handle, mut rx) = spawn_agent(
         model,
-        tools::default_tools(env.dir.path().to_path_buf()),
+        tools::default_tools(tools::workspace::WorkspaceRoots::new(
+            env.dir.path().to_path_buf(),
+            vec![],
+        )),
         env.pool.clone(),
         &conv_id,
         "hi",
@@ -563,7 +636,10 @@ async fn stream_start_failure_emits_error_event() {
 
     let (_handle, mut rx) = spawn_agent(
         model,
-        tools::default_tools(env.dir.path().to_path_buf()),
+        tools::default_tools(tools::workspace::WorkspaceRoots::new(
+            env.dir.path().to_path_buf(),
+            vec![],
+        )),
         env.pool.clone(),
         &conv_id,
         "hi",
@@ -589,7 +665,10 @@ async fn mid_stream_error_emits_error_event_and_stops() {
 
     let (_handle, mut rx) = spawn_agent(
         model,
-        tools::default_tools(env.dir.path().to_path_buf()),
+        tools::default_tools(tools::workspace::WorkspaceRoots::new(
+            env.dir.path().to_path_buf(),
+            vec![],
+        )),
         env.pool.clone(),
         &conv_id,
         "hi",
@@ -603,4 +682,73 @@ async fn mid_stream_error_emits_error_event_and_stops() {
     };
     assert!(msg.starts_with("Stream error:"), "got: {msg}");
     assert!(!events.iter().any(|e| matches!(e, AgentEvent::Finish)));
+}
+
+/// A project with additional working directories: the tools must read (by
+/// absolute path) inside the additional root, mirroring how the API layer
+/// builds WorkspaceRoots from the project row.
+#[tokio::test]
+async fn tools_read_files_inside_additional_working_dirs() {
+    let env = TestEnv::new().await;
+    let extra = tempfile::tempdir().expect("create additional dir");
+    tokio::fs::write(extra.path().join("notes.md"), "extra context\n")
+        .await
+        .unwrap();
+
+    // Persist the project with the additional dir so the row reflects what
+    // the API would hand to the agent loop (normalization drops nothing here).
+    let project = db::projects::create_project(
+        &env.pool,
+        &db::projects::CreateProjectRequest {
+            name: "multi-root".to_string(),
+            working_dir: env.dir.path().to_string_lossy().into_owned(),
+            additional_dirs: Some(vec![extra.path().to_string_lossy().into_owned()]),
+        },
+    )
+    .await
+    .expect("create multi-root project");
+    assert_eq!(
+        project.additional_dirs.0,
+        vec![extra.path().to_string_lossy().into_owned()]
+    );
+
+    let conv = db::conversations::create_conversation(&env.pool, &project.id, Some("test"))
+        .await
+        .expect("create conversation");
+
+    let extra_file = extra.path().join("notes.md");
+    let model = ScriptedModel::new(vec![
+        Turn::Stream(vec![
+            tool_call("call-1", "read_file", json!({ "path": extra_file })),
+            finish(FinishReason::ToolCalls),
+        ]),
+        Turn::Stream(vec![text("done"), finish(FinishReason::Stop)]),
+    ]);
+
+    let (_handle, mut rx) = spawn_agent(
+        model,
+        tools::default_tools(tools::workspace::WorkspaceRoots::new(
+            env.dir.path().to_path_buf(),
+            vec![extra.path().to_path_buf()],
+        )),
+        env.pool.clone(),
+        &conv.id,
+        "read the notes",
+    )
+    .await;
+    let events = collect_events(&mut rx, is_terminal).await;
+
+    match events
+        .iter()
+        .find(|e| matches!(e, AgentEvent::ToolResult { .. }))
+    {
+        Some(AgentEvent::ToolResult {
+            content, is_error, ..
+        }) => {
+            assert!(!*is_error);
+            assert!(content.contains("extra context"));
+        }
+        other => panic!("expected ToolResult, got {other:?}"),
+    }
+    assert_eq!(*events.last().unwrap(), AgentEvent::Finish);
 }

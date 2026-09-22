@@ -1065,7 +1065,7 @@ it("视图停留在其他会话时派发不受影响（侧栏更新不依赖当�
   GET.mockResolvedValueOnce({
     data: [storedMessage("user", '[{"Text":"B会话"}]', { id: "b1" })],
     error: undefined,
-  });
+  } as never);
   await fetchMessages("conv-view-b");
 
   // A 上发消息（不切视图），流中带来 A 的 title_updated。

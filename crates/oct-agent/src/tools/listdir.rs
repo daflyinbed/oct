@@ -3,18 +3,18 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
-use std::path::PathBuf;
 
 use super::truncate::{MAX_TOOL_OUTPUT_BYTES, truncate_middle};
+use super::workspace::WorkspaceRoots;
 use super::{AgentTool, ToolContext, ToolOutput};
 
 pub struct ListDirTool {
-    working_dir: PathBuf,
+    roots: WorkspaceRoots,
 }
 
 impl ListDirTool {
-    pub fn new(working_dir: PathBuf) -> Self {
-        Self { working_dir }
+    pub fn new(roots: WorkspaceRoots) -> Self {
+        Self { roots }
     }
 }
 
@@ -127,14 +127,15 @@ impl AgentTool for ListDirTool {
             serde_json::from_value(args).context("Invalid arguments for list_dir")?;
 
         let target = if let Some(ref path) = args.path {
-            match super::read::validate_path_within(&self.working_dir, path) {
+            match self.roots.validate_path(path) {
                 Ok(p) => p,
                 Err(output) => return Ok(output),
             }
         } else {
-            self.working_dir
+            self.roots
+                .primary()
                 .canonicalize()
-                .unwrap_or_else(|_| self.working_dir.clone())
+                .unwrap_or_else(|_| self.roots.primary().to_path_buf())
         };
 
         if !target.is_dir() {
