@@ -16,12 +16,14 @@ use tracing::debug;
 
 use super::AppState;
 use super::error::{ApiResult, AppError};
+use crate::agent::compact;
 use crate::agent::loop_runner::run_agent_loop;
 use crate::agent::prompt::system_prompt;
 use crate::agent::title;
-use crate::agent::{AgentContext, AgentEvent, EventHub, RunHandle};
+use crate::agent::{AgentContext, AgentEvent, CompactionTrigger, EventHub, RunHandle};
 use crate::db::{
-    conversations as conv_db, messages as msg_db, projects as project_db, providers as provider_db,
+    conversations as conv_db, messages as msg_db, models as model_db, projects as project_db,
+    providers as provider_db,
 };
 use crate::tools;
 use crate::tools::workspace::WorkspaceRoots;
@@ -88,6 +90,28 @@ async fn resolve_model(
     Ok((model, provider_id.to_string(), model_id.to_string()))
 }
 
+/// Context window for compaction decisions: built-in provider info first
+/// (Anthropic/Moonshot carry their limits in code), then the models table's
+/// `limit_context` (seeded from models.dev or set on custom models). `None`
+/// means unknown — auto compaction stays disabled, manual still works.
+async fn resolve_context_window(
+    state: &AppState,
+    model: &dyn oct_llm_provider::model::ChatModel,
+    provider_id: &str,
+    model_id: &str,
+) -> Option<u32> {
+    if let Some(window) = model.info().limits.max_input_tokens.filter(|w| *w > 0) {
+        return Some(window);
+    }
+    let row = model_db::get_model(&state.pool, provider_id, model_id)
+        .await
+        .ok()
+        .flatten()?;
+    row.limit_context
+        .and_then(|v| u32::try_from(v).ok())
+        .filter(|w| *w > 0)
+}
+
 /// Shared tail of the chat endpoints: take the session entry the caller
 /// inserted (a real run handle with a fresh event hub), subscribe to the hub,
 /// spawn the agent loop, and return the SSE stream of the run's events.
@@ -99,7 +123,8 @@ fn start_agent_run(
     id: &str,
     project: &project_db::Project,
     chat_model: Box<dyn oct_llm_provider::model::ChatModel>,
-    messages: Vec<Message>,
+    view: msg_db::LlmView,
+    context_window: Option<u32>,
 ) -> ApiResult<Response> {
     let handle = state
         .sessions
@@ -138,13 +163,14 @@ fn start_agent_run(
         tools: Arc::new(run_tools),
         pool: state.pool.clone(),
         system_prompt: system_prompt(&PathBuf::from(&project.working_dir), &additional),
+        context_window,
     };
 
     let conv_id = id.to_string();
     let sessions = state.sessions.clone();
 
     tokio::spawn(async move {
-        run_agent_loop(ctx, conv_id.clone(), messages, handle).await;
+        run_agent_loop(ctx, conv_id.clone(), view, handle).await;
         // Dropping the last run handle releases the hub: every subscriber
         // stream reaches EOF (the SSE bodies end), matching the old broadcast
         // termination semantics.
@@ -229,6 +255,8 @@ pub async fn send_message(
             return Err(e);
         }
     };
+    let context_window =
+        resolve_context_window(&state, chat_model.as_ref(), &provider_id, &model_id).await;
 
     // Poison guard: a previous run interrupted mid-tool (e.g. backend crash)
     // leaves assistant ToolCalls without tool messages; repairing BEFORE the
@@ -265,8 +293,8 @@ pub async fn send_message(
         entry.value_mut().start_message_id = Some(stored_user.id.clone());
     }
 
-    let messages = match msg_db::load_messages_for_llm(&state.pool, &id).await {
-        Ok(m) => m,
+    let view = match msg_db::load_llm_view(&state.pool, &id).await {
+        Ok(v) => v,
         Err(e) => {
             state.sessions.remove(&id);
             return Err(AppError::from(e));
@@ -315,7 +343,7 @@ pub async fn send_message(
         .ensure_connections(&state.pool, Some(&project.id))
         .await;
 
-    start_agent_run(&state, &id, &project, chat_model, messages)
+    start_agent_run(&state, &id, &project, chat_model, view, context_window)
 }
 
 #[utoipa::path(
@@ -397,13 +425,15 @@ pub async fn resume_turn(
         }
     };
 
-    let (chat_model, _provider_id, _model_id) = match resolve_model(&state, &provider_spec).await {
+    let (chat_model, provider_id, model_id) = match resolve_model(&state, &provider_spec).await {
         Ok(m) => m,
         Err(e) => {
             state.sessions.remove(&id);
             return Err(e);
         }
     };
+    let context_window =
+        resolve_context_window(&state, chat_model.as_ref(), &provider_id, &model_id).await;
 
     // Only now persist the repair (idempotent): placeholder ToolResults for
     // the dangling calls found above.
@@ -413,8 +443,8 @@ pub async fn resume_turn(
     }
 
     // No new user message: the loop continues from the existing history.
-    let messages = match msg_db::load_messages_for_llm(&state.pool, &id).await {
-        Ok(m) => m,
+    let view = match msg_db::load_llm_view(&state.pool, &id).await {
+        Ok(v) => v,
         Err(e) => {
             state.sessions.remove(&id);
             return Err(AppError::from(e));
@@ -428,7 +458,121 @@ pub async fn resume_turn(
         .ensure_connections(&state.pool, Some(&project.id))
         .await;
 
-    start_agent_run(&state, &id, &project, chat_model, messages)
+    start_agent_run(&state, &id, &project, chat_model, view, context_window)
+}
+
+/// Query params for manual compaction.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CompactQuery {
+    /// `provider_id:model_id`. Optional: defaults to the conversation's last
+    /// used provider/model.
+    pub provider_spec: Option<String>,
+}
+
+/// Result of a manual compaction (mirrors the `compacted` SSE event).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CompactResult {
+    pub summary_message_id: String,
+    /// Number of message rows the marker replaced in the LLM view (the rows
+    /// remain in the DB, excluded from future requests).
+    pub compacted_messages: u32,
+    pub est_tokens_before: u64,
+    pub est_tokens_after: u64,
+    pub summary: String,
+}
+
+/// Manually compact a conversation: summarize the old history into a marker
+/// row right away (synchronous; not an SSE stream). Old rows are kept — the
+/// LLM view simply starts at the new marker.
+#[utoipa::path(
+    post,
+    path = "/conversations/{id}/compact",
+    params(
+        ("id" = String, Path, description = "Conversation ID"),
+        ("provider_spec" = Option<String>, Query, description = "provider_id:model_id; defaults to the conversation's last used provider/model"),
+    ),
+    responses(
+        (status = 200, description = "Compaction done", body = CompactResult),
+        (status = 400, description = "Nothing to compact, or no provider/model available"),
+        (status = 404, description = "Conversation not found"),
+        (status = 409, description = "An agent run or another compaction is already active")
+    ),
+    tag = "chat"
+)]
+pub async fn compact_conversation(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<CompactQuery>,
+) -> ApiResult<Json<CompactResult>> {
+    // The session entry doubles as the compaction mutex: an active run OR a
+    // concurrent manual compact gets a 409. Removed on every exit path below
+    // (a synchronous request, unlike the SSE run endpoints).
+    insert_session_entry(&state, &id)?;
+    let result = run_manual_compact(&state, &id, query.provider_spec.as_deref()).await;
+    state.sessions.remove(&id);
+    result
+}
+
+async fn run_manual_compact(
+    state: &AppState,
+    id: &str,
+    provider_spec: Option<&str>,
+) -> ApiResult<Json<CompactResult>> {
+    conv_db::get_conversation(&state.pool, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Conversation not found".into()))?;
+
+    let spec = match provider_spec {
+        Some(s) => s.to_string(),
+        None => match msg_db::get_last_provider_spec(&state.pool, id).await? {
+            Some((provider_id, model_id)) => format!("{provider_id}:{model_id}"),
+            None => {
+                return Err(AppError::BadRequest(
+                    "Conversation has no recorded provider/model; pass provider_spec".into(),
+                ));
+            }
+        },
+    };
+    let (chat_model, provider_id, model_id) = resolve_model(state, &spec).await?;
+    let window = resolve_context_window(state, chat_model.as_ref(), &provider_id, &model_id).await;
+    let tail_keep = window
+        .map(compact::tail_keep_tokens)
+        .unwrap_or(compact::DEFAULT_TAIL_KEEP_TOKENS);
+
+    let view = msg_db::load_llm_view(&state.pool, id).await?;
+    let Some(cut) = compact::find_cut_point(&view.messages, tail_keep) else {
+        return Err(AppError::BadRequest(
+            "Conversation is too short to compact".into(),
+        ));
+    };
+
+    // Display-only figures: the anchor is used when present so the "before"
+    // number matches what the provider actually charged, falling back to a
+    // message-only estimate (no tool schemas at hand outside a run).
+    let anchor = view.anchor.map(|a| (a.tokens, a.message_index));
+    let est_before = compact::estimate_context(&view.messages, &[], anchor);
+
+    let region = view.messages[..cut].to_vec();
+    let summary = compact::generate_summary(chat_model.as_ref(), &region, window)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Compaction summary failed: {e}")))?;
+
+    let marker = compact::build_marker_message(&summary);
+    let rebuilt_tail: Vec<Message> = std::iter::once(marker.clone())
+        .chain(view.messages[cut..].iter().cloned())
+        .collect();
+    let est_after = compact::estimate_messages(&rebuilt_tail);
+    let details = compact::marker_details(CompactionTrigger::Manual, cut, est_before, est_after);
+    let stored =
+        msg_db::insert_message(&state.pool, id, &marker, None, None, Some(&details)).await?;
+
+    Ok(Json(CompactResult {
+        summary_message_id: stored.id,
+        compacted_messages: cut as u32,
+        est_tokens_before: est_before,
+        est_tokens_after: est_after,
+        summary,
+    }))
 }
 
 #[utoipa::path(

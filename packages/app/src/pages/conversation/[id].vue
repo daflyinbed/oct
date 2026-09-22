@@ -10,6 +10,9 @@
     @send="handleSendMessage"
     @stop="handleStop"
     @resume="handleResume"
+    @compact="handleCompact"
+    @select-provider="selectProvider"
+    @select-model="selectModel"
   />
 </template>
 
@@ -34,9 +37,16 @@ const {
   resumeTurn,
   attachRun,
   cancelConversation,
+  compactConversation,
 } = useChat();
-const { providers, selectedProviderId, selectedModelId, getProviderSpec } =
-  useProviders();
+const {
+  providers,
+  selectedProviderId,
+  selectedModelId,
+  selectProvider,
+  selectModel,
+  getProviderSpec,
+} = useProviders();
 
 // 会话加载统一为 fetchMessages + attachRun：刷新/切会话后若 run 仍在
 // 后端跑着，从 run 起点重放事件流并继续实时增长（attach 需在历史就位
@@ -63,5 +73,10 @@ async function handleResume() {
 
 function handleStop() {
   if (conversationId.value) cancelConversation(conversationId.value);
+}
+
+async function handleCompact() {
+  if (!conversationId.value) return;
+  await compactConversation(conversationId.value);
 }
 </script>

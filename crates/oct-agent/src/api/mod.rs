@@ -53,6 +53,9 @@ pub struct AppState {
         mcp::McpToolSummary,
         chat::SendMessageRequest,
         chat::RunningStatus,
+        chat::CompactQuery,
+        chat::CompactResult,
+        crate::agent::CompactionTrigger,
         files::FileContent,
         files::FileEntry,
         files::FileEntryKind,
@@ -114,6 +117,7 @@ fn api_routes(state: AppState) -> OpenApiRouter<AppState> {
         .routes(utoipa_axum::routes!(chat::get_messages))
         .routes(utoipa_axum::routes!(chat::cancel_agent))
         .routes(utoipa_axum::routes!(chat::resume_turn))
+        .routes(utoipa_axum::routes!(chat::compact_conversation))
         // Run reconnection (frontend refresh while a run is in flight)
         .routes(utoipa_axum::routes!(chat::get_run_status))
         .routes(utoipa_axum::routes!(chat::stream_run_events))

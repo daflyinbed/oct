@@ -152,6 +152,7 @@ const RE_CONVERSATION_DELETE =
   /^\/api\/projects\/([^/]+)\/conversations\/([^/]+)$/;
 const RE_CONVERSATION_MESSAGES = /^\/api\/conversations\/([^/]+)\/messages$/;
 const RE_CONVERSATION_CANCEL = /^\/api\/conversations\/([^/]+)\/cancel$/;
+const RE_CONVERSATION_COMPACT = /^\/api\/conversations\/([^/]+)\/compact$/;
 const RE_CONVERSATION_RUN = /^\/api\/conversations\/([^/]+)\/run$/;
 const RE_MCP_SERVER = /^\/api\/mcp\/servers\/([^/]+)$/;
 const RE_MCP_ENSURE = /^\/api\/projects\/([^/]+)\/mcp\/ensure$/;
@@ -425,6 +426,49 @@ async function handleApi(
     res.writeHead(204);
     res.end();
     return;
+  }
+
+  // POST /api/conversations/:id/compact —— 手动压缩:向该会话的 messages
+  // 追加一条 compaction 标记行(details kind=compaction)并回 CompactResult,
+  // 前端随后的 GET messages 由此渲染出分隔条(与真实后端同一条链路)。
+  m = pathname.match(RE_CONVERSATION_COMPACT);
+  if (m && req.method === "POST") {
+    const id = decodeURIComponent(m[1]);
+    const rows = (s.messages ??= {})[id] ?? (s.messages[id] = []);
+    const compacted = rows.length;
+    const summary = "E2E 压缩摘要：完成了登录修复并跑通测试";
+    const marker = {
+      id: `m-compact-${++state.autoId}`,
+      conversation_id: id,
+      role: "user",
+      parts_json: JSON.stringify([
+        {
+          Text: `[Context compaction] The earlier conversation history was compacted.\n\n<summary>\n${summary}\n</summary>\n\nContinue the task based on the summary above.`,
+        },
+      ]),
+      details_json: JSON.stringify({
+        kind: "compaction",
+        triggered_by: "manual",
+        compacted_message_count: compacted,
+        estimated_tokens_before: 9000,
+        estimated_tokens_after: 800,
+      }),
+      ordering: compacted + 1,
+      provider_id: null,
+      model_id: null,
+      input_tokens: null,
+      output_tokens: null,
+      reasoning_tokens: null,
+      created_at: nowIso(),
+    };
+    rows.push(marker);
+    return sendJson(res, 200, {
+      summary_message_id: marker.id,
+      compacted_messages: compacted,
+      est_tokens_before: 9000,
+      est_tokens_after: 800,
+      summary,
+    });
   }
 
   // GET /api/conversations/:id/run —— 重连探测：会话存在未关闭的 SSE 流

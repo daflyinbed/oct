@@ -195,3 +195,56 @@ export function titleUpdated(title: string): AgentEvent {
     data: { title },
   };
 }
+
+/** 上下文压缩开始（状态栏切「压缩中」）。 */
+export function compactingEvent(
+  triggeredBy: "auto" | "manual" = "auto",
+): AgentEvent {
+  return {
+    type: "compacting",
+    data: { triggered_by: triggeredBy },
+  };
+}
+
+/** 压缩完成：事件携带全量 summary，前端当场渲染分隔条。 */
+export function compactedEvent(
+  summary: string,
+  opts: {
+    summaryMessageId?: string;
+    triggeredBy?: "auto" | "manual";
+    compactedMessages?: number;
+    estTokensBefore?: number;
+    estTokensAfter?: number;
+    contextWindowTokens?: number | null;
+  } = {},
+): AgentEvent {
+  return {
+    type: "compacted",
+    data: {
+      summary_message_id: opts.summaryMessageId ?? "m-compact-1",
+      triggered_by: opts.triggeredBy ?? "auto",
+      compacted_messages: opts.compactedMessages ?? 7,
+      est_tokens_before: opts.estTokensBefore ?? 9000,
+      est_tokens_after: opts.estTokensAfter ?? 800,
+      summary,
+      context_window_tokens: opts.contextWindowTokens ?? null,
+    },
+  };
+}
+
+/** usage 事件（指示器数据源；context_window_tokens 驱动百分比）。 */
+export function usageEvent(
+  inputTokens: number,
+  outputTokens = 8,
+  contextWindowTokens: number | null = null,
+): AgentEvent {
+  return {
+    type: "usage",
+    data: {
+      input_tokens: inputTokens,
+      output_tokens: outputTokens,
+      reasoning_tokens: null,
+      context_window_tokens: contextWindowTokens,
+    },
+  };
+}

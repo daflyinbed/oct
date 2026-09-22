@@ -53,6 +53,9 @@
         <div class="flex items-center gap-0.5 p-2">
           <span class="flex-1" />
 
+          <!-- 上下文占用圆环：hover 弹出容量详情 -->
+          <ContextRing class="mr-1" />
+
           <!-- Provider / 模型选择器 -->
           <AppSelect
             :model-value="selectedProviderId"
@@ -109,6 +112,7 @@ import {
 } from "vue";
 import AppSelect from "@/components/ui/AppSelect.vue";
 import ChatMessage from "./ChatMessage.vue";
+import ContextRing from "./ContextRing.vue";
 import type { components } from "@/api/schema";
 import type { DisplayMessage } from "@/composables/useChat";
 
@@ -129,6 +133,8 @@ const emit = defineEmits<{
   send: [content: string];
   stop: [];
   resume: [];
+  /** /compact 命令：请求手动压缩当前会话。 */
+  compact: [];
   selectProvider: [providerId: string];
   selectModel: [modelId: string];
 }>();
@@ -161,6 +167,12 @@ const modelOptions = computed(() =>
 function handleSend() {
   if (!inputMessage.value.trim() || !props.conversationId || props.sending)
     return;
+  // 斜杠命令拦截（v1 精确匹配）：/compact 不作为消息发送。
+  if (inputMessage.value.trim() === "/compact") {
+    inputMessage.value = "";
+    emit("compact");
+    return;
+  }
   emit("send", inputMessage.value);
   inputMessage.value = "";
 }
@@ -196,7 +208,9 @@ watch(
     if (!last) return 0;
     let size = 0;
     for (const part of last.parts) {
-      if (part.kind === "text" || part.kind === "reasoning") {
+      if (part.kind === "compaction") {
+        size += part.summary.length;
+      } else if (part.kind === "text" || part.kind === "reasoning") {
         size += part.text.length;
       } else {
         size += part.arguments.length + part.liveOutput.droppedChars;

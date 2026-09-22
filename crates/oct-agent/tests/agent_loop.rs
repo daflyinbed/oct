@@ -1058,3 +1058,300 @@ async fn mcp_tool_timeout_returns_error_and_loop_continues() {
     ));
     assert_eq!(*events.last().unwrap(), AgentEvent::Finish);
 }
+
+// --- Context compaction -------------------------------------------------------
+
+use oct_agent::agent::compact;
+use oct_agent::db::messages as msg_db;
+use oct_llm_provider::core::Message;
+
+/// Alternating user/assistant exchanges plus a trailing user message — the
+/// shape a send produces. Each message carries enough padding that a tiny
+/// test window (500 tokens → threshold 425) is clearly exceeded.
+fn compact_history(rounds: usize) -> Vec<Message> {
+    let pad = "x".repeat(200);
+    let mut msgs = Vec::new();
+    for i in 0..rounds {
+        msgs.push(Message::text(Role::User, format!("old-user-{i} {pad}")));
+        msgs.push(Message::text(
+            Role::Assistant,
+            format!("old-assistant-{i} {pad}"),
+        ));
+    }
+    msgs.push(Message::text(Role::User, "the current request"));
+    msgs
+}
+
+#[tokio::test]
+async fn auto_compaction_replaces_history_persists_marker_and_streams_events() {
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+
+    let model = ScriptedModel::new(vec![Turn::Stream(vec![
+        text("done"),
+        finish(FinishReason::Stop),
+    ])]);
+    model.push_generation(Ok("SUMMARY: fixed the login bug".to_string()));
+    let observer = model.observer();
+
+    let view = db::messages::LlmView {
+        messages: compact_history(4), // 9 messages
+        anchor: None,
+    };
+    let (_handle, mut rx) = support::spawn_agent_with(
+        model,
+        Vec::new(),
+        env.pool.clone(),
+        &conv_id,
+        view,
+        Some(500),
+    )
+    .await;
+    let events = collect_events(&mut rx, is_terminal).await;
+
+    // Event order: compacting < compacted < the turn's text.
+    let idx = |name: &str| {
+        events
+            .iter()
+            .position(|e| event_name(e) == name)
+            .unwrap_or_else(|| panic!("missing event {name} in {events:?}"))
+    };
+    assert_eq!(event_name(&events[idx("compacting")]), "compacting");
+    assert!(idx("compacting") < idx("compacted"));
+    assert!(idx("compacted") < idx("text_delta"));
+    assert_eq!(*events.last().unwrap(), AgentEvent::Finish);
+
+    let AgentEvent::Compacted {
+        triggered_by,
+        compacted_messages,
+        summary,
+        summary_message_id,
+        context_window_tokens,
+        ..
+    } = &events[idx("compacted")]
+    else {
+        unreachable!()
+    };
+    assert_eq!(*triggered_by, oct_agent::agent::CompactionTrigger::Auto);
+    assert_eq!(*context_window_tokens, Some(500));
+    assert_eq!(
+        *compacted_messages, 8,
+        "summarizes everything but the final user message (the assistant \
+         round alone exceeds the 50-token tail budget of a 500-token window)"
+    );
+    assert!(summary.contains("login bug"));
+    assert!(!summary_message_id.is_empty());
+
+    // The summary call received the compacted region as serialized text.
+    let summary_req = &observer.generate_requests()[0];
+    let serialized = serde_json::to_string(&summary_req.messages).unwrap();
+    assert!(
+        serialized.contains("old-user-0"),
+        "region passed to summary"
+    );
+
+    // The next (and only) stream request carries [system, marker, tail]:
+    // the old history is gone, the tail is verbatim.
+    let req = &observer.requests()[0];
+    assert_eq!(req.messages.len(), 3);
+    assert_eq!(req.messages[0].role, Role::System);
+    assert_eq!(req.messages[1].role, Role::User);
+    let ContentPart::Text(marker_text) = &req.messages[1].parts[0] else {
+        panic!("marker is a text message");
+    };
+    assert!(marker_text.contains("[Context compaction]"));
+    assert!(marker_text.contains("SUMMARY: fixed the login bug"));
+    assert!(marker_text.contains("<summary>"));
+    assert_eq!(req.messages[2].role, Role::User);
+    let tail_serialized = serde_json::to_string(&req.messages[2..]).unwrap();
+    assert!(tail_serialized.contains("the current request"));
+    let full = serde_json::to_string(&req.messages).unwrap();
+    assert!(!full.contains("old-user-0"), "compacted region excluded");
+
+    // The marker row is persisted with UI metadata in details_json.
+    let stored = db::messages::list_messages(&env.pool, &conv_id)
+        .await
+        .unwrap();
+    let marker_row = stored
+        .iter()
+        .find(|m| {
+            m.details_json
+                .as_deref()
+                .is_some_and(|d| d.contains("\"kind\":\"compaction\""))
+        })
+        .expect("marker row persisted");
+    assert_eq!(marker_row.role, "user");
+    assert!(marker_row.parts_json.contains("login bug"));
+    assert_eq!(marker_row.id, *summary_message_id);
+}
+
+/// Map an event to its serde tag for ordering assertions.
+fn event_name(e: &AgentEvent) -> &'static str {
+    match e {
+        AgentEvent::Compacting { .. } => "compacting",
+        AgentEvent::Compacted { .. } => "compacted",
+        AgentEvent::TextDelta(_) => "text_delta",
+        AgentEvent::Finish => "finish",
+        _ => "other",
+    }
+}
+
+#[tokio::test]
+async fn auto_compaction_failure_does_not_break_the_run() {
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+
+    let model = ScriptedModel::new(vec![Turn::Stream(vec![
+        text("still works"),
+        finish(FinishReason::Stop),
+    ])]);
+    model.push_generation(Err(ModelError::provider("summary exploded")));
+    let observer = model.observer();
+
+    let view = db::messages::LlmView {
+        messages: compact_history(4),
+        anchor: None,
+    };
+    let (_handle, mut rx) = support::spawn_agent_with(
+        model,
+        Vec::new(),
+        env.pool.clone(),
+        &conv_id,
+        view,
+        Some(500),
+    )
+    .await;
+    let events = collect_events(&mut rx, is_terminal).await;
+
+    // Compacting was announced, compaction never landed, the turn continued
+    // with the UN-compacted history and finished normally.
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Compacting { .. })),
+        "compacting announced: {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Compacted { .. })),
+        "no compacted event on failure"
+    );
+    assert!(text_of(&events).contains("still works"));
+    assert_eq!(*events.last().unwrap(), AgentEvent::Finish);
+
+    let req = &observer.requests()[0];
+    let serialized = serde_json::to_string(&req.messages).unwrap();
+    assert!(serialized.contains("old-user-0"), "history untouched");
+
+    let stored = db::messages::list_messages(&env.pool, &conv_id)
+        .await
+        .unwrap();
+    assert!(
+        !stored.iter().any(|m| {
+            m.details_json
+                .as_deref()
+                .is_some_and(|d| d.contains("compaction"))
+        }),
+        "no marker row on failure"
+    );
+}
+
+#[tokio::test]
+async fn load_llm_view_starts_at_last_marker_drops_orphans_and_anchors() {
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+
+    // Pre-marker history: invisible to the LLM from now on.
+    msg_db::insert_message(
+        &env.pool,
+        &conv_id,
+        &Message::text(Role::User, "old-0"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    msg_db::insert_message(
+        &env.pool,
+        &conv_id,
+        &Message::text(Role::Assistant, "old-1"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // The marker row.
+    let marker = compact::build_marker_message("the summary");
+    let details = compact::marker_details(oct_agent::agent::CompactionTrigger::Auto, 2, 100, 20);
+    msg_db::insert_message(&env.pool, &conv_id, &marker, None, None, Some(&details))
+        .await
+        .unwrap();
+
+    // An orphan tool result AFTER the marker (e.g. a repair placeholder for
+    // a pre-marker call): must be filtered out of the view.
+    let orphan = Message {
+        role: Role::Tool,
+        parts: vec![ContentPart::ToolResult(ToolResult {
+            call_id: "ghost".to_string(),
+            content: json!("result of a call that was compacted away"),
+            is_error: false,
+        })],
+    };
+    msg_db::insert_message(&env.pool, &conv_id, &orphan, None, None, None)
+        .await
+        .unwrap();
+
+    // Post-marker live messages, the assistant carrying usage (the anchor).
+    msg_db::insert_message(
+        &env.pool,
+        &conv_id,
+        &Message::text(Role::User, "q"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let assistant = msg_db::insert_message(
+        &env.pool,
+        &conv_id,
+        &Message::text(Role::Assistant, "a"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    msg_db::update_message_usage(&env.pool, &assistant.id, Some(100), Some(50), None)
+        .await
+        .unwrap();
+
+    let view = msg_db::load_llm_view(&env.pool, &conv_id).await.unwrap();
+
+    // [marker, q, a] — old rows excluded, orphan dropped.
+    assert_eq!(view.messages.len(), 3);
+    assert_eq!(view.messages[0].role, Role::User);
+    let ContentPart::Text(t) = &view.messages[0].parts[0] else {
+        panic!()
+    };
+    assert!(t.contains("the summary"));
+    assert_eq!(view.messages[1].role, Role::User);
+    assert_eq!(view.messages[2].role, Role::Assistant);
+
+    // Anchor: the assistant row's input+output, at its view index.
+    let anchor = view.anchor.expect("anchor present");
+    assert_eq!(anchor.tokens, 150);
+    assert_eq!(anchor.message_index, 2);
+
+    // Pre-marker dangling calls are not repairable anymore.
+    assert!(
+        msg_db::find_dangling_tool_calls(&env.pool, &conv_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}

@@ -1,3 +1,4 @@
+pub mod compact;
 pub mod events;
 pub mod loop_runner;
 pub mod prompt;
@@ -66,6 +67,33 @@ pub enum AgentEvent {
         input_tokens: Option<u32>,
         output_tokens: Option<u32>,
         reasoning_tokens: Option<u32>,
+        /// Context window of the resolved model, when known. The loop knows
+        /// it from the model info / models table; the primary send stream has
+        /// no run_meta, so this is where a UI learns the denominator for a
+        /// context-usage percentage.
+        context_window_tokens: Option<u32>,
+    },
+
+    /// Auto compaction started at a turn boundary: the loop is summarizing
+    /// old history (a blocking, tool-less model call inside the run).
+    #[serde(rename = "compacting")]
+    Compacting { triggered_by: CompactionTrigger },
+
+    /// Compaction completed: the marker row is persisted and every subsequent
+    /// LLM request carries `[marker summary, verbatim tail]` instead of the
+    /// compacted history. Carries the summary text so a live UI can render
+    /// the divider without a refetch (a later fetch renders the same row).
+    #[serde(rename = "compacted")]
+    Compacted {
+        summary_message_id: String,
+        triggered_by: CompactionTrigger,
+        /// Number of message rows the marker replaced in the LLM view (they
+        /// remain in the DB, just excluded from future requests).
+        compacted_messages: u32,
+        est_tokens_before: u64,
+        est_tokens_after: u64,
+        summary: String,
+        context_window_tokens: Option<u32>,
     },
 
     #[serde(rename = "finish")]
@@ -100,6 +128,18 @@ pub struct AgentContext {
     pub tools: Arc<Vec<Box<dyn AgentTool>>>,
     pub pool: SqlitePool,
     pub system_prompt: String,
+    /// Context window (max input tokens) of the resolved model: built-in
+    /// provider info first, then the models table's limit_context. `None`
+    /// disables AUTO compaction (manual still works).
+    pub context_window: Option<u32>,
+}
+
+/// What started a compaction.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionTrigger {
+    Auto,
+    Manual,
 }
 
 #[derive(Clone)]

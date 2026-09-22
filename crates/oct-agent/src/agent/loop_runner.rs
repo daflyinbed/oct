@@ -12,18 +12,27 @@ use oct_llm_provider::core::{
 };
 use oct_llm_provider::model::ChatRequest;
 
+use crate::agent::compact::{self, CompactAttempt};
 use crate::agent::{AgentContext, AgentEvent, RunHandle};
 use crate::db::messages as msg_db;
+use crate::db::messages::LlmView;
 use crate::tools;
 
-pub async fn run_agent_loop(
-    ctx: AgentContext,
-    conv_id: String,
-    messages: Vec<Message>,
-    handle: RunHandle,
-) {
+pub async fn run_agent_loop(ctx: AgentContext, conv_id: String, view: LlmView, handle: RunHandle) {
     let mut full_messages = vec![Message::text(Role::System, &ctx.system_prompt)];
-    full_messages.extend(messages);
+    full_messages.extend(view.messages);
+
+    // Provider-truth anchor for compaction estimates (see compact::
+    // estimate_context). +1 offsets the system message prepended above.
+    let mut usage_anchor: Option<(u64, usize)> =
+        view.anchor.map(|a| (a.tokens, a.message_index + 1));
+
+    // Auto-compaction bookkeeping: `compact_floor` is the estimated context
+    // right after the last compaction this run — re-triggering requires
+    // growing past it by another tail budget (prevents compact loops). A
+    // failed summary call disables auto compaction for the rest of the run.
+    let mut compact_floor: u64 = 0;
+    let mut auto_compact_disabled = false;
 
     let tool_specs: Vec<_> = ctx
         .tools
@@ -35,6 +44,44 @@ pub async fn run_agent_loop(
         if handle.cancel.is_cancelled() {
             handle.hub.publish(AgentEvent::Cancelled);
             return;
+        }
+
+        // Turn-top compaction check — BEFORE the request, so both the first
+        // turn of an over-long conversation and every tool round in between
+        // are covered. Usage arriving during a stream only refreshes the
+        // anchor: the decision must see everything accumulated SINCE the
+        // last request (tool results are the big increment).
+        if let Some(window) = ctx.context_window
+            && !auto_compact_disabled
+        {
+            let threshold = compact::trigger_threshold(window);
+            let tail_keep = compact::tail_keep_tokens(window);
+            let est = compact::estimate_context(&full_messages, &tool_specs, usage_anchor);
+            if est >= threshold && est >= compact_floor.saturating_add(tail_keep) {
+                let attempt = compact::run_auto_compaction(
+                    ctx.model.as_ref(),
+                    &ctx.pool,
+                    &conv_id,
+                    &ctx.system_prompt,
+                    &handle.hub,
+                    &handle.cancel,
+                    window,
+                    &tool_specs,
+                    &mut full_messages,
+                    &mut usage_anchor,
+                    est,
+                )
+                .await;
+                match attempt {
+                    CompactAttempt::Done(floor) => compact_floor = floor,
+                    CompactAttempt::Nothing => {}
+                    CompactAttempt::Failed => auto_compact_disabled = true,
+                    CompactAttempt::Cancelled => {
+                        handle.hub.publish(AgentEvent::Cancelled);
+                        return;
+                    }
+                }
+            }
         }
 
         let request = ChatRequest {
@@ -62,6 +109,9 @@ pub async fn run_agent_loop(
         let mut pending_tool_calls: Vec<ToolCall> = Vec::new();
         let mut finish_reason = FinishReason::Stop;
         let mut last_usage: Option<(Option<u32>, Option<u32>, Option<u32>)> = None;
+        // input+output of the request currently streaming; committed as the
+        // usage anchor once the assistant message lands in full_messages.
+        let mut pending_anchor: Option<u64> = None;
 
         loop {
             tokio::select! {
@@ -108,10 +158,20 @@ pub async fn run_agent_loop(
                                 usage.output_tokens,
                                 usage.reasoning_tokens,
                             ));
+                            // Provider-truth anchor for the NEXT estimate:
+                            // everything after this request is a local
+                            // increment on top of these tokens.
+                            if usage.input_tokens.is_some() || usage.output_tokens.is_some() {
+                                pending_anchor = Some(
+                                    u64::from(usage.input_tokens.unwrap_or(0))
+                                        + u64::from(usage.output_tokens.unwrap_or(0)),
+                                );
+                            }
                             handle.hub.publish(AgentEvent::Usage {
                                 input_tokens: usage.input_tokens,
                                 output_tokens: usage.output_tokens,
                                 reasoning_tokens: usage.reasoning_tokens,
+                                context_window_tokens: ctx.context_window,
                             });
                         }
                         Ok(StreamEvent::Finish(reason)) => {
@@ -191,6 +251,12 @@ pub async fn run_agent_loop(
                 }
             }
             full_messages.push(assistant_msg);
+            // Commit the anchor from this request's usage now that the
+            // message sits at its final index. (Skipped naturally when the
+            // stream reported no usage — the old anchor stays valid.)
+            if let Some(tokens) = pending_anchor.take() {
+                usage_anchor = Some((tokens, full_messages.len() - 1));
+            }
         }
 
         if !has_tool_calls {

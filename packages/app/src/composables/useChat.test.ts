@@ -1,8 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import client from "@/api/client";
 import { onTitleUpdated, useChat } from "@/composables/useChat";
+import {
+  clearContextUsage,
+  useContextUsage,
+} from "@/composables/useContextUsage";
 
-import type { ReasoningPart, ToolCallPart } from "@/composables/useChat";
+import type {
+  CompactionPart,
+  ReasoningPart,
+  ToolCallPart,
+} from "@/composables/useChat";
 import type { DeepReadonly } from "vue";
 
 // fetchMessages 走 openapi-fetch client，这里整体 mock 掉。
@@ -11,6 +19,7 @@ vi.mock("@/api/client", () => ({
 }));
 
 const GET = vi.mocked(client.GET);
+const POST = vi.mocked(client.POST);
 
 const {
   messages,
@@ -148,7 +157,9 @@ function nextConvId(): string {
 
 beforeEach(() => {
   clearMessages();
+  clearContextUsage();
   GET.mockReset();
+  POST.mockReset();
   vi.unstubAllGlobals();
 });
 
@@ -1092,4 +1103,165 @@ it("视图停留在其他会话时派发不受影响（侧栏更新不依赖当�
   expect(GET).toHaveBeenCalledTimes(1);
 
   unsubscribe();
+});
+
+const { compactConversation } = useChat();
+
+function compactionParts(): DeepReadonly<CompactionPart>[] {
+  return messages.value.flatMap((m) =>
+    m.parts.filter(
+      (p): p is DeepReadonly<CompactionPart> => p.kind === "compaction",
+    ),
+  );
+}
+
+describe("上下文压缩", () => {
+  beforeEach(() => {
+    POST.mockReset();
+  });
+
+  it("stored 标记行渲染为 compaction 分隔条而非用户气泡", async () => {
+    GET.mockResolvedValue({
+      data: [
+        storedMessage("user", '[{"Text":"旧问题"}]'),
+        storedMessage("assistant", '[{"Text":"旧回答"}]'),
+        storedMessage(
+          "user",
+          JSON.stringify([
+            {
+              Text: "[Context compaction] 前缀\n\n<summary>\n做了 A 和 B\n</summary>\n\n后缀",
+            },
+          ]),
+          {
+            details_json: JSON.stringify({
+              kind: "compaction",
+              triggered_by: "auto",
+              compacted_message_count: 2,
+              estimated_tokens_before: 1000,
+              estimated_tokens_after: 200,
+            }),
+          },
+        ),
+        storedMessage("user", '[{"Text":"新问题"}]'),
+      ],
+    } as never);
+
+    await fetchMessages(nextConvId());
+
+    // 标记行不是 user 气泡，而是独立角色的分隔条；摘要剥掉框架文本。
+    expect(messages.value.map((m) => m.role)).toEqual([
+      "user",
+      "assistant",
+      "compaction",
+      "user",
+    ]);
+    expect(messages.value[2]?.parts[0]).toEqual({
+      kind: "compaction",
+      summary: "做了 A 和 B",
+      triggeredBy: "auto",
+      compactedMessages: 2,
+      estTokensBefore: 1000,
+      estTokensAfter: 200,
+    });
+  });
+
+  it("compacted 事件当场插入分隔条并驱动 usage 指示器", async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        sse([
+          { type: "compacting", data: { triggered_by: "auto" } },
+          {
+            type: "compacted",
+            data: {
+              summary_message_id: "m1",
+              triggered_by: "auto",
+              compacted_messages: 5,
+              est_tokens_before: 900,
+              est_tokens_after: 100,
+              summary: "摘好了",
+              context_window_tokens: 2000,
+            },
+          },
+          {
+            type: "usage",
+            data: {
+              input_tokens: 120,
+              output_tokens: 8,
+              reasoning_tokens: null,
+              context_window_tokens: 2000,
+            },
+          },
+          textDelta("继续"),
+          finishEvent,
+        ]),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await sendMessage(nextConvId(), "hi");
+
+    // 分隔条先于本轮文本落进流式消息的 parts。
+    const parts = compactionParts();
+    expect(parts).toHaveLength(1);
+    expect(parts[0]).toMatchObject({ summary: "摘好了", triggeredBy: "auto" });
+    const last = messages.value.at(-1)!;
+    expect(last.parts[0]?.kind).toBe("compaction");
+    expect(last.parts[1]).toEqual({ kind: "text", text: "继续" });
+
+    const { inputTokens, windowTokens, compacting } = useContextUsage();
+    expect(inputTokens.value).toBe(120);
+    expect(windowTokens.value).toBe(2000);
+    expect(compacting.value).toBe(false);
+  });
+
+  it("手动 compact 调端点、成功后重拉历史", async () => {
+    const conv = nextConvId();
+    // 视图先落在该会话上（activeConversationId 守卫：切走后不重拉）。
+    GET.mockResolvedValueOnce({
+      data: [storedMessage("user", '[{"Text":"旧问题"}]')],
+    } as never);
+    await fetchMessages(conv);
+
+    POST.mockResolvedValue({
+      data: {
+        summary_message_id: "m1",
+        compacted_messages: 3,
+        est_tokens_before: 900,
+        est_tokens_after: 100,
+        summary: "手动摘要",
+      },
+    } as never);
+    GET.mockResolvedValue({
+      data: [
+        storedMessage(
+          "user",
+          JSON.stringify([
+            { Text: "[Context compaction]\n<summary>\n手动摘要\n</summary>" },
+          ]),
+          {
+            details_json: JSON.stringify({
+              kind: "compaction",
+              triggered_by: "manual",
+              compacted_message_count: 3,
+              estimated_tokens_before: 900,
+              estimated_tokens_after: 100,
+            }),
+          },
+        ),
+      ],
+    } as never);
+
+    await compactConversation(conv);
+
+    expect(POST).toHaveBeenCalledWith(
+      "/api/conversations/{id}/compact",
+      expect.objectContaining({ params: { path: { id: conv } } }),
+    );
+    // 重拉后由 stored 路径接管同一展示。
+    expect(messages.value.map((m) => m.role)).toEqual(["compaction"]);
+    expect(compactionParts()[0]).toMatchObject({
+      summary: "手动摘要",
+      triggeredBy: "manual",
+    });
+  });
 });

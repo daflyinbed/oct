@@ -20,6 +20,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/conversations/{id}/compact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Manually compact a conversation: summarize the old history into a marker
+         *     row right away (synchronous; not an SSE stream). Old rows are kept — the
+         *     LLM view simply starts at the new marker.
+         */
+        post: operations["compact_conversation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/conversations/{id}/events": {
         parameters: {
             query?: never;
@@ -369,6 +390,14 @@ export interface components {
             type: "tool_result";
         } | {
             data: {
+                /**
+                 * Format: int32
+                 * @description Context window of the resolved model, when known. The loop knows
+                 *     it from the model info / models table; the primary send stream has
+                 *     no run_meta, so this is where a UI learns the denominator for a
+                 *     context-usage percentage.
+                 */
+                context_window_tokens?: number | null;
                 /** Format: int32 */
                 input_tokens?: number | null;
                 /** Format: int32 */
@@ -378,6 +407,42 @@ export interface components {
             };
             /** @enum {string} */
             type: "usage";
+        } | {
+            /**
+             * @description Auto compaction started at a turn boundary: the loop is summarizing
+             *     old history (a blocking, tool-less model call inside the run).
+             */
+            data: {
+                triggered_by: components["schemas"]["CompactionTrigger"];
+            };
+            /** @enum {string} */
+            type: "compacting";
+        } | {
+            /**
+             * @description Compaction completed: the marker row is persisted and every subsequent
+             *     LLM request carries `[marker summary, verbatim tail]` instead of the
+             *     compacted history. Carries the summary text so a live UI can render
+             *     the divider without a refetch (a later fetch renders the same row).
+             */
+            data: {
+                /**
+                 * Format: int32
+                 * @description Number of message rows the marker replaced in the LLM view (they
+                 *     remain in the DB, just excluded from future requests).
+                 */
+                compacted_messages: number;
+                /** Format: int32 */
+                context_window_tokens?: number | null;
+                /** Format: int64 */
+                est_tokens_after: number;
+                /** Format: int64 */
+                est_tokens_before: number;
+                summary: string;
+                summary_message_id: string;
+                triggered_by: components["schemas"]["CompactionTrigger"];
+            };
+            /** @enum {string} */
+            type: "compacted";
         } | {
             /** @enum {string} */
             type: "finish";
@@ -416,6 +481,34 @@ export interface components {
             /** @enum {string} */
             type: "run_meta";
         };
+        /** @description Query params for manual compaction. */
+        CompactQuery: {
+            /**
+             * @description `provider_id:model_id`. Optional: defaults to the conversation's last
+             *     used provider/model.
+             */
+            provider_spec?: string | null;
+        };
+        /** @description Result of a manual compaction (mirrors the `compacted` SSE event). */
+        CompactResult: {
+            /**
+             * Format: int32
+             * @description Number of message rows the marker replaced in the LLM view (the rows
+             *     remain in the DB, excluded from future requests).
+             */
+            compacted_messages: number;
+            /** Format: int64 */
+            est_tokens_after: number;
+            /** Format: int64 */
+            est_tokens_before: number;
+            summary: string;
+            summary_message_id: string;
+        };
+        /**
+         * @description What started a compaction.
+         * @enum {string}
+         */
+        CompactionTrigger: "auto" | "manual";
         Conversation: {
             /** Format: date-time */
             created_at: string;
@@ -797,6 +890,53 @@ export interface operations {
             };
             /** @description No agent running for this conversation */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    compact_conversation: {
+        parameters: {
+            query?: {
+                /** @description provider_id:model_id; defaults to the conversation's last used provider/model */
+                provider_spec?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Conversation ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Compaction done */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompactResult"];
+                };
+            };
+            /** @description Nothing to compact, or no provider/model available */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Conversation not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An agent run or another compaction is already active */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

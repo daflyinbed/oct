@@ -48,6 +48,10 @@ pub enum Turn {
 struct ScriptedState {
     turns: Mutex<VecDeque<Turn>>,
     requests: Mutex<Vec<ChatRequest>>,
+    /// Scripted replies for non-streaming `generate` calls (title/summary
+    /// style); each call pops one.
+    generations: Mutex<VecDeque<Result<String, ModelError>>>,
+    generate_requests: Mutex<Vec<ChatRequest>>,
 }
 
 /// A ChatModel that plays scripted turns and records received requests.
@@ -68,6 +72,12 @@ impl ScriptedObserver {
     pub fn requests(&self) -> Vec<ChatRequest> {
         self.state.requests.lock().unwrap().clone()
     }
+
+    /// Every non-streaming `generate` request (e.g. the compaction summary
+    /// call), in order.
+    pub fn generate_requests(&self) -> Vec<ChatRequest> {
+        self.state.generate_requests.lock().unwrap().clone()
+    }
 }
 
 impl ScriptedModel {
@@ -76,6 +86,8 @@ impl ScriptedModel {
             state: Arc::new(ScriptedState {
                 turns: Mutex::new(turns.into()),
                 requests: Mutex::new(Vec::new()),
+                generations: Mutex::new(VecDeque::new()),
+                generate_requests: Mutex::new(Vec::new()),
             }),
             info: test_model_info(),
         }
@@ -85,6 +97,11 @@ impl ScriptedModel {
         ScriptedObserver {
             state: self.state.clone(),
         }
+    }
+
+    /// Queue one scripted reply for the next non-streaming `generate` call.
+    pub fn push_generation(&self, reply: Result<String, ModelError>) {
+        self.state.generations.lock().unwrap().push_back(reply);
     }
 }
 
@@ -111,8 +128,23 @@ impl ChatModel for ScriptedModel {
         &self.info
     }
 
-    async fn generate(&self, _req: ChatRequest) -> Result<ChatResponse, ModelError> {
-        Err(ModelError::unsupported("generate not scripted"))
+    async fn generate(&self, req: ChatRequest) -> Result<ChatResponse, ModelError> {
+        self.state.generate_requests.lock().unwrap().push(req);
+        let reply = self
+            .state
+            .generations
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_else(|| Err(ModelError::unsupported("generate not scripted")));
+        let text = reply?;
+        Ok(ChatResponse {
+            message: oct_llm_provider::core::Message::text(Role::Assistant, text),
+            finish_reason: FinishReason::Stop,
+            usage: None,
+            provider_response_id: None,
+            provider_metadata: Default::default(),
+        })
     }
 
     async fn stream(&self, req: ChatRequest) -> Result<ChatStream, ModelError> {
@@ -215,6 +247,26 @@ pub async fn spawn_agent(
     conv_id: &str,
     user_message: &str,
 ) -> (RunHandle, SubscribeStream) {
+    let view = oct_agent::db::messages::LlmView {
+        messages: vec![oct_llm_provider::core::Message::text(
+            Role::User,
+            user_message,
+        )],
+        anchor: None,
+    };
+    spawn_agent_with(model, tools, pool, conv_id, view, None).await
+}
+
+/// [`spawn_agent`] with full control over the loaded view and the context
+/// window (auto compaction is driven by the window: `None` disables it).
+pub async fn spawn_agent_with(
+    model: ScriptedModel,
+    tools: Vec<Box<dyn oct_agent::tools::AgentTool>>,
+    pool: sqlx::SqlitePool,
+    conv_id: &str,
+    view: oct_agent::db::messages::LlmView,
+    context_window: Option<u32>,
+) -> (RunHandle, SubscribeStream) {
     let cancel = CancellationToken::new();
     let handle = RunHandle {
         hub: Arc::new(EventHub::new()),
@@ -228,19 +280,13 @@ pub async fn spawn_agent(
         tools: Arc::new(tools),
         pool,
         system_prompt: "test system prompt".to_string(),
+        context_window,
     };
 
     let conv = conv_id.to_string();
     let run = handle.clone();
-    let user = user_message.to_string();
     tokio::spawn(async move {
-        run_agent_loop(
-            ctx,
-            conv,
-            vec![oct_llm_provider::core::Message::text(Role::User, user)],
-            run,
-        )
-        .await;
+        run_agent_loop(ctx, conv, view, run).await;
     });
 
     (handle, stream)
@@ -440,6 +486,18 @@ impl TestApp {
             .send()
             .await
             .expect("cancel request should not fail at transport level")
+    }
+
+    /// POST /api/conversations/{id}/compact — manual compaction.
+    pub async fn compact(&self, conv_id: &str) -> reqwest::Response {
+        self.http
+            .post(format!(
+                "{}/api/conversations/{conv_id}/compact",
+                self.base_url
+            ))
+            .send()
+            .await
+            .expect("compact request should not fail at transport level")
     }
 
     /// POST /api/conversations/{id}/resume; returns the response with headers
