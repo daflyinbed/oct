@@ -19,6 +19,7 @@ const {
   updateServer,
   deleteServer,
   toggleEnabled,
+  clearError,
 } = useMcpServers();
 
 const T0 = "2026-09-21T00:00:00";
@@ -240,5 +241,24 @@ describe("deleteServer", () => {
 
     expect(ok).toBe(true);
     expect(servers.value.map((s) => s.id)).toEqual(["s2"]);
+  });
+});
+
+describe("clearError", () => {
+  it("清空错误状态（表单接管展示后调用，错误不残留）", async () => {
+    GET.mockResolvedValue({ data: [server("s1")], error: undefined } as never);
+    await fetchServers();
+    POST.mockResolvedValue({
+      data: undefined,
+      error: { error: "MCP server 's1' already exists" },
+    } as never);
+    await createServer({ name: "s1", transport: "stdio", command: "npx" });
+    expect(error.value).not.toBeNull();
+
+    clearError();
+
+    expect(error.value).toBeNull();
+    // 只清错误，不动列表
+    expect(servers.value).toHaveLength(1);
   });
 });

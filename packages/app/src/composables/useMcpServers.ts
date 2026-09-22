@@ -78,6 +78,14 @@ export function useMcpServers() {
     return true;
   };
 
+  /**
+   * 清除变更错误：错误是模块级单例，表单视图把失败信息接管到自己局部的
+   * 错误状态后调用，避免同一条错误继续残留在列表视图顶部。
+   */
+  const clearError = () => {
+    error.value = null;
+  };
+
   /** 开关 enabled；乐观更新，失败时回滚为提交前的值（不整表 refetch）。 */
   const toggleEnabled = async (server: McpServerResponse, enabled: boolean) => {
     const idx = servers.value.findIndex((s) => s.id === server.id);
@@ -105,5 +113,6 @@ export function useMcpServers() {
     updateServer,
     deleteServer,
     toggleEnabled,
+    clearError,
   };
 }

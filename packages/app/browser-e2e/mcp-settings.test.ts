@@ -127,7 +127,7 @@ it("mcp settings: 新增 → 列表(未连接) → 切 enabled → 编辑 comman
   mounted.unmount();
 });
 
-it("mcp settings: 重名创建 409,错误信息透出;failed 状态显示错误副文本", async () => {
+it("mcp settings: 重名创建 409,错误信息透出;Cancel 后清除不跨视图残留;failed 状态显示错误副文本", async () => {
   const mounted = await openMcpSettings([
     mcpServerFixture("m1", {
       name: "fs",
@@ -147,6 +147,16 @@ it("mcp settings: 重名创建 409,错误信息透出;failed 状态显示错误�
   await page.getByRole("button", { name: "Create Server" }).click();
 
   await expect.poll(modalText).toContain("MCP server 'fs' already exists");
+
+  // Cancel 返回列表:表单错误与列表顶部的错误一并清除,只剩行的 failed 副文本
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect.poll(modalText).not.toContain("already exists");
+  await expect.poll(modalText).toContain("spawn failed: ENOENT");
+
+  // 重开表单:上次的 409 不带进来
+  await page.getByRole("button", { name: "Add Server" }).first().click();
+  await expect.poll(modalText).toContain("Add MCP Server");
+  await expect.poll(modalText).not.toContain("already exists");
 
   mounted.unmount();
 });

@@ -836,11 +836,10 @@
                     </div>
                   </label>
                 </div>
-                <p
-                  v-if="mcpFormError ?? mcpError"
-                  class="text-[12px] text-danger-10"
-                >
-                  {{ mcpFormError ?? mcpError }}
+                <!-- 只显示表单自己的错误；fetch/列表级错误（mcpError）留在
+                     列表视图顶部，不经 ?? 泄漏进表单 -->
+                <p v-if="mcpFormError" class="text-[12px] text-danger-10">
+                  {{ mcpFormError }}
                 </p>
                 <div class="flex items-center gap-2">
                   <button
@@ -933,6 +932,7 @@ const {
   updateServer,
   deleteServer,
   toggleEnabled: toggleMcpServerEnabled,
+  clearError: clearMcpError,
 } = useMcpServers();
 
 const { projects } = useProjects();
@@ -1113,11 +1113,14 @@ function emptyMcpForm() {
   };
 }
 
-// 进入 mcp 视图时拉取列表（连接状态是实时派生值，每次进入都刷新）
+// 进入 mcp 视图时拉取列表（连接状态是实时派生值，每次进入都刷新）。
+// 离开表单视图（Cancel / goBack / 切作用域 / 编辑目标失效退回）时清表单
+// 错误：提交失败的信息不残留到列表视图，也不带进下一次进表单。
 watch(
   () => view.value.name,
-  (name) => {
+  (name, prev) => {
     if (name === "mcp") void fetchMcpServers();
+    if (prev === "mcp-edit" && name !== "mcp-edit") mcpFormError.value = null;
   },
 );
 
@@ -1128,6 +1131,8 @@ watch(
 watch(
   () => props.visible,
   (open) => {
+    // 直接关弹窗（DialogClose/Esc/遮罩）也清表单错误，不留到下次打开
+    if (!open) mcpFormError.value = null;
     if (open && (view.value.name === "mcp" || view.value.name === "mcp-edit")) {
       void fetchMcpServers();
     }
@@ -1298,7 +1303,13 @@ async function submitMcpServer() {
         ...(toolTimeout != null ? { tool_timeout_ms: toolTimeout } : {}),
         ...(projectId ? { project_id: projectId } : {}),
       });
-      if (ok) view.value = { name: "mcp" };
+      if (ok) {
+        view.value = { name: "mcp" };
+      } else {
+        // 变更错误由表单接管（mcpError 是模块级单例，不清会残留到列表顶部）
+        mcpFormError.value = mcpError.value ?? "更新 MCP server 失败";
+        clearMcpError();
+      }
     } else {
       const created = await createServer({
         name,
@@ -1309,7 +1320,12 @@ async function submitMcpServer() {
         ...(toolTimeout != null ? { tool_timeout_ms: toolTimeout } : {}),
         ...(projectId ? { project_id: projectId } : {}),
       });
-      if (created) view.value = { name: "mcp" };
+      if (created) {
+        view.value = { name: "mcp" };
+      } else {
+        mcpFormError.value = mcpError.value ?? "创建 MCP server 失败";
+        clearMcpError();
+      }
     }
   } finally {
     mcpSubmitting.value = false;
