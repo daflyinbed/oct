@@ -282,7 +282,7 @@ impl AgentTool for ExecuteCommandTool {
             .to_string()
     }
 
-    async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ToolOutput> {
+    async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
         let args: ExecuteCommandArgs =
             serde_json::from_value(args).context("Invalid arguments for execute_command")?;
 
@@ -353,16 +353,17 @@ impl AgentTool for ExecuteCommandTool {
         let stdout_reader = child
             .stdout
             .take()
-            .map(|s| spawn_reader(s, OutputStream::Stdout, _ctx.clone()));
+            .map(|s| spawn_reader(s, OutputStream::Stdout, ctx.clone()));
         let stderr_reader = child
             .stderr
             .take()
-            .map(|s| spawn_reader(s, OutputStream::Stderr, _ctx.clone()));
+            .map(|s| spawn_reader(s, OutputStream::Stderr, ctx.clone()));
 
         // Wait with timeout while keeping the child handle alive so it can be
         // killed on timeout (unlike the previous wait_with_output approach, which
         // consumed the child and left it running forever after a timeout).
         let mut timed_out = false;
+        let mut cancelled = false;
         let wait_result = tokio::select! {
             status = child.wait() => Ok(status),
             _ = tokio::time::sleep(timeout) => {
@@ -370,6 +371,14 @@ impl AgentTool for ExecuteCommandTool {
                 kill_process_group(pgid, &mut child);
                 // Bound the re-wait: a child stuck in uninterruptible sleep
                 // could otherwise hang the tool forever even after SIGKILL.
+                tokio::time::timeout(KILL_REAP_TIMEOUT, child.wait()).await
+            }
+            // The run was cancelled: take the child down through the same
+            // kill + reap path as a timeout instead of waiting out the
+            // remaining budget (or a `sleep 3600` the model forgot to bound).
+            _ = ctx.cancel_token().cancelled() => {
+                cancelled = true;
+                kill_process_group(pgid, &mut child);
                 tokio::time::timeout(KILL_REAP_TIMEOUT, child.wait()).await
             }
         };
@@ -384,9 +393,9 @@ impl AgentTool for ExecuteCommandTool {
                 exit_code_detail = status.code();
                 status.code().unwrap_or(-1)
             }
-            Ok(Err(e)) if timed_out => {
+            Ok(Err(e)) if timed_out || cancelled => {
                 // The post-kill wait failed; the command is dead either way, so
-                // keep the timeout context and partial output instead of
+                // keep the timeout/cancel context and partial output instead of
                 // dropping them.
                 tracing::warn!("post-kill wait failed: {e}");
                 -1
@@ -422,6 +431,9 @@ impl AgentTool for ExecuteCommandTool {
         let mut result = String::new();
         if timed_out {
             result.push_str(&format!("Command timed out after {timeout_secs} seconds"));
+        }
+        if cancelled {
+            result.push_str("Command cancelled by the user");
         }
         if !stdout.is_empty() {
             if !result.is_empty() {
@@ -490,7 +502,23 @@ mod tests {
         fn new() -> Self {
             let hub = Arc::new(EventHub::new());
             Self {
-                ctx: ToolContext::new("test-call", hub.clone()),
+                ctx: ToolContext::new(
+                    "test-call",
+                    hub.clone(),
+                    tokio_util::sync::CancellationToken::new(),
+                ),
+                hub,
+            }
+        }
+
+        /// A context whose run has ALREADY been cancelled: execute's wait
+        /// select must observe the token instead of the timeout clock.
+        fn cancelled() -> Self {
+            let hub = Arc::new(EventHub::new());
+            let token = tokio_util::sync::CancellationToken::new();
+            token.cancel();
+            Self {
+                ctx: ToolContext::new("test-call", hub.clone(), token),
                 hub,
             }
         }
@@ -571,6 +599,30 @@ mod tests {
         // the model-visible content.
         assert_eq!(details["exit_code"], Value::Null);
         assert_eq!(details["timeout_secs"], json!(1));
+    }
+
+    #[tokio::test]
+    async fn cancelled_run_kills_the_child_instead_of_waiting_out_the_budget() {
+        let tool = ExecuteCommandTool::new(WorkspaceRoots::new(std::env::temp_dir(), vec![]));
+        let started = std::time::Instant::now();
+        // The token is cancelled BEFORE the call: the wait select must observe
+        // it at once (no clock involved — a hang would trip the test timeout),
+        // kill the process group, and reap, rather than honouring the 60s
+        // budget or the command's own 30s sleep.
+        let test_ctx = TestCtx::cancelled();
+        let out = tool
+            .execute(
+                json!({ "command": "sleep 30", "timeout_secs": 60 }),
+                &test_ctx.ctx,
+            )
+            .await
+            .unwrap();
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(out.is_error);
+        assert!(out.content.contains("Command cancelled by the user"));
+
+        let details = out.details.expect("command ran, details expected");
+        assert_eq!(details["timed_out"], json!(false));
     }
 
     #[tokio::test]

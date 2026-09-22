@@ -545,7 +545,11 @@ mod tests {
     /// A ToolContext wired to a throwaway event hub; grep does not
     /// stream, so the context is only needed for the trait signature.
     fn noop_ctx() -> ToolContext {
-        ToolContext::new("test", std::sync::Arc::new(crate::agent::EventHub::new()))
+        ToolContext::new(
+            "test",
+            std::sync::Arc::new(crate::agent::EventHub::new()),
+            tokio_util::sync::CancellationToken::new(),
+        )
     }
 
     /// Unique temp directory per test (pid + nanos), like the other tool tests.

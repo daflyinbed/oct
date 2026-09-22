@@ -9,6 +9,7 @@ use utoipa::ToSchema;
 
 use crate::agent::AgentEvent;
 use crate::agent::events::EventHub;
+use tokio_util::sync::CancellationToken;
 
 pub mod edit;
 pub mod execute;
@@ -141,6 +142,10 @@ struct ToolContextInner {
     call_id: String,
     hub: Arc<EventHub>,
     state: Mutex<SmootherState>,
+    /// The run's cancellation token: long-running tools (execute, MCP) race
+    /// it against their own completion so a cancelled run stops them at once
+    /// instead of letting them run to their timeout.
+    cancel: CancellationToken,
 }
 
 /// Per-call handle given to a tool so it can stream live output to the
@@ -155,18 +160,26 @@ pub struct ToolContext {
 }
 
 impl ToolContext {
-    pub fn new(call_id: impl Into<String>, hub: Arc<EventHub>) -> Self {
+    pub fn new(call_id: impl Into<String>, hub: Arc<EventHub>, cancel: CancellationToken) -> Self {
         Self {
             inner: Arc::new(ToolContextInner {
                 call_id: call_id.into(),
                 hub,
                 state: Mutex::new(SmootherState::default()),
+                cancel,
             }),
         }
     }
 
     pub fn call_id(&self) -> &str {
         &self.inner.call_id
+    }
+
+    /// The run's cancellation token. Tools with unbounded or long waits
+    /// (execute, MCP calls) should race [`CancellationToken::cancelled`]
+    /// against their work and return a cancelled ToolOutput on it.
+    pub fn cancel_token(&self) -> &CancellationToken {
+        &self.inner.cancel
     }
 
     /// Append live output text and flush lazily: a stream's buffer is sent
@@ -291,7 +304,11 @@ mod tests {
     ) {
         let hub = Arc::new(EventHub::new());
         let stream = hub.subscribe();
-        (ToolContext::new("call-1", hub.clone()), hub, stream)
+        (
+            ToolContext::new("call-1", hub.clone(), CancellationToken::new()),
+            hub,
+            stream,
+        )
     }
 
     fn deltas(events: Vec<AgentEvent>) -> Vec<(OutputStream, String)> {

@@ -223,7 +223,11 @@ pub async fn run_agent_loop(
                 .find(|t| t.name() == tc.name)
                 .map_or_else(|| tc.name.clone(), |t| t.title(&args));
 
-            let tool_ctx = tools::ToolContext::new(tc.id.clone(), handle.hub.clone());
+            // The run's cancel token rides along so long-running tools
+            // (execute, MCP) can abort in-flight work the moment the user
+            // cancels, instead of running to their own timeout.
+            let tool_ctx =
+                tools::ToolContext::new(tc.id.clone(), handle.hub.clone(), handle.cancel.clone());
             contexts.push(tool_ctx.clone());
 
             // Announce the call at dispatch time so the frontend learns the tool

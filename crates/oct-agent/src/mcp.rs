@@ -20,7 +20,9 @@
 //! loop's tool trait: the LLM sees the flat `mcp__{server}__{tool}` name
 //! (deduplicated across servers by `oct_mcp::ToolNameMap`), while calls are
 //! dispatched over the server's connection under the original tool name,
-//! wrapped in that server's `tool_timeout_ms` budget.
+//! wrapped in that server's `tool_timeout_ms` budget and aborted as soon as
+//! the run's cancellation token fires (the shared connection is never shut
+//! down by an individual call).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -597,23 +599,30 @@ impl AgentTool for McpTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        _ctx: &ToolContext,
+        ctx: &ToolContext,
     ) -> anyhow::Result<ToolOutput> {
         // Never `Err`: a dead or slow server becomes an error ToolOutput so
         // the agent loop keeps running and the model can react to the text.
-        // Both timeout and transport errors name the server and the tool so
-        // the user (and the model) can locate the misbehaving party.
-        let result = match tokio::time::timeout(
-            self.timeout,
-            self.connection.call_tool(&self.original_name, &args),
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(_) => {
+        // Timeout, cancellation and transport errors name the server and the
+        // tool so the user (and the model) can locate the misbehaving party.
+        let result = tokio::select! {
+            result = self.connection.call_tool(&self.original_name, &args) => result,
+            _ = tokio::time::sleep(self.timeout) => {
                 return Ok(ToolOutput::error(format!(
                     "MCP tool error: tool `{}` on MCP server `{}` timed out after {:?}",
                     self.original_name, self.server_name, self.timeout
+                )));
+            }
+            // The run was cancelled: bail out now instead of letting the call
+            // run to its timeout. The shared connection is NOT shut down — it
+            // is keyed by server id and outlives this run — and dropping the
+            // request future simply makes rmcp discard the eventual response.
+            // Sending a JSON-RPC cancelled notification is deliberately out
+            // of scope here.
+            _ = ctx.cancel_token().cancelled() => {
+                return Ok(ToolOutput::error(format!(
+                    "MCP tool error: tool `{}` on MCP server `{}` was cancelled by the user",
+                    self.original_name, self.server_name
                 )));
             }
         };
@@ -649,6 +658,7 @@ mod tests {
     use std::sync::Mutex;
 
     use serde_json::json;
+    use tokio_util::sync::CancellationToken;
 
     /// Minimal scripted connection for unit tests (the richer
     /// tests/support version is not visible from inside the crate).
@@ -894,7 +904,20 @@ mod tests {
     }
 
     async fn run(tool: &McpTool) -> ToolOutput {
-        let ctx = ToolContext::new("call-1", Arc::new(crate::agent::EventHub::new()));
+        let ctx = ToolContext::new(
+            "call-1",
+            Arc::new(crate::agent::EventHub::new()),
+            CancellationToken::new(),
+        );
+        tool.execute(json!({"a": 1}), &ctx).await.unwrap()
+    }
+
+    /// Like [`run`], but with an ALREADY-cancelled run token: the cancel arm
+    /// of the execute select must win without any clock involved.
+    async fn run_cancelled(tool: &McpTool) -> ToolOutput {
+        let token = CancellationToken::new();
+        token.cancel();
+        let ctx = ToolContext::new("call-1", Arc::new(crate::agent::EventHub::new()), token);
         tool.execute(json!({"a": 1}), &ctx).await.unwrap()
     }
 
@@ -967,21 +990,25 @@ mod tests {
         assert!(output.content.len() < MAX_TOOL_OUTPUT_BYTES * 2);
     }
 
+    /// A connection whose calls never resolve (exercises the timeout and
+    /// cancellation paths).
+    struct Hanging;
+
+    #[async_trait]
+    impl McpConnection for Hanging {
+        async fn list_tools(&self) -> anyhow::Result<Vec<McpToolInfo>> {
+            Ok(Vec::new())
+        }
+        async fn call_tool(&self, _name: &str, _args: &Value) -> anyhow::Result<McpCallResult> {
+            futures_util::future::pending().await
+        }
+        async fn shutdown(&self) {}
+    }
+
     #[tokio::test]
     async fn execute_timeout_maps_to_error_output_naming_server_and_tool() {
         // A connection whose calls never resolve: the pending future must
         // outrun the 20ms budget baked into the tool below.
-        struct Hanging;
-        #[async_trait]
-        impl McpConnection for Hanging {
-            async fn list_tools(&self) -> anyhow::Result<Vec<McpToolInfo>> {
-                Ok(Vec::new())
-            }
-            async fn call_tool(&self, _name: &str, _args: &Value) -> anyhow::Result<McpCallResult> {
-                futures_util::future::pending().await
-            }
-            async fn shutdown(&self) {}
-        }
         let tool = McpTool::new(
             "mcp__srv__slow".to_string(),
             info("slow", None),
@@ -994,6 +1021,27 @@ mod tests {
         let content = output.content;
         assert!(content.contains("MCP tool error"), "got: {content}");
         assert!(content.contains("timed out"), "got: {content}");
+        assert!(content.contains("`slow`"), "must name the tool: {content}");
+        assert!(content.contains("`srv`"), "must name the server: {content}");
+    }
+
+    #[tokio::test]
+    async fn execute_cancelled_run_returns_error_output_without_timeout_wait() {
+        // A hanging call plus an ALREADY-cancelled token: the cancel arm must
+        // win immediately — no clock is involved, so the 60s budget below
+        // proves nothing was waited for (a hang would trip the test timeout).
+        let tool = McpTool::new(
+            "mcp__srv__slow".to_string(),
+            info("slow", None),
+            "srv".to_string(),
+            Arc::new(Hanging),
+            Duration::from_secs(60),
+        );
+        let output = run_cancelled(&tool).await;
+        assert!(output.is_error);
+        let content = output.content;
+        assert!(content.contains("MCP tool error"), "got: {content}");
+        assert!(content.contains("cancelled"), "got: {content}");
         assert!(content.contains("`slow`"), "must name the tool: {content}");
         assert!(content.contains("`srv`"), "must name the server: {content}");
     }

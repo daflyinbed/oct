@@ -132,7 +132,11 @@ mod tests {
     /// A ToolContext wired to a throwaway event hub; write_file does
     /// not stream, so the context is only needed for the trait signature.
     fn noop_ctx() -> ToolContext {
-        ToolContext::new("test", std::sync::Arc::new(crate::agent::EventHub::new()))
+        ToolContext::new(
+            "test",
+            std::sync::Arc::new(crate::agent::EventHub::new()),
+            tokio_util::sync::CancellationToken::new(),
+        )
     }
 
     struct Fixture {

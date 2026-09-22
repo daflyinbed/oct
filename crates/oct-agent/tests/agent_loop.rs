@@ -6,6 +6,7 @@ mod support;
 
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use serde_json::json;
@@ -1057,4 +1058,154 @@ async fn mcp_tool_timeout_returns_error_and_loop_continues() {
         ContentPart::ToolResult(ToolResult { is_error: true, .. })
     ));
     assert_eq!(*events.last().unwrap(), AgentEvent::Finish);
+}
+
+/// A cancelled in-flight tool lands as exactly one tool message: either the
+/// loop's "用户取消了执行" placeholder (future dropped unfinished) or the
+/// tool's own cancelled output (select raced the loop's break) — never both,
+/// never none. Returns the (content, is_error) of that message.
+async fn single_cancelled_tool_result(
+    pool: &sqlx::SqlitePool,
+    conv_id: &str,
+    call_id: &str,
+) -> (serde_json::Value, bool) {
+    let stored = db::messages::list_messages(pool, conv_id).await.unwrap();
+    let tool_messages: Vec<_> = stored.iter().filter(|m| m.role == "tool").collect();
+    assert_eq!(
+        tool_messages.len(),
+        1,
+        "exactly one tool message must cover the cancelled call, got {}",
+        tool_messages.len()
+    );
+    match &parts_of(tool_messages[0])[0] {
+        ContentPart::ToolResult(ToolResult {
+            call_id: id,
+            content,
+            is_error,
+        }) => {
+            assert_eq!(id, call_id);
+            assert!(
+                *is_error,
+                "a cancelled call must persist as an error result: {content}"
+            );
+            (content.clone(), *is_error)
+        }
+        other => panic!("expected ToolResult part, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn cancel_while_mcp_tool_in_flight_ends_run_and_keeps_connection_alive() {
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+
+    // A hanging MCP call under a 60s budget: without cancel propagation the
+    // run would sit out the whole budget after cancellation.
+    let slow_info = fake_tool("slow", None);
+    let fake = Arc::new(FakeMcpConnection::new(vec![slow_info.clone()]).with_hang("slow"));
+    let tool = McpTool::new(
+        "mcp__fake__slow".to_string(),
+        slow_info,
+        "fake".to_string(),
+        fake.clone(),
+        Duration::from_secs(60),
+    );
+
+    let model = ScriptedModel::new(vec![Turn::Stream(vec![
+        tool_call("call-1", "mcp__fake__slow", json!({})),
+        finish(FinishReason::ToolCalls),
+    ])]);
+    let observer = model.observer();
+
+    let (handle, mut rx) = spawn_agent(
+        model,
+        vec![Box::new(tool)],
+        env.pool.clone(),
+        &conv_id,
+        "call the slow one",
+    )
+    .await;
+
+    // Cancel once the call is dispatched (ToolCallStart is published before
+    // the future is first polled; the token makes this a sync handoff).
+    let _ = collect_events(&mut rx, |e| matches!(e, AgentEvent::ToolCallStart { .. })).await;
+    handle.cancel();
+    let events = collect_events(&mut rx, is_terminal).await;
+
+    assert_eq!(*events.last().unwrap(), AgentEvent::Cancelled);
+    assert_eq!(
+        observer.requests().len(),
+        1,
+        "no second LLM turn after cancel"
+    );
+
+    // History stays consistent: the dangling call is covered exactly once.
+    let (content, _) = single_cancelled_tool_result(&env.pool, &conv_id, "call-1").await;
+    let placeholder = content == json!("用户取消了执行");
+    let cancelled_output = content
+        .as_str()
+        .is_some_and(|text| text.contains("cancelled"));
+    assert!(
+        placeholder || cancelled_output,
+        "expected the loop placeholder or the tool's cancelled output, got: {content}"
+    );
+
+    // The shared connection is NEVER shut down by cancelling one run: it is
+    // keyed by server id and must survive for the next conversation.
+    assert_eq!(fake.shutdown_count(), 0);
+}
+
+#[tokio::test]
+async fn cancel_while_execute_runs_kills_child_and_ends_run_promptly() {
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+
+    let model = ScriptedModel::new(vec![Turn::Stream(vec![
+        tool_call(
+            "call-1",
+            "execute_command",
+            json!({ "command": "sleep 30", "timeout_secs": 60 }),
+        ),
+        finish(FinishReason::ToolCalls),
+    ])]);
+    let observer = model.observer();
+
+    let started = Instant::now();
+    let (handle, mut rx) = spawn_agent(
+        model,
+        tools::default_tools(tools::workspace::WorkspaceRoots::new(
+            env.dir.path().to_path_buf(),
+            vec![],
+        )),
+        env.pool.clone(),
+        &conv_id,
+        "run something long",
+    )
+    .await;
+
+    let _ = collect_events(&mut rx, |e| matches!(e, AgentEvent::ToolCallStart { .. })).await;
+    handle.cancel();
+    let events = collect_events(&mut rx, is_terminal).await;
+
+    assert_eq!(*events.last().unwrap(), AgentEvent::Cancelled);
+    // The child must be killed through the cancel path, not waited out: the
+    // budget is 60s and the command sleeps 30s, so a run that honoured either
+    // would blow past this bound (collect_events' own 30s timeout is the
+    // hard backstop).
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "cancelled execute must end promptly, took {:?}",
+        started.elapsed()
+    );
+    assert_eq!(observer.requests().len(), 1);
+
+    let (content, _) = single_cancelled_tool_result(&env.pool, &conv_id, "call-1").await;
+    let placeholder = content == json!("用户取消了执行");
+    let cancelled_output = content
+        .as_str()
+        .is_some_and(|text| text.contains("Command cancelled by the user"));
+    assert!(
+        placeholder || cancelled_output,
+        "expected the loop placeholder or the tool's cancelled output, got: {content}"
+    );
 }
