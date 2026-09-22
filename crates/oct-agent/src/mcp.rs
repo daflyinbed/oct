@@ -23,9 +23,20 @@
 //! wrapped in that server's `tool_timeout_ms` budget and aborted as soon as
 //! the run's cancellation token fires (the shared connection is never shut
 //! down by an individual call).
+//!
+//! The cached tool list does not go stale while a server keeps running:
+//! every connected entry spawns a refresh task listening on the connection's
+//! `tools/list_changed` feed (see
+//! [`McpManager`]'s `spawn_tool_list_refresh_task`), which re-lists after a
+//! short debounce and writes the new catalog into the entry. A refresh task
+//! belongs to exactly one entry generation — remove or replace the entry and
+//! the old task retires on its next write, so it can never corrupt a newer
+//! entry.
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -34,6 +45,7 @@ use serde_json::{Value, json};
 use sqlx::SqlitePool;
 use tracing::{info, warn};
 
+use oct_mcp::ToolListChanged;
 use oct_mcp::ToolNameMap;
 use oct_mcp::{McpCallResult, McpConnection, McpToolInfo, StdioServerConfig, connect_stdio};
 
@@ -46,6 +58,13 @@ use crate::tools::{AgentTool, ToolContext, ToolOutput};
 /// Budget for spawning one MCP server and finishing the initialize
 /// handshake (and, separately, for the follow-up `tools/list`).
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Debounce window a `tools/list_changed` refresh task holds open before
+/// re-listing: a server often announces several changes in a burst (and
+/// restarts announce on reconnect), which must collapse into ONE
+/// `tools/list` round trip. Short on purpose — the catalog refresh is
+/// best-effort latency, never a correctness window.
+const TOOL_LIST_REFRESH_DEBOUNCE: Duration = Duration::from_millis(500);
 
 /// Per-call timeout for MCP tool calls when the server row carries no
 /// `tool_timeout_ms`.
@@ -85,6 +104,14 @@ struct ManagedServer {
     /// `mcp__{name}__{tool}` tool names.
     name: String,
     status: ServerStatus,
+    /// Identity of this entry incarnation, allocated from the manager's
+    /// monotonic counter on every insert. The `tools/list_changed` refresh
+    /// task spawned with an entry may only write while the live entry's
+    /// generation still matches — removing or replacing the entry retires
+    /// the old task on its next write instead of letting it corrupt a newer
+    /// entry. `0` only ever appears in hand-built test literals, which no
+    /// spawned task matches.
+    generation: u64,
     /// Fingerprint of the config this entry was established under.
     /// `None` marks a test-injected entry (see
     /// [`McpManager::insert_connection_for_test`]): reconcile treats it as
@@ -97,7 +124,8 @@ struct ManagedServer {
     scope: Option<String>,
     /// The live connection; `None` exactly when status is `Failed`.
     connection: Option<Arc<dyn McpConnection>>,
-    /// Cached `tools/list` result (only meaningful while `Connected`).
+    /// Cached `tools/list` result (only meaningful while `Connected`),
+    /// refreshed in place by the entry's `tools/list_changed` task.
     tools: Vec<McpToolInfo>,
     /// Per-call budget from the row's `tool_timeout_ms` (or the default).
     tool_timeout: Duration,
@@ -107,8 +135,11 @@ struct ManagedServer {
 /// `Arc`; cheap to construct, so tests build their own per case.
 #[derive(Default)]
 pub struct McpManager {
-    /// key = `mcp_servers.id`.
-    servers: DashMap<String, ManagedServer>,
+    /// key = `mcp_servers.id`. `Arc` so the per-entry refresh tasks can hold
+    /// the map without owning the whole manager.
+    servers: Arc<DashMap<String, ManagedServer>>,
+    /// Monotonic source of [`ManagedServer::generation`] values.
+    generation: AtomicU64,
     /// Serializes reconciles: two concurrent chat turns must never both
     /// decide the same server needs connecting (the loser would overwrite —
     /// and leak — the winner's connection). Callers queue here; by the time
@@ -225,11 +256,16 @@ impl McpManager {
                     warn!(server = %row.name, %error, "MCP server connection failed")
                 }
             }
+            let generation = self.next_generation();
+            // The refresh task needs the connection Arc too; clone before it
+            // moves into the entry.
+            let refresh_connection = connection.clone();
             self.servers.insert(
                 row.id.clone(),
                 ManagedServer {
                     name: row.name.clone(),
                     status,
+                    generation,
                     fingerprint: Some(fingerprint_of(row)),
                     scope: row.project_id.clone(),
                     connection,
@@ -237,7 +273,21 @@ impl McpManager {
                     tool_timeout: tool_timeout_of(row),
                 },
             );
+            if let Some(connection) = refresh_connection {
+                spawn_tool_list_refresh_task(
+                    self.servers.clone(),
+                    row.id.clone(),
+                    generation,
+                    connection,
+                );
+            }
         }
+    }
+
+    /// Next value for the entry generation counter (starts at 1; 0 stays
+    /// reserved for hand-built test literals no spawned task can match).
+    fn next_generation(&self) -> u64 {
+        self.generation.fetch_add(1, Ordering::Relaxed) + 1
     }
 
     /// Whether the entry for `id` must be (re)connected for the current row.
@@ -390,7 +440,9 @@ impl McpManager {
     /// [`Self::ensure_connections`] treats it as externally owned: it is
     /// never reconnected, and it survives reconciles even if the matching
     /// row is missing or disabled. Tool-call timeout is the default; build
-    /// an [`McpTool`] directly to control it.
+    /// an [`McpTool`] directly to control it. A `tools/list_changed` refresh
+    /// task is spawned exactly like for production entries — fire the
+    /// connection's feed to drive it.
     #[doc(hidden)]
     pub fn insert_connection_for_test(
         &self,
@@ -401,18 +453,126 @@ impl McpManager {
         tools: Vec<McpToolInfo>,
     ) {
         let tool_count = tools.len();
+        let generation = self.next_generation();
         self.servers.insert(
             server_id.to_string(),
             ManagedServer {
                 name: name.to_string(),
                 status: ServerStatus::Connected { tool_count },
+                generation,
                 fingerprint: None,
                 scope: scope.map(str::to_string),
-                connection: Some(connection),
+                connection: Some(connection.clone()),
                 tools,
                 tool_timeout: DEFAULT_TOOL_TIMEOUT,
             },
         );
+        spawn_tool_list_refresh_task(
+            self.servers.clone(),
+            server_id.to_string(),
+            generation,
+            connection,
+        );
+    }
+}
+
+/// Spawn the `tools/list_changed` refresh task for one freshly inserted
+/// entry incarnation. Connections without a notification feed (default
+/// trait impl, e.g. minimal test doubles) spawn nothing. The task shares the
+/// map instead of the manager so it can be spawned from `&self` methods; it
+/// terminates when the feed closes (production connections close it on
+/// shutdown), or at the first write that finds its entry removed or replaced
+/// (generation guard). See [`tool_list_refresh_loop`].
+fn spawn_tool_list_refresh_task(
+    servers: Arc<DashMap<String, ManagedServer>>,
+    id: String,
+    generation: u64,
+    connection: Arc<dyn McpConnection>,
+) {
+    let Some(watcher) = connection.tool_list_changed() else {
+        return;
+    };
+    tokio::spawn(tool_list_refresh_loop(
+        watcher, servers, id, generation, connection,
+    ));
+}
+
+/// Debounce + refresh loop behind every connected entry: on each
+/// `tools/list_changed` notification, hold [`TOOL_LIST_REFRESH_DEBOUNCE`]
+/// open (notifications landing inside collapse into this cycle), then
+/// re-list under the connect-time budget and write the new catalog into the
+/// entry — guarded by the generation the task was spawned with.
+///
+/// Failure policy: a failed or timed-out refresh is logged and the entry is
+/// left exactly as it was (the server may be mid-restart; reconcile remains
+/// the authority on reconnects). The loop never removes an entry.
+async fn tool_list_refresh_loop(
+    mut watcher: ToolListChanged,
+    servers: Arc<DashMap<String, ManagedServer>>,
+    id: String,
+    generation: u64,
+    connection: Arc<dyn McpConnection>,
+) {
+    loop {
+        // Park until the server announces a catalog change (or the feed
+        // closes for good — a production connection's feed closes once its
+        // entry is disconnected and the service dropped).
+        if !watcher.changed().await {
+            return;
+        }
+        // Debounce: a FIXED window from the first notification; every
+        // notification landing inside it is absorbed here (its `changed()`
+        // resolution marks the revision seen) and served by the single
+        // re-list below. A notification after the window naturally starts a
+        // fresh cycle. `changed()` is cancel-safe in select.
+        let deadline = tokio::time::Instant::now() + TOOL_LIST_REFRESH_DEBOUNCE;
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep_until(deadline) => break,
+                alive = watcher.changed() => {
+                    if !alive {
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Same budget the connect-time listing uses, so a server that lists
+        // forever cannot pin the task.
+        let refreshed = tokio::time::timeout(CONNECT_TIMEOUT, connection.list_tools()).await;
+        match refreshed {
+            Ok(Ok(tools)) => {
+                // Generation check and write happen under one DashMap shard
+                // lock (the RefMut guard), so a concurrent remove/replace of
+                // the entry cannot interleave between them.
+                let Some(mut entry) = servers.get_mut(&id) else {
+                    // Entry removed (disconnect/reconcile): retire.
+                    return;
+                };
+                if entry.generation != generation {
+                    // Entry replaced by a reconnect: retire, never write
+                    // into the new incarnation.
+                    return;
+                }
+                let tool_count = tools.len();
+                entry.tools = tools;
+                entry.status = ServerStatus::Connected { tool_count };
+                info!(
+                    server = %entry.name,
+                    tools = tool_count,
+                    "MCP tool catalog refreshed after tools/list_changed"
+                );
+            }
+            Ok(Err(e)) => {
+                warn!(server = %id, "MCP tools/list refresh failed: {e:#}");
+            }
+            Err(_) => {
+                warn!(
+                    server = %id,
+                    "MCP tools/list refresh timed out after {CONNECT_TIMEOUT:?}"
+                );
+            }
+        }
     }
 }
 
@@ -656,6 +816,7 @@ impl AgentTool for McpTool {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+    use std::sync::atomic::AtomicUsize;
 
     use serde_json::json;
     use tokio_util::sync::CancellationToken;
@@ -778,6 +939,7 @@ mod tests {
                 status: ServerStatus::Failed {
                     error: "spawn failed".to_string(),
                 },
+                generation: 0,
                 fingerprint: Some("fp".to_string()),
                 scope: None,
                 connection: None,
@@ -1250,6 +1412,7 @@ mod tests {
             ManagedServer {
                 name: "edit".to_string(),
                 status: ServerStatus::Connected { tool_count: 1 },
+                generation: 0,
                 fingerprint: Some("stale-fingerprint".to_string()),
                 scope: None,
                 connection: Some(FakeConn::ok("x")),
@@ -1281,6 +1444,7 @@ mod tests {
             ManagedServer {
                 name: "keep".to_string(),
                 status: ServerStatus::Connected { tool_count: 1 },
+                generation: 0,
                 fingerprint: Some(fingerprint_of(&row)),
                 scope: row.project_id.clone(),
                 connection: Some(fake.clone()),
@@ -1325,6 +1489,7 @@ mod tests {
             ManagedServer {
                 name: "scoped".to_string(),
                 status: ServerStatus::Connected { tool_count: 1 },
+                generation: 0,
                 fingerprint: Some(fingerprint_of(&row)),
                 scope: Some(owner.id.clone()),
                 connection: Some(fake),
@@ -1366,6 +1531,7 @@ mod tests {
             ManagedServer {
                 name: "scoped".to_string(),
                 status: ServerStatus::Connected { tool_count: 1 },
+                generation: 0,
                 fingerprint: Some("stale-fingerprint".to_string()),
                 scope: Some(owner.id.clone()),
                 connection: Some(FakeConn::ok("x")),
@@ -1426,6 +1592,7 @@ mod tests {
             ManagedServer {
                 name: "mover".to_string(),
                 status: ServerStatus::Connected { tool_count: 1 },
+                generation: 0,
                 fingerprint: Some(fingerprint_of(&row)),
                 scope: None,
                 connection: Some(FakeConn::ok("x")),
@@ -1451,6 +1618,243 @@ mod tests {
             Some(ServerStatus::Failed { .. })
         ));
         assert!(manager.tools_for_run(Some(&project.id)).is_empty());
+    }
+
+    // ------------------------------------------------------------------
+    // tools/list_changed refresh loop (debounce, generation guard)
+    // ------------------------------------------------------------------
+
+    /// Fake connection with a manual notification trigger, a mutable tool
+    /// catalog and a `list_tools` call counter — everything the refresh
+    /// loop's tests need to observe (the richer tests/support fake is not
+    /// visible from inside the crate).
+    struct NotifyFake {
+        tools: Mutex<Vec<McpToolInfo>>,
+        list_calls: AtomicUsize,
+        notifier: oct_mcp::ToolListNotifier,
+        watcher: ToolListChanged,
+    }
+
+    impl NotifyFake {
+        fn new(tools: Vec<McpToolInfo>) -> Arc<Self> {
+            let (notifier, watcher) = oct_mcp::tool_list_changed_channel();
+            Arc::new(Self {
+                tools: Mutex::new(tools),
+                list_calls: AtomicUsize::new(0),
+                notifier,
+                watcher,
+            })
+        }
+
+        fn set_tools(&self, tools: Vec<McpToolInfo>) {
+            *self.tools.lock().unwrap() = tools;
+        }
+
+        fn list_call_count(&self) -> usize {
+            self.list_calls.load(Ordering::SeqCst)
+        }
+
+        /// The server announces a catalog change (manual fire).
+        fn notify(&self) {
+            self.notifier.notify();
+        }
+    }
+
+    #[async_trait]
+    impl McpConnection for NotifyFake {
+        async fn list_tools(&self) -> anyhow::Result<Vec<McpToolInfo>> {
+            self.list_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.tools.lock().unwrap().clone())
+        }
+
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _arguments: &Value,
+        ) -> anyhow::Result<McpCallResult> {
+            Ok(McpCallResult {
+                text: String::new(),
+                structured_json: None,
+                is_error: false,
+            })
+        }
+
+        async fn shutdown(&self) {}
+
+        fn tool_list_changed(&self) -> Option<ToolListChanged> {
+            Some(self.watcher.clone())
+        }
+    }
+
+    fn tool_names(tools: Vec<McpToolInfo>) -> Vec<String> {
+        tools.into_iter().map(|t| t.name).collect()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn list_changed_notification_refreshes_the_entry_after_debounce() {
+        let manager = McpManager::default();
+        let fake = NotifyFake::new(vec![info("a", None)]);
+        manager.insert_connection_for_test(
+            "id-1",
+            "one",
+            None,
+            fake.clone(),
+            vec![info("a", None)],
+        );
+        assert_eq!(tool_names(manager.tools_of("id-1")), ["a".to_string()]);
+
+        // The server gains a tool and announces the catalog change.
+        fake.set_tools(vec![info("a", None), info("b", None)]);
+        fake.notify();
+
+        // Paused clock: time auto-advances only while every task is parked,
+        // so sleeping past the debounce window guarantees the refresh (whose
+        // deadline sits at the window's start) has completed — deterministic,
+        // no wall-clock sleep, no polling.
+        tokio::time::sleep(TOOL_LIST_REFRESH_DEBOUNCE * 2).await;
+
+        assert_eq!(fake.list_call_count(), 1, "one notification = one re-list");
+        assert_eq!(
+            tool_names(manager.tools_of("id-1")),
+            ["a".to_string(), "b".to_string()]
+        );
+        assert_eq!(
+            manager.status_of("id-1"),
+            Some(ServerStatus::Connected { tool_count: 2 })
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_burst_of_notifications_debounces_into_a_single_refresh() {
+        let manager = McpManager::default();
+        let fake = NotifyFake::new(vec![info("a", None)]);
+        manager.insert_connection_for_test(
+            "id-1",
+            "one",
+            None,
+            fake.clone(),
+            vec![info("a", None)],
+        );
+
+        // Three notifications land inside one debounce window: the burst
+        // must collapse into ONE tools/list round trip.
+        fake.set_tools(vec![info("a", None), info("b", None)]);
+        fake.notify();
+        fake.notify();
+        fake.notify();
+        tokio::time::sleep(TOOL_LIST_REFRESH_DEBOUNCE * 2).await;
+
+        assert_eq!(
+            fake.list_call_count(),
+            1,
+            "a burst inside the window is one refresh"
+        );
+        assert_eq!(
+            tool_names(manager.tools_of("id-1")),
+            ["a".to_string(), "b".to_string()]
+        );
+
+        // A LATER notification still starts a fresh cycle (no coalescing
+        // across windows).
+        fake.set_tools(vec![info("a", None), info("b", None), info("c", None)]);
+        fake.notify();
+        tokio::time::sleep(TOOL_LIST_REFRESH_DEBOUNCE * 2).await;
+
+        assert_eq!(fake.list_call_count(), 2);
+        assert_eq!(manager.tools_of("id-1").len(), 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn refresh_task_retires_when_its_entry_is_replaced() {
+        let manager = McpManager::default();
+        let stale = NotifyFake::new(vec![info("stale", None)]);
+        manager.insert_connection_for_test(
+            "id-1",
+            "one",
+            None,
+            stale.clone(),
+            vec![info("stale", None)],
+        );
+
+        // The entry is disconnected (reconcile's removal path) and the same
+        // id re-established under a fresh generation with a DIFFERENT
+        // connection — the shape of a fingerprint-change reconnect.
+        manager.disconnect("id-1").await;
+        let fresh = NotifyFake::new(vec![info("fresh", None)]);
+        manager.insert_connection_for_test(
+            "id-1",
+            "one",
+            None,
+            fresh.clone(),
+            vec![info("fresh", None)],
+        );
+
+        // The OLD connection's server announces (its feed never closed —
+        // the fake keeps it alive); the old task wakes, runs its debounce
+        // and re-lists on its own connection...
+        stale.set_tools(vec![info("stale-2", None)]);
+        stale.notify();
+        tokio::time::sleep(TOOL_LIST_REFRESH_DEBOUNCE * 2).await;
+
+        // ...the refresh really ran, but the generation guard rejected the
+        // write: the live entry still shows the fresh connection's catalog.
+        assert_eq!(
+            stale.list_call_count(),
+            1,
+            "the retired task did perform its (rejected) re-list"
+        );
+        assert_eq!(tool_names(manager.tools_of("id-1")), ["fresh".to_string()]);
+        assert_eq!(
+            fresh.list_call_count(),
+            0,
+            "the fresh connection never announced"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_refresh_keeps_the_entry_and_its_cached_tools() {
+        // A server announcing a change while its tools/list breaks (e.g.
+        // mid-restart): the refresh fails, the entry keeps its cached
+        // catalog and Connected status — reconcile stays the authority on
+        // reconnects.
+        let manager = McpManager::default();
+
+        // A connection whose tools/list always fails but whose feed fires.
+        struct FailingList(ToolListChanged);
+        #[async_trait]
+        impl McpConnection for FailingList {
+            async fn list_tools(&self) -> anyhow::Result<Vec<McpToolInfo>> {
+                Err(anyhow::anyhow!("server restarted mid-list"))
+            }
+            async fn call_tool(
+                &self,
+                _name: &str,
+                _arguments: &Value,
+            ) -> anyhow::Result<McpCallResult> {
+                unreachable!("no tool calls in this test")
+            }
+            async fn shutdown(&self) {}
+            fn tool_list_changed(&self) -> Option<ToolListChanged> {
+                Some(self.0.clone())
+            }
+        }
+        let (notifier, watcher) = oct_mcp::tool_list_changed_channel();
+        manager.insert_connection_for_test(
+            "id-2",
+            "broken",
+            None,
+            Arc::new(FailingList(watcher)),
+            vec![info("kept", None)],
+        );
+
+        notifier.notify();
+        tokio::time::sleep(TOOL_LIST_REFRESH_DEBOUNCE * 2).await;
+
+        assert_eq!(tool_names(manager.tools_of("id-2")), ["kept".to_string()]);
+        assert_eq!(
+            manager.status_of("id-2"),
+            Some(ServerStatus::Connected { tool_count: 1 })
+        );
     }
 
     #[test]

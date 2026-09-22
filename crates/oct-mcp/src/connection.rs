@@ -3,19 +3,21 @@
 //! This module wraps rmcp's client stack behind the narrow [`McpConnection`]
 //! trait. rmcp types (`RunningService`, `Peer`, model structs) appear ONLY in
 //! private items — never in a public signature — so consumers of this crate
-//! can treat MCP as "spawn a server, list tools, call tools, shut down"
-//! without a direct rmcp dependency.
+//! can treat MCP as "spawn a server, list tools, call tools, watch for
+//! `tools/list_changed`, shut down" without a direct rmcp dependency.
 //!
 //! Only the child-process stdio transport is supported (see the crate-level
 //! docs for why HTTP transports are deliberately out).
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::time::Duration;
 
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use async_trait::async_trait;
+use rmcp::ClientHandler;
 use rmcp::model::CallToolRequestParams;
 use rmcp::model::CallToolResult;
 use rmcp::model::ClientCapabilities;
@@ -24,6 +26,8 @@ use rmcp::model::ContentBlock;
 use rmcp::model::Implementation;
 use rmcp::model::PaginatedRequestParams;
 use rmcp::model::Tool;
+use rmcp::service::MaybeSendFuture;
+use rmcp::service::NotificationContext;
 use rmcp::service::Peer;
 use rmcp::service::RoleClient;
 use rmcp::service::RunningService;
@@ -33,6 +37,7 @@ use rmcp::transport::child_process::TokioChildProcess;
 use serde_json::Map;
 use serde_json::Value;
 use tokio::sync::Mutex;
+use tokio::sync::watch;
 
 use crate::naming::normalize_input_schema;
 
@@ -75,6 +80,68 @@ pub struct McpCallResult {
     pub is_error: bool,
 }
 
+/// Live feed of one server's `notifications/tools/list_changed`, exposed by
+/// [`McpConnection::tool_list_changed`].
+///
+/// Backed by a `tokio` watch channel kept private so no foreign types leak
+/// into this crate's signatures. The watched value is a monotonic revision
+/// counter: every notification received on the connection increments it, so
+/// consumers can either coalesce bursts ("something changed") or count them
+/// ([`ToolListChanged::current`]).
+///
+/// Clone-cheap: every clone tracks its own "last seen" revision, exactly like
+/// the underlying watch receiver.
+#[derive(Debug, Clone)]
+pub struct ToolListChanged {
+    rx: watch::Receiver<u64>,
+}
+
+impl ToolListChanged {
+    /// Current revision. Starts at 0 on connect; every received
+    /// `tools/list_changed` notification increments it. Mainly useful for
+    /// assertions and logging.
+    pub fn current(&self) -> u64 {
+        *self.rx.borrow()
+    }
+
+    /// Resolves once at least one notification arrived since the last
+    /// observation on THIS handle, marking the current revision seen.
+    /// Cancel-safe (usable as a `tokio::select!` branch). Returns `false`
+    /// when the feed is closed for good — the connection was shut down, no
+    /// change will ever fire again — so `while watcher.changed().await` is
+    /// the natural consumer loop.
+    pub async fn changed(&mut self) -> bool {
+        self.rx.changed().await.is_ok()
+    }
+}
+
+/// Manual trigger side of a [`ToolListChanged`] feed. Held by the rmcp client
+/// handler inside this crate, and constructible via
+/// [`tool_list_changed_channel`] by test doubles simulating a live server
+/// that announces catalog changes.
+#[derive(Debug, Clone)]
+pub struct ToolListNotifier {
+    tx: watch::Sender<u64>,
+}
+
+impl ToolListNotifier {
+    /// Announce one `tools/list_changed` event. Cheap no-op (no error, no
+    /// allocation) when nobody observes the feed.
+    pub fn notify(&self) {
+        // Always increments the revision: the counter is the payload, so an
+        // equal-value write would silently drop an event for any consumer
+        // counting revisions.
+        self.tx.send_modify(|revision| *revision += 1);
+    }
+}
+
+/// Create a connected [`ToolListNotifier`]/[`ToolListChanged`] pair — the
+/// test-double counterpart of the feed [`connect_stdio`] wires up internally.
+pub fn tool_list_changed_channel() -> (ToolListNotifier, ToolListChanged) {
+    let (tx, rx) = watch::channel(0);
+    (ToolListNotifier { tx }, ToolListChanged { rx })
+}
+
 /// A live connection to one MCP server. All methods take `&self` so a single
 /// connection can be shared across the agent loop; drop alone does NOT
 /// guarantee a graceful server shutdown — call [`McpConnection::shutdown`].
@@ -94,6 +161,15 @@ pub trait McpConnection: Send + Sync {
     /// the stdio transport close the child's stdin, wait briefly for exit,
     /// then kill. Idempotent.
     async fn shutdown(&self);
+
+    /// Live `tools/list_changed` feed of this connection, when the transport
+    /// surfaces server-initiated notifications. The default `None` means the
+    /// connection never announces catalog changes — callers fall back to
+    /// whatever they cached at connect time. Each call returns an independent
+    /// clone observing the same revisions.
+    fn tool_list_changed(&self) -> Option<ToolListChanged> {
+        None
+    }
 }
 
 /// Spawn an MCP server as a child process and run the MCP initialize
@@ -151,6 +227,30 @@ fn set_pdeathsig() -> std::io::Result<()> {
     Ok(())
 }
 
+/// rmcp client handler feeding a [`ToolListChanged`] watch channel with
+/// `notifications/tools/list_changed`. `get_info` returns the same identity
+/// `ClientConfig` the connection always declared — the handler ONLY adds
+/// notification routing; every other notification and server request keeps
+/// rmcp's no-op default (oct still consumes nothing beyond tools).
+struct NotifyHandler {
+    config: ClientConfig,
+    tool_list_changed: ToolListNotifier,
+}
+
+impl ClientHandler for NotifyHandler {
+    fn on_tool_list_changed(
+        &self,
+        _context: NotificationContext<RoleClient>,
+    ) -> impl Future<Output = ()> + MaybeSendFuture + '_ {
+        self.tool_list_changed.notify();
+        std::future::ready(())
+    }
+
+    fn get_info(&self) -> ClientConfig {
+        self.config.clone()
+    }
+}
+
 /// Core of [`connect_stdio`], generic over the transport so the tests can
 /// drive the SAME production path (initialize handshake, request encoding,
 /// result mapping) over an in-memory duplex pipe instead of a child process.
@@ -158,7 +258,9 @@ fn set_pdeathsig() -> std::io::Result<()> {
 /// The client identifies itself as "oct" (version of this crate) and declares
 /// NO capabilities beyond the base protocol: oct only ever consumes tools.
 /// A server that nevertheless sends sampling/roots/elicitation requests gets
-/// them refused by rmcp's default no-op handler.
+/// them refused by rmcp's default no-op handler — except
+/// `tools/list_changed`, which [`NotifyHandler`] forwards to the
+/// [`ToolListChanged`] feed carried by the returned connection.
 async fn connect_transport<T, E, A>(
     transport: T,
     timeout: Duration,
@@ -167,15 +269,19 @@ where
     T: IntoTransport<RoleClient, E, A>,
     E: std::error::Error + Send + Sync + 'static,
 {
-    let client_info = ClientConfig::new(
-        ClientCapabilities::default(),
-        Implementation::new("oct", env!("CARGO_PKG_VERSION")),
-    );
+    let (notifier, tool_list_changed) = tool_list_changed_channel();
+    let handler = NotifyHandler {
+        config: ClientConfig::new(
+            ClientCapabilities::default(),
+            Implementation::new("oct", env!("CARGO_PKG_VERSION")),
+        ),
+        tool_list_changed: notifier,
+    };
 
     // Dropping the serve_client future mid-handshake (timeout path) drops the
     // transport with it, which kills the spawned child — no orphan process
     // is left behind.
-    let running = tokio::time::timeout(timeout, serve_client(client_info, transport))
+    let running = tokio::time::timeout(timeout, serve_client(handler, transport))
         .await
         .map_err(|_| {
             anyhow!("MCP server did not finish the initialize handshake within {timeout:?}")
@@ -187,6 +293,7 @@ where
     Ok(Box::new(RmcpConnection {
         peer: running.peer().clone(),
         service: Mutex::new(Some(running)),
+        tool_list_changed,
     }))
 }
 
@@ -197,7 +304,10 @@ struct RmcpConnection {
     peer: Peer<RoleClient>,
     /// The running service, taken and gracefully closed by `shutdown`.
     /// `Mutex<Option<..>>` because the trait's `shutdown` takes `&self`.
-    service: Mutex<Option<RunningService<RoleClient, ClientConfig>>>,
+    service: Mutex<Option<RunningService<RoleClient, NotifyHandler>>>,
+    /// Receiver half of the notification feed [`NotifyHandler`] sends to;
+    /// closed for good once `shutdown` drops the service (and the handler).
+    tool_list_changed: ToolListChanged,
 }
 
 #[async_trait]
@@ -248,6 +358,10 @@ impl McpConnection for RmcpConnection {
                 tracing::debug!("MCP connection closed");
             }
         }
+    }
+
+    fn tool_list_changed(&self) -> Option<ToolListChanged> {
+        Some(self.tool_list_changed.clone())
     }
 }
 
@@ -446,10 +560,14 @@ mod tests {
 
     /// Run the scripted server until the client side closes the pipe (read
     /// returns an empty line at EOF). Every incoming message is recorded in
-    /// `log`.
+    /// `log`. When `announce_tools_changed` is set, the server pushes two
+    /// `notifications/tools/list_changed` frames right after the initialize
+    /// response — mirroring a real server whose tool catalog moved twice
+    /// before the client asked anything.
     async fn run_scripted_server(
         stream: tokio::io::DuplexStream,
         log: RequestLog,
+        announce_tools_changed: bool,
     ) -> std::io::Result<()> {
         let (read_half, mut write_half) = tokio::io::split(stream);
         let mut lines = BufReader::new(read_half).lines();
@@ -518,6 +636,15 @@ mod tests {
             write_half
                 .write_all(format!("{}\n", response.to_string()).as_bytes())
                 .await?;
+            if method == "initialize" && announce_tools_changed {
+                for _ in 0..2 {
+                    let notification =
+                        json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"});
+                    write_half
+                        .write_all(format!("{}\n", notification).as_bytes())
+                        .await?;
+                }
+            }
         }
         Ok(())
     }
@@ -525,11 +652,20 @@ mod tests {
     /// Wire a client (via the production [`connect_transport`]) to a scripted
     /// server over a duplex pipe; returns (connection, request log).
     async fn connected_client() -> (Box<dyn McpConnection>, RequestLog) {
+        connected_client_with(false).await
+    }
+
+    /// [`connected_client`] with control over whether the scripted server
+    /// announces `tools/list_changed` right after the handshake.
+    async fn connected_client_with(
+        announce_tools_changed: bool,
+    ) -> (Box<dyn McpConnection>, RequestLog) {
         let (client_side, server_side) = duplex(64 * 1024);
         let log: RequestLog = Arc::default();
         let server_log = log.clone();
-        let server =
-            tokio::spawn(async move { run_scripted_server(server_side, server_log).await });
+        let server = tokio::spawn(async move {
+            run_scripted_server(server_side, server_log, announce_tools_changed).await
+        });
 
         let connection = connect_transport(client_side, Duration::from_secs(10))
             .await
@@ -648,6 +784,76 @@ mod tests {
         assert_eq!(mirror.text, r#"{"deep":{"x":[1,"两"]}}"#);
 
         connection.shutdown().await;
+    }
+
+    /// Wait until the feed observed at least revision `target` (recv with
+    /// timeout 兜底, no sleeps). Watch semantics coalesce a burst into one
+    /// `changed()` wake carrying the LATEST revision, so the loop must follow
+    /// the revision counter instead of assuming one wake per notification:
+    /// when `changed()` resolves the revision may already be past `target`,
+    /// and when fewer remain in flight the next `changed()` would hang.
+    async fn wait_for_revision(watcher: &mut ToolListChanged, target: u64) {
+        loop {
+            if watcher.current() >= target {
+                return;
+            }
+            let changed = tokio::time::timeout(Duration::from_secs(5), watcher.changed())
+                .await
+                .expect("notification must be delivered");
+            assert!(changed, "feed must still be alive");
+        }
+    }
+
+    #[tokio::test]
+    async fn tools_list_changed_notifications_reach_the_exposed_feed() {
+        let (connection, _log) = connected_client_with(true).await;
+        let mut watcher = connection
+            .tool_list_changed()
+            .expect("stdio connections must expose the notification feed");
+
+        // Two notifications were pushed right after the handshake: both must
+        // land on the feed (revision == 2 proves neither was dropped — and
+        // the wake may carry them in one coalesced `changed()`).
+        wait_for_revision(&mut watcher, 2).await;
+        assert_eq!(watcher.current(), 2);
+
+        // The notifications must not disturb request handling on the same
+        // stream: list/call work exactly as without them.
+        let tools = connection.list_tools().await.expect("list_tools");
+        assert_eq!(tools.len(), 3);
+        let echo = connection
+            .call_tool("echo", &json!({"a": 1}))
+            .await
+            .expect("echo call");
+        assert_eq!(echo.text, "hello\nworld");
+
+        // And the feed must stay quiet afterwards: a short bounded wait on
+        // `changed()` (the timeout IS the assertion) proves no spurious
+        // signals leak through.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), watcher.changed())
+                .await
+                .is_err(),
+            "no further notification may fire"
+        );
+
+        connection.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn feed_closes_when_the_connection_shuts_down() {
+        let (connection, _log) = connected_client_with(true).await;
+        let mut watcher = connection
+            .tool_list_changed()
+            .expect("stdio connections must expose the notification feed");
+        // Settle both scripted notifications so the next `changed()` has
+        // nothing pending; then shutdown must close the feed for good.
+        wait_for_revision(&mut watcher, 2).await;
+        connection.shutdown().await;
+        let closed = tokio::time::timeout(Duration::from_secs(5), watcher.changed())
+            .await
+            .expect("changed() must resolve after the feed closes");
+        assert!(!closed, "feed must report closed after shutdown");
     }
 
     #[tokio::test]

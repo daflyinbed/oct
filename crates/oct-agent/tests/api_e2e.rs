@@ -732,6 +732,72 @@ async fn mcp_tools_join_the_chat_loop_and_status_reports_live_state() {
 }
 
 #[tokio::test]
+async fn mcp_list_changed_notification_refreshes_the_surfaced_catalog() {
+    let app = TestApp::new().await;
+
+    // A connected server whose live catalog moves while the connection stays
+    // up: the fake announces `tools/list_changed` like a real server, and the
+    // manager's debounced refresh must make the new catalog visible through
+    // the API without any reconnect.
+    let id = create_mcp_row(&app, "live").await;
+    let listing = vec![fake_tool("echo", Some("say things"))];
+    let fake = Arc::new(FakeMcpConnection::new(listing.clone()));
+    app.mcp
+        .insert_connection_for_test(&id, "live", None, fake.clone(), listing);
+
+    // Baseline: the injected catalog is surfaced as-is (and the injected
+    // listing did not go through the connection — list_call_count starts 0).
+    let fetched = mcp_server_detail(&app, &id).await;
+    assert_eq!(fetched["status"], "connected");
+    assert_eq!(fetched["tool_count"], 1);
+    assert_eq!(fake.list_call_count(), 0);
+
+    // The server ships a second tool and announces the change twice in a
+    // burst — the debounce must collapse the burst into ONE re-list.
+    fake.set_tools(vec![
+        fake_tool("echo", Some("say things")),
+        fake_tool("spawn", None),
+    ]);
+    fake.notify_tool_list_changed();
+    fake.notify_tool_list_changed();
+
+    // The refresh task is a detached background job with no test-visible
+    // channel, so its only observable effect is the API response — bounded
+    // poll, same justification as wait_conversation (never a bare sleep).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let fetched = loop {
+        let fetched = mcp_server_detail(&app, &id).await;
+        if fetched["tool_count"] == 2 {
+            break fetched;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for the refreshed catalog, last: {fetched}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+
+    // The refreshed catalog reaches the tools panel payload under the raw
+    // server-side names, and the burst really cost a single re-list.
+    let tools = fetched["tools"].as_array().expect("tools while connected");
+    assert_eq!(tools.len(), 2);
+    assert_eq!(tools[0]["name"], "echo");
+    assert_eq!(tools[1]["name"], "spawn");
+    assert_eq!(
+        fake.list_call_count(),
+        1,
+        "a burst of notifications is one debounced re-list"
+    );
+}
+
+/// GET /api/mcp/servers/{id} (the detail endpoint the tools panel reads).
+async fn mcp_server_detail(app: &TestApp, id: &str) -> Value {
+    let resp = app.get_json(&format!("/api/mcp/servers/{id}")).await;
+    assert_eq!(resp.status(), 200);
+    resp.json().await.expect("server json")
+}
+
+#[tokio::test]
 async fn mcp_rows_never_reconciled_report_not_connected() {
     let app = TestApp::new().await;
 

@@ -1,7 +1,12 @@
 //! Scripted [`McpConnection`] for the agent-loop and API e2e tests: a preset
-//! tool list plus per-tool scripted call outcomes (result / transport error /
-//! hang). Every call is recorded so tests can assert the ORIGINAL tool names
-//! and verbatim arguments the production adapter dispatched.
+//! (and re-programmable) tool list plus per-tool scripted call outcomes
+//! (result / transport error / hang). Every call is recorded so tests can
+//! assert the ORIGINAL tool names and verbatim arguments the production
+//! adapter dispatched. The connection also carries a live
+//! `tools/list_changed` feed tests can fire manually
+//! ([`FakeMcpConnection::notify_tool_list_changed`]) to drive the manager's
+//! debounced refresh path exactly like a real server announcing catalog
+//! changes.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -9,7 +14,9 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
-use oct_mcp::{McpCallResult, McpConnection, McpToolInfo};
+use oct_mcp::ToolListChanged;
+use oct_mcp::ToolListNotifier;
+use oct_mcp::{McpCallResult, McpConnection, McpToolInfo, tool_list_changed_channel};
 use serde_json::Value;
 
 /// The scripted outcome of one `tools/call`.
@@ -28,10 +35,13 @@ pub enum FakeOutcome {
 /// `McpManager` via `insert_connection_for_test`, and keep the `Arc` clone
 /// around for assertions (`calls`, `shutdown_count`).
 pub struct FakeMcpConnection {
-    tools: Vec<McpToolInfo>,
+    tools: Mutex<Vec<McpToolInfo>>,
     outcomes: Mutex<HashMap<String, FakeOutcome>>,
     calls: Mutex<Vec<(String, Value)>>,
     shutdowns: AtomicUsize,
+    list_calls: AtomicUsize,
+    tool_list_notifier: ToolListNotifier,
+    tool_list_watcher: ToolListChanged,
 }
 
 impl FakeMcpConnection {
@@ -39,11 +49,15 @@ impl FakeMcpConnection {
     /// answer with an `is_error` result naming the tool, so an unscripted
     /// call fails loudly instead of silently succeeding.
     pub fn new(tools: Vec<McpToolInfo>) -> Self {
+        let (tool_list_notifier, tool_list_watcher) = tool_list_changed_channel();
         Self {
-            tools,
+            tools: Mutex::new(tools),
             outcomes: Mutex::new(HashMap::new()),
             calls: Mutex::new(Vec::new()),
             shutdowns: AtomicUsize::new(0),
+            list_calls: AtomicUsize::new(0),
+            tool_list_notifier,
+            tool_list_watcher,
         }
     }
 
@@ -71,9 +85,27 @@ impl FakeMcpConnection {
         self
     }
 
+    /// Replace the advertised tool list, as a live server would after
+    /// installing/removing tools. Pair with
+    /// [`Self::notify_tool_list_changed`] to make the manager re-list.
+    pub fn set_tools(&self, tools: Vec<McpToolInfo>) {
+        *self.tools.lock().unwrap() = tools;
+    }
+
+    /// Fire one `tools/list_changed` notification on this connection's feed.
+    pub fn notify_tool_list_changed(&self) {
+        self.tool_list_notifier.notify();
+    }
+
     /// The `(original tool name, arguments)` pairs received, in order.
     pub fn calls(&self) -> Vec<(String, Value)> {
         self.calls.lock().unwrap().clone()
+    }
+
+    /// How many times `list_tools` was served (connect-time listing plus
+    /// every notification-driven refresh).
+    pub fn list_call_count(&self) -> usize {
+        self.list_calls.load(Ordering::SeqCst)
     }
 
     pub fn shutdown_count(&self) -> usize {
@@ -84,7 +116,8 @@ impl FakeMcpConnection {
 #[async_trait]
 impl McpConnection for FakeMcpConnection {
     async fn list_tools(&self) -> anyhow::Result<Vec<McpToolInfo>> {
-        Ok(self.tools.clone())
+        self.list_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(self.tools.lock().unwrap().clone())
     }
 
     async fn call_tool(&self, name: &str, arguments: &Value) -> anyhow::Result<McpCallResult> {
@@ -109,6 +142,10 @@ impl McpConnection for FakeMcpConnection {
 
     async fn shutdown(&self) {
         self.shutdowns.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn tool_list_changed(&self) -> Option<ToolListChanged> {
+        Some(self.tool_list_watcher.clone())
     }
 }
 
