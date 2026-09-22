@@ -500,6 +500,105 @@ async fn create_scoped_mcp_row(app: &TestApp, name: &str, project_id: &str) -> S
         .to_string()
 }
 
+/// POST /api/projects/{id}/mcp/ensure reconciles before listing: rows the
+/// project can see get a connection attempt (Failed for the nonexistent test
+/// binary), while disabled and out-of-scope rows stay out of the response.
+#[tokio::test]
+async fn mcp_ensure_lists_project_effective_set_after_reconcile() {
+    let app = TestApp::new().await;
+    let project_id = app.create_project().await;
+    let other_project = app.create_project().await;
+
+    let global_id = create_mcp_row(&app, "global").await;
+    let scoped_id = create_scoped_mcp_row(&app, "scoped", &project_id).await;
+    let foreign_id = create_scoped_mcp_row(&app, "foreign", &other_project).await;
+    let disabled_id = create_mcp_row(&app, "off").await;
+    let resp = app
+        .patch_json(
+            &format!("/api/mcp/servers/{disabled_id}"),
+            serde_json::json!({ "enabled": false }),
+        )
+        .await;
+    assert_eq!(resp.status(), 200);
+
+    let resp = app
+        .post_json(
+            "/api/projects/oct-mcp-missing-project/mcp/ensure",
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(resp.status(), 404);
+
+    let resp = app
+        .post_json(
+            &format!("/api/projects/{project_id}/mcp/ensure"),
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(resp.status(), 200);
+    let list: Vec<Value> = resp.json().await.unwrap();
+    let mut ids: Vec<&str> = list
+        .iter()
+        .map(|server| server["id"].as_str().expect("server id"))
+        .collect();
+    ids.sort_unstable();
+    let mut expected = vec![global_id.as_str(), scoped_id.as_str()];
+    expected.sort_unstable();
+    assert_eq!(
+        ids, expected,
+        "effective set = global + own project, enabled only"
+    );
+
+    // The reconcile actually ran: every listed row was attempted and its
+    // failure recorded (the test command does not exist), not left as the
+    // pre-connect `not_connected` the plain list endpoint reports.
+    for server in &list {
+        assert_eq!(server["status"], "failed");
+        let error = server["error"].as_str().expect("failed carries an error");
+        assert!(
+            error.contains("oct-mcp-test-nonexistent-binary"),
+            "error names the command: {error}"
+        );
+        assert_eq!(server["tool_count"], Value::Null);
+    }
+
+    // A repeat ensure stays 200 with the same shape (Failed entries retry by
+    // contract), and another project's ensure lists only its own view.
+    let resp = app
+        .post_json(
+            &format!("/api/projects/{project_id}/mcp/ensure"),
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(resp.status(), 200);
+    let relist: Vec<Value> = resp.json().await.unwrap();
+    assert_eq!(relist.len(), list.len());
+
+    let resp = app
+        .post_json(
+            &format!("/api/projects/{other_project}/mcp/ensure"),
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(resp.status(), 200);
+    let foreign: Vec<Value> = resp.json().await.unwrap();
+    let mut foreign_ids: Vec<&str> = foreign
+        .iter()
+        .map(|server| server["id"].as_str().expect("server id"))
+        .collect();
+    foreign_ids.sort_unstable();
+    let mut foreign_expected = vec![global_id.as_str(), foreign_id.as_str()];
+    foreign_expected.sort_unstable();
+    assert_eq!(
+        foreign_ids, foreign_expected,
+        "the global row serves the other project too"
+    );
+    assert!(
+        foreign.iter().all(|server| server["status"] == "failed"),
+        "every listed row was reconciled for this project as well"
+    );
+}
+
 #[tokio::test]
 async fn mcp_tools_join_the_chat_loop_and_status_reports_live_state() {
     let app = TestApp::new().await;
@@ -617,6 +716,19 @@ async fn mcp_tools_join_the_chat_loop_and_status_reports_live_state() {
     let fetched: Value = resp.json().await.unwrap();
     assert_eq!(fetched["status"], "connected");
     assert_eq!(fetched["tool_count"], 1);
+    // The cached tools/list is surfaced for the tools panel: raw server-side
+    // name and description, no [mcp:...] prefix, no truncation.
+    let tools = fetched["tools"].as_array().expect("tools while connected");
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0]["name"], "echo");
+    assert_eq!(tools[0]["description"], "say things");
+
+    // Failed rows carry no tools payload.
+    let resp = app.get_json(&format!("/api/mcp/servers/{other_id}")).await;
+    assert_eq!(resp.status(), 200);
+    let fetched: Value = resp.json().await.unwrap();
+    assert_eq!(fetched["status"], "failed");
+    assert_eq!(fetched["tools"], Value::Null);
 }
 
 #[tokio::test]

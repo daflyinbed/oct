@@ -371,6 +371,16 @@ impl McpManager {
             .map(|entry| entry.value().status.clone())
     }
 
+    /// Cached `tools/list` of one server while `Connected`; empty when the
+    /// server is missing, failed, or not yet connected. Read by the API layer
+    /// to surface the loaded tool names/descriptions to the UI.
+    pub fn tools_of(&self, server_id: &str) -> Vec<McpToolInfo> {
+        self.servers
+            .get(server_id)
+            .map(|entry| entry.value().tools.clone())
+            .unwrap_or_default()
+    }
+
     /// Test seam (integration tests live outside the crate, hence `pub`):
     /// register a pre-established `connection` under `server_id` as a
     /// `Connected` server advertising `tools`, scoped to `scope` (`None` =

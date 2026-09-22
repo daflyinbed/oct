@@ -642,7 +642,7 @@
                 <div class="flex items-center gap-2">
                   <span
                     class="h-1.5 w-1.5 flex-none rounded-full"
-                    :class="MCP_STATUS_DOT[server.status] ?? 'bg-neutral-5'"
+                    :class="mcpStatusDot(server.status)"
                     :title="mcpStatusText(server)"
                   />
                   <span class="text-[13px] text-strong font-semibold">{{
@@ -692,7 +692,7 @@
                 <div class="mt-1.5 flex items-center gap-2 pl-3.5">
                   <span
                     class="min-w-0 flex-1 truncate text-[12px]"
-                    :class="mcpStatusClass(server)"
+                    :class="mcpStatusClass(server.status)"
                   >
                     {{ mcpStatusText(server) }}
                   </span>
@@ -888,6 +888,11 @@ import {
 import { computed, ref, watch } from "vue";
 import AppSelect from "@/components/ui/AppSelect.vue";
 import { useMcpServers } from "@/composables/useMcpServers";
+import {
+  mcpStatusClass,
+  mcpStatusDot,
+  mcpStatusText,
+} from "@/composables/useMcpStatus";
 import { useProjects } from "@/composables/useProjects";
 import { useProviders } from "@/composables/useProviders";
 import type { components } from "@/api/schema";
@@ -899,6 +904,11 @@ const props = defineProps<{
   visible: boolean;
   /** 工作区当前活动项目；作为项目作用域的默认选中项。 */
   activeProjectId: string | null;
+  /**
+   * 非空 = 打开时直接定位到该 MCP server 的编辑表单（状态栏菜单的
+   * 「配置」深链）。宿主在弹窗关闭时应清空，避免普通打开误触发定位。
+   */
+  focusServerId?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -1168,35 +1178,11 @@ const projectScopeOptions = computed(() => [
   ...projects.value.map((p) => ({ value: p.id, label: p.name })),
 ]);
 
-const MCP_STATUS_DOT: Record<string, string> = {
-  connected: "bg-success-10",
-  failed: "bg-danger-10",
-  not_connected: "bg-neutral-5",
-};
-
 function scopeLabel(server: McpServerResponse): string {
   if (!server.project_id) return "全局";
   return (
     projects.value.find((p) => p.id === server.project_id)?.name ?? "未知项目"
   );
-}
-
-function mcpStatusText(server: McpServerResponse): string {
-  if (server.status === "connected") {
-    return server.tool_count != null
-      ? `已连接 · ${server.tool_count} 个工具`
-      : "已连接";
-  }
-  if (server.status === "failed") {
-    return server.error ?? "连接失败";
-  }
-  return "未连接";
-}
-
-function mcpStatusClass(server: McpServerResponse): string {
-  if (server.status === "connected") return "text-dim";
-  if (server.status === "failed") return "text-danger-10";
-  return "text-faint";
 }
 
 function startAddServer() {
@@ -1224,6 +1210,26 @@ function startEditServer(server: McpServerResponse) {
   mcpFormError.value = null;
   view.value = { name: "mcp-edit", id: server.id };
 }
+
+/* ---------- 状态栏菜单「配置」深链：打开即定位到指定 server 的编辑表单 ---------- */
+watch(
+  () => [props.visible, props.focusServerId] as const,
+  ([open, focusId]) => {
+    if (!open || !focusId) return;
+    // 先拉最新列表：startEditServer 需要完整行数据，且定位目标可能在他处
+    // 刚被改过。找不到（已删除）时落到 mcp 列表视图兜底。
+    void fetchMcpServers().then(() => {
+      const server = mcpServers.value.find((item) => item.id === focusId);
+      if (server) {
+        // 列表作用域跟到该 server 的归属，从编辑表单返回列表时看得到它
+        scopeId.value = server.project_id ?? GLOBAL_SCOPE;
+        startEditServer(server);
+      } else {
+        view.value = { name: "mcp" };
+      }
+    });
+  },
+);
 
 function selectMcpScope(value: string) {
   mcpForm.value.projectId = value;

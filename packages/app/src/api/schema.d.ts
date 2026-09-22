@@ -221,6 +221,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{projectId}/mcp/ensure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reconcile + read in one round trip for the status-bar indicator: connects
+         *     the project's effective set (global + project-scoped) before returning it,
+         *     so a fresh conversation shows live statuses without waiting for the first
+         *     chat turn. Reconcile is the same best-effort pass a chat turn runs — a
+         *     server that cannot be spawned reports `failed` here, never a 5xx.
+         */
+        post: operations["ensure_project_mcp_servers"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/providers": {
         parameters: {
             query?: never;
@@ -504,10 +527,10 @@ export interface components {
          *
          *     The storage fields mirror [`db::McpServer`] one-to-one (utoipa cannot
          *     express `serde(flatten)`, so — like `ProviderResponse` for providers —
-         *     the response DTO lists them explicitly); `status`/`tool_count`/`error`
-         *     come from the in-process manager without touching the DB. Rows the
-         *     manager holds no entry for (never connected since startup, or disabled)
-         *     report `not_connected`.
+         *     the response DTO lists them explicitly); `status`/`tool_count`/`error`/
+         *     `tools` come from the in-process manager without touching the DB. Rows
+         *     the manager holds no entry for (never connected since startup, or
+         *     disabled) report `not_connected`.
          */
         McpServerResponse: {
             args?: string[] | null;
@@ -536,10 +559,21 @@ export interface components {
             tool_count?: number | null;
             /** Format: int64 */
             tool_timeout_ms?: number | null;
+            /** @description Cached `tools/list` while connected; `null` otherwise. */
+            tools?: components["schemas"]["McpToolSummary"][] | null;
             transport: string;
             /** Format: date-time */
             updated_at: string;
             url?: string | null;
+        };
+        /**
+         * @description One cached `tools/list` entry, as surfaced to the UI while the server is
+         *     connected. `description` is the raw server-provided text (no `[mcp:...]`
+         *     prefix, no LLM-facing truncation).
+         */
+        McpToolSummary: {
+            description?: string | null;
+            name: string;
         };
         Model: {
             attachment: boolean;
@@ -1499,6 +1533,36 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Project not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ensure_project_mcp_servers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project ID */
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The project's effective MCP set (global + project-scoped, enabled only) with post-reconcile live status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpServerResponse"][];
+                };
             };
             /** @description Project not found */
             404: {

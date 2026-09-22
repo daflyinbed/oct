@@ -111,6 +111,7 @@ interface McpRow {
   status: string;
   tool_count: number | null;
   error: string | null;
+  tools: { name: string; description: string | null }[] | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +154,7 @@ const RE_CONVERSATION_MESSAGES = /^\/api\/conversations\/([^/]+)\/messages$/;
 const RE_CONVERSATION_CANCEL = /^\/api\/conversations\/([^/]+)\/cancel$/;
 const RE_CONVERSATION_RUN = /^\/api\/conversations\/([^/]+)\/run$/;
 const RE_MCP_SERVER = /^\/api\/mcp\/servers\/([^/]+)$/;
+const RE_MCP_ENSURE = /^\/api\/projects\/([^/]+)\/mcp\/ensure$/;
 const RE_GATE_OPEN = /^\/__mock\/gates\/([^/]+)\/open$/;
 
 function resetState() {
@@ -581,6 +583,7 @@ async function handleApi(
         status: "not_connected",
         tool_count: null,
         error: null,
+        tools: null,
       };
       (s.mcpServers ??= []).push(row);
       return sendJson(res, 201, row);
@@ -645,6 +648,32 @@ async function handleApi(
       res.end();
       return;
     }
+  }
+
+  // POST /api/projects/:id/mcp/ensure —— 对账后返回该项目有效集合。
+  // mock 没有真实进程可 spawn:有效集合里仍是 not_connected 的行翻成
+  // connected(tool_count 缺省 1),已是 failed/connected 的保持原样。
+  m = pathname.match(RE_MCP_ENSURE);
+  if (m && req.method === "POST") {
+    const projectId = decodeURIComponent(m[1]);
+    if (!projectExists(projectId)) {
+      return sendJson(res, 404, { error: "Project not found" });
+    }
+    const rows = mcpRows().filter(
+      (r) => r.enabled && (!r.project_id || r.project_id === projectId),
+    );
+    for (const row of rows) {
+      if (row.status === "not_connected") {
+        row.status = "connected";
+        row.tool_count ??= 1;
+        // 真实后端返回 reconcile 时缓存的 tools/list;mock 无进程,
+        // 用确定性合成工具代表"加载到了哪些工具"。
+        row.tools ??= [
+          { name: `${row.name}_tool`, description: `mock tool of ${row.name}` },
+        ];
+      }
+    }
+    return sendJson(res, 200, rows);
   }
 
   sendJson(res, 404, { error: `mock has no route: ${req.method} ${pathname}` });

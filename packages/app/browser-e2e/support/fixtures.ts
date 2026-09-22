@@ -90,6 +90,7 @@ export function mcpServerFixture(
     status: "not_connected",
     tool_count: null,
     error: null,
+    tools: null,
     ...overrides,
   };
 }

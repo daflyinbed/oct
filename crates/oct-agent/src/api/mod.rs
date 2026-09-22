@@ -50,6 +50,7 @@ pub struct AppState {
         crate::db::mcp::CreateMcpServerRequest,
         crate::db::mcp::UpdateMcpServerRequest,
         mcp::McpServerResponse,
+        mcp::McpToolSummary,
         chat::SendMessageRequest,
         chat::RunningStatus,
         files::FileContent,
@@ -88,6 +89,7 @@ fn api_routes(state: AppState) -> OpenApiRouter<AppState> {
         .routes(utoipa_axum::routes!(providers::delete_model))
         // MCP servers
         .routes(utoipa_axum::routes!(mcp::list_mcp_servers))
+        .routes(utoipa_axum::routes!(mcp::ensure_project_mcp_servers))
         .routes(utoipa_axum::routes!(mcp::create_mcp_server))
         .routes(utoipa_axum::routes!(mcp::get_mcp_server))
         .routes(utoipa_axum::routes!(mcp::update_mcp_server))

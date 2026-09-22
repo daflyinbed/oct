@@ -1,7 +1,8 @@
 import { computed, readonly, ref } from "vue";
+import { useMcpStatus } from "./useMcpStatus";
 import { useProjects } from "./useProjects";
 
-export type TabKind = "chat" | "file" | "diff" | "git-graph";
+export type TabKind = "chat" | "file" | "diff" | "git-graph" | "mcp";
 
 export interface WorkspaceTab {
   /** 稳定唯一键：`chat:<conversationId>`、`file:<projectId>:<path>`、`diff:<key>`… */
@@ -19,6 +20,7 @@ const activeTabId = ref<string | null>(null);
 
 export function useTabs() {
   const { conversations } = useProjects();
+  const { servers: mcpServers } = useMcpStatus();
 
   const activeTab = computed(
     () => tabs.value.find((tab) => tab.id === activeTabId.value) ?? null,
@@ -58,6 +60,14 @@ export function useTabs() {
     if (tab.kind === "file") {
       const segments = (tab.payload ?? "").split("/");
       return segments.at(-1) || "File";
+    }
+    if (tab.kind === "mcp") {
+      // 标题跟随 server 实时名称（重命名后旧标签自动跟上）
+      return (
+        mcpServers.value.find((server) => server.id === tab.payload)?.name ??
+        tab.title ??
+        "MCP"
+      );
     }
     return tab.title ?? tab.kind;
   }

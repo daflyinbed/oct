@@ -25,14 +25,23 @@ pub struct ListMcpServersQuery {
     project_id: Option<String>,
 }
 
+/// One cached `tools/list` entry, as surfaced to the UI while the server is
+/// connected. `description` is the raw server-provided text (no `[mcp:...]`
+/// prefix, no LLM-facing truncation).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct McpToolSummary {
+    pub name: String,
+    pub description: Option<String>,
+}
+
 /// An MCP server row merged with the connection manager's live status.
 ///
 /// The storage fields mirror [`db::McpServer`] one-to-one (utoipa cannot
 /// express `serde(flatten)`, so — like `ProviderResponse` for providers —
-/// the response DTO lists them explicitly); `status`/`tool_count`/`error`
-/// come from the in-process manager without touching the DB. Rows the
-/// manager holds no entry for (never connected since startup, or disabled)
-/// report `not_connected`.
+/// the response DTO lists them explicitly); `status`/`tool_count`/`error`/
+/// `tools` come from the in-process manager without touching the DB. Rows
+/// the manager holds no entry for (never connected since startup, or
+/// disabled) report `not_connected`.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct McpServerResponse {
     pub id: String,
@@ -56,18 +65,32 @@ pub struct McpServerResponse {
     pub tool_count: Option<usize>,
     /// Last connection error while `status` is `failed`; `null` otherwise.
     pub error: Option<String>,
+    /// Cached `tools/list` while connected; `null` otherwise.
+    pub tools: Option<Vec<McpToolSummary>>,
 }
 
 fn to_mcp_server_response(
     server: &db::McpServer,
     status: Option<ServerStatus>,
+    tools: Vec<oct_mcp::McpToolInfo>,
 ) -> McpServerResponse {
-    let (status, tool_count, error) = match status {
-        Some(ServerStatus::Connected { tool_count }) => {
-            ("connected".to_string(), Some(tool_count), None)
-        }
-        Some(ServerStatus::Failed { error }) => ("failed".to_string(), None, Some(error)),
-        None => ("not_connected".to_string(), None, None),
+    let (status, tool_count, error, tools) = match status {
+        Some(ServerStatus::Connected { tool_count }) => (
+            "connected",
+            Some(tool_count),
+            None,
+            Some(
+                tools
+                    .into_iter()
+                    .map(|tool| McpToolSummary {
+                        name: tool.name,
+                        description: tool.description,
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+        ),
+        Some(ServerStatus::Failed { error }) => ("failed", None, Some(error), None),
+        None => ("not_connected", None, None, None),
     };
     McpServerResponse {
         id: server.id.clone(),
@@ -83,9 +106,10 @@ fn to_mcp_server_response(
         project_id: server.project_id.clone(),
         created_at: server.created_at,
         updated_at: server.updated_at,
-        status,
+        status: status.to_string(),
         tool_count,
         error,
+        tools,
     }
 }
 
@@ -166,7 +190,51 @@ pub async fn list_mcp_servers(
     };
     let result = servers
         .iter()
-        .map(|server| to_mcp_server_response(server, state.mcp.status_of(&server.id)))
+        .map(|server| {
+            to_mcp_server_response(
+                server,
+                state.mcp.status_of(&server.id),
+                state.mcp.tools_of(&server.id),
+            )
+        })
+        .collect();
+    Ok(Json(result))
+}
+
+/// Reconcile + read in one round trip for the status-bar indicator: connects
+/// the project's effective set (global + project-scoped) before returning it,
+/// so a fresh conversation shows live statuses without waiting for the first
+/// chat turn. Reconcile is the same best-effort pass a chat turn runs — a
+/// server that cannot be spawned reports `failed` here, never a 5xx.
+#[utoipa::path(
+    post,
+    path = "/projects/{projectId}/mcp/ensure",
+    params(("projectId" = String, Path, description = "Project ID")),
+    responses(
+        (status = 200, description = "The project's effective MCP set (global + project-scoped, enabled only) with post-reconcile live status", body = Vec<McpServerResponse>),
+        (status = 404, description = "Project not found")
+    ),
+    tag = "mcp"
+)]
+pub async fn ensure_project_mcp_servers(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> ApiResult<Json<Vec<McpServerResponse>>> {
+    reject_unknown_project(&state, &project_id).await?;
+    state
+        .mcp
+        .ensure_connections(&state.pool, Some(&project_id))
+        .await;
+    let servers = db::list_effective_mcp_servers(&state.pool, &project_id).await?;
+    let result = servers
+        .iter()
+        .map(|server| {
+            to_mcp_server_response(
+                server,
+                state.mcp.status_of(&server.id),
+                state.mcp.tools_of(&server.id),
+            )
+        })
         .collect();
     Ok(Json(result))
 }
@@ -222,7 +290,7 @@ pub async fn create_mcp_server(
     }
 
     let server = db::create_mcp_server(&state.pool, &req).await?;
-    let response = to_mcp_server_response(&server, state.mcp.status_of(&server.id));
+    let response = to_mcp_server_response(&server, state.mcp.status_of(&server.id), Vec::new());
     Ok((StatusCode::CREATED, Json(response)))
 }
 
@@ -246,6 +314,7 @@ pub async fn get_mcp_server(
     Ok(Json(to_mcp_server_response(
         &server,
         state.mcp.status_of(&server.id),
+        state.mcp.tools_of(&server.id),
     )))
 }
 

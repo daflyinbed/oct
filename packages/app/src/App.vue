@@ -73,6 +73,11 @@
               :diff-files="diffFiles"
             />
             <GitGraphTabView v-else-if="activeTab?.kind === 'git-graph'" />
+            <McpTabView
+              v-else-if="activeTab?.kind === 'mcp'"
+              :server-id="activeTab.payload ?? ''"
+              :active-project-id="activeProjectId"
+            />
           </div>
         </div>
       </SplitterPanel>
@@ -134,16 +139,19 @@
       :chat-visible="showChat"
       :diff-visible="showDiffPanel"
       :file-tree-visible="showFileTree"
+      :active-project-id="activeProjectId"
       @toggle-sidebar="showSidebar = !showSidebar"
       @toggle-chat="showChat = !showChat"
       @toggle-diff="showDiffPanel = !showDiffPanel"
       @toggle-file-tree="showFileTree = !showFileTree"
+      @configure-mcp-server="handleConfigureMcpServer"
     />
 
     <SettingsModal
       :visible="showSettings"
       :active-project-id="activeProjectId"
-      @close="showSettings = false"
+      :focus-server-id="mcpFocusServerId"
+      @close="closeSettings"
     />
     <!-- 新建与编辑共用一个对话框：project 为 null 时是新建模式。 -->
     <ProjectDialog
@@ -168,6 +176,7 @@ import ProjectSidebar from "@/components/sidebar/ProjectSidebar.vue";
 import DiffTabView from "@/components/views/DiffTabView.vue";
 import FileTabView from "@/components/views/FileTabView.vue";
 import GitGraphTabView from "@/components/views/GitGraphTabView.vue";
+import McpTabView from "@/components/views/McpTabView.vue";
 import { onTitleUpdated, useChat } from "@/composables/useChat";
 import { useProjects } from "@/composables/useProjects";
 import { useProviders } from "@/composables/useProviders";
@@ -233,8 +242,21 @@ const showDiffPanel = ref(true);
 const showFileTree = ref(true);
 const showSettings = ref(false);
 const showNewProject = ref(false);
-/** 非空 = 编辑该项目；与 showNewProject 共用 ProjectDialog。 */
+/** 非空 = 打开设置时直接定位到该 MCP server 的编辑表单（状态栏菜单深链）。 */
+const mcpFocusServerId = ref<string | null>(null);
+/** 新建与编辑共用一个对话框：project 为 null 时是新建模式。 */
 const editingProject = ref<components["schemas"]["Project"] | null>(null);
+
+function closeSettings() {
+  showSettings.value = false;
+  // 清空深链目标：此后从顶栏「设置」普通打开时不得再触发定位
+  mcpFocusServerId.value = null;
+}
+
+function handleConfigureMcpServer(serverId: string) {
+  mcpFocusServerId.value = serverId;
+  showSettings.value = true;
+}
 
 function closeProjectDialog() {
   showNewProject.value = false;
