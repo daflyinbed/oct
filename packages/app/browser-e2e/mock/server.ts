@@ -79,6 +79,8 @@ export interface Scenario {
   messages?: Record<string, unknown[]>;
   /** GET /api/providers 的返回体(ProviderResponse[])。 */
   providers?: unknown[];
+  /** MCP server 初始行(McpServerResponse[]);POST/PATCH/DELETE 就地增删改。 */
+  mcpServers?: unknown[];
   /** POST 建会话时按序发放的确定性 id(耗尽后回退 c-auto-N)。 */
   newConversationIds?: string[];
   /** 每个会话的 SSE 剧本,POST 消息时惰性取用。 */
@@ -89,6 +91,26 @@ export interface CapturedRequest {
   method: string;
   path: string;
   body: unknown;
+}
+
+/** mock 内存态的 MCP server 行,形状对齐 schema.d.ts 的 McpServerResponse。 */
+interface McpRow {
+  id: string;
+  name: string;
+  transport: string;
+  command: string | null;
+  args: string[] | null;
+  env: Record<string, string> | null;
+  url: string | null;
+  headers: Record<string, string> | null;
+  enabled: boolean;
+  tool_timeout_ms: number | null;
+  project_id: string | null;
+  created_at: string;
+  updated_at: string;
+  status: string;
+  tool_count: number | null;
+  error: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +152,7 @@ const RE_CONVERSATION_DELETE =
 const RE_CONVERSATION_MESSAGES = /^\/api\/conversations\/([^/]+)\/messages$/;
 const RE_CONVERSATION_CANCEL = /^\/api\/conversations\/([^/]+)\/cancel$/;
 const RE_CONVERSATION_RUN = /^\/api\/conversations\/([^/]+)\/run$/;
+const RE_MCP_SERVER = /^\/api\/mcp\/servers\/([^/]+)$/;
 const RE_GATE_OPEN = /^\/__mock\/gates\/([^/]+)\/open$/;
 
 function resetState() {
@@ -226,6 +249,17 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
   }
 }
 
+// 请求体流只能消费一次(请求日志与路由 handler 都要读),按请求 memoize。
+const bodyCache = new WeakMap<IncomingMessage, Promise<unknown>>();
+function readBodyCached(req: IncomingMessage): Promise<unknown> {
+  let pending = bodyCache.get(req);
+  if (!pending) {
+    pending = readBody(req);
+    bodyCache.set(req, pending);
+  }
+  return pending;
+}
+
 function sendJson(res: ServerResponse, status: number, body: unknown) {
   res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(body));
@@ -297,6 +331,7 @@ async function handleApi(
   req: IncomingMessage,
   res: ServerResponse,
   pathname: string,
+  searchParams: URLSearchParams,
 ): Promise<void> {
   const s = state.scenario;
 
@@ -306,7 +341,7 @@ async function handleApi(
   }
   // POST /api/projects
   if (req.method === "POST" && pathname === "/api/projects") {
-    const body = (await readBody(req)) as {
+    const body = (await readBodyCached(req)) as {
       name?: string;
       working_dir?: string;
       additional_dirs?: string[];
@@ -334,7 +369,7 @@ async function handleApi(
       return sendJson(res, 200, list);
     }
     if (req.method === "POST") {
-      const body = (await readBody(req)) as { title?: string | null };
+      const body = (await readBodyCached(req)) as { title?: string | null };
       const queued = s.newConversationIds?.shift();
       const conversation = {
         id: queued ?? `c-auto-${++state.autoId}`,
@@ -404,6 +439,214 @@ async function handleApi(
     return sendJson(res, 200, s.providers ?? []);
   }
 
+  // --- MCP servers:内存态 CRUD,行形状对齐 schema.d.ts 的 McpServerResponse --
+
+  function mcpRows(): McpRow[] {
+    return (s.mcpServers ?? []) as McpRow[];
+  }
+
+  function projectExists(projectId: string): boolean {
+    return (s.projects ?? []).some(
+      (p) => (p as { id?: string }).id === projectId,
+    );
+  }
+
+  /** 公共字段校验,与真实后端(api/mcp.rs 的 validate_mcp_fields)对齐。 */
+  function validateMcpFields(
+    name: unknown,
+    transport: unknown,
+    command: unknown,
+    toolTimeoutMs: unknown,
+  ): { code: number; message: string } | null {
+    if (typeof name === "string" && name.trim() === "") {
+      return { code: 400, message: "name must not be empty" };
+    }
+    if (typeof transport === "string" && transport !== "stdio") {
+      return {
+        code: 400,
+        message: `unsupported transport '${transport}'; only 'stdio' is available`,
+      };
+    }
+    if (typeof command === "string" && command.trim() === "") {
+      return { code: 400, message: "command must not be empty" };
+    }
+    if (typeof toolTimeoutMs === "number" && toolTimeoutMs <= 0) {
+      return {
+        code: 400,
+        message: `tool_timeout_ms must be a positive number of milliseconds, got ${toolTimeoutMs}`,
+      };
+    }
+    return null;
+  }
+
+  function isStringRecord(value: unknown): value is Record<string, string> {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      !Array.isArray(value) &&
+      Object.values(value).every((v) => typeof v === "string")
+    );
+  }
+
+  /** PATCH 合并语义与 db::update_mcp_server 一致:提供即替换(含空集合),缺省保持。 */
+  function mergeMcpRow(row: McpRow, body: Record<string, unknown>): void {
+    if (typeof body.name === "string") row.name = body.name;
+    if (typeof body.transport === "string") row.transport = body.transport;
+    if (typeof body.command === "string") row.command = body.command;
+    if (typeof body.enabled === "boolean") row.enabled = body.enabled;
+    if (typeof body.tool_timeout_ms === "number") {
+      row.tool_timeout_ms = body.tool_timeout_ms;
+    }
+    if (typeof body.project_id === "string") row.project_id = body.project_id;
+    if (Array.isArray(body.args)) row.args = body.args as string[];
+    if (isStringRecord(body.env)) row.env = body.env;
+    if (typeof body.url === "string") row.url = body.url;
+    if (isStringRecord(body.headers)) row.headers = body.headers;
+    row.updated_at = nowIso();
+  }
+
+  // GET|POST /api/mcp/servers
+  if (pathname === "/api/mcp/servers") {
+    if (req.method === "GET") {
+      const projectId = searchParams.get("project_id");
+      let rows = mcpRows();
+      if (projectId) {
+        if (!projectExists(projectId)) {
+          return sendJson(res, 404, { error: "Project not found" });
+        }
+        // 有效集合:enabled 且(全局或该项目专属)
+        rows = rows.filter(
+          (r) => r.enabled && (!r.project_id || r.project_id === projectId),
+        );
+      }
+      return sendJson(res, 200, rows);
+    }
+    if (req.method === "POST") {
+      const body = (await readBodyCached(req)) as {
+        name?: unknown;
+        transport?: unknown;
+        command?: unknown;
+        args?: unknown;
+        env?: unknown;
+        enabled?: unknown;
+        tool_timeout_ms?: unknown;
+        project_id?: unknown;
+      };
+      const invalid = validateMcpFields(
+        body?.name,
+        body?.transport,
+        body?.command,
+        body?.tool_timeout_ms,
+      );
+      if (invalid)
+        return sendJson(res, invalid.code, { error: invalid.message });
+      // stdio 无 command 即 400(与 create handler 的显式检查一致)
+      if (
+        typeof body?.command !== "string" ||
+        body.command.trim().length === 0
+      ) {
+        return sendJson(res, 400, {
+          error: "stdio transport requires a command",
+        });
+      }
+      if (
+        typeof body?.project_id === "string" &&
+        !projectExists(body.project_id)
+      ) {
+        return sendJson(res, 404, { error: "Project not found" });
+      }
+      if (mcpRows().some((r) => r.name === body.name)) {
+        return sendJson(res, 409, {
+          error: `MCP server '${body.name}' already exists`,
+        });
+      }
+      const row: McpRow = {
+        id: `m-auto-${++state.autoId}`,
+        name: body.name as string,
+        transport: body.transport as string,
+        command: (body.command as string) ?? null,
+        args: Array.isArray(body.args) ? (body.args as string[]) : null,
+        env: isStringRecord(body.env) ? body.env : null,
+        url: null,
+        headers: null,
+        enabled: typeof body.enabled === "boolean" ? body.enabled : true,
+        tool_timeout_ms:
+          typeof body.tool_timeout_ms === "number"
+            ? body.tool_timeout_ms
+            : null,
+        project_id:
+          typeof body.project_id === "string" ? body.project_id : null,
+        created_at: nowIso(),
+        updated_at: nowIso(),
+        status: "not_connected",
+        tool_count: null,
+        error: null,
+      };
+      (s.mcpServers ??= []).push(row);
+      return sendJson(res, 201, row);
+    }
+  }
+
+  // GET|PATCH|DELETE /api/mcp/servers/:id
+  m = pathname.match(RE_MCP_SERVER);
+  if (m) {
+    const id = decodeURIComponent(m[1]);
+    const rows = mcpRows();
+    const idx = rows.findIndex((r) => r.id === id);
+    if (req.method === "GET") {
+      if (idx === -1) {
+        return sendJson(res, 404, { error: "MCP server not found" });
+      }
+      return sendJson(res, 200, rows[idx]);
+    }
+    if (req.method === "PATCH") {
+      if (idx === -1) {
+        return sendJson(res, 404, { error: "MCP server not found" });
+      }
+      const body = (await readBodyCached(req)) as Record<string, unknown>;
+      // update 的校验口径:字段缺省时按 existing 代入(与 validate_mcp_fields
+      // 在 update 路径的取值一致)
+      const existing = rows[idx];
+      const invalid = validateMcpFields(
+        body.name ?? existing.name,
+        body.transport ?? existing.transport,
+        body.command ?? existing.command,
+        body.tool_timeout_ms ?? existing.tool_timeout_ms,
+      );
+      if (invalid) {
+        return sendJson(res, invalid.code, { error: invalid.message });
+      }
+      if (
+        typeof body.project_id === "string" &&
+        !projectExists(body.project_id)
+      ) {
+        return sendJson(res, 404, { error: "Project not found" });
+      }
+      if (
+        typeof body.name === "string" &&
+        rows.some((r) => r.name === body.name && r.id !== id)
+      ) {
+        return sendJson(res, 409, {
+          error: `MCP server '${body.name}' already exists`,
+        });
+      }
+      mergeMcpRow(existing, body);
+      // 真实后端 PATCH 只回 200,无响应体
+      res.writeHead(200);
+      res.end();
+      return;
+    }
+    if (req.method === "DELETE") {
+      if (idx === -1) {
+        return sendJson(res, 404, { error: "MCP server not found" });
+      }
+      s.mcpServers = rows.filter((r) => r.id !== id);
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+  }
+
   sendJson(res, 404, { error: `mock has no route: ${req.method} ${pathname}` });
 }
 
@@ -417,7 +660,7 @@ async function handleAdmin(
     return sendJson(res, 200, { ok: true });
   }
   if (req.method === "PUT" && pathname === "/__mock/scenario") {
-    state.scenario = (await readBody(req)) as Scenario;
+    state.scenario = (await readBodyCached(req)) as Scenario;
     return sendJson(res, 200, { ok: true });
   }
   const gateMatch = pathname.match(RE_GATE_OPEN);
@@ -436,7 +679,8 @@ export async function startMockServer(): Promise<{
   close: () => Promise<void>;
 }> {
   const server = http.createServer(async (req, res) => {
-    const pathname = new URL(req.url ?? "/", "http://mock").pathname;
+    const url = new URL(req.url ?? "/", "http://mock");
+    const pathname = url.pathname;
     try {
       if (pathname.startsWith("/__mock")) {
         await handleAdmin(req, res, pathname);
@@ -446,10 +690,10 @@ export async function startMockServer(): Promise<{
       state.requests.push({
         method: req.method ?? "?",
         path: pathname,
-        body: pathname.startsWith("/api") ? await readBody(req) : null,
+        body: pathname.startsWith("/api") ? await readBodyCached(req) : null,
       });
       if (pathname.startsWith("/api")) {
-        await handleApi(req, res, pathname);
+        await handleApi(req, res, pathname, url.searchParams);
         return;
       }
       sendJson(res, 404, { error: `unexpected path: ${pathname}` });

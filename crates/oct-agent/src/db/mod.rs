@@ -1,4 +1,5 @@
 pub mod conversations;
+pub mod mcp;
 pub mod messages;
 pub mod models;
 pub mod projects;

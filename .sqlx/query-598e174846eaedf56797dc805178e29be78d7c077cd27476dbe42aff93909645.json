@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO mcp_servers (id, name, transport, command, args_json, env_json, url, headers_json, enabled, tool_timeout_ms, project_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 13
+    },
+    "nullable": []
+  },
+  "hash": "598e174846eaedf56797dc805178e29be78d7c077cd27476dbe42aff93909645"
+}

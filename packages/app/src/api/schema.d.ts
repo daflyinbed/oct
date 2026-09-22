@@ -93,6 +93,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/mcp/servers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_mcp_servers"];
+        put?: never;
+        post: operations["create_mcp_server"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/mcp/servers/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_mcp_server"];
+        put?: never;
+        post?: never;
+        delete: operations["delete_mcp_server"];
+        options?: never;
+        head?: never;
+        patch: operations["update_mcp_server"];
+        trace?: never;
+    };
     "/api/projects": {
         parameters: {
             query?: never;
@@ -380,6 +412,26 @@ export interface components {
         CreateConversationRequest: {
             title?: string | null;
         };
+        CreateMcpServerRequest: {
+            args?: string[] | null;
+            command?: string | null;
+            /** @description Defaults to enabled. */
+            enabled?: boolean | null;
+            env?: {
+                [key: string]: string;
+            } | null;
+            headers?: {
+                [key: string]: string;
+            } | null;
+            name: string;
+            /** @description Owning project (`None` = global). Must reference an existing project. */
+            project_id?: string | null;
+            /** Format: int64 */
+            tool_timeout_ms?: number | null;
+            /** @description Transport type; only `stdio` is accepted in Phase 1. */
+            transport: string;
+            url?: string | null;
+        };
         CreateModelRequest: {
             attachment?: boolean | null;
             /** Format: double */
@@ -447,6 +499,48 @@ export interface components {
         };
         /** @enum {string} */
         FileEntryKind: "dir" | "file";
+        /**
+         * @description An MCP server row merged with the connection manager's live status.
+         *
+         *     The storage fields mirror [`db::McpServer`] one-to-one (utoipa cannot
+         *     express `serde(flatten)`, so — like `ProviderResponse` for providers —
+         *     the response DTO lists them explicitly); `status`/`tool_count`/`error`
+         *     come from the in-process manager without touching the DB. Rows the
+         *     manager holds no entry for (never connected since startup, or disabled)
+         *     report `not_connected`.
+         */
+        McpServerResponse: {
+            args?: string[] | null;
+            command?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            enabled: boolean;
+            env?: {
+                [key: string]: string;
+            } | null;
+            /** @description Last connection error while `status` is `failed`; `null` otherwise. */
+            error?: string | null;
+            headers?: {
+                [key: string]: string;
+            } | null;
+            id: string;
+            name: string;
+            /**
+             * @description Owning project: `null` = global (every project), otherwise the id of
+             *     the single project this server is visible to.
+             */
+            project_id?: string | null;
+            /** @description `connected` | `failed` | `not_connected`. */
+            status: string;
+            /** @description Number of tools the server exposes while connected; `null` otherwise. */
+            tool_count?: number | null;
+            /** Format: int64 */
+            tool_timeout_ms?: number | null;
+            transport: string;
+            /** Format: date-time */
+            updated_at: string;
+            url?: string | null;
+        };
         Model: {
             attachment: boolean;
             /** Format: double */
@@ -577,6 +671,25 @@ export interface components {
         };
         UpdateConversationRequest: {
             title?: string | null;
+        };
+        UpdateMcpServerRequest: {
+            args?: string[] | null;
+            command?: string | null;
+            enabled?: boolean | null;
+            env?: {
+                [key: string]: string;
+            } | null;
+            headers?: {
+                [key: string]: string;
+            } | null;
+            name?: string | null;
+            /** @description Set the owning project; absent leaves the scope unchanged. */
+            project_id?: string | null;
+            /** Format: int64 */
+            tool_timeout_ms?: number | null;
+            /** @description Only `stdio` is accepted in Phase 1. */
+            transport?: string | null;
+            url?: string | null;
         };
         UpdateModelRequest: {
             attachment?: boolean | null;
@@ -816,6 +929,188 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["RunningStatus"];
                 };
+            };
+        };
+    };
+    list_mcp_servers: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Restrict the list to the servers effective for this project (global
+                 *     plus that project's scoped rows, enabled only). Omitted: every row.
+                 */
+                project_id?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description List of MCP servers with live connection status; with `project_id`, the project's effective set (global + project-scoped, enabled only) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpServerResponse"][];
+                };
+            };
+            /** @description Project not found (only when `project_id` is given) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create_mcp_server: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateMcpServerRequest"];
+            };
+        };
+        responses: {
+            /** @description Created MCP server (live status is `not_connected` until the next chat turn reconciles) */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpServerResponse"];
+                };
+            };
+            /** @description Invalid transport, missing command, empty name, or non-positive timeout */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description project_id does not reference an existing project */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description MCP server name already exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_mcp_server: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description MCP server ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description MCP server found, with live connection status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpServerResponse"];
+                };
+            };
+            /** @description MCP server not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_mcp_server: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description MCP server ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description MCP server deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description MCP server not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_mcp_server: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description MCP server ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateMcpServerRequest"];
+            };
+        };
+        responses: {
+            /** @description MCP server updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid transport, empty command/name, or non-positive timeout */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description MCP server not found, or project_id does not reference an existing project */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description MCP server name already exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

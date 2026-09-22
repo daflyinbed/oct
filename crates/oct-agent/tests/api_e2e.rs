@@ -7,6 +7,7 @@
 
 mod support;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -14,8 +15,10 @@ use serde_json::Value;
 
 use oct_agent::db::messages as msg_db;
 use oct_llm_provider::core::{ContentPart, Message, Role, ToolCall};
+use oct_mcp::McpCallResult;
 use support::TestApp;
 use support::llm::{self, LlmTurn, finish_chunk, text_chunk, tool_call_chunk};
+use support::mcp::{FakeMcpConnection, fake_tool};
 use support::sse_payloads;
 
 fn event_types(events: &[Value]) -> Vec<&str> {
@@ -171,6 +174,732 @@ async fn provider_create_conflicts_on_duplicate_and_hides_api_key() {
     assert_eq!(providers[0]["id"], "mock-llm");
     assert_eq!(providers[0]["api_key_set"], true);
     assert!(providers[0].get("api_key").is_none());
+}
+
+// --- MCP servers CRUD ----------------------------------------------------------
+
+#[tokio::test]
+async fn mcp_server_lifecycle_roundtrip() {
+    let app = TestApp::new().await;
+
+    // Create a stdio server: command + args + env, http fields left null.
+    let resp = app
+        .post_json(
+            "/api/mcp/servers",
+            serde_json::json!({
+                "name": "filesystem",
+                "transport": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+                "env": {"FOO": "bar"},
+                "url": null,
+                "headers": null,
+                "tool_timeout_ms": 30_000,
+            }),
+        )
+        .await;
+    assert_eq!(resp.status(), 201);
+    let server: Value = resp.json().await.unwrap();
+    let id = server["id"].as_str().unwrap().to_string();
+    assert!(!id.is_empty(), "id is generated server-side");
+    assert_eq!(server["name"], "filesystem");
+    assert_eq!(server["transport"], "stdio");
+    assert_eq!(server["command"], "npx");
+    assert_eq!(
+        server["args"],
+        serde_json::json!(["-y", "@modelcontextprotocol/server-filesystem", "/tmp"])
+    );
+    assert_eq!(server["env"], serde_json::json!({"FOO": "bar"}));
+    assert_eq!(server["url"], Value::Null);
+    assert_eq!(server["headers"], Value::Null);
+    assert_eq!(server["enabled"], true, "enabled defaults to true");
+    assert_eq!(server["tool_timeout_ms"], 30_000);
+
+    // List contains exactly the new server.
+    let resp = app.get_json("/api/mcp/servers").await;
+    assert_eq!(resp.status(), 200);
+    let list: Vec<Value> = resp.json().await.unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["id"], id);
+
+    // Get by id round-trips the stored JSON columns.
+    let resp = app.get_json(&format!("/api/mcp/servers/{id}")).await;
+    assert_eq!(resp.status(), 200);
+    let fetched: Value = resp.json().await.unwrap();
+    assert_eq!(fetched["args"], server["args"]);
+    assert_eq!(fetched["env"], server["env"]);
+
+    // Update returns a bare 200; verify the effect through GET.
+    let resp = app
+        .patch_json(
+            &format!("/api/mcp/servers/{id}"),
+            serde_json::json!({
+                "enabled": false,
+                "tool_timeout_ms": 5_000,
+                "args": ["-y", "other-server"],
+                "env": {"A": "1"},
+            }),
+        )
+        .await;
+    assert_eq!(resp.status(), 200);
+    let resp = app.get_json(&format!("/api/mcp/servers/{id}")).await;
+    let fetched: Value = resp.json().await.unwrap();
+    assert_eq!(fetched["enabled"], false);
+    assert_eq!(fetched["tool_timeout_ms"], 5_000);
+    assert_eq!(fetched["args"], serde_json::json!(["-y", "other-server"]));
+    assert_eq!(fetched["env"], serde_json::json!({"A": "1"}));
+    // Untouched fields survive the patch.
+    assert_eq!(fetched["name"], "filesystem");
+    assert_eq!(fetched["command"], "npx");
+
+    let resp = app.http_delete(&format!("/api/mcp/servers/{id}")).await;
+    assert_eq!(resp.status(), 204);
+
+    let resp = app.get_json(&format!("/api/mcp/servers/{id}")).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn mcp_server_duplicate_name_conflicts() {
+    let app = TestApp::new().await;
+
+    let body = serde_json::json!({
+        "name": "dup",
+        "transport": "stdio",
+        "command": "npx",
+    });
+    let resp = app.post_json("/api/mcp/servers", &body).await;
+    assert_eq!(resp.status(), 201);
+
+    // Same name again → 409.
+    let resp = app.post_json("/api/mcp/servers", &body).await;
+    assert_eq!(resp.status(), 409);
+    let error: Value = resp.json().await.unwrap();
+    assert!(error["error"].as_str().unwrap().contains("already exists"));
+
+    // Renaming a second server onto an existing name → 409.
+    let resp = app
+        .post_json(
+            "/api/mcp/servers",
+            serde_json::json!({"name": "other", "transport": "stdio", "command": "npx"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 201);
+    let other: Value = resp.json().await.unwrap();
+    let other_id = other["id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .patch_json(
+            &format!("/api/mcp/servers/{other_id}"),
+            serde_json::json!({"name": "dup"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 409);
+
+    // Re-asserting a server's own name is a no-op, not a conflict.
+    let resp = app
+        .patch_json(
+            &format!("/api/mcp/servers/{other_id}"),
+            serde_json::json!({"name": "other"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 200);
+}
+
+#[tokio::test]
+async fn mcp_server_validation_rejects_bad_requests() {
+    let app = TestApp::new().await;
+
+    // http is a known-but-future transport → explicit "not yet" 400.
+    let resp = app
+        .post_json(
+            "/api/mcp/servers",
+            serde_json::json!({"name": "remote", "transport": "http", "url": "http://localhost:1"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 400);
+    let error: Value = resp.json().await.unwrap();
+    assert!(
+        error["error"]
+            .as_str()
+            .unwrap()
+            .contains("not supported yet")
+    );
+
+    // Unknown transport → 400.
+    let resp = app
+        .post_json(
+            "/api/mcp/servers",
+            serde_json::json!({"name": "s", "transport": "grpc", "command": "x"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 400);
+
+    // stdio without a command → 400.
+    let resp = app
+        .post_json(
+            "/api/mcp/servers",
+            serde_json::json!({"name": "s", "transport": "stdio"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 400);
+    let error: Value = resp.json().await.unwrap();
+    assert!(
+        error["error"]
+            .as_str()
+            .unwrap()
+            .contains("requires a command")
+    );
+
+    // Blank command → 400.
+    let resp = app
+        .post_json(
+            "/api/mcp/servers",
+            serde_json::json!({"name": "s", "transport": "stdio", "command": "   "}),
+        )
+        .await;
+    assert_eq!(resp.status(), 400);
+
+    // Blank name → 400.
+    let resp = app
+        .post_json(
+            "/api/mcp/servers",
+            serde_json::json!({"name": "  ", "transport": "stdio", "command": "npx"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 400);
+
+    // Non-positive tool timeouts → 400.
+    let resp = app
+        .post_json(
+            "/api/mcp/servers",
+            serde_json::json!({"name": "s", "transport": "stdio", "command": "npx", "tool_timeout_ms": 0}),
+        )
+        .await;
+    assert_eq!(resp.status(), 400);
+    let resp = app
+        .post_json(
+            "/api/mcp/servers",
+            serde_json::json!({"name": "s", "transport": "stdio", "command": "npx", "tool_timeout_ms": -1}),
+        )
+        .await;
+    assert_eq!(resp.status(), 400);
+
+    // args/env carry their JSON-shape contract in the request types: a
+    // non-array args or non-object env fails deserialization → 422.
+    let resp = app
+        .post_json(
+            "/api/mcp/servers",
+            serde_json::json!({"name": "s", "transport": "stdio", "command": "npx", "args": "flat"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 422);
+    let resp = app
+        .post_json(
+            "/api/mcp/servers",
+            serde_json::json!({"name": "s", "transport": "stdio", "command": "npx", "env": ["A"]}),
+        )
+        .await;
+    assert_eq!(resp.status(), 422);
+
+    // Nothing from the rejected creates was stored.
+    let resp = app.get_json("/api/mcp/servers").await;
+    let list: Vec<Value> = resp.json().await.unwrap();
+    assert_eq!(list.len(), 0);
+
+    // The same rules apply on update.
+    let resp = app
+        .post_json(
+            "/api/mcp/servers",
+            serde_json::json!({"name": "valid", "transport": "stdio", "command": "npx"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 201);
+    let server: Value = resp.json().await.unwrap();
+    let id = server["id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .patch_json(
+            &format!("/api/mcp/servers/{id}"),
+            serde_json::json!({"transport": "http"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 400);
+
+    let resp = app
+        .patch_json(
+            &format!("/api/mcp/servers/{id}"),
+            serde_json::json!({"command": ""}),
+        )
+        .await;
+    assert_eq!(resp.status(), 400);
+
+    let resp = app
+        .patch_json(
+            &format!("/api/mcp/servers/{id}"),
+            serde_json::json!({"tool_timeout_ms": 0}),
+        )
+        .await;
+    assert_eq!(resp.status(), 400);
+
+    // Unknown id → 404 on get, update and delete alike.
+    let missing = "00000000-0000-0000-0000-000000000000";
+    let resp = app.get_json(&format!("/api/mcp/servers/{missing}")).await;
+    assert_eq!(resp.status(), 404);
+    let resp = app
+        .patch_json(
+            &format!("/api/mcp/servers/{missing}"),
+            serde_json::json!({"name": "x"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 404);
+    let resp = app
+        .http_delete(&format!("/api/mcp/servers/{missing}"))
+        .await;
+    assert_eq!(resp.status(), 404);
+}
+
+// --- MCP servers in the chat loop (injected fake connection) -------------------
+
+/// POST /api/mcp/servers with a stdio config; returns the created row's id.
+async fn create_mcp_row(app: &TestApp, name: &str) -> String {
+    let resp = app
+        .post_json(
+            "/api/mcp/servers",
+            serde_json::json!({
+                "name": name,
+                "transport": "stdio",
+                "command": "oct-mcp-test-nonexistent-binary",
+            }),
+        )
+        .await;
+    assert_eq!(resp.status(), 201, "mcp row creation should succeed");
+    resp.json::<Value>().await.expect("mcp server json")["id"]
+        .as_str()
+        .expect("mcp server id")
+        .to_string()
+}
+
+/// POST /api/mcp/servers scoped to `project_id`; returns the created row's id.
+async fn create_scoped_mcp_row(app: &TestApp, name: &str, project_id: &str) -> String {
+    let resp = app
+        .post_json(
+            "/api/mcp/servers",
+            serde_json::json!({
+                "name": name,
+                "transport": "stdio",
+                "command": "oct-mcp-test-nonexistent-binary",
+                "project_id": project_id,
+            }),
+        )
+        .await;
+    assert_eq!(resp.status(), 201, "scoped mcp row creation should succeed");
+    resp.json::<Value>().await.expect("mcp server json")["id"]
+        .as_str()
+        .expect("mcp server id")
+        .to_string()
+}
+
+#[tokio::test]
+async fn mcp_tools_join_the_chat_loop_and_status_reports_live_state() {
+    let app = TestApp::new().await;
+    let llm_server = llm::spawn_llm_mock(vec![
+        LlmTurn::Complete(vec![
+            tool_call_chunk("call-1", "mcp__fake__echo", r#"{"a":1}"#),
+            finish_chunk("tool_calls"),
+        ]),
+        LlmTurn::Complete(vec![text_chunk("done"), finish_chunk("stop")]),
+    ])
+    .await;
+    app.register_llm_provider(&llm_server).await;
+
+    // Two configured rows: one will get a scripted connection injected, the
+    // other stays unconnected (its command does not exist — the reconcile
+    // attempt fails fast and is recorded as Failed, which is exactly the
+    // no-real-binary contract of these tests).
+    let fake_id = create_mcp_row(&app, "fake").await;
+    let other_id = create_mcp_row(&app, "other").await;
+
+    let listing = vec![fake_tool("echo", Some("say things"))];
+    let fake = Arc::new(FakeMcpConnection::new(listing.clone()).with_result(
+        "echo",
+        McpCallResult {
+            text: "hello from mcp".to_string(),
+            structured_json: Some(serde_json::json!({"sum": 3})),
+            is_error: false,
+        },
+    ));
+    app.mcp
+        .insert_connection_for_test(&fake_id, "fake", None, fake.clone(), listing);
+
+    let project_id = app.create_project().await;
+    let conv_id = app.create_conversation(&project_id).await;
+
+    // The chat turn reconciles (spawning the missing binary fails fast),
+    // keeps the injected connection, and advertises the MCP tool to the LLM.
+    let resp = app.send_message(&conv_id, "use the mcp tool").await;
+    assert_eq!(resp.status(), 200);
+    let events = app.read_sse(resp).await;
+
+    let tool_result = events
+        .iter()
+        .find(|e| e["type"] == "tool_result")
+        .expect("tool_result in stream");
+    assert_eq!(tool_result["data"]["is_error"], false);
+    assert_eq!(tool_result["data"]["content"], "hello from mcp");
+    assert_eq!(tool_result["data"]["details"]["server"], "fake");
+    assert_eq!(tool_result["data"]["details"]["tool"], "echo");
+    assert_eq!(*event_types(&events).last().unwrap(), "finish");
+
+    // The fake saw the ORIGINAL tool name with verbatim arguments — the
+    // exposed-name translation happened inside the adapter.
+    assert_eq!(
+        fake.calls(),
+        vec![("echo".to_string(), serde_json::json!({"a": 1}))]
+    );
+
+    // The first LLM request advertised the MCP tool under its exposed name.
+    let first = &llm_server.requests()[0];
+    let advertised = first["tools"].as_array().expect("tools advertised");
+    let echo = advertised
+        .iter()
+        .find(|t| t["function"]["name"] == "mcp__fake__echo")
+        .expect("the mcp tool must be advertised to the LLM");
+    assert_eq!(echo["function"]["description"], "[mcp:fake] say things");
+
+    // The second LLM request carries the MCP tool result back.
+    let second = &llm_server.requests()[1];
+    let tool_message = second["messages"].as_array().unwrap().last().unwrap();
+    assert_eq!(tool_message["role"], "tool");
+    assert_eq!(tool_message["tool_call_id"], "call-1");
+    assert_eq!(tool_message["content"], "hello from mcp");
+
+    // Persistence: the tool message's parts_json carries the ToolResult.
+    let stored = stored_messages(&app, &conv_id).await;
+    let roles: Vec<&str> = stored.iter().map(|m| m["role"].as_str().unwrap()).collect();
+    assert_eq!(roles, vec!["user", "assistant", "tool", "assistant"]);
+    assert!(
+        stored[2]["parts_json"]
+            .as_str()
+            .unwrap()
+            .contains("hello from mcp")
+    );
+
+    // Live status in the list endpoint: injected row connected, the
+    // never-connected row reports its failed reconcile attempt.
+    let resp = app.get_json("/api/mcp/servers").await;
+    assert_eq!(resp.status(), 200);
+    let list: Vec<Value> = resp.json().await.unwrap();
+    let by_id = |id: &str| {
+        list.iter()
+            .find(|r| r["id"] == id)
+            .unwrap_or_else(|| panic!("row {id} in list"))
+    };
+    let fake_row = by_id(&fake_id);
+    assert_eq!(fake_row["status"], "connected");
+    assert_eq!(fake_row["tool_count"], 1);
+    assert_eq!(fake_row["error"], Value::Null);
+    let other_row = by_id(&other_id);
+    assert_eq!(other_row["status"], "failed");
+    assert_eq!(other_row["tool_count"], Value::Null);
+    assert!(
+        other_row["error"]
+            .as_str()
+            .unwrap()
+            .contains("oct-mcp-test-nonexistent-binary"),
+        "error should name the command: {}",
+        other_row["error"]
+    );
+
+    // GET by id carries the same merged status.
+    let resp = app.get_json(&format!("/api/mcp/servers/{fake_id}")).await;
+    assert_eq!(resp.status(), 200);
+    let fetched: Value = resp.json().await.unwrap();
+    assert_eq!(fetched["status"], "connected");
+    assert_eq!(fetched["tool_count"], 1);
+}
+
+#[tokio::test]
+async fn mcp_rows_never_reconciled_report_not_connected() {
+    let app = TestApp::new().await;
+
+    // A row exists but no chat turn ever ran: the manager has no entry for
+    // it, and the merged response reports `not_connected` (with the storage
+    // fields still intact).
+    let id = create_mcp_row(&app, "idle").await;
+
+    let resp = app.get_json("/api/mcp/servers").await;
+    let list: Vec<Value> = resp.json().await.unwrap();
+    assert_eq!(list[0]["status"], "not_connected");
+    assert_eq!(list[0]["tool_count"], Value::Null);
+    assert_eq!(list[0]["error"], Value::Null);
+
+    let resp = app.get_json(&format!("/api/mcp/servers/{id}")).await;
+    let fetched: Value = resp.json().await.unwrap();
+    assert_eq!(fetched["status"], "not_connected");
+    assert_eq!(fetched["name"], "idle");
+    assert_eq!(fetched["command"], "oct-mcp-test-nonexistent-binary");
+}
+
+// --- MCP servers project scoping ------------------------------------------------
+
+#[tokio::test]
+async fn mcp_server_project_scope_roundtrip_and_effective_filter() {
+    let app = TestApp::new().await;
+    let project_a = app.create_project().await;
+    let project_b = app.create_project().await;
+
+    // Create scoped to A: the stored row (and the response) carry the id.
+    let resp = app
+        .post_json(
+            "/api/mcp/servers",
+            serde_json::json!({
+                "name": "a-only",
+                "transport": "stdio",
+                "command": "npx",
+                "project_id": project_a,
+            }),
+        )
+        .await;
+    assert_eq!(resp.status(), 201);
+    let scoped: Value = resp.json().await.unwrap();
+    assert_eq!(scoped["project_id"], serde_json::json!(project_a));
+
+    // A global server: null project_id in the response.
+    let shared_id = create_mcp_row(&app, "shared").await;
+    let resp = app.get_json(&format!("/api/mcp/servers/{shared_id}")).await;
+    let fetched: Value = resp.json().await.unwrap();
+    assert_eq!(fetched["project_id"], Value::Null);
+
+    // An unknown project id on create → 404, nothing stored.
+    let missing = "00000000-0000-0000-0000-000000000000";
+    let resp = app
+        .post_json(
+            "/api/mcp/servers",
+            serde_json::json!({
+                "name": "bad",
+                "transport": "stdio",
+                "command": "npx",
+                "project_id": missing,
+            }),
+        )
+        .await;
+    assert_eq!(resp.status(), 404);
+    let error: Value = resp.json().await.unwrap();
+    assert!(
+        error["error"]
+            .as_str()
+            .unwrap()
+            .contains("Project not found")
+    );
+
+    // Effective-set filter: global + own project, each DTO still marking
+    // its own project_id.
+    let resp = app
+        .get_json(&format!("/api/mcp/servers?project_id={project_a}"))
+        .await;
+    assert_eq!(resp.status(), 200);
+    let list: Vec<Value> = resp.json().await.unwrap();
+    let names: Vec<&str> = list.iter().map(|r| r["name"].as_str().unwrap()).collect();
+    assert_eq!(names, vec!["a-only", "shared"], "creation order");
+    assert_eq!(list[0]["project_id"], serde_json::json!(project_a));
+    assert_eq!(list[1]["project_id"], Value::Null);
+
+    let resp = app
+        .get_json(&format!("/api/mcp/servers?project_id={project_b}"))
+        .await;
+    let list: Vec<Value> = resp.json().await.unwrap();
+    let names: Vec<&str> = list.iter().map(|r| r["name"].as_str().unwrap()).collect();
+    assert_eq!(names, vec!["shared"]);
+
+    // Unknown project on the filter → 404.
+    let resp = app
+        .get_json(&format!("/api/mcp/servers?project_id={missing}"))
+        .await;
+    assert_eq!(resp.status(), 404);
+
+    // Disabled rows drop out of the effective set (but stay in the
+    // unfiltered list).
+    let scoped_id = scoped["id"].as_str().unwrap().to_string();
+    let resp = app
+        .patch_json(
+            &format!("/api/mcp/servers/{scoped_id}"),
+            serde_json::json!({"enabled": false}),
+        )
+        .await;
+    assert_eq!(resp.status(), 200);
+    let resp = app
+        .get_json(&format!("/api/mcp/servers?project_id={project_a}"))
+        .await;
+    let list: Vec<Value> = resp.json().await.unwrap();
+    let names: Vec<&str> = list.iter().map(|r| r["name"].as_str().unwrap()).collect();
+    assert_eq!(names, vec!["shared"]);
+    let resp = app.get_json("/api/mcp/servers").await;
+    let list: Vec<Value> = resp.json().await.unwrap();
+    assert_eq!(
+        list.len(),
+        2,
+        "the unfiltered list still shows the disabled row"
+    );
+
+    // Re-scoping via PATCH: absent leaves the scope unchanged, an unknown
+    // project is rejected without changing it.
+    let resp = app
+        .patch_json(
+            &format!("/api/mcp/servers/{shared_id}"),
+            serde_json::json!({"project_id": project_b}),
+        )
+        .await;
+    assert_eq!(resp.status(), 200);
+    let resp = app.get_json(&format!("/api/mcp/servers/{shared_id}")).await;
+    let fetched: Value = resp.json().await.unwrap();
+    assert_eq!(fetched["project_id"], serde_json::json!(project_b));
+
+    let resp = app
+        .patch_json(
+            &format!("/api/mcp/servers/{shared_id}"),
+            serde_json::json!({"project_id": missing}),
+        )
+        .await;
+    assert_eq!(resp.status(), 404);
+    let resp = app.get_json(&format!("/api/mcp/servers/{shared_id}")).await;
+    let fetched: Value = resp.json().await.unwrap();
+    assert_eq!(fetched["project_id"], serde_json::json!(project_b));
+
+    // After the re-scope, A's effective set is empty and B sees `shared`.
+    let resp = app
+        .get_json(&format!("/api/mcp/servers?project_id={project_a}"))
+        .await;
+    let list: Vec<Value> = resp.json().await.unwrap();
+    assert_eq!(list.len(), 0);
+    let resp = app
+        .get_json(&format!("/api/mcp/servers?project_id={project_b}"))
+        .await;
+    let list: Vec<Value> = resp.json().await.unwrap();
+    let names: Vec<&str> = list.iter().map(|r| r["name"].as_str().unwrap()).collect();
+    assert_eq!(names, vec!["shared"]);
+}
+
+#[tokio::test]
+async fn deleting_project_cascades_scoped_mcp_servers() {
+    let app = TestApp::new().await;
+    let project_id = app.create_project().await;
+    let scoped_id = create_scoped_mcp_row(&app, "scoped", &project_id).await;
+    let global_id = create_mcp_row(&app, "global").await;
+
+    let resp = app
+        .http_delete(&format!("/api/projects/{project_id}"))
+        .await;
+    assert_eq!(resp.status(), 204);
+
+    // Cascade delete (FK ON DELETE CASCADE): the scoped row is gone, the
+    // global row survives.
+    let resp = app.get_json(&format!("/api/mcp/servers/{scoped_id}")).await;
+    assert_eq!(resp.status(), 404);
+    let resp = app.get_json("/api/mcp/servers").await;
+    let list: Vec<Value> = resp.json().await.unwrap();
+    let ids: Vec<&str> = list.iter().map(|r| r["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, vec![global_id.as_str()]);
+}
+
+#[tokio::test]
+async fn mcp_project_scoped_tools_are_isolated_across_projects() {
+    let app = TestApp::new().await;
+    let llm_server = llm::spawn_llm_mock(vec![
+        // A's run: call the scoped MCP tool, then finish.
+        LlmTurn::Complete(vec![
+            tool_call_chunk("call-a", "mcp__scoped__echo", r#"{"a":1}"#),
+            finish_chunk("tool_calls"),
+        ]),
+        LlmTurn::Complete(vec![text_chunk("a done"), finish_chunk("stop")]),
+        // B's run: plain text.
+        LlmTurn::Complete(vec![text_chunk("b done"), finish_chunk("stop")]),
+    ])
+    .await;
+    app.register_llm_provider(&llm_server).await;
+
+    let project_a = app.create_project().await;
+    let project_b = app.create_project().await;
+    let conv_a = app.create_conversation(&project_a).await;
+    let conv_b = app.create_conversation(&project_b).await;
+
+    // One server row scoped to A, with a scripted connection injected under
+    // the SAME scope: A's runs see the tool, B's never do.
+    let scoped_id = create_scoped_mcp_row(&app, "scoped", &project_a).await;
+    let listing = vec![fake_tool("echo", Some("say things"))];
+    let fake = Arc::new(FakeMcpConnection::new(listing.clone()).with_result(
+        "echo",
+        McpCallResult {
+            text: "hello from scoped".to_string(),
+            structured_json: None,
+            is_error: false,
+        },
+    ));
+    app.mcp.insert_connection_for_test(
+        &scoped_id,
+        "scoped",
+        Some(&project_a),
+        fake.clone(),
+        listing,
+    );
+
+    // A's first turn: the tool is advertised on the LLM wire and the call
+    // round-trips through the whole stack.
+    let resp = app.send_message(&conv_a, "use the mcp tool").await;
+    assert_eq!(resp.status(), 200);
+    let events = app.read_sse(resp).await;
+    let tool_result = events
+        .iter()
+        .find(|e| e["type"] == "tool_result")
+        .expect("tool_result in A's stream");
+    assert_eq!(tool_result["data"]["is_error"], false);
+    assert_eq!(tool_result["data"]["content"], "hello from scoped");
+    assert_eq!(
+        fake.calls(),
+        vec![("echo".to_string(), serde_json::json!({"a": 1}))]
+    );
+
+    let requests = llm_server.requests();
+    assert_eq!(requests.len(), 2, "A's run: tool turn + final turn");
+    let a_tools = requests[0]["tools"].as_array().expect("tools advertised");
+    assert!(
+        a_tools
+            .iter()
+            .any(|t| t["function"]["name"] == "mcp__scoped__echo"),
+        "A must be advertised the scoped tool"
+    );
+
+    // B's first turn: no mcp__ tool is advertised (workspace tools only)
+    // and the fake never sees a call from B.
+    let resp = app.send_message(&conv_b, "hi from b").await;
+    assert_eq!(resp.status(), 200);
+    let events = app.read_sse(resp).await;
+    assert_eq!(text_of(&events), "b done");
+    assert_eq!(*event_types(&events).last().unwrap(), "finish");
+
+    let requests = llm_server.requests();
+    assert_eq!(requests.len(), 3);
+    let b_tools = requests[2]["tools"].as_array().expect("tools advertised");
+    assert!(
+        b_tools.iter().all(|t| !t["function"]["name"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("mcp__")),
+        "B must not see A's scoped tool: {b_tools:?}"
+    );
+    assert_eq!(
+        fake.calls().len(),
+        1,
+        "B must never dispatch through A's server"
+    );
+
+    // The list endpoint still reports the row (scoped to A) regardless of
+    // live connections.
+    let resp = app
+        .get_json(&format!("/api/mcp/servers?project_id={project_b}"))
+        .await;
+    let list: Vec<Value> = resp.json().await.unwrap();
+    assert_eq!(list.len(), 0, "the scoped row is not in B's effective set");
 }
 
 // --- Chat: full stack through the mock LLM ------------------------------------

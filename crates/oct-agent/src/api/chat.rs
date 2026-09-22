@@ -126,9 +126,16 @@ fn start_agent_run(
         .collect();
     let roots = WorkspaceRoots::new(PathBuf::from(&project.working_dir), additional.clone());
 
+    // Default workspace tools plus every connected MCP server's tools that
+    // are in scope for THIS project (global + project-scoped; the LLM sees
+    // one flat toolset; MCP names are the mcp__{server}__{tool} forms
+    // deduplicated across servers).
+    let mut run_tools = tools::default_tools(roots);
+    run_tools.extend(state.mcp.tools_for_run(Some(&project.id)));
+
     let ctx = AgentContext {
         model: Arc::from(chat_model),
-        tools: Arc::new(tools::default_tools(roots)),
+        tools: Arc::new(run_tools),
         pool: state.pool.clone(),
         system_prompt: system_prompt(&PathBuf::from(&project.working_dir), &additional),
     };
@@ -299,6 +306,15 @@ pub async fn send_message(
         }
     }
 
+    // Bring the MCP connections in sync with the enabled mcp_servers rows
+    // before the run's toolset is assembled, from this project's
+    // perspective (best-effort: a server that fails to spawn is recorded as
+    // Failed and simply contributes no tools).
+    state
+        .mcp
+        .ensure_connections(&state.pool, Some(&project.id))
+        .await;
+
     start_agent_run(&state, &id, &project, chat_model, messages)
 }
 
@@ -404,6 +420,13 @@ pub async fn resume_turn(
             return Err(AppError::from(e));
         }
     };
+
+    // Same MCP reconcile as send_message, again scoped to the project: the
+    // resumed turn's toolset must reflect the current enabled servers.
+    state
+        .mcp
+        .ensure_connections(&state.pool, Some(&project.id))
+        .await;
 
     start_agent_run(&state, &id, &project, chat_model, messages)
 }

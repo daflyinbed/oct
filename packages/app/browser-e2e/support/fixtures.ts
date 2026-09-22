@@ -10,6 +10,7 @@ type ModelSummary = components["schemas"]["ModelSummary"];
 type StoredMessage = components["schemas"]["StoredMessage"];
 type AgentEvent = components["schemas"]["AgentEvent"];
 type OutputStream = components["schemas"]["OutputStream"];
+type McpServerResponse = components["schemas"]["McpServerResponse"];
 
 const T0 = "2026-09-20T00:00:00";
 
@@ -64,6 +65,32 @@ export function providerFixture(id = "mock-prov"): ProviderResponse {
     created_at: T0,
     updated_at: T0,
     source: "custom",
+  };
+}
+
+/** mock 内存态的 MCP server 行(默认全局、启用、未连接)。 */
+export function mcpServerFixture(
+  id = "m1",
+  overrides: Partial<McpServerResponse> = {},
+): McpServerResponse {
+  return {
+    id,
+    name: "fs",
+    transport: "stdio",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-filesystem"],
+    env: null,
+    url: null,
+    headers: null,
+    enabled: true,
+    tool_timeout_ms: null,
+    project_id: null,
+    created_at: T0,
+    updated_at: T0,
+    status: "not_connected",
+    tool_count: null,
+    error: null,
+    ...overrides,
   };
 }
 

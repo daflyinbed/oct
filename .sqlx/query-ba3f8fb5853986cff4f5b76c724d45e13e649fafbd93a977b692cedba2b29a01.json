@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE mcp_servers SET name = $1, transport = $2, command = $3, args_json = $4, env_json = $5, url = $6, headers_json = $7, enabled = $8, tool_timeout_ms = $9, project_id = $10, updated_at = $11 WHERE id = $12",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 12
+    },
+    "nullable": []
+  },
+  "hash": "ba3f8fb5853986cff4f5b76c724d45e13e649fafbd93a977b692cedba2b29a01"
+}

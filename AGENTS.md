@@ -4,7 +4,7 @@
 
 Two separate package managers coexist:
 
-- **Rust workspace** (`Cargo.toml`): `crates/oct-llm-provider` (library) → `crates/oct-agent` (library + `oct-agent` binary; integration tests import `oct_agent::…`)
+- **Rust workspace** (`Cargo.toml`): `crates/oct-llm-provider` (library) → `crates/oct-mcp` (MCP client quarantine crate: wraps rmcp behind a narrow `McpConnection` trait; stdio transport only, no reqwest in its dependency tree) → `crates/oct-agent` (library + `oct-agent` binary; integration tests import `oct_agent::…`)
 - **pnpm workspace** (`pnpm-workspace.yaml`): `packages/app` (Vue 3 frontend)
 
 ## Commands
@@ -73,26 +73,29 @@ pnpm -r exec eslint .                 # ESLint with @xwbx/eslint-config flat con
 - **Provider registry** (`oct-llm-provider/provider/registry.rs`): `ProviderRegistry` holds registered providers, resolves chat model specs, and can create ad-hoc OpenAI-compatible chat models for custom providers at runtime.
 - **Agent loop** (`oct-agent/agent/`): Streams LLM responses, executes tool calls, feeds results back. Supports cancellation via `tokio_util::sync::CancellationToken`. No iteration limit.
 - **Agent tools** (`oct-agent/tools/`): `read`, `write`, `listdir`, `execute`
+- **MCP support** (`oct-mcp` + `oct-agent/src/mcp.rs` + `oct-agent/api/mcp.rs` + `oct-agent/db/mcp.rs`): MCP 客户端 Phase 1（仅 tools 能力、stdio 传输）。`oct-mcp` 隔离 rmcp（stdio-only features，依赖树禁 reqwest，防与 workspace 的 reqwest 0.12 冲突），公开窄接口 `McpConnection`/`connect_stdio`/`qualified_tool_name`（`mcp__{server}__{tool}`，64 字符截断+哈希后缀）/`ToolNameMap`。`McpManager` 进 AppState，每个 chat turn 前按当前项目对账 enabled `mcp_servers` 行（作用域两级合并：`project_id` NULL=全局、非 NULL=仅该项目；增删改/指纹变更重连、out-of-scope 的过期 entry 仅移除不重连、失败记 Failed、best-effort；连接 key 始终是 server id，跨项目/对话复用同一条连接，scope 只过滤建连触发方与 run 工具集），连接的工具以 `McpTool`（实现 `AgentTool`）拼进 run toolset；工具调用超时默认 60s（行级 `tool_timeout_ms` 覆盖）。REST CRUD 在 `/api/mcp/servers`（列表/详情并入实时连接状态，`?project_id=` 返回该项目的有效集合）。
 - **API** (`oct-agent/api/`): Axum + utoipa OpenAPI generation. Scalar UI at `/scalar`. OpenAPI JSON at `/api/openapi.json`. SSE streaming for chat. Routes:
   - **Providers & Models**: CRUD for providers and models (list, create, update, delete). Models support rich metadata (capabilities, limits, costs, modalities).
   - **Projects**: CRUD (list, create, get, update, delete). Projects have `name` and `working_dir`.
   - **Conversations**: CRUD (list, create, get, update, delete). Conversations belong to a project.
   - **Chat**: Send message (SSE streaming), get messages.
-- **AppState**: Holds `SqlitePool`, `Arc<ProviderRegistry>`, and `Arc<DashMap<String, RunHandle>>` for tracking active agent sessions.
+  - **MCP servers**: CRUD at `/api/mcp/servers`（列表/详情并入 `McpManager` 实时连接状态）。
+- **AppState**: Holds `SqlitePool`, `Arc<ProviderRegistry>`, `Arc<DashMap<String, RunHandle>>` for tracking active agent sessions, and `Arc<McpManager>` for MCP connections.
 - **Frontend** (`packages/app`): Vue 3 + Vite 8 + UnoCSS (OKLCH tokens). Uses `openapi-fetch` to consume the generated OpenAPI schema. `@vueuse/core` for composables. `unplugin-vue-components` for auto-imports. Key directories:
-  - `src/composables/`: `useChat.ts`, `useProjects.ts`, `useProviders.ts`
+  - `src/composables/`: `useChat.ts`, `useProjects.ts`, `useProviders.ts`, `useMcpServers.ts`
   - `src/components/chat/`, `diff/`, `file-tree/`, `settings/`, `sidebar/`
   - `src/api/`: `client.ts` (openapi-fetch), `schema.d.ts` (auto-generated)
 
 ## Database Schema
 
-5 tables (see `migrations/20260417182650_init_schema`):
+6 tables (init `migrations/20260417182650_init_schema` + `migrations/20260922100000_add_mcp_servers`):
 
 - `providers`: id, name, adapter_type, base_url, api_key, doc_url, source (`seeded`/`custom`), timestamps
 - `models`: id, provider*id, model_id, name, family, reasoning, tool_call, attachment, structured_output, temperature, knowledge, release_date, open_weights, cost*\_, limit\_\_, modalities\_\*, source, is_enabled, timestamps
 - `projects`: id, name, working_dir, additional_dirs (JSON 数组；附加工作目录，绝对路径 only，工具沙箱多根「任一根内即放行」，相对路径仍锚定 working_dir), timestamps
 - `conversations`: id, project_id, title, title_source (`default`/`ai`/`user`；手动命名永不被自动标题覆盖，自动标题只在 `default` 时条件写入), timestamps
 - `messages`: id, conversation_id, role, parts_json, ordering, provider_id, model_id, input_tokens, output_tokens, reasoning_tokens, created_at
+- `mcp_servers`: id, name (UNIQUE), transport (`stdio`；`http` 字段已预留但 API 尚拒绝), command, args_json, env_json, url, headers_json, enabled, tool_timeout_ms, project_id (NULL=全局；非 NULL=仅该项目，FK cascade 随项目删除), timestamps
 
 ## Testing
 

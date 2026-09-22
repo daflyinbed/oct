@@ -1,0 +1,27 @@
+[package]
+name = "oct-mcp"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Isolation layer over the official MCP Rust SDK. HARD CONSTRAINT: only the
+# client + child-process stdio transport features are enabled. Never enable
+# any streamable-http feature (or anything pulling `__reqwest`): rmcp's HTTP
+# stack depends on reqwest 0.13, which conflicts with the reqwest 0.12 the
+# rest of the workspace uses. Verify with `cargo tree -p oct-mcp | grep reqwest`.
+rmcp = { version = "3.4", default-features = false, features = [
+  "client",
+  "transport-child-process",
+] }
+anyhow = "1"
+async-trait = "0.1"
+serde_json = "1"
+tokio = { version = "1", features = [
+  "process",
+  "time",
+  "sync",
+  "io-util",
+  "rt",
+  "macros",
+] }
+tracing = "0.1"

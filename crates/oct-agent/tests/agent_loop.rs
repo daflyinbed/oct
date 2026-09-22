@@ -4,14 +4,20 @@
 
 mod support;
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use async_trait::async_trait;
 use serde_json::json;
 
 use oct_agent::agent::AgentEvent;
 use oct_agent::db;
+use oct_agent::mcp::{McpManager, McpTool};
 use oct_agent::tools::{self, AgentTool, ToolContext, ToolOutput};
 use oct_llm_provider::core::{ContentPart, FinishReason, ModelError, Role, ToolCall, ToolResult};
+use oct_mcp::McpCallResult;
 
+use support::mcp::{FakeMcpConnection, fake_tool};
 use support::{
     ScriptedModel, TestEnv, Turn, collect_events, finish, is_terminal, new_conversation, reasoning,
     spawn_agent, text, tool_call, usage,
@@ -750,5 +756,305 @@ async fn tools_read_files_inside_additional_working_dirs() {
         }
         other => panic!("expected ToolResult, got {other:?}"),
     }
+    assert_eq!(*events.last().unwrap(), AgentEvent::Finish);
+}
+
+// --- MCP tools (injected fake connections; zero real servers/binaries) -------
+
+/// Extract the ToolResult events as (call_id, content, is_error, details).
+fn tool_results(events: &[AgentEvent]) -> Vec<(String, String, bool, Option<serde_json::Value>)> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolResult {
+                call_id,
+                content,
+                is_error,
+                details,
+            } => Some((call_id.clone(), content.clone(), *is_error, details.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn mcp_tool_round_trip_translates_names_and_feeds_result_back() {
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+
+    // One injected server, two tools: one answering text+structured, one
+    // structured-only (no text at all).
+    let listing = vec![
+        fake_tool("echo", Some("say things")),
+        fake_tool("stats", None),
+    ];
+    let fake = Arc::new(
+        FakeMcpConnection::new(listing.clone())
+            .with_result(
+                "echo",
+                McpCallResult {
+                    text: "hello from mcp".to_string(),
+                    structured_json: Some(json!({"sum": 3})),
+                    is_error: false,
+                },
+            )
+            .with_result(
+                "stats",
+                McpCallResult {
+                    text: String::new(),
+                    structured_json: Some(json!({"rows": [], "count": 0})),
+                    is_error: false,
+                },
+            ),
+    );
+    let manager = McpManager::default();
+    manager.insert_connection_for_test("srv-fake", "fake", None, fake.clone(), listing);
+
+    let mut all_tools = tools::default_tools(tools::workspace::WorkspaceRoots::new(
+        env.dir.path().to_path_buf(),
+        vec![],
+    ));
+    all_tools.extend(manager.tools_for_run(None));
+
+    let model = ScriptedModel::new(vec![
+        Turn::Stream(vec![
+            tool_call("call-1", "mcp__fake__echo", json!({"a": 1})),
+            tool_call("call-2", "mcp__fake__stats", json!({})),
+            finish(FinishReason::ToolCalls),
+        ]),
+        Turn::Stream(vec![text("done"), finish(FinishReason::Stop)]),
+    ]);
+    let observer = model.observer();
+
+    let (_handle, mut rx) = spawn_agent(
+        model,
+        all_tools,
+        env.pool.clone(),
+        &conv_id,
+        "use the mcp tools",
+    )
+    .await;
+    let events = collect_events(&mut rx, is_terminal).await;
+
+    // The first request advertised both MCP tools under their exposed names
+    // with the [mcp:server] description prefix.
+    let advertised = &observer.requests()[0].tools;
+    let names: Vec<&str> = advertised.iter().map(|t| t.name.as_str()).collect();
+    assert!(names.contains(&"mcp__fake__echo"), "advertised: {names:?}");
+    assert!(names.contains(&"mcp__fake__stats"), "advertised: {names:?}");
+    for spec in advertised.iter().filter(|t| t.name.starts_with("mcp__")) {
+        let description = spec.description.as_deref().unwrap_or_default();
+        assert!(
+            description.starts_with("[mcp:fake] "),
+            "description must carry the server prefix, got: {description}"
+        );
+    }
+
+    // The UI title pairs server name with the ORIGINAL tool name.
+    match events
+        .iter()
+        .find(|e| matches!(e, AgentEvent::ToolCallStart { name, .. } if name == "mcp__fake__echo"))
+    {
+        Some(AgentEvent::ToolCallStart { title, .. }) => {
+            assert_eq!(title, "fake / echo");
+        }
+        other => panic!("expected ToolCallStart for echo, got {other:?}"),
+    }
+
+    // Both results arrive as non-errors: echo's text verbatim, stats'
+    // structuredContent rendered as pretty JSON (it sent no text).
+    let results = tool_results(&events);
+    assert_eq!(results.len(), 2);
+    let echo = results
+        .iter()
+        .find(|(id, ..)| id == "call-1")
+        .expect("echo result");
+    assert_eq!(echo.1, "hello from mcp");
+    assert!(!echo.2);
+    assert_eq!(echo.3.as_ref().unwrap()["server"], "fake");
+    assert_eq!(echo.3.as_ref().unwrap()["tool"], "echo");
+    assert_eq!(echo.3.as_ref().unwrap()["structured"], json!({"sum": 3}));
+    let stats = results
+        .iter()
+        .find(|(id, ..)| id == "call-2")
+        .expect("stats result");
+    assert!(!stats.2);
+    assert!(
+        stats.1.contains("\"count\": 0"),
+        "pretty JSON expected, got: {}",
+        stats.1
+    );
+
+    // Dispatch used the ORIGINAL tool names with verbatim arguments
+    // (completion order between the parallel calls is not fixed).
+    let mut calls = fake.calls();
+    calls.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        calls,
+        vec![
+            ("echo".to_string(), json!({"a": 1})),
+            ("stats".to_string(), json!({})),
+        ]
+    );
+
+    // The second turn receives both tool results back (feed-back contract).
+    let second = &observer.requests()[1];
+    let tool_messages: Vec<&oct_llm_provider::core::Message> = second
+        .messages
+        .iter()
+        .filter(|m| m.role == Role::Tool)
+        .collect();
+    assert_eq!(tool_messages.len(), 2);
+
+    // Persistence: both tool results land as tool messages carrying
+    // ToolResult parts (parts_json) with UI-only details in their own column.
+    let stored = db::messages::list_messages(&env.pool, &conv_id)
+        .await
+        .unwrap();
+    let tool_rows: Vec<_> = stored.iter().filter(|m| m.role == "tool").collect();
+    assert_eq!(tool_rows.len(), 2);
+    for row in &tool_rows {
+        let parts = parts_of(row);
+        assert!(matches!(
+            &parts[0],
+            ContentPart::ToolResult(ToolResult {
+                is_error: false,
+                ..
+            })
+        ));
+        assert!(
+            row.details_json
+                .as_deref()
+                .unwrap()
+                .contains("\"server\":\"fake\"")
+        );
+    }
+    assert!(
+        tool_rows
+            .iter()
+            .any(|r| r.parts_json.contains("hello from mcp"))
+    );
+}
+
+#[tokio::test]
+async fn mcp_tool_error_result_maps_to_error_tool_output_and_loop_continues() {
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+
+    let listing = vec![fake_tool("boom", Some("always fails"))];
+    let fake = Arc::new(FakeMcpConnection::new(listing.clone()).with_result(
+        "boom",
+        McpCallResult {
+            text: "exploded".to_string(),
+            structured_json: None,
+            is_error: true,
+        },
+    ));
+    let manager = McpManager::default();
+    manager.insert_connection_for_test("srv-fake", "fake", None, fake.clone(), listing);
+
+    let mut all_tools = tools::default_tools(tools::workspace::WorkspaceRoots::new(
+        env.dir.path().to_path_buf(),
+        vec![],
+    ));
+    all_tools.extend(manager.tools_for_run(None));
+
+    let model = ScriptedModel::new(vec![
+        Turn::Stream(vec![
+            tool_call("call-1", "mcp__fake__boom", json!({})),
+            finish(FinishReason::ToolCalls),
+        ]),
+        Turn::Stream(vec![text("recovered"), finish(FinishReason::Stop)]),
+    ]);
+    let observer = model.observer();
+
+    let (_handle, mut rx) = spawn_agent(
+        model,
+        all_tools,
+        env.pool.clone(),
+        &conv_id,
+        "break something",
+    )
+    .await;
+    let events = collect_events(&mut rx, is_terminal).await;
+
+    // The tool-level isError surfaces as an error ToolResult with the
+    // server's message verbatim.
+    let results = tool_results(&events);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0, "call-1");
+    assert_eq!(results[0].1, "exploded");
+    assert!(results[0].2);
+
+    // The error reaches the model as an error tool result, and the run
+    // still finishes normally afterwards.
+    let second = &observer.requests()[1];
+    assert!(matches!(
+        &second.messages[3].parts[0],
+        ContentPart::ToolResult(ToolResult { is_error: true, .. })
+    ));
+    assert_eq!(*events.last().unwrap(), AgentEvent::Finish);
+
+    // The persisted tool message keeps the error flag.
+    let stored = db::messages::list_messages(&env.pool, &conv_id)
+        .await
+        .unwrap();
+    let tool_row = stored.iter().find(|m| m.role == "tool").unwrap();
+    assert!(tool_row.parts_json.contains("is_error\":true"));
+}
+
+#[tokio::test]
+async fn mcp_tool_timeout_returns_error_and_loop_continues() {
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+
+    // The tool is built directly (not through the manager) so the test can
+    // bake in a 50ms budget; the fake's call never resolves.
+    let slow_info = fake_tool("slow", None);
+    let fake = Arc::new(FakeMcpConnection::new(vec![slow_info.clone()]).with_hang("slow"));
+    let tool = McpTool::new(
+        "mcp__fake__slow".to_string(),
+        slow_info,
+        "fake".to_string(),
+        fake,
+        Duration::from_millis(50),
+    );
+
+    let model = ScriptedModel::new(vec![
+        Turn::Stream(vec![
+            tool_call("call-1", "mcp__fake__slow", json!({})),
+            finish(FinishReason::ToolCalls),
+        ]),
+        Turn::Stream(vec![finish(FinishReason::Stop)]),
+    ]);
+    let observer = model.observer();
+
+    let (_handle, mut rx) = spawn_agent(
+        model,
+        vec![Box::new(tool)],
+        env.pool.clone(),
+        &conv_id,
+        "call the slow one",
+    )
+    .await;
+    let events = collect_events(&mut rx, is_terminal).await;
+
+    let results = tool_results(&events);
+    assert_eq!(results.len(), 1);
+    assert!(results[0].2, "a timed-out call must be an error result");
+    let content = &results[0].1;
+    assert!(content.contains("timed out"), "got: {content}");
+    assert!(content.contains("`slow`"), "must name the tool: {content}");
+    assert!(
+        content.contains("`fake`"),
+        "must name the server: {content}"
+    );
+
+    // The timeout error is fed back to the model and the run finishes.
+    let second = &observer.requests()[1];
+    assert!(matches!(
+        &second.messages[3].parts[0],
+        ContentPart::ToolResult(ToolResult { is_error: true, .. })
+    ));
     assert_eq!(*events.last().unwrap(), AgentEvent::Finish);
 }

@@ -13,6 +13,7 @@
 #![allow(dead_code)]
 
 pub mod llm;
+pub mod mcp;
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -287,6 +288,10 @@ pub struct TestApp {
     /// Handle onto the server's own database: lets tests seed persisted
     /// state (e.g. an interrupted turn's dangling history) directly.
     pub pool: sqlx::SqlitePool,
+    /// The very `Arc<McpManager>` the server's AppState holds: lets tests
+    /// inject scripted MCP connections (see [`mcp::FakeMcpConnection`])
+    /// instead of spawning real server processes.
+    pub mcp: Arc<oct_agent::mcp::McpManager>,
     http: reqwest::Client,
 }
 
@@ -296,10 +301,12 @@ impl TestApp {
         let db_url = format!("sqlite://{}", dir.path().join("test.db").display());
         let pool = db::init_pool(&db_url).await.expect("init test database");
 
+        let mcp = Arc::new(oct_agent::mcp::McpManager::default());
         let state = oct_agent::api::AppState {
             pool: pool.clone(),
             registry: Arc::new(default_registry()),
             sessions: Arc::new(dashmap::DashMap::new()),
+            mcp: mcp.clone(),
         };
         let app = oct_agent::api::build_router(state);
 
@@ -315,6 +322,7 @@ impl TestApp {
             dir,
             base_url: format!("http://127.0.0.1:{port}"),
             pool,
+            mcp,
             http: reqwest::Client::new(),
         }
     }

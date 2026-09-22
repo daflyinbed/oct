@@ -55,23 +55,39 @@
                 AI
               </button>
               <span class="text-[12.5px] text-faint">/</span>
-              <button
-                class="text-[12.5px] text-dim transition-colors hover:text-neutral-10"
-                @click="view = { name: 'providers' }"
-              >
-                LLM Providers
-              </button>
-              <template v-if="view.name === 'provider'">
-                <span class="text-[12.5px] text-faint">/</span>
-                <span class="text-[12.5px] text-neutral-10 font-semibold">{{
-                  selected?.name
-                }}</span>
-              </template>
-              <template v-else-if="view.name === 'connect-provider'">
-                <span class="text-[12.5px] text-faint">/</span>
-                <span class="text-[12.5px] text-neutral-10 font-semibold"
-                  >Connect Provider</span
+              <template v-if="inProviderTree">
+                <button
+                  class="text-[12.5px] text-dim transition-colors hover:text-neutral-10"
+                  @click="view = { name: 'providers' }"
                 >
+                  LLM Providers
+                </button>
+                <template v-if="view.name === 'provider'">
+                  <span class="text-[12.5px] text-faint">/</span>
+                  <span class="text-[12.5px] text-neutral-10 font-semibold">{{
+                    selected?.name
+                  }}</span>
+                </template>
+                <template v-else-if="view.name === 'connect-provider'">
+                  <span class="text-[12.5px] text-faint">/</span>
+                  <span class="text-[12.5px] text-neutral-10 font-semibold"
+                    >Connect Provider</span
+                  >
+                </template>
+              </template>
+              <template v-else>
+                <button
+                  class="text-[12.5px] text-dim transition-colors hover:text-neutral-10"
+                  @click="view = { name: 'mcp' }"
+                >
+                  MCP Servers
+                </button>
+                <template v-if="view.name === 'mcp-edit'">
+                  <span class="text-[12.5px] text-faint">/</span>
+                  <span class="text-[12.5px] text-neutral-10 font-semibold">{{
+                    editingServer ? editingServer.name : "Add Server"
+                  }}</span>
+                </template>
               </template>
             </template>
             <span v-else class="text-[12.5px] text-neutral-10 font-semibold">
@@ -85,6 +101,14 @@
             >
               <i-lucide-plus class="h-3 w-3" />
               Connect Provider
+            </button>
+            <button
+              v-if="view.name === 'mcp'"
+              class="h-[26px] inline-flex items-center gap-1.5 control-surface rounded-md px-2.5 text-[12px] font-medium control-focus"
+              @click="startAddServer"
+            >
+              <i-lucide-plus class="h-3 w-3" />
+              Add Server
             </button>
             <DialogClose
               class="h-[26px] w-[26px] control-ghost rounded-md text-[12px] control-focus"
@@ -122,6 +146,26 @@
                 <button
                   class="h-[26px] inline-flex flex-none items-center gap-1.5 control-surface rounded-md px-2.5 text-[12px] font-medium control-focus"
                   @click="view = { name: 'providers' }"
+                >
+                  Configure
+                  <i-lucide-chevron-right class="h-3 w-3 text-dim" />
+                </button>
+              </div>
+              <div
+                class="flex items-center gap-[18px] border-b border-line-soft border-dashed py-3"
+              >
+                <div class="min-w-0 flex-1">
+                  <div class="text-[13px] text-strong font-semibold">
+                    MCP Servers
+                  </div>
+                  <div class="mt-0.5 text-[12px] text-dim">
+                    为 Agent 接入外部工具服务器（Model Context Protocol）。
+                  </div>
+                </div>
+                <button
+                  class="h-[26px] inline-flex flex-none items-center gap-1.5 control-surface rounded-md px-2.5 text-[12px] font-medium control-focus"
+                  title="配置 MCP Servers"
+                  @click="view = { name: 'mcp' }"
                 >
                   Configure
                   <i-lucide-chevron-right class="h-3 w-3 text-dim" />
@@ -546,6 +590,254 @@
                 </div>
               </div>
             </template>
+
+            <!-- ============ MCP Servers 列表 ============ -->
+            <template v-else-if="view.name === 'mcp'">
+              <DialogTitle class="text-[16.5px] text-strong font-semibold">
+                MCP Servers
+              </DialogTitle>
+              <p class="mt-1 text-[12px] text-dim">
+                为 Agent
+                接入外部工具服务器（stdio）；启用后下一次对话开始时连接。
+              </p>
+
+              <p v-if="mcpError" class="mt-3 text-[12px] text-danger-10">
+                {{ mcpError }}
+              </p>
+
+              <div
+                v-for="server in filteredMcpServers"
+                :key="server.id"
+                class="border-b border-line-soft border-dashed py-3"
+              >
+                <div class="flex items-center gap-2">
+                  <span
+                    class="h-1.5 w-1.5 flex-none rounded-full"
+                    :class="MCP_STATUS_DOT[server.status] ?? 'bg-neutral-5'"
+                    :title="mcpStatusText(server)"
+                  />
+                  <span class="text-[13px] text-strong font-semibold">{{
+                    server.name
+                  }}</span>
+                  <span
+                    class="rounded bg-neutral-2 px-1.5 py-px text-[10.5px] text-dim font-medium leading-[16px]"
+                  >
+                    {{ scopeLabel(server) }}
+                  </span>
+                  <span
+                    class="rounded bg-neutral-2 px-1.5 py-px text-[10.5px] text-dim font-medium leading-[16px]"
+                  >
+                    {{ server.transport }}
+                  </span>
+                  <span class="flex-1" />
+                  <button
+                    class="relative h-[19px] w-[34px] flex-none rounded-full transition-colors"
+                    :class="server.enabled ? 'bg-accent-7' : 'bg-neutral-2'"
+                    role="switch"
+                    :aria-checked="server.enabled"
+                    :aria-label="`启用 ${server.name}`"
+                    :title="server.enabled ? '禁用该 server' : '启用该 server'"
+                    @click="toggleMcpEnabled(server)"
+                  >
+                    <span
+                      class="absolute left-[2px] top-[2px] h-[15px] w-[15px] rounded-full bg-white shadow-[0_1px_3px_rgba(0,0,0,0.3)] transition-transform"
+                      :class="server.enabled ? 'translate-x-[15px]' : ''"
+                    />
+                  </button>
+                  <button
+                    class="h-[26px] inline-flex flex-none items-center gap-1.5 control-surface rounded-md px-2.5 text-[12px] font-medium control-focus"
+                    :title="`配置 ${server.name}`"
+                    @click="startEditServer(server)"
+                  >
+                    Configure
+                    <i-lucide-chevron-right class="h-3 w-3 text-dim" />
+                  </button>
+                  <button
+                    class="h-[26px] w-[26px] flex-none control-ghost rounded-md text-dim control-focus"
+                    :title="`删除 ${server.name}`"
+                    @click="removeMcpServer(server)"
+                  >
+                    <i-lucide-trash-2 class="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <div class="mt-1.5 flex items-center gap-2 pl-3.5">
+                  <span
+                    class="min-w-0 flex-1 truncate text-[12px]"
+                    :class="mcpStatusClass(server)"
+                  >
+                    {{ mcpStatusText(server) }}
+                  </span>
+                  <span
+                    v-if="server.command"
+                    class="max-w-[45%] flex-none truncate text-[11.5px] text-faint font-mono"
+                  >
+                    {{ server.command }}
+                  </span>
+                </div>
+              </div>
+
+              <div
+                v-if="filteredMcpServers.length === 0 && !mcpLoading"
+                class="py-10 text-center"
+              >
+                <p class="text-[12.5px] text-faint">
+                  尚未配置任何 MCP server。
+                </p>
+                <button
+                  class="mt-3 h-[26px] inline-flex items-center gap-1.5 control-surface rounded-md px-2.5 text-[12px] font-medium control-focus"
+                  @click="startAddServer"
+                >
+                  <i-lucide-plus class="h-3 w-3" />
+                  Add Server
+                </button>
+              </div>
+              <p
+                v-if="mcpLoading"
+                class="py-8 text-center text-[12.5px] text-faint"
+              >
+                Loading…
+              </p>
+            </template>
+
+            <!-- ============ MCP Server 新增 / 编辑表单 ============ -->
+            <template v-else-if="view.name === 'mcp-edit'">
+              <div class="flex items-center gap-2">
+                <DialogTitle class="text-[16.5px] text-strong font-semibold">
+                  {{ editingServer ? "Edit MCP Server" : "Add MCP Server" }}
+                </DialogTitle>
+                <span
+                  class="rounded bg-neutral-2 px-1.5 py-px text-[10.5px] text-dim font-medium leading-[16px]"
+                >
+                  stdio
+                </span>
+              </div>
+              <p class="mt-1 text-[12px] text-dim">
+                以本地子进程方式启动（stdio transport），Agent
+                在对话中按需调用其工具。
+              </p>
+
+              <div class="mt-4 max-w-[520px] space-y-4">
+                <label class="block">
+                  <span class="text-[13px] text-strong font-semibold">
+                    Name
+                  </span>
+                  <span class="ml-1 text-[12px] text-danger-10">*</span>
+                  <div class="mt-0.5 text-[12px] text-dim">
+                    唯一名称，用于识别该 server。
+                  </div>
+                  <input
+                    v-model="mcpForm.name"
+                    placeholder="e.g. filesystem"
+                    class="mt-2 h-[30px] w-full control-surface px-3 text-[13px] control-focus"
+                  />
+                </label>
+                <label class="block">
+                  <span class="text-[13px] text-strong font-semibold">
+                    Command
+                  </span>
+                  <span class="ml-1 text-[12px] text-danger-10">*</span>
+                  <div class="mt-0.5 text-[12px] text-dim">
+                    启动命令（可执行文件）。
+                  </div>
+                  <input
+                    v-model="mcpForm.command"
+                    placeholder="e.g. npx"
+                    class="mt-2 h-[30px] w-full control-surface px-3 text-[13px] font-mono control-focus"
+                  />
+                </label>
+                <label class="block">
+                  <span class="text-[13px] text-strong font-semibold">
+                    Args
+                  </span>
+                  <div class="mt-0.5 text-[12px] text-dim">
+                    命令行参数，每行一个。
+                  </div>
+                  <textarea
+                    v-model="mcpForm.args"
+                    rows="3"
+                    placeholder="-y&#10;@modelcontextprotocol/server-filesystem&#10;/tmp"
+                    class="mt-2 block w-full resize-y border border-neutral-5 rounded-md bg-surface px-3 py-2 text-[12.5px] text-neutral-10 font-mono control-focus outline-none transition-colors placeholder:text-faint"
+                  />
+                </label>
+                <label class="block">
+                  <span class="text-[13px] text-strong font-semibold">
+                    Env
+                  </span>
+                  <div class="mt-0.5 text-[12px] text-dim">
+                    环境变量，每行一个 KEY=value。
+                  </div>
+                  <textarea
+                    v-model="mcpForm.env"
+                    rows="2"
+                    placeholder="API_TOKEN=secret"
+                    class="mt-2 block w-full resize-y border border-neutral-5 rounded-md bg-surface px-3 py-2 text-[12.5px] text-neutral-10 font-mono control-focus outline-none transition-colors placeholder:text-faint"
+                  />
+                </label>
+                <div class="flex items-start gap-4">
+                  <label class="block w-[180px] flex-none">
+                    <span class="text-[13px] text-strong font-semibold">
+                      Tool Timeout
+                    </span>
+                    <div class="mt-0.5 text-[12px] text-dim">
+                      工具调用超时（毫秒），留空用默认值。
+                    </div>
+                    <input
+                      v-model="mcpForm.toolTimeout"
+                      placeholder="30000"
+                      inputmode="numeric"
+                      class="mt-2 h-[30px] w-full control-surface px-3 text-[13px] font-mono control-focus"
+                    />
+                  </label>
+                  <label class="mt-[1px] min-w-0 flex-1">
+                    <span
+                      class="mt-[11px] text-[13px] text-strong font-semibold"
+                    >
+                      Project Scope
+                    </span>
+                    <div class="mt-0.5 text-[12px] text-dim">
+                      全局对所有项目生效；项目内仅该项目的对话可见。
+                    </div>
+                    <div class="mt-2">
+                      <AppSelect
+                        :model-value="mcpForm.projectId"
+                        :options="projectScopeOptions"
+                        placeholder="全局"
+                        title="作用域"
+                        trigger-class="w-full text-neutral-10"
+                        @update:model-value="selectMcpScope"
+                      />
+                    </div>
+                  </label>
+                </div>
+                <p
+                  v-if="mcpFormError ?? mcpError"
+                  class="text-[12px] text-danger-10"
+                >
+                  {{ mcpFormError ?? mcpError }}
+                </p>
+                <div class="flex items-center gap-2">
+                  <button
+                    class="h-[28px] control-solid rounded-md px-4 text-[12.5px] font-medium control-focus transition-colors disabled:opacity-50"
+                    :disabled="!canSubmitMcp || mcpSubmitting"
+                    @click="submitMcpServer"
+                  >
+                    {{
+                      mcpSubmitting
+                        ? "Saving…"
+                        : editingServer
+                          ? "Save Changes"
+                          : "Create Server"
+                    }}
+                  </button>
+                  <button
+                    class="h-[28px] control-ghost rounded-md px-3 text-[12.5px] control-focus"
+                    @click="view = { name: 'mcp' }"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </template>
           </div>
         </div>
         <DialogDescription class="sr-only">
@@ -567,12 +859,16 @@ import {
   DialogTitle,
 } from "reka-ui";
 import { computed, ref, watch } from "vue";
+import AppSelect from "@/components/ui/AppSelect.vue";
+import { useMcpServers } from "@/composables/useMcpServers";
+import { useProjects } from "@/composables/useProjects";
 import { useProviders } from "@/composables/useProviders";
 import type { components } from "@/api/schema";
 
 type ProviderResponse = components["schemas"]["ProviderResponse"];
+type McpServerResponse = components["schemas"]["McpServerResponse"];
 
-defineProps<{
+const props = defineProps<{
   visible: boolean;
 }>();
 
@@ -589,11 +885,26 @@ const {
   createModel,
 } = useProviders();
 
+const {
+  servers: mcpServers,
+  loading: mcpLoading,
+  error: mcpError,
+  fetchServers: fetchMcpServers,
+  createServer,
+  updateServer,
+  deleteServer,
+  toggleEnabled: toggleMcpServerEnabled,
+} = useMcpServers();
+
+const { projects } = useProjects();
+
 type View =
   | { name: "ai" }
   | { name: "providers" }
   | { name: "provider"; id: string }
-  | { name: "connect-provider" };
+  | { name: "connect-provider" }
+  | { name: "mcp" }
+  | { name: "mcp-edit"; id: string | null };
 
 const view = ref<View>({ name: "ai" });
 const query = ref("");
@@ -678,9 +989,234 @@ const filteredModels = computed(() => {
   );
 });
 
+// 面包屑子树：providers 系视图共用 "AI / LLM Providers" 前缀，mcp 系另走一支
+const inProviderTree = computed(() =>
+  ["providers", "provider", "connect-provider"].includes(view.value.name),
+);
+
 function goBack() {
-  view.value =
-    view.value.name === "ai" ? { name: "ai" } : { name: "providers" };
+  if (view.value.name === "ai") {
+    view.value = { name: "ai" };
+  } else if (view.value.name === "mcp" || view.value.name === "mcp-edit") {
+    view.value = { name: "mcp" };
+  } else {
+    view.value = { name: "providers" };
+  }
+}
+
+/* ---------- MCP Servers：列表 / 新增 / 编辑 ---------- */
+
+/** AppSelect 的 value 是 string；用哨兵值表达"全局"（project_id 为 null）。 */
+const GLOBAL_SCOPE = "__global__";
+
+const mcpForm = ref(emptyMcpForm());
+const mcpFormError = ref<string | null>(null);
+const mcpSubmitting = ref(false);
+
+function emptyMcpForm() {
+  return {
+    name: "",
+    command: "",
+    /** 一行一个命令行参数 */
+    args: "",
+    /** 一行一个 KEY=value */
+    env: "",
+    /** 空 = 不设置（create）/ 保持原值（update） */
+    toolTimeout: "",
+    projectId: GLOBAL_SCOPE,
+  };
+}
+
+// 进入 mcp 视图时拉取列表（连接状态是实时派生值，每次进入都刷新）
+watch(
+  () => view.value.name,
+  (name) => {
+    if (name === "mcp") void fetchMcpServers();
+  },
+);
+
+// 弹窗重开时若停在 mcp 系视图同样要拉新：view.name 未变不会触发上面的
+// watch，会渲染模块级缓存的陈旧状态。两条 watch 触发条件互斥（开合只变
+// visible、切视图只变 view.name），不会重复请求。mcp-edit 一并拉新是为了
+// 让「编辑目标已被他处删除时退回列表」的兜底 watch 拿到最新列表。
+watch(
+  () => props.visible,
+  (open) => {
+    if (open && (view.value.name === "mcp" || view.value.name === "mcp-edit")) {
+      void fetchMcpServers();
+    }
+  },
+);
+
+const editingServer = computed(() => {
+  const current = view.value;
+  if (current.name !== "mcp-edit" || !current.id) return null;
+  return mcpServers.value.find((s) => s.id === current.id) ?? null;
+});
+
+// 编辑目标已被删除（如他处同步）时退回列表
+watch(editingServer, (value) => {
+  if (view.value.name === "mcp-edit" && view.value.id && !value) {
+    view.value = { name: "mcp" };
+  }
+});
+
+const filteredMcpServers = computed(() => {
+  const q = query.value.trim().toLowerCase();
+  return mcpServers.value.filter(
+    (server) => !q || server.name.toLowerCase().includes(q),
+  );
+});
+
+const projectScopeOptions = computed(() => [
+  { value: GLOBAL_SCOPE, label: "全局（所有项目）" },
+  ...projects.value.map((p) => ({ value: p.id, label: p.name })),
+]);
+
+const MCP_STATUS_DOT: Record<string, string> = {
+  connected: "bg-success-10",
+  failed: "bg-danger-10",
+  not_connected: "bg-neutral-5",
+};
+
+function scopeLabel(server: McpServerResponse): string {
+  if (!server.project_id) return "全局";
+  return (
+    projects.value.find((p) => p.id === server.project_id)?.name ?? "未知项目"
+  );
+}
+
+function mcpStatusText(server: McpServerResponse): string {
+  if (server.status === "connected") {
+    return server.tool_count != null
+      ? `已连接 · ${server.tool_count} 个工具`
+      : "已连接";
+  }
+  if (server.status === "failed") {
+    return server.error ?? "连接失败";
+  }
+  return "未连接";
+}
+
+function mcpStatusClass(server: McpServerResponse): string {
+  if (server.status === "connected") return "text-dim";
+  if (server.status === "failed") return "text-danger-10";
+  return "text-faint";
+}
+
+function startAddServer() {
+  mcpForm.value = emptyMcpForm();
+  mcpFormError.value = null;
+  view.value = { name: "mcp-edit", id: null };
+}
+
+function startEditServer(server: McpServerResponse) {
+  mcpForm.value = {
+    name: server.name,
+    command: server.command ?? "",
+    args: (server.args ?? []).join("\n"),
+    env: Object.entries(server.env ?? {})
+      .map(([key, value]) => `${key}=${value}`)
+      .join("\n"),
+    toolTimeout:
+      server.tool_timeout_ms != null ? String(server.tool_timeout_ms) : "",
+    projectId: server.project_id ?? GLOBAL_SCOPE,
+  };
+  mcpFormError.value = null;
+  view.value = { name: "mcp-edit", id: server.id };
+}
+
+function selectMcpScope(value: string) {
+  mcpForm.value.projectId = value;
+}
+
+function parseArgsLines(text: string): string[] {
+  return text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+function parseEnvLines(text: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const eq = trimmed.indexOf("=");
+    const key = eq === -1 ? trimmed : trimmed.slice(0, eq).trim();
+    // 格式非法的行在 canSubmitMcp 已拦截；这里防御性跳过
+    if (eq !== -1 && key) env[key] = trimmed.slice(eq + 1);
+  }
+  return env;
+}
+
+const canSubmitMcp = computed(() => {
+  if (mcpForm.value.name.trim().length === 0) return false;
+  if (mcpForm.value.command.trim().length === 0) return false;
+  // env 行格式：空行或 KEY=value
+  return mcpForm.value.env.split("\n").every((line) => {
+    const trimmed = line.trim();
+    return !trimmed || trimmed.includes("=");
+  });
+});
+
+async function submitMcpServer() {
+  if (!canSubmitMcp.value || mcpSubmitting.value) return;
+  mcpFormError.value = null;
+
+  let toolTimeout: number | null = null;
+  if (mcpForm.value.toolTimeout.trim()) {
+    toolTimeout = Number.parseInt(mcpForm.value.toolTimeout, 10);
+    if (!Number.isFinite(toolTimeout) || toolTimeout <= 0) {
+      mcpFormError.value = "tool_timeout_ms 需为正整数（毫秒）。";
+      return;
+    }
+  }
+
+  const args = parseArgsLines(mcpForm.value.args);
+  const env = parseEnvLines(mcpForm.value.env);
+  const projectId =
+    mcpForm.value.projectId === GLOBAL_SCOPE ? null : mcpForm.value.projectId;
+  const name = mcpForm.value.name.trim();
+  const command = mcpForm.value.command.trim();
+
+  mcpSubmitting.value = true;
+  try {
+    if (view.value.name === "mcp-edit" && view.value.id) {
+      // 编辑：所见即所得——空 args/env 传空集合清空；timeout/作用域留空则
+      // 省略字段保持原值（后端 PATCH 语义：提供即替换、缺省保持）。
+      const ok = await updateServer(view.value.id, {
+        name,
+        command,
+        args,
+        env,
+        ...(toolTimeout != null ? { tool_timeout_ms: toolTimeout } : {}),
+        ...(projectId ? { project_id: projectId } : {}),
+      });
+      if (ok) view.value = { name: "mcp" };
+    } else {
+      const created = await createServer({
+        name,
+        transport: "stdio",
+        command,
+        ...(args.length > 0 ? { args } : {}),
+        ...(Object.keys(env).length > 0 ? { env } : {}),
+        ...(toolTimeout != null ? { tool_timeout_ms: toolTimeout } : {}),
+        ...(projectId ? { project_id: projectId } : {}),
+      });
+      if (created) view.value = { name: "mcp" };
+    }
+  } finally {
+    mcpSubmitting.value = false;
+  }
+}
+
+function toggleMcpEnabled(server: McpServerResponse) {
+  void toggleMcpServerEnabled(server, !server.enabled);
+}
+
+function removeMcpServer(server: McpServerResponse) {
+  void deleteServer(server.id);
 }
 
 function startConnect() {

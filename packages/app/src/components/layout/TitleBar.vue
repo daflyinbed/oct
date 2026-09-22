@@ -170,7 +170,7 @@
     <div class="flex items-center gap-0.5">
       <button
         class="h-7 w-7 control-ghost rounded-md control-focus"
-        title="Provider 设置"
+        title="设置"
         @click="$emit('openSettings')"
       >
         <i-lucide-settings class="h-4 w-4" />

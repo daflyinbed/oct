@@ -2,6 +2,7 @@ pub mod chat;
 pub mod conversations;
 pub mod error;
 pub mod files;
+pub mod mcp;
 pub mod projects;
 pub mod providers;
 
@@ -14,6 +15,7 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_scalar::{Scalar, Servable};
 
 use crate::agent::RunHandle;
+use crate::mcp::McpManager;
 use oct_llm_provider::provider::ProviderRegistry;
 
 #[derive(Clone)]
@@ -21,6 +23,10 @@ pub struct AppState {
     pub pool: SqlitePool,
     pub registry: Arc<ProviderRegistry>,
     pub sessions: Arc<DashMap<String, RunHandle>>,
+    /// Process-wide MCP connection manager: reconciled against the enabled
+    /// `mcp_servers` rows on every chat turn, and read by the MCP list/get
+    /// endpoints for live connection status.
+    pub mcp: Arc<McpManager>,
 }
 
 #[derive(OpenApi)]
@@ -41,6 +47,9 @@ pub struct AppState {
         crate::db::models::Model,
         crate::db::models::CreateModelRequest,
         crate::db::models::UpdateModelRequest,
+        crate::db::mcp::CreateMcpServerRequest,
+        crate::db::mcp::UpdateMcpServerRequest,
+        mcp::McpServerResponse,
         chat::SendMessageRequest,
         chat::RunningStatus,
         files::FileContent,
@@ -77,6 +86,12 @@ fn api_routes(state: AppState) -> OpenApiRouter<AppState> {
         .routes(utoipa_axum::routes!(providers::create_model))
         .routes(utoipa_axum::routes!(providers::update_model))
         .routes(utoipa_axum::routes!(providers::delete_model))
+        // MCP servers
+        .routes(utoipa_axum::routes!(mcp::list_mcp_servers))
+        .routes(utoipa_axum::routes!(mcp::create_mcp_server))
+        .routes(utoipa_axum::routes!(mcp::get_mcp_server))
+        .routes(utoipa_axum::routes!(mcp::update_mcp_server))
+        .routes(utoipa_axum::routes!(mcp::delete_mcp_server))
         // Projects
         .routes(utoipa_axum::routes!(projects::list_projects))
         .routes(utoipa_axum::routes!(projects::create_project))
