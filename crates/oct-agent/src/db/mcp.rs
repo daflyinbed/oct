@@ -10,13 +10,15 @@ use uuid::Uuid;
 
 /// A registered MCP server the agent can pull tools from.
 ///
-/// Phase 1 covers the `stdio` transport only (`command` + `args` + `env`);
-/// `url`/`headers` are stored for the Phase 2 `http` transport but unused.
+/// Two transports: `stdio` launches a local child process (`command` +
+/// `args` + `env`); `http` reaches a Streamable HTTP endpoint (`url` +
+/// `headers`). Fields of the unused transport may still hold stale values —
+/// switching transports preserves them.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, ToSchema)]
 pub struct McpServer {
     pub id: String,
     pub name: String,
-    /// Transport type: `stdio` today, `http` reserved for Phase 2.
+    /// Transport type: `stdio` (local process) or `http` (Streamable HTTP).
     pub transport: String,
     /// Executable to launch (stdio transport).
     pub command: Option<String>,
@@ -26,9 +28,10 @@ pub struct McpServer {
     /// Environment variables for the stdio launch, stored as a JSON object.
     #[schema(value_type = Option<HashMap<String, String>>)]
     pub env: Option<Json<HashMap<String, String>>>,
-    /// Remote endpoint (http transport, Phase 2).
+    /// Remote endpoint (http transport), e.g. `https://example.com/mcp`.
     pub url: Option<String>,
-    /// Request headers (http transport, Phase 2), stored as a JSON object.
+    /// Request headers attached to every http-transport request, stored as a
+    /// JSON object (the bearer seam: `{"Authorization": "Bearer <token>"}`).
     #[schema(value_type = Option<HashMap<String, String>>)]
     pub headers: Option<Json<HashMap<String, String>>>,
     /// Disabled servers stay configured but are not launched.
@@ -46,7 +49,8 @@ pub struct McpServer {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateMcpServerRequest {
     pub name: String,
-    /// Transport type; only `stdio` is accepted in Phase 1.
+    /// Transport type: `stdio` (requires `command`) or `http` (requires
+    /// `url`).
     pub transport: String,
     pub command: Option<String>,
     pub args: Option<Vec<String>>,
@@ -63,7 +67,8 @@ pub struct CreateMcpServerRequest {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateMcpServerRequest {
     pub name: Option<String>,
-    /// Only `stdio` is accepted in Phase 1.
+    /// Transport type: `stdio` (requires `command`) or `http` (requires
+    /// `url`); the cross-check runs on the effective post-merge values.
     pub transport: Option<String>,
     pub command: Option<String>,
     pub args: Option<Vec<String>>,

@@ -622,8 +622,8 @@
                 MCP Servers
               </DialogTitle>
               <p class="mt-1 text-[12px] text-dim">
-                为 Agent
-                接入外部工具服务器（stdio）；启用后下一次对话开始时连接。{{
+                为 Agent 接入外部工具服务器（stdio /
+                http）；启用后下一次对话开始时连接。{{
                   inProjectScope
                     ? `此处为项目「${activeScopeProjectName}」专属配置，全局配置见「全局」作用域。`
                     : "此处为全局作用域，对所有项目生效。"
@@ -688,7 +688,7 @@
                        与 Configure（control-surface）的 hover 同级，亮暗色
                        都可感知 -->
                   <button
-                    class="h-[26px] w-[26px] flex-none rounded-md text-dim transition-colors hover:bg-neutral-3 hover:text-neutral-10 active:bg-neutral-4 control-focus"
+                    class="h-[26px] w-[26px] flex-none rounded-md text-dim control-focus transition-colors active:bg-neutral-4 hover:bg-neutral-3 hover:text-neutral-10"
                     :title="`删除 ${server.name}`"
                     @click="removeMcpServer(server)"
                   >
@@ -696,8 +696,9 @@
                   </button>
                 </div>
                 <!-- 状态/错误副文本独占一行（长错误截断，完整文本悬停状态点
-                     的 title 可见）；command 另起一行，用 text-dim 保证亮色
-                     下可读（text-faint 在亮色面板上对比度不足） -->
+                     的 title 可见）；stdio 行显示 command、http 行显示
+                     url，用 text-dim 保证亮色下可读（text-faint 在亮色
+                     面板上对比度不足） -->
                 <div class="mt-1.5 pl-3.5">
                   <span
                     class="block truncate text-[12px]"
@@ -706,11 +707,11 @@
                     {{ mcpStatusText(server) }}
                   </span>
                   <span
-                    v-if="server.command"
+                    v-if="server.command || server.url"
                     class="mt-0.5 block truncate text-[11.5px] text-dim font-mono"
-                    :title="server.command"
+                    :title="server.command ?? server.url ?? ''"
                   >
-                    {{ server.command }}
+                    {{ server.command ?? server.url }}
                   </span>
                 </div>
               </div>
@@ -745,12 +746,11 @@
                 <span
                   class="rounded bg-neutral-2 px-1.5 py-px text-[10.5px] text-dim font-medium leading-[16px]"
                 >
-                  stdio
+                  {{ mcpForm.transport }}
                 </span>
               </div>
               <p class="mt-1 text-[12px] text-dim">
-                以本地子进程方式启动（stdio transport），Agent
-                在对话中按需调用其工具。
+                {{ mcpFormIntro }}
               </p>
 
               <div class="mt-4 max-w-[520px] space-y-4">
@@ -770,46 +770,98 @@
                 </label>
                 <label class="block">
                   <span class="text-[13px] text-strong font-semibold">
-                    Command
-                  </span>
-                  <span class="ml-1 text-[12px] text-danger-10">*</span>
-                  <div class="mt-0.5 text-[12px] text-dim">
-                    启动命令（可执行文件）。
-                  </div>
-                  <input
-                    v-model="mcpForm.command"
-                    placeholder="e.g. npx"
-                    class="mt-2 h-[30px] w-full control-surface px-3 text-[13px] font-mono control-focus"
-                  />
-                </label>
-                <label class="block">
-                  <span class="text-[13px] text-strong font-semibold">
-                    Args
+                    Transport
                   </span>
                   <div class="mt-0.5 text-[12px] text-dim">
-                    命令行参数，每行一个。
+                    stdio 本地子进程；http 远程 Streamable HTTP 端点。
                   </div>
-                  <textarea
-                    v-model="mcpForm.args"
-                    rows="3"
-                    placeholder="-y&#10;@modelcontextprotocol/server-filesystem&#10;/tmp"
-                    class="mt-2 block w-full resize-y border border-neutral-5 rounded-md bg-surface px-3 py-2 text-[12.5px] text-neutral-10 font-mono control-focus outline-none transition-colors placeholder:text-faint"
-                  />
-                </label>
-                <label class="block">
-                  <span class="text-[13px] text-strong font-semibold">
-                    Env
-                  </span>
-                  <div class="mt-0.5 text-[12px] text-dim">
-                    环境变量，每行一个 KEY=value。
+                  <div class="mt-2">
+                    <AppSelect
+                      :model-value="mcpForm.transport"
+                      :options="mcpTransportOptions"
+                      title="transport"
+                      trigger-class="w-full text-neutral-10"
+                      @update:model-value="selectMcpTransport"
+                    />
                   </div>
-                  <textarea
-                    v-model="mcpForm.env"
-                    rows="2"
-                    placeholder="API_TOKEN=secret"
-                    class="mt-2 block w-full resize-y border border-neutral-5 rounded-md bg-surface px-3 py-2 text-[12.5px] text-neutral-10 font-mono control-focus outline-none transition-colors placeholder:text-faint"
-                  />
                 </label>
+                <!-- stdio 专属字段：本地进程三件套 -->
+                <template v-if="mcpForm.transport === 'stdio'">
+                  <label class="block">
+                    <span class="text-[13px] text-strong font-semibold">
+                      Command
+                    </span>
+                    <span class="ml-1 text-[12px] text-danger-10">*</span>
+                    <div class="mt-0.5 text-[12px] text-dim">
+                      启动命令（可执行文件）。
+                    </div>
+                    <input
+                      v-model="mcpForm.command"
+                      placeholder="e.g. npx"
+                      class="mt-2 h-[30px] w-full control-surface px-3 text-[13px] font-mono control-focus"
+                    />
+                  </label>
+                  <label class="block">
+                    <span class="text-[13px] text-strong font-semibold">
+                      Args
+                    </span>
+                    <div class="mt-0.5 text-[12px] text-dim">
+                      命令行参数，每行一个。
+                    </div>
+                    <textarea
+                      v-model="mcpForm.args"
+                      rows="3"
+                      placeholder="-y&#10;@modelcontextprotocol/server-filesystem&#10;/tmp"
+                      class="mt-2 block w-full resize-y border border-neutral-5 rounded-md bg-surface px-3 py-2 text-[12.5px] text-neutral-10 font-mono control-focus outline-none transition-colors placeholder:text-faint"
+                    />
+                  </label>
+                  <label class="block">
+                    <span class="text-[13px] text-strong font-semibold">
+                      Env
+                    </span>
+                    <div class="mt-0.5 text-[12px] text-dim">
+                      环境变量，每行一个 KEY=value。
+                    </div>
+                    <textarea
+                      v-model="mcpForm.env"
+                      rows="2"
+                      placeholder="API_TOKEN=secret"
+                      class="mt-2 block w-full resize-y border border-neutral-5 rounded-md bg-surface px-3 py-2 text-[12.5px] text-neutral-10 font-mono control-focus outline-none transition-colors placeholder:text-faint"
+                    />
+                  </label>
+                </template>
+                <!-- http 专属字段：端点 + 请求头（bearer 认证入口） -->
+                <template v-else>
+                  <label class="block">
+                    <span class="text-[13px] text-strong font-semibold">
+                      URL
+                    </span>
+                    <span class="ml-1 text-[12px] text-danger-10">*</span>
+                    <div class="mt-0.5 text-[12px] text-dim">
+                      Streamable HTTP 端点（http:// 或 https:// 开头）。
+                    </div>
+                    <input
+                      v-model="mcpForm.url"
+                      placeholder="https://example.com/mcp"
+                      class="mt-2 h-[30px] w-full control-surface px-3 text-[13px] font-mono control-focus"
+                    />
+                  </label>
+                  <label class="block">
+                    <span class="text-[13px] text-strong font-semibold">
+                      Headers
+                    </span>
+                    <div class="mt-0.5 text-[12px] text-dim">
+                      请求头，每行一个 KEY=value；Bearer 认证写
+                      Authorization=Bearer &lt;token&gt;。
+                    </div>
+                    <textarea
+                      v-model="mcpForm.headers"
+                      rows="2"
+                      placeholder="Authorization=Bearer sk-..."
+                      class="mt-2 block w-full resize-y border border-neutral-5 rounded-md bg-surface px-3 py-2 text-[12.5px] text-neutral-10 font-mono control-focus outline-none transition-colors placeholder:text-faint"
+                    />
+                  </label>
+                </template>
                 <div class="flex items-start gap-4">
                   <label class="block w-[180px] flex-none">
                     <span class="text-[13px] text-strong font-semibold">
@@ -1112,15 +1164,36 @@ const mcpSubmitting = ref(false);
 function emptyMcpForm() {
   return {
     name: "",
+    /** "stdio" | "http"，决定表单展示哪组字段、提交带哪些键 */
+    transport: "stdio",
     command: "",
     /** 一行一个命令行参数 */
     args: "",
     /** 一行一个 KEY=value */
     env: "",
+    /** http 端点 */
+    url: "",
+    /** 一行一个 KEY=value（http 请求头，Bearer 认证入口） */
+    headers: "",
     /** 空 = 不设置（create）/ 保持原值（update） */
     toolTimeout: "",
     projectId: GLOBAL_SCOPE,
   };
+}
+
+const mcpTransportOptions = [
+  { value: "stdio", label: "stdio（本地子进程）" },
+  { value: "http", label: "http（Streamable HTTP）" },
+];
+
+const mcpFormIntro = computed(() =>
+  mcpForm.value.transport === "http"
+    ? "连接远程 Streamable HTTP 端点（http transport），Agent 在对话中按需调用其工具。"
+    : "以本地子进程方式启动（stdio transport），Agent 在对话中按需调用其工具。",
+);
+
+function selectMcpTransport(value: string) {
+  mcpForm.value.transport = value;
 }
 
 // 进入 mcp 视图时拉取列表（连接状态是实时派生值，每次进入都刷新）。
@@ -1213,9 +1286,14 @@ function startAddServer() {
 function startEditServer(server: McpServerResponse) {
   mcpForm.value = {
     name: server.name,
+    transport: server.transport === "http" ? "http" : "stdio",
     command: server.command ?? "",
     args: (server.args ?? []).join("\n"),
     env: Object.entries(server.env ?? {})
+      .map(([key, value]) => `${key}=${value}`)
+      .join("\n"),
+    url: server.url ?? "",
+    headers: Object.entries(server.headers ?? {})
       .map(([key, value]) => `${key}=${value}`)
       .join("\n"),
     toolTimeout:
@@ -1257,27 +1335,35 @@ function parseArgsLines(text: string): string[] {
     .filter((line) => line.length > 0);
 }
 
-function parseEnvLines(text: string): Record<string, string> {
-  const env: Record<string, string> = {};
+/** KEY=value 行 → 对象；与 parseEnvLines 同构（env 与 http headers 共用）。 */
+function parseKeyValueLines(text: string): Record<string, string> {
+  const map: Record<string, string> = {};
   for (const line of text.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     const eq = trimmed.indexOf("=");
     const key = eq === -1 ? trimmed : trimmed.slice(0, eq).trim();
     // 格式非法的行在 canSubmitMcp 已拦截；这里防御性跳过
-    if (eq !== -1 && key) env[key] = trimmed.slice(eq + 1);
+    if (eq !== -1 && key) map[key] = trimmed.slice(eq + 1);
   }
-  return env;
+  return map;
 }
 
 const canSubmitMcp = computed(() => {
   if (mcpForm.value.name.trim().length === 0) return false;
-  if (mcpForm.value.command.trim().length === 0) return false;
-  // env 行格式：空行或 KEY=value
-  return mcpForm.value.env.split("\n").every((line) => {
-    const trimmed = line.trim();
-    return !trimmed || trimmed.includes("=");
-  });
+  // 必填字段随 transport：stdio 要 command，http 要 url
+  if (mcpForm.value.transport === "http") {
+    if (mcpForm.value.url.trim().length === 0) return false;
+  } else if (mcpForm.value.command.trim().length === 0) {
+    return false;
+  }
+  // KEY=value 行格式（env 与 headers 同规则）：空行或 KEY=value
+  const linesValid = (text: string) =>
+    text.split("\n").every((line) => {
+      const trimmed = line.trim();
+      return !trimmed || trimmed.includes("=");
+    });
+  return linesValid(mcpForm.value.env) && linesValid(mcpForm.value.headers);
 });
 
 async function submitMcpServer() {
@@ -1294,22 +1380,26 @@ async function submitMcpServer() {
   }
 
   const args = parseArgsLines(mcpForm.value.args);
-  const env = parseEnvLines(mcpForm.value.env);
+  const env = parseKeyValueLines(mcpForm.value.env);
+  const headers = parseKeyValueLines(mcpForm.value.headers);
   const projectId =
     mcpForm.value.projectId === GLOBAL_SCOPE ? null : mcpForm.value.projectId;
   const name = mcpForm.value.name.trim();
+  const transport = mcpForm.value.transport;
   const command = mcpForm.value.command.trim();
+  const url = mcpForm.value.url.trim();
 
   mcpSubmitting.value = true;
   try {
     if (view.value.name === "mcp-edit" && view.value.id) {
-      // 编辑：所见即所得——空 args/env 传空集合清空；timeout/作用域留空则
-      // 省略字段保持原值（后端 PATCH 语义：提供即替换、缺省保持）。
+      // 编辑：所见即所得——只提交当前 transport 的字段组（另一组的存量
+      // 由后端保留，transport 来回切不丢配置）。空 args/env/headers 传空
+      // 集合清空；timeout/作用域留空则省略字段保持原值（后端 PATCH
+      // 语义：提供即替换、缺省保持）。
       const ok = await updateServer(view.value.id, {
         name,
-        command,
-        args,
-        env,
+        transport,
+        ...(transport === "http" ? { url, headers } : { command, args, env }),
         ...(toolTimeout != null ? { tool_timeout_ms: toolTimeout } : {}),
         ...(projectId ? { project_id: projectId } : {}),
       });
@@ -1323,10 +1413,17 @@ async function submitMcpServer() {
     } else {
       const created = await createServer({
         name,
-        transport: "stdio",
-        command,
-        ...(args.length > 0 ? { args } : {}),
-        ...(Object.keys(env).length > 0 ? { env } : {}),
+        transport,
+        ...(transport === "http"
+          ? {
+              url,
+              ...(Object.keys(headers).length > 0 ? { headers } : {}),
+            }
+          : {
+              command,
+              ...(args.length > 0 ? { args } : {}),
+              ...(Object.keys(env).length > 0 ? { env } : {}),
+            }),
         ...(toolTimeout != null ? { tool_timeout_ms: toolTimeout } : {}),
         ...(projectId ? { project_id: projectId } : {}),
       });

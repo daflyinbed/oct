@@ -310,11 +310,11 @@ async fn mcp_server_duplicate_name_conflicts() {
 async fn mcp_server_validation_rejects_bad_requests() {
     let app = TestApp::new().await;
 
-    // http is a known-but-future transport → explicit "not yet" 400.
+    // http without a url → 400 (http is supported now; the url is required).
     let resp = app
         .post_json(
             "/api/mcp/servers",
-            serde_json::json!({"name": "remote", "transport": "http", "url": "http://localhost:1"}),
+            serde_json::json!({"name": "remote", "transport": "http"}),
         )
         .await;
     assert_eq!(resp.status(), 400);
@@ -323,7 +323,23 @@ async fn mcp_server_validation_rejects_bad_requests() {
         error["error"]
             .as_str()
             .unwrap()
-            .contains("not supported yet")
+            .contains("http transport requires a url")
+    );
+
+    // http with a non-http(s) scheme → 400 (cheap structural guard).
+    let resp = app
+        .post_json(
+            "/api/mcp/servers",
+            serde_json::json!({"name": "remote", "transport": "http", "url": "ftp://example.com/mcp"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 400);
+    let error: Value = resp.json().await.unwrap();
+    assert!(
+        error["error"]
+            .as_str()
+            .unwrap()
+            .contains("http:// or https://")
     );
 
     // Unknown transport → 400.
@@ -418,6 +434,8 @@ async fn mcp_server_validation_rejects_bad_requests() {
     let server: Value = resp.json().await.unwrap();
     let id = server["id"].as_str().unwrap().to_string();
 
+    // Switching to http WITHOUT providing (or already having) a url → 400:
+    // the cross-check runs on the effective post-merge values.
     let resp = app
         .patch_json(
             &format!("/api/mcp/servers/{id}"),
@@ -425,6 +443,13 @@ async fn mcp_server_validation_rejects_bad_requests() {
         )
         .await;
     assert_eq!(resp.status(), 400);
+    let error: Value = resp.json().await.unwrap();
+    assert!(
+        error["error"]
+            .as_str()
+            .unwrap()
+            .contains("http transport requires a url")
+    );
 
     let resp = app
         .patch_json(
@@ -457,6 +482,196 @@ async fn mcp_server_validation_rejects_bad_requests() {
         .http_delete(&format!("/api/mcp/servers/{missing}"))
         .await;
     assert_eq!(resp.status(), 404);
+}
+
+// --- MCP http transport: full chain against a local Streamable HTTP mock ------
+
+#[tokio::test]
+async fn mcp_http_server_connects_and_surfaces_tools_with_bearer_headers() {
+    let app = TestApp::new().await;
+    let mock = support::mcp_http::McpHttpMock::spawn().await;
+    let project_id = app.create_project().await;
+
+    // Create an http row: url + bearer headers; stdio fields stay null.
+    let resp = app
+        .post_json(
+            "/api/mcp/servers",
+            serde_json::json!({
+                "name": "remote-http",
+                "transport": "http",
+                "url": mock.url,
+                "headers": {"Authorization": support::mcp_http::TOKEN},
+            }),
+        )
+        .await;
+    assert_eq!(resp.status(), 201);
+    let server: Value = resp.json().await.unwrap();
+    let id = server["id"].as_str().unwrap().to_string();
+    assert_eq!(server["transport"], "http");
+    assert_eq!(server["url"], mock.url);
+    assert_eq!(server["status"], "not_connected");
+
+    // The project's ensure endpoint reconciles: the real backend connects
+    // through oct-mcp's Streamable HTTP client, lists tools, and surfaces
+    // both the live status and the tool catalog.
+    let resp = app
+        .post_json(
+            &format!("/api/projects/{project_id}/mcp/ensure"),
+            serde_json::json!(null),
+        )
+        .await;
+    assert_eq!(resp.status(), 200);
+    let effective: Vec<Value> = resp.json().await.unwrap();
+    assert_eq!(effective.len(), 1);
+    assert_eq!(effective[0]["id"], id);
+    assert_eq!(effective[0]["status"], "connected");
+    assert_eq!(effective[0]["tool_count"], 1);
+    assert_eq!(
+        effective[0]["tools"],
+        serde_json::json!([{"name": "remote_tool", "description": "served over http"}]),
+    );
+
+    // The mock saw the full handshake chain, every request authorized with
+    // the row's bearer header (initialize included).
+    let requests = mock.requests();
+    let methods: Vec<&str> = requests.iter().map(|r| r.method.as_str()).collect();
+    assert!(methods.contains(&"initialize"), "saw {methods:?}");
+    assert!(methods.contains(&"tools/list"));
+    assert!(!requests.is_empty());
+    for request in &requests {
+        assert_eq!(
+            request.authorization.as_deref(),
+            Some(support::mcp_http::TOKEN),
+            "request `{}` missed the bearer header",
+            request.method
+        );
+    }
+
+    // GET by id mirrors the connected state.
+    let resp = app.get_json(&format!("/api/mcp/servers/{id}")).await;
+    let fetched: Value = resp.json().await.unwrap();
+    assert_eq!(fetched["status"], "connected");
+}
+
+#[tokio::test]
+async fn mcp_stdio_http_transport_switch_preserves_the_other_sides_fields() {
+    let app = TestApp::new().await;
+    let mock = support::mcp_http::McpHttpMock::spawn().await;
+
+    // Start stdio, switch to http in one PATCH (transport + url together).
+    let resp = app
+        .post_json(
+            "/api/mcp/servers",
+            serde_json::json!({
+                "name": "switcher",
+                "transport": "stdio",
+                "command": "oct-mcp-test-nonexistent-binary",
+            }),
+        )
+        .await;
+    assert_eq!(resp.status(), 201);
+    let server: Value = resp.json().await.unwrap();
+    let id = server["id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .patch_json(
+            &format!("/api/mcp/servers/{id}"),
+            serde_json::json!({
+                "transport": "http",
+                "url": mock.url,
+                "headers": {"Authorization": support::mcp_http::TOKEN},
+            }),
+        )
+        .await;
+    assert_eq!(resp.status(), 200);
+    let resp = app.get_json(&format!("/api/mcp/servers/{id}")).await;
+    let fetched: Value = resp.json().await.unwrap();
+    assert_eq!(fetched["transport"], "http");
+    assert_eq!(fetched["url"], mock.url);
+    // The stale stdio command survives the switch (deliberate: switching
+    // back and forth never destroys the other side's config).
+    assert_eq!(fetched["command"], "oct-mcp-test-nonexistent-binary");
+
+    // Switch back to stdio: the old command is still there, so the PATCH
+    // goes through without re-sending it — and the stale url/headers stay.
+    let resp = app
+        .patch_json(
+            &format!("/api/mcp/servers/{id}"),
+            serde_json::json!({"transport": "stdio"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 200);
+    let resp = app.get_json(&format!("/api/mcp/servers/{id}")).await;
+    let fetched: Value = resp.json().await.unwrap();
+    assert_eq!(fetched["transport"], "stdio");
+    assert_eq!(fetched["url"], mock.url, "http fields are kept, not wiped");
+
+    // Switching to stdio on a row with NO command anywhere → 400.
+    let resp = app
+        .post_json(
+            "/api/mcp/servers",
+            serde_json::json!({
+                "name": "http-only",
+                "transport": "http",
+                "url": mock.url,
+            }),
+        )
+        .await;
+    assert_eq!(resp.status(), 201);
+    let http_only: Value = resp.json().await.unwrap();
+    let http_only_id = http_only["id"].as_str().unwrap().to_string();
+    let resp = app
+        .patch_json(
+            &format!("/api/mcp/servers/{http_only_id}"),
+            serde_json::json!({"transport": "stdio"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 400);
+    let error: Value = resp.json().await.unwrap();
+    assert!(
+        error["error"]
+            .as_str()
+            .unwrap()
+            .contains("stdio transport requires a command")
+    );
+}
+
+#[tokio::test]
+async fn mcp_http_unreachable_url_surfaces_a_failed_status() {
+    let app = TestApp::new().await;
+    let project_id = app.create_project().await;
+
+    // Port 1 on loopback: nothing listens, the connect fails immediately
+    // (ECONNREFUSED — no 15s handshake budget is spent waiting).
+    let resp = app
+        .post_json(
+            "/api/mcp/servers",
+            serde_json::json!({
+                "name": "dead-remote",
+                "transport": "http",
+                "url": "http://127.0.0.1:1/mcp",
+            }),
+        )
+        .await;
+    assert_eq!(resp.status(), 201);
+
+    // ensure reconciles: a broken server reports `failed` with the error
+    // string, never a 5xx.
+    let resp = app
+        .post_json(
+            &format!("/api/projects/{project_id}/mcp/ensure"),
+            serde_json::json!(null),
+        )
+        .await;
+    assert_eq!(resp.status(), 200);
+    let effective: Vec<Value> = resp.json().await.unwrap();
+    assert_eq!(effective.len(), 1);
+    assert_eq!(effective[0]["status"], "failed");
+    let error = effective[0]["error"].as_str().unwrap().to_string();
+    assert!(
+        error.contains("127.0.0.1:1"),
+        "error should name the endpoint: {error}"
+    );
 }
 
 // --- MCP servers in the chat loop (injected fake connection) -------------------

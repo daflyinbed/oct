@@ -4,15 +4,19 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-# Isolation layer over the official MCP Rust SDK. HARD CONSTRAINT: only the
-# client + child-process stdio transport features are enabled. Never enable
-# any streamable-http feature (or anything pulling `__reqwest`): rmcp's HTTP
-# stack depends on reqwest 0.13, which conflicts with the reqwest 0.12 the
-# rest of the workspace uses. Verify with `cargo tree -p oct-mcp | grep reqwest`.
+# Isolation layer over the official MCP Rust SDK. rmcp types still never leak
+# past this crate's public API. Transports: child-process stdio + Streamable
+# HTTP (rmcp's reqwest backend). The http feature pulls rmcp's reqwest 0.13,
+# which is why the whole workspace pins reqwest 0.13 — one version across all
+# crates. Verify with `cargo tree -d -p reqwest` (must report no duplicates).
 rmcp = { version = "3.4", default-features = false, features = [
   "client",
   "transport-child-process",
+  "transport-streamable-http-client-reqwest",
 ] }
+# HeaderName/HeaderValue for connect_http's custom-header map. Same major
+# version as rmcp's own http dep, so the tree keeps a single copy.
+http = "1"
 anyhow = "1"
 async-trait = "0.1"
 serde_json = "1"
@@ -31,3 +35,13 @@ tracing = "0.1"
 # cfg(unix) so the tree stays minimal without platform-specific listings).
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# In-process Streamable HTTP mock for the connect_http integration tests
+# (tests/http_transport.rs). Test-only; not part of the production tree.
+[dev-dependencies]
+axum = { version = "0.8", default-features = false, features = [
+  "http1",
+  "json",
+  "tokio",
+] }
+tokio = { version = "1", features = ["net"] }

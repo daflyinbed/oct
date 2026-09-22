@@ -47,7 +47,10 @@ use tracing::{info, warn};
 
 use oct_mcp::ToolListChanged;
 use oct_mcp::ToolNameMap;
-use oct_mcp::{McpCallResult, McpConnection, McpToolInfo, StdioServerConfig, connect_stdio};
+use oct_mcp::{
+    HttpServerConfig, McpCallResult, McpConnection, McpToolInfo, StdioServerConfig, connect_http,
+    connect_stdio,
+};
 
 use crate::db;
 use crate::db::mcp::McpServer;
@@ -577,12 +580,11 @@ async fn tool_list_refresh_loop(
 }
 
 /// Fingerprint of every launch- and scope-relevant field of a row. Any edit
-/// that changes how the server is started (or addressed, once http lands)
-/// must produce a different value, forcing a reconnect on the next
-/// reconcile; `project_id` is included so a scope edit refreshes the
-/// entry's scope view too. `updated_at` would be simpler but loses
-/// precision on rapid edits and fires on irrelevant schema changes; the
-/// semantic fields are exact.
+/// that changes how the server is started or addressed must produce a
+/// different value, forcing a reconnect on the next reconcile;
+/// `project_id` is included so a scope edit refreshes the entry's scope view
+/// too. `updated_at` would be simpler but loses precision on rapid edits and
+/// fires on irrelevant schema changes; the semantic fields are exact.
 fn fingerprint_of(server: &McpServer) -> String {
     format!(
         "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
@@ -618,9 +620,10 @@ fn tool_timeout_of(server: &McpServer) -> Duration {
         .unwrap_or(DEFAULT_TOOL_TIMEOUT)
 }
 
-/// Connect one server row: spawn + handshake, then `tools/list`, each
-/// bounded by [`CONNECT_TIMEOUT`]. Never returns an error — failures come
-/// back as a `Failed` status with the error string for the API surface.
+/// Connect one server row: start the transport (stdio child process or
+/// Streamable HTTP) + handshake, then `tools/list`, each bounded by
+/// [`CONNECT_TIMEOUT`]. Never returns an error — failures come back as a
+/// `Failed` status with the error string for the API surface.
 async fn connect_server(
     row: &McpServer,
 ) -> (
@@ -628,23 +631,45 @@ async fn connect_server(
     Option<Arc<dyn McpConnection>>,
     Vec<McpToolInfo>,
 ) {
-    if row.transport != "stdio" {
-        return failed(format!(
-            "transport '{}' is not supported yet; only 'stdio' is available",
-            row.transport
-        ));
-    }
-    let Some(command) = row.command.as_deref() else {
-        return failed("stdio transport requires a command".to_string());
-    };
-    let cfg = StdioServerConfig {
-        command: command.to_string(),
-        args: row.args.as_deref().cloned().unwrap_or_default(),
-        env: row.env.as_deref().cloned().unwrap_or_default(),
+    // Resolve the transport-specific connection future; the handshake→list
+    // pipeline below is shared. A row whose transport fields are incomplete
+    // (the API validates this, but the DB can still be edited out-of-band)
+    // fails fast with a clear error instead of a confusing spawn/connect one.
+    let connect = match row.transport.as_str() {
+        "stdio" => {
+            let Some(command) = row.command.as_deref() else {
+                return failed("stdio transport requires a command".to_string());
+            };
+            let cfg = StdioServerConfig {
+                command: command.to_string(),
+                args: row.args.as_deref().cloned().unwrap_or_default(),
+                env: row.env.as_deref().cloned().unwrap_or_default(),
+            };
+            futures_util::future::Either::Left(
+                async move { connect_stdio(&cfg, CONNECT_TIMEOUT).await },
+            )
+        }
+        "http" => {
+            let Some(url) = row.url.as_deref().map(str::trim).filter(|u| !u.is_empty()) else {
+                return failed("http transport requires a url".to_string());
+            };
+            let cfg = HttpServerConfig {
+                url: url.to_string(),
+                headers: row.headers.as_deref().cloned().unwrap_or_default(),
+            };
+            futures_util::future::Either::Right(
+                async move { connect_http(&cfg, CONNECT_TIMEOUT).await },
+            )
+        }
+        other => {
+            return failed(format!(
+                "unsupported transport '{other}'; 'stdio' and 'http' are available"
+            ));
+        }
     };
     let attempt = async {
-        let connection = connect_stdio(&cfg, CONNECT_TIMEOUT).await?;
-        // connect_stdio bounds only the handshake; bound tools/list too so a
+        let connection = connect.await?;
+        // connect_* bound only the handshake; bound tools/list too so a
         // server that lists forever cannot stall the chat turn.
         let tools = tokio::time::timeout(CONNECT_TIMEOUT, connection.list_tools())
             .await

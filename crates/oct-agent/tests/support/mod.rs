@@ -14,6 +14,7 @@
 
 pub mod llm;
 pub mod mcp;
+pub mod mcp_http;
 
 use std::collections::VecDeque;
 use std::sync::Arc;

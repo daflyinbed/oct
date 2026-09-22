@@ -451,7 +451,10 @@ export interface components {
             project_id?: string | null;
             /** Format: int64 */
             tool_timeout_ms?: number | null;
-            /** @description Transport type; only `stdio` is accepted in Phase 1. */
+            /**
+             * @description Transport type: `stdio` (requires `command`) or `http` (requires
+             *     `url`).
+             */
             transport: string;
             url?: string | null;
         };
@@ -721,7 +724,10 @@ export interface components {
             project_id?: string | null;
             /** Format: int64 */
             tool_timeout_ms?: number | null;
-            /** @description Only `stdio` is accepted in Phase 1. */
+            /**
+             * @description Transport type: `stdio` (requires `command`) or `http` (requires
+             *     `url`); the cross-check runs on the effective post-merge values.
+             */
             transport?: string | null;
             url?: string | null;
         };
@@ -1021,7 +1027,7 @@ export interface operations {
                     "application/json": components["schemas"]["McpServerResponse"];
                 };
             };
-            /** @description Invalid transport, missing command, empty name, or non-positive timeout */
+            /** @description Invalid transport, missing command (stdio) or url (http), empty name, or non-positive timeout */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -1125,7 +1131,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Invalid transport, empty command/name, or non-positive timeout */
+            /** @description Invalid transport, empty command/name/url, or non-positive timeout */
             400: {
                 headers: {
                     [name: string]: unknown;

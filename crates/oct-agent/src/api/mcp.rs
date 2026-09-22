@@ -13,8 +13,9 @@ use crate::db::mcp as db;
 use crate::db::projects as project_db;
 use crate::mcp::ServerStatus;
 
-/// The only transport implemented in Phase 1.
-const SUPPORTED_TRANSPORT: &str = "stdio";
+/// Transports the API accepts: `stdio` (local child process) and `http`
+/// (Streamable HTTP remote endpoint).
+const SUPPORTED_TRANSPORTS: [&str; 2] = ["stdio", "http"];
 
 /// Query parameters of `GET /mcp/servers`.
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
@@ -113,15 +114,16 @@ fn to_mcp_server_response(
     }
 }
 
-/// Shared create/update validation. Transport, command and timeout rules
-/// are enforced here so both entry points stay in lockstep; `args`/`env`
-/// are already structurally validated by their `Vec<String>` /
-/// `HashMap<String, String>` request types (serde rejects wrong shapes
-/// before the handler runs).
+/// Shared create/update validation. Transport, command, url and timeout
+/// rules are enforced here so both entry points stay in lockstep; `args`/
+/// `env`/`headers` are already structurally validated by their
+/// `Vec<String>` / `HashMap<String, String>` request types (serde rejects
+/// wrong shapes before the handler runs).
 fn validate_mcp_fields(
     name: Option<&str>,
     transport: Option<&str>,
     command: Option<&str>,
+    url: Option<&str>,
     tool_timeout_ms: Option<i64>,
 ) -> Result<(), AppError> {
     if name.is_some_and(|name| name.trim().is_empty()) {
@@ -129,14 +131,10 @@ fn validate_mcp_fields(
     }
 
     if let Some(transport) = transport {
-        if transport == "http" {
-            return Err(AppError::BadRequest(
-                "transport 'http' is not supported yet; only 'stdio' is available".into(),
-            ));
-        }
-        if transport != SUPPORTED_TRANSPORT {
+        if !SUPPORTED_TRANSPORTS.contains(&transport) {
             return Err(AppError::BadRequest(format!(
-                "unsupported transport '{transport}'; only '{SUPPORTED_TRANSPORT}' is available"
+                "unsupported transport '{transport}'; supported: {}",
+                SUPPORTED_TRANSPORTS.join(", ")
             )));
         }
     }
@@ -145,12 +143,63 @@ fn validate_mcp_fields(
         return Err(AppError::BadRequest("command must not be empty".into()));
     }
 
+    if url.is_some_and(|url| url.trim().is_empty()) {
+        return Err(AppError::BadRequest("url must not be empty".into()));
+    }
+
     if tool_timeout_ms.is_some_and(|timeout| timeout <= 0) {
         return Err(AppError::BadRequest(format!(
             "tool_timeout_ms must be a positive number of milliseconds, got {tool_timeout_ms:?}"
         )));
     }
 
+    Ok(())
+}
+
+/// Cross-field check tying the transport to its addressing fields. Semantics:
+/// `stdio` needs a non-blank `command` (nothing to run otherwise); `http`
+/// needs an http(s) `url`. The reverse residue is deliberately tolerated —
+/// a `stdio` row may keep a stale `url`/`headers` (and an `http` row a stale
+/// `command`), so switching transports back and forth never destroys the
+/// other side's config.
+fn validate_transport_fields(
+    transport: &str,
+    command: Option<&str>,
+    url: Option<&str>,
+) -> Result<(), AppError> {
+    match transport {
+        "stdio" => {
+            if command.is_none_or(|command| command.trim().is_empty()) {
+                return Err(AppError::BadRequest(
+                    "stdio transport requires a command".into(),
+                ));
+            }
+        }
+        "http" => {
+            let url = url.map(str::trim).filter(|url| !url.is_empty());
+            match url {
+                None => {
+                    return Err(AppError::BadRequest("http transport requires a url".into()));
+                }
+                Some(url) => {
+                    // Cheap structural guard (full validity is only knowable
+                    // at connect time); catches the obvious missing-scheme
+                    // typo before it becomes an opaque connect failure.
+                    if !url.starts_with("http://") && !url.starts_with("https://") {
+                        return Err(AppError::BadRequest(
+                            "http transport url must start with http:// or https://".into(),
+                        ));
+                    }
+                }
+            }
+        }
+        other => {
+            return Err(AppError::BadRequest(format!(
+                "unsupported transport '{other}'; supported: {}",
+                SUPPORTED_TRANSPORTS.join(", ")
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -245,7 +294,7 @@ pub async fn ensure_project_mcp_servers(
     request_body = db::CreateMcpServerRequest,
     responses(
         (status = 201, description = "Created MCP server (live status is `not_connected` until the next chat turn reconciles)", body = McpServerResponse),
-        (status = 400, description = "Invalid transport, missing command, empty name, or non-positive timeout"),
+        (status = 400, description = "Invalid transport, missing command (stdio) or url (http), empty name, or non-positive timeout"),
         (status = 404, description = "project_id does not reference an existing project"),
         (status = 409, description = "MCP server name already exists")
     ),
@@ -259,21 +308,12 @@ pub async fn create_mcp_server(
         Some(&req.name),
         Some(&req.transport),
         req.command.as_deref(),
+        req.url.as_deref(),
         req.tool_timeout_ms,
     )?;
-
-    // stdio is a local process launch: without a command there is nothing
-    // to run. (http, which would validate `url` instead, arrives in Phase 2.)
-    if req.transport == SUPPORTED_TRANSPORT
-        && req
-            .command
-            .as_deref()
-            .is_none_or(|command| command.trim().is_empty())
-    {
-        return Err(AppError::BadRequest(
-            "stdio transport requires a command".into(),
-        ));
-    }
+    // stdio launches a local process (command required); http reaches a
+    // remote endpoint (url required). Cross-residue is tolerated and stored.
+    validate_transport_fields(&req.transport, req.command.as_deref(), req.url.as_deref())?;
 
     if let Some(project_id) = req.project_id.as_deref() {
         reject_unknown_project(&state, project_id).await?;
@@ -325,7 +365,7 @@ pub async fn get_mcp_server(
     request_body = db::UpdateMcpServerRequest,
     responses(
         (status = 200, description = "MCP server updated"),
-        (status = 400, description = "Invalid transport, empty command/name, or non-positive timeout"),
+        (status = 400, description = "Invalid transport, empty command/name/url, or non-positive timeout"),
         (status = 404, description = "MCP server not found, or project_id does not reference an existing project"),
         (status = 409, description = "MCP server name already exists")
     ),
@@ -340,15 +380,25 @@ pub async fn update_mcp_server(
         req.name.as_deref(),
         req.transport.as_deref(),
         req.command.as_deref(),
+        req.url.as_deref(),
         req.tool_timeout_ms,
     )?;
 
+    // Fetch the row first: the transport↔addressing cross-check runs on the
+    // EFFECTIVE post-merge values (PATCH semantics: provide = replace,
+    // absent = keep), so "PATCH {transport: http}" on a row without a url is
+    // a 400 here — while the same PATCH with a url (or on a row that already
+    // has one) passes.
+    let existing = db::get_mcp_server(&state.pool, &id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("MCP server not found".into()))?;
+    let transport = req.transport.as_deref().unwrap_or(&existing.transport);
+    let command = req.command.as_deref().or(existing.command.as_deref());
+    let url = req.url.as_deref().or(existing.url.as_deref());
+    validate_transport_fields(transport, command, url)?;
+
     if let Some(project_id) = req.project_id.as_deref() {
         reject_unknown_project(&state, project_id).await?;
-    }
-
-    if db::get_mcp_server(&state.pool, &id).await?.is_none() {
-        return Err(AppError::NotFound("MCP server not found".into()));
     }
 
     if let Some(name) = req.name.as_deref() {

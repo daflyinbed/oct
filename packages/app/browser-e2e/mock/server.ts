@@ -458,19 +458,27 @@ async function handleApi(
     name: unknown,
     transport: unknown,
     command: unknown,
+    url: unknown,
     toolTimeoutMs: unknown,
   ): { code: number; message: string } | null {
     if (typeof name === "string" && name.trim() === "") {
       return { code: 400, message: "name must not be empty" };
     }
-    if (typeof transport === "string" && transport !== "stdio") {
+    if (
+      typeof transport === "string" &&
+      transport !== "stdio" &&
+      transport !== "http"
+    ) {
       return {
         code: 400,
-        message: `unsupported transport '${transport}'; only 'stdio' is available`,
+        message: `unsupported transport '${transport}'; supported: stdio, http`,
       };
     }
     if (typeof command === "string" && command.trim() === "") {
       return { code: 400, message: "command must not be empty" };
+    }
+    if (typeof url === "string" && url.trim() === "") {
+      return { code: 400, message: "url must not be empty" };
     }
     if (typeof toolTimeoutMs === "number" && toolTimeoutMs <= 0) {
       return {
@@ -479,6 +487,38 @@ async function handleApi(
       };
     }
     return null;
+  }
+
+  /** transport ↔ 寻址字段交叉校验,与真实后端 validate_transport_fields
+   * 对齐:stdio 要 command、http 要 http(s) url;另一组的残留字段
+   * (url/headers 或 command)刻意容忍并保留存储。 */
+  function validateTransportFields(
+    transport: string,
+    command: unknown,
+    url: unknown,
+  ): { code: number; message: string } | null {
+    if (transport === "stdio") {
+      if (typeof command !== "string" || command.trim().length === 0) {
+        return { code: 400, message: "stdio transport requires a command" };
+      }
+      return null;
+    }
+    if (transport === "http") {
+      if (typeof url !== "string" || url.trim().length === 0) {
+        return { code: 400, message: "http transport requires a url" };
+      }
+      if (!url.startsWith("http://") && !url.startsWith("https://")) {
+        return {
+          code: 400,
+          message: "http transport url must start with http:// or https://",
+        };
+      }
+      return null;
+    }
+    return {
+      code: 400,
+      message: `unsupported transport '${transport}'; supported: stdio, http`,
+    };
   }
 
   function isStringRecord(value: unknown): value is Record<string, string> {
@@ -530,6 +570,8 @@ async function handleApi(
         command?: unknown;
         args?: unknown;
         env?: unknown;
+        url?: unknown;
+        headers?: unknown;
         enabled?: unknown;
         tool_timeout_ms?: unknown;
         project_id?: unknown;
@@ -538,19 +580,18 @@ async function handleApi(
         body?.name,
         body?.transport,
         body?.command,
+        body?.url,
         body?.tool_timeout_ms,
       );
       if (invalid)
         return sendJson(res, invalid.code, { error: invalid.message });
-      // stdio 无 command 即 400(与 create handler 的显式检查一致)
-      if (
-        typeof body?.command !== "string" ||
-        body.command.trim().length === 0
-      ) {
-        return sendJson(res, 400, {
-          error: "stdio transport requires a command",
-        });
-      }
+      // transport ↔ 寻址字段交叉校验(与 create handler 的显式检查一致)
+      const cross = validateTransportFields(
+        body?.transport as string,
+        body?.command,
+        body?.url,
+      );
+      if (cross) return sendJson(res, cross.code, { error: cross.message });
       if (
         typeof body?.project_id === "string" &&
         !projectExists(body.project_id)
@@ -569,8 +610,8 @@ async function handleApi(
         command: (body.command as string) ?? null,
         args: Array.isArray(body.args) ? (body.args as string[]) : null,
         env: isStringRecord(body.env) ? body.env : null,
-        url: null,
-        headers: null,
+        url: (body.url as string) ?? null,
+        headers: isStringRecord(body.headers) ? body.headers : null,
         enabled: typeof body.enabled === "boolean" ? body.enabled : true,
         tool_timeout_ms:
           typeof body.tool_timeout_ms === "number"
@@ -608,16 +649,27 @@ async function handleApi(
       }
       const body = (await readBodyCached(req)) as Record<string, unknown>;
       // update 的校验口径:字段缺省时按 existing 代入(与 validate_mcp_fields
-      // 在 update 路径的取值一致)
+      // 在 update 路径的取值一致),交叉校验同样跑在合并后的有效值上——
+      // 与真实后端 update handler 先取 existing 再 validate_transport_fields
+      // 的顺序一致。
       const existing = rows[idx];
       const invalid = validateMcpFields(
         body.name ?? existing.name,
         body.transport ?? existing.transport,
         body.command ?? existing.command,
+        body.url ?? existing.url,
         body.tool_timeout_ms ?? existing.tool_timeout_ms,
       );
       if (invalid) {
         return sendJson(res, invalid.code, { error: invalid.message });
+      }
+      const cross = validateTransportFields(
+        (body.transport ?? existing.transport) as string,
+        body.command ?? existing.command,
+        body.url ?? existing.url,
+      );
+      if (cross) {
+        return sendJson(res, cross.code, { error: cross.message });
       }
       if (
         typeof body.project_id === "string" &&

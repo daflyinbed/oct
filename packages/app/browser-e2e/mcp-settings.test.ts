@@ -33,7 +33,7 @@ async function openMcpSettings(seed: unknown[] = []): Promise<MountedApp> {
   await page.getByTitle("配置 MCP Servers").click();
   await expect
     .poll(modalText)
-    .toContain("为 Agent 接入外部工具服务器（stdio）");
+    .toContain("为 Agent 接入外部工具服务器（stdio / http）");
   return mounted;
 }
 
@@ -161,6 +161,81 @@ it("mcp settings: 重名创建 409,错误信息透出;Cancel 后清除不跨视�
   mounted.unmount();
 });
 
+it("mcp settings: http transport 表单——条件字段切换、url/headers 提交、编辑回填", async () => {
+  const mounted = await openMcpSettings();
+
+  await page.getByRole("button", { name: "Add Server" }).first().click();
+  await expect.poll(modalText).toContain("Add MCP Server");
+  await page.getByPlaceholder("e.g. filesystem").fill("remote");
+
+  // 默认 stdio:Command/Args/Env 在场
+  await expect.poll(modalText).toContain("Command");
+
+  // 切到 http:stdio 三件套退场,URL/Headers 进场
+  await page.getByTitle("transport").click();
+  await page.getByRole("option", { name: "http（Streamable HTTP）" }).click();
+  await expect.poll(modalText).not.toContain("Command");
+  await expect.poll(modalText).toContain("Streamable HTTP 端点");
+
+  // URL 是 http 的必填:留空时 Create 禁用
+  const create = page.getByRole("button", { name: "Create Server" });
+  await expect
+    .poll(async () => ((await create.element()) as HTMLButtonElement).disabled)
+    .toBe(true);
+
+  await page
+    .getByPlaceholder("https://example.com/mcp")
+    .fill("https://api.example.com/mcp");
+  await page
+    .getByPlaceholder("Authorization=Bearer sk-...")
+    .fill("Authorization=Bearer tok-1");
+  await expect
+    .poll(async () => ((await create.element()) as HTMLButtonElement).disabled)
+    .toBe(false);
+  await create.click();
+
+  // POST 请求体带 transport:http + url + headers(Bearer 走 headers)
+  await expect
+    .poll(async () => {
+      const posts = await mcpRequests("POST", RE_MCP_LIST);
+      return posts.some((r) => {
+        const body = r.body as Record<string, unknown> | null;
+        return (
+          body?.transport === "http" &&
+          body?.url === "https://api.example.com/mcp" &&
+          (body.headers as Record<string, string> | undefined)
+            ?.Authorization === "Bearer tok-1"
+        );
+      });
+    })
+    .toBe(true);
+
+  // 列表:http 行的副文本显示 url(而非 command)
+  await expect.poll(modalText).toContain("https://api.example.com/mcp");
+
+  // 编辑回填:transport/url/headers 都带回来
+  await page.getByTitle("配置 remote").click();
+  await expect.poll(modalText).toContain("Edit MCP Server");
+  await expect
+    .poll(async () => {
+      const el = (await page
+        .getByPlaceholder("https://example.com/mcp")
+        .element()) as HTMLInputElement | null;
+      return el?.value ?? "";
+    })
+    .toBe("https://api.example.com/mcp");
+  await expect
+    .poll(async () => {
+      const el = (await page
+        .getByPlaceholder("Authorization=Bearer sk-...")
+        .element()) as HTMLTextAreaElement | null;
+      return el?.value ?? "";
+    })
+    .toBe("Authorization=Bearer tok-1");
+
+  mounted.unmount();
+});
+
 it("mcp settings: 关闭后重开(停在 mcp 视图)重新拉列表并渲染新状态;切走切回仍刷新", async () => {
   const mounted = await openMcpSettings([mcpServerFixture("m1")]);
 
@@ -193,7 +268,7 @@ it("mcp settings: 关闭后重开(停在 mcp 视图)重新拉列表并渲染新�
     .toBe(true);
   await expect
     .poll(modalText)
-    .toContain("为 Agent 接入外部工具服务器（stdio）");
+    .toContain("为 Agent 接入外部工具服务器（stdio / http）");
   // a) 重开动作恰好多发一次列表请求:证明发了请求,同时防重复
   await expect.poll(mcpListCount).toBe(before + 1);
   // b) 渲染的是新状态而非模块级缓存的旧状态

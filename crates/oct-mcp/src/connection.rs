@@ -1,13 +1,16 @@
-//! stdio MCP client connections.
+//! MCP client connections over stdio (child process) and Streamable HTTP.
 //!
 //! This module wraps rmcp's client stack behind the narrow [`McpConnection`]
 //! trait. rmcp types (`RunningService`, `Peer`, model structs) appear ONLY in
 //! private items — never in a public signature — so consumers of this crate
-//! can treat MCP as "spawn a server, list tools, call tools, watch for
-//! `tools/list_changed`, shut down" without a direct rmcp dependency.
+//! can treat MCP as "start a server (spawn it, or point at a URL), list
+//! tools, call tools, watch for `tools/list_changed`, shut down" without a
+//! direct rmcp dependency.
 //!
-//! Only the child-process stdio transport is supported (see the crate-level
-//! docs for why HTTP transports are deliberately out).
+//! Both transports enter through the same [`connect_transport`] seam, so the
+//! handshake, request encoding and notification wiring are identical; only
+//! the byte pipe differs (newline-delimited stdio vs HTTP POST + optional
+//! SSE).
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -17,6 +20,8 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use async_trait::async_trait;
+use http::HeaderName;
+use http::HeaderValue;
 use rmcp::ClientHandler;
 use rmcp::model::CallToolRequestParams;
 use rmcp::model::CallToolResult;
@@ -33,7 +38,9 @@ use rmcp::service::RoleClient;
 use rmcp::service::RunningService;
 use rmcp::service::serve_client;
 use rmcp::transport::IntoTransport;
+use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::child_process::TokioChildProcess;
+use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use serde_json::Map;
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -52,6 +59,19 @@ pub struct StdioServerConfig {
     /// the child starts with the current process's env and these key/value
     /// pairs replace or add entries.
     pub env: HashMap<String, String>,
+}
+
+/// How to reach one MCP server speaking Streamable HTTP.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HttpServerConfig {
+    /// Endpoint URL, e.g. `https://example.com/mcp`.
+    pub url: String,
+    /// Extra headers attached to EVERY request on this connection — the
+    /// bearer seam: store `{"Authorization": "Bearer <token>"}` here (the
+    /// value passes through verbatim, prefix included). rmcp reserves only
+    /// `accept`/`mcp-session-id`/`last-event-id` for itself; `Authorization`
+    /// and anything else goes onto the wire untouched.
+    pub headers: HashMap<String, String>,
 }
 
 /// One tool advertised by an MCP server, already shaped for LLM consumption.
@@ -207,6 +227,40 @@ pub async fn connect_stdio(
     connect_transport(transport, timeout).await
 }
 
+/// Connect to an MCP server over Streamable HTTP and run the MCP initialize
+/// handshake.
+///
+/// `cfg.headers` rides on every request (see [`HttpServerConfig::headers`]
+/// for the bearer contract). `timeout` bounds ONLY the connect + handshake
+/// phase, exactly like [`connect_stdio`]; once this returns, requests are
+/// unbounded — wrap them in the caller's own cancellation if a server can
+/// hang.
+pub async fn connect_http(
+    cfg: &HttpServerConfig,
+    timeout: Duration,
+) -> Result<Box<dyn McpConnection>> {
+    // Header strings are validated up front (instead of failing per-request
+    // deep inside rmcp) so a config typo surfaces at connect time with the
+    // offending name in the error chain.
+    let mut custom_headers = HashMap::with_capacity(cfg.headers.len());
+    for (name, value) in &cfg.headers {
+        let name = HeaderName::from_bytes(name.as_bytes())
+            .with_context(|| format!("invalid MCP HTTP header name `{name}`"))?;
+        let value = HeaderValue::from_str(value)
+            .with_context(|| format!("invalid MCP HTTP header value for `{name}`"))?;
+        custom_headers.insert(name, value);
+    }
+    tracing::info!(url = %cfg.url, "connecting to MCP server over streamable http");
+    let config = StreamableHttpClientTransportConfig::with_uri(cfg.url.clone())
+        .custom_headers(custom_headers);
+    // from_config builds rmcp's stock reqwest client (redirects disabled, so
+    // caller-supplied headers can never be replayed to a redirect target) and
+    // spawns the transport worker; connect_transport then drives the SAME
+    // initialize handshake + NotifyHandler wiring as the stdio path.
+    let transport = StreamableHttpClientTransport::from_config(config);
+    connect_transport(transport, timeout).await
+}
+
 /// pre_exec hook: arm PR_SET_PDEATHSIG in the forked server child, before
 /// exec. Runs between fork and exec, so only async-signal-safe calls are
 /// allowed — `prctl` and `getppid` are raw syscall wrappers and qualify.
@@ -251,9 +305,10 @@ impl ClientHandler for NotifyHandler {
     }
 }
 
-/// Core of [`connect_stdio`], generic over the transport so the tests can
-/// drive the SAME production path (initialize handshake, request encoding,
-/// result mapping) over an in-memory duplex pipe instead of a child process.
+/// Core of [`connect_stdio`] and [`connect_http`], generic over the transport
+/// so the tests can drive the SAME production path (initialize handshake,
+/// request encoding, result mapping) over an in-memory duplex pipe instead of
+/// a child process or network.
 ///
 /// The client identifies itself as "oct" (version of this crate) and declares
 /// NO capabilities beyond the base protocol: oct only ever consumes tools.
@@ -279,8 +334,8 @@ where
     };
 
     // Dropping the serve_client future mid-handshake (timeout path) drops the
-    // transport with it, which kills the spawned child — no orphan process
-    // is left behind.
+    // transport with it — the spawned stdio child dies, the HTTP worker task
+    // is cancelled — so nothing is left behind.
     let running = tokio::time::timeout(timeout, serve_client(handler, transport))
         .await
         .map_err(|_| {
@@ -349,9 +404,10 @@ impl McpConnection for RmcpConnection {
 
     async fn shutdown(&self) {
         if let Some(mut service) = self.service.lock().await.take() {
-            // Cancels the service loop and closes the transport; for a stdio
-            // child that closes its stdin, waits up to 3s for exit, then
-            // kills — rmcp's TokioChildProcess::graceful_shutdown.
+            // Cancels the service loop and closes the transport: a stdio
+            // child's stdin closes (wait up to 3s for exit, then kill —
+            // rmcp's TokioChildProcess::graceful_shutdown); an HTTP session
+            // is DELETEd server-side (bounded, see rmcp's session cleanup).
             if let Err(error) = service.close().await {
                 tracing::warn!(%error, "error while closing MCP connection");
             } else {
