@@ -110,10 +110,45 @@ pub async fn connect_stdio(
 ) -> Result<Box<dyn McpConnection>> {
     let mut command = tokio::process::Command::new(&cfg.command);
     command.args(&cfg.args).envs(&cfg.env);
+    // Linux: arm PR_SET_PDEATHSIG so the kernel SIGTERMs the server child if
+    // the backend process dies outright (SIGKILL / core dump) — drop-based
+    // shutdown never runs in that scenario and the stdio server would be
+    // orphaned. Best-effort: PDEATHSIG is cleared across fork(2) (hence armed
+    // in pre_exec, i.e. in the forked child before exec) and silently dropped
+    // for setuid/setgid binaries; it also targets the parent *thread*, so a
+    // runtime worker thread exiting can fire it early. macOS and other
+    // Unixes have no equivalent — deliberate no-op.
+    #[cfg(all(unix, target_os = "linux"))]
+    // SAFETY: the closure runs in the forked child before exec and only
+    // performs async-signal-safe calls (`prctl`/`getppid` are raw syscall
+    // wrappers; the ppid==1 exit path aborts before anything else runs).
+    unsafe {
+        command.pre_exec(set_pdeathsig);
+    }
     tracing::info!(command = %cfg.command, "spawning MCP server over stdio");
     let transport = TokioChildProcess::new(command)
         .with_context(|| format!("failed to spawn MCP server process `{}`", cfg.command))?;
     connect_transport(transport, timeout).await
+}
+
+/// pre_exec hook: arm PR_SET_PDEATHSIG in the forked server child, before
+/// exec. Runs between fork and exec, so only async-signal-safe calls are
+/// allowed — `prctl` and `getppid` are raw syscall wrappers and qualify.
+/// SIGTERM (not SIGKILL) so well-behaved servers can trap it and shut down
+/// gracefully. See the call site for the full best-effort caveats.
+#[cfg(all(unix, target_os = "linux"))]
+fn set_pdeathsig() -> std::io::Result<()> {
+    unsafe {
+        libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+        // Race guard: if the parent died between fork and prctl, the signal
+        // will never fire (PDEATHSIG latches onto the parent as of prctl
+        // time). A reparented child (ppid == 1) means that already happened —
+        // exit now instead of running orphaned.
+        if libc::getppid() == 1 {
+            std::process::exit(1);
+        }
+    }
+    Ok(())
 }
 
 /// Core of [`connect_stdio`], generic over the transport so the tests can

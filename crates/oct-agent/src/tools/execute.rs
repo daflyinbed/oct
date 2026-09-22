@@ -192,6 +192,30 @@ async fn drain_reader(reader: Option<ReaderHandle>) -> Vec<u8> {
         .clone()
 }
 
+/// pre_exec hook: arm PR_SET_PDEATHSIG in the forked child, before exec.
+/// Runs between fork and exec, so only async-signal-safe calls are allowed —
+/// `prctl` and `getppid` are raw syscall wrappers and qualify.
+///
+/// Complements `process_group(0)`: the process group makes *deliberate* kills
+/// (timeout, cancellation, scope exit) take down the whole tree, while
+/// PDEATHSIG covers the backend itself dying without a chance to run any of
+/// that glue. SIGTERM (not SIGKILL) so well-behaved children can trap it,
+/// clean up, and take their own descendants down.
+#[cfg(all(unix, target_os = "linux"))]
+fn set_pdeathsig() -> std::io::Result<()> {
+    unsafe {
+        libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+        // Race guard: if the parent died between fork and prctl, the signal
+        // will never fire (PDEATHSIG latches onto the parent as of prctl
+        // time). A reparented child (ppid == 1) means that already happened —
+        // exit now instead of running orphaned.
+        if libc::getppid() == 1 {
+            std::process::exit(1);
+        }
+    }
+    Ok(())
+}
+
 /// Kill the whole process tree on timeout. The child was spawned with
 /// `process_group(0)`, so it leads its own group and pgid == child pid;
 /// `killpg` takes down sh plus any descendants it spawned.
@@ -292,6 +316,22 @@ impl AgentTool for ExecuteCommandTool {
         // on timeout (inherent tokio method, available on Unix since tokio 1.24).
         #[cfg(unix)]
         command.process_group(0);
+        // Linux: arm PR_SET_PDEATHSIG so the kernel SIGTERMs the child if the
+        // backend process dies outright (SIGKILL / core dump). In that scenario
+        // no destructors ever run — kill_on_drop and the group-kill-on-drop
+        // guard below are dead code — and the child would be orphaned.
+        // Best-effort semantics: PDEATHSIG is cleared across fork(2) (hence
+        // armed in pre_exec, i.e. in the forked child before exec) and
+        // silently dropped for setuid/setgid binaries; it also targets the
+        // parent *thread*, so a runtime worker thread exiting can fire it
+        // early. macOS and other Unixes have no equivalent — deliberate no-op.
+        #[cfg(all(unix, target_os = "linux"))]
+        // SAFETY: the closure runs in the forked child before exec and only
+        // performs async-signal-safe calls (`prctl`/`getppid` are raw syscall
+        // wrappers; the ppid==1 exit path aborts before anything else runs).
+        unsafe {
+            command.pre_exec(set_pdeathsig);
+        }
 
         let started = Instant::now();
         let mut child = match command.spawn() {
