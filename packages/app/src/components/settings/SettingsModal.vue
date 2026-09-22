@@ -634,10 +634,12 @@
                 {{ mcpError }}
               </p>
 
+              <!-- enabled=false 整行弱化（含状态点/徽标/开关），开关仍可用 -->
               <div
                 v-for="server in filteredMcpServers"
                 :key="server.id"
-                class="border-b border-line-soft border-dashed py-3"
+                class="border-b border-line-soft border-dashed py-3 transition-opacity"
+                :class="server.enabled ? '' : 'opacity-60'"
               >
                 <div class="flex items-center gap-2">
                   <span
@@ -681,24 +683,32 @@
                     Configure
                     <i-lucide-chevron-right class="h-3 w-3 text-dim" />
                   </button>
+                  <!-- 删除是破坏性操作，hover 反馈比普通 ghost（neutral-1，
+                       亮色下 ~5% 黑底几乎不可见）强一档：提到 neutral-3，
+                       与 Configure（control-surface）的 hover 同级，亮暗色
+                       都可感知 -->
                   <button
-                    class="h-[26px] w-[26px] flex-none control-ghost rounded-md text-dim control-focus"
+                    class="h-[26px] w-[26px] flex-none rounded-md text-dim transition-colors hover:bg-neutral-3 hover:text-neutral-10 active:bg-neutral-4 control-focus"
                     :title="`删除 ${server.name}`"
                     @click="removeMcpServer(server)"
                   >
                     <i-lucide-trash-2 class="h-3.5 w-3.5" />
                   </button>
                 </div>
-                <div class="mt-1.5 flex items-center gap-2 pl-3.5">
+                <!-- 状态/错误副文本独占一行（长错误截断，完整文本悬停状态点
+                     的 title 可见）；command 另起一行，用 text-dim 保证亮色
+                     下可读（text-faint 在亮色面板上对比度不足） -->
+                <div class="mt-1.5 pl-3.5">
                   <span
-                    class="min-w-0 flex-1 truncate text-[12px]"
+                    class="block truncate text-[12px]"
                     :class="mcpStatusClass(server.status)"
                   >
                     {{ mcpStatusText(server) }}
                   </span>
                   <span
                     v-if="server.command"
-                    class="max-w-[45%] flex-none truncate text-[11.5px] text-faint font-mono"
+                    class="mt-0.5 block truncate text-[11.5px] text-dim font-mono"
+                    :title="server.command"
                   >
                     {{ server.command }}
                   </span>
