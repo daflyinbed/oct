@@ -58,7 +58,12 @@ it("mcp settings: 新增 → 列表(未连接) → 切 enabled → 编辑 comman
 
   await expect.poll(modalText).toContain("尚未配置任何 MCP server");
 
-  // 新增:顶栏 Add Server 进表单
+  // 切到项目作用域（单个 select：全局 + 各项目），mcp 列表原地重过滤
+  await page.getByTitle("配置作用域").click();
+  await page.getByRole("option", { name: "demo" }).click();
+  await expect.poll(modalText).toContain("尚未配置任何 MCP server");
+
+  // 新增:顶栏 Add Server 进表单；表单作用域默认跟随当前视图（demo），无需手选
   await page.getByRole("button", { name: "Add Server" }).first().click();
   await expect.poll(modalText).toContain("Add MCP Server");
 
@@ -68,15 +73,20 @@ it("mcp settings: 新增 → 列表(未连接) → 切 enabled → 编辑 comman
     .getByPlaceholder(RE_ARGS_PLACEHOLDER)
     .fill("-y\n@modelcontextprotocol/server-filesystem");
   await page.getByPlaceholder("API_TOKEN=secret").fill("API_TOKEN=secret");
-  // 作用域:全局 → 项目 demo
-  await page.getByTitle("作用域").click();
-  await page.getByRole("option", { name: "demo" }).click();
   await page.getByRole("button", { name: "Create Server" }).click();
 
   // 列表出现:name、作用域徽标(项目名)、not_connected 状态
   await expect.poll(modalText).toContain("fs");
   await expect.poll(modalText).toContain("未连接");
   await expect.poll(modalText).toContain("demo");
+
+  // 项目专属配置不出现在全局作用域清单；切回项目后原地可见
+  await page.getByTitle("配置作用域").click();
+  await page.getByRole("option", { name: "全局（所有项目）" }).click();
+  await expect.poll(modalText).toContain("全局作用域下尚未配置任何 MCP server");
+  await page.getByTitle("配置作用域").click();
+  await page.getByRole("option", { name: "demo" }).click();
+  await expect.poll(modalText).toContain("未连接");
 
   // 切 enabled:开关翻转,PATCH 带enabled:false 落到 mock
   await page.getByRole("switch", { name: "启用 fs" }).click();

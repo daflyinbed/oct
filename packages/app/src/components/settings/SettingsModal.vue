@@ -10,8 +10,17 @@
           class="w-[216px] flex flex-none flex-col border-r border-line-soft bg-titlebar"
         >
           <div class="flex-none p-3 pb-2">
+            <!-- 配置作用域：全局或某个项目；provider 系配置只在全局存在 -->
+            <AppSelect
+              :model-value="scopeId"
+              :options="projectScopeOptions"
+              placeholder="选择作用域"
+              title="配置作用域"
+              trigger-class="w-full text-neutral-10"
+              @update:model-value="selectScope"
+            />
             <div
-              class="h-7 flex items-center gap-[7px] border border-line-soft rounded-md bg-surface px-[9px] text-faint transition-colors focus-within:border-accent-6"
+              class="mt-2 h-7 flex items-center gap-[7px] border border-line-soft rounded-md bg-surface px-[9px] text-faint transition-colors focus-within:border-accent-6"
             >
               <i-lucide-search class="h-3 w-3 flex-none" />
               <input
@@ -119,13 +128,17 @@
           </div>
 
           <div class="flex-1 overflow-y-auto px-7 pb-12 pt-[18px]">
-            <!-- ============ AI 根页：LLM Providers 子项 ============ -->
+            <!-- ============ AI 根页：按作用域列出配置入口 ============ -->
             <template v-if="view.name === 'ai'">
               <DialogTitle class="text-[16.5px] text-strong font-semibold">
                 AI
               </DialogTitle>
               <p class="mt-1 text-[12px] text-dim">
-                模型 Provider 与聊天标签页可用模型的配置入口。
+                {{
+                  inProjectScope
+                    ? `项目「${activeScopeProjectName}」专属的配置入口；全局配置切到「全局」作用域查看。`
+                    : "模型 Provider 与聊天标签页可用模型的配置入口。"
+                }}
               </p>
               <div
                 class="mt-6 border-b border-line border-dashed pb-1.5 text-[11px] text-dim tracking-[0.5px] font-mono"
@@ -133,11 +146,19 @@
                 General
               </div>
               <div
+                v-if="!inProjectScope"
                 class="flex items-center gap-[18px] border-b border-line-soft border-dashed py-3"
               >
                 <div class="min-w-0 flex-1">
-                  <div class="text-[13px] text-strong font-semibold">
-                    LLM Providers
+                  <div class="flex items-center gap-2">
+                    <span class="text-[13px] text-strong font-semibold">
+                      LLM Providers
+                    </span>
+                    <span
+                      class="rounded bg-neutral-2 px-1.5 py-px text-[10.5px] text-dim font-medium leading-[16px]"
+                    >
+                      全局
+                    </span>
                   </div>
                   <div class="mt-0.5 text-[12px] text-dim">
                     连接模型 Provider，并选择聊天标签页中显示哪些模型。
@@ -159,7 +180,11 @@
                     MCP Servers
                   </div>
                   <div class="mt-0.5 text-[12px] text-dim">
-                    为 Agent 接入外部工具服务器（Model Context Protocol）。
+                    {{
+                      inProjectScope
+                        ? "仅该项目对话可用的 MCP servers；全局配置对所有项目生效。"
+                        : "全局作用域的 MCP servers，对所有项目生效；项目专属的切到某个项目作用域添加。"
+                    }}
                   </div>
                 </div>
                 <button
@@ -591,14 +616,18 @@
               </div>
             </template>
 
-            <!-- ============ MCP Servers 列表 ============ -->
+            <!-- ============ MCP Servers 列表（按当前作用域过滤） ============ -->
             <template v-else-if="view.name === 'mcp'">
               <DialogTitle class="text-[16.5px] text-strong font-semibold">
                 MCP Servers
               </DialogTitle>
               <p class="mt-1 text-[12px] text-dim">
                 为 Agent
-                接入外部工具服务器（stdio）；启用后下一次对话开始时连接。
+                接入外部工具服务器（stdio）；启用后下一次对话开始时连接。{{
+                  inProjectScope
+                    ? `此处为项目「${activeScopeProjectName}」专属配置，全局配置见「全局」作用域。`
+                    : "此处为全局作用域，对所有项目生效。"
+                }}
               </p>
 
               <p v-if="mcpError" class="mt-3 text-[12px] text-danger-10">
@@ -680,9 +709,7 @@
                 v-if="filteredMcpServers.length === 0 && !mcpLoading"
                 class="py-10 text-center"
               >
-                <p class="text-[12.5px] text-faint">
-                  尚未配置任何 MCP server。
-                </p>
+                <p class="text-[12.5px] text-faint">{{ mcpEmptyText }}</p>
                 <button
                   class="mt-3 h-[26px] inline-flex items-center gap-1.5 control-surface rounded-md px-2.5 text-[12px] font-medium control-focus"
                   @click="startAddServer"
@@ -870,6 +897,8 @@ type McpServerResponse = components["schemas"]["McpServerResponse"];
 
 const props = defineProps<{
   visible: boolean;
+  /** 工作区当前活动项目；作为项目作用域的默认选中项。 */
+  activeProjectId: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -910,6 +939,56 @@ const view = ref<View>({ name: "ai" });
 const query = ref("");
 const keyInputs = ref({} as Record<string, string>);
 const showKeys = ref({} as Record<string, boolean>);
+
+/* ---------- 配置作用域：单个 select，值为哨兵（全局）或项目 id。 ---------- */
+/* ---------- provider 系配置只在全局有意义，项目作用域仅暴露 MCP； ---------- */
+/* ---------- MCP 按 project_id 归属分区展示。 ---------- */
+
+/** AppSelect 的 value 是 string；用哨兵值表达"全局"（project_id 为 null）。 */
+const GLOBAL_SCOPE = "__global__";
+
+/** 当前配置作用域：GLOBAL_SCOPE 哨兵（全局）或项目 id。 */
+const scopeId = ref<string>(GLOBAL_SCOPE);
+
+const inProjectScope = computed(() => scopeId.value !== GLOBAL_SCOPE);
+
+// 所选项目失效（列表加载/变更、项目被他处删除）时回退：活动项目 > 第一个 > 全局
+watch(
+  [projects, () => props.activeProjectId],
+  () => {
+    if (scopeId.value === GLOBAL_SCOPE) return;
+    const list = projects.value;
+    if (list.some((p) => p.id === scopeId.value)) return;
+    const byActive =
+      props.activeProjectId && list.some((p) => p.id === props.activeProjectId)
+        ? props.activeProjectId
+        : null;
+    scopeId.value = byActive ?? list[0]?.id ?? GLOBAL_SCOPE;
+  },
+  { immediate: true },
+);
+
+const activeScopeProjectName = computed(
+  () => projects.value.find((p) => p.id === scopeId.value)?.name ?? "",
+);
+
+function selectScope(value: string) {
+  if (value === scopeId.value) return;
+  scopeId.value = value;
+  const name = view.value.name;
+  if (
+    name === "providers" ||
+    name === "provider" ||
+    name === "connect-provider"
+  ) {
+    // provider 系视图只在全局作用域存在
+    view.value = { name: "ai" };
+  } else if (name === "mcp-edit") {
+    // 半截表单不跨作用域携带，回到目标作用域的列表
+    view.value = { name: "mcp" };
+  }
+  // ai / mcp 视图跨作用域有效，原地保留（列表按新作用域响应式重过滤）
+}
 
 /* ---------- Connect Provider：从列表连接 / 手动添加 ---------- */
 const connectMode = ref<"pick" | "manual">("pick");
@@ -1006,9 +1085,6 @@ function goBack() {
 
 /* ---------- MCP Servers：列表 / 新增 / 编辑 ---------- */
 
-/** AppSelect 的 value 是 string；用哨兵值表达"全局"（project_id 为 null）。 */
-const GLOBAL_SCOPE = "__global__";
-
 const mcpForm = ref(emptyMcpForm());
 const mcpFormError = ref<string | null>(null);
 const mcpSubmitting = ref(false);
@@ -1061,11 +1137,30 @@ watch(editingServer, (value) => {
   }
 });
 
+/** 当前作用域可见的 servers：全局 = project_id 为空；项目 = 归属所选项目。 */
+const scopedMcpServers = computed(() => {
+  if (!inProjectScope.value) {
+    return mcpServers.value.filter((server) => !server.project_id);
+  }
+  const projectId = scopeId.value;
+  return mcpServers.value.filter((server) => server.project_id === projectId);
+});
+
 const filteredMcpServers = computed(() => {
   const q = query.value.trim().toLowerCase();
-  return mcpServers.value.filter(
+  return scopedMcpServers.value.filter(
     (server) => !q || server.name.toLowerCase().includes(q),
   );
+});
+
+const mcpEmptyText = computed(() => {
+  if (inProjectScope.value) {
+    const name = activeScopeProjectName.value;
+    return name
+      ? `项目「${name}」下尚未配置任何 MCP server。`
+      : "尚未配置任何 MCP server。";
+  }
+  return "全局作用域下尚未配置任何 MCP server。";
 });
 
 const projectScopeOptions = computed(() => [
@@ -1106,6 +1201,10 @@ function mcpStatusClass(server: McpServerResponse): string {
 
 function startAddServer() {
   mcpForm.value = emptyMcpForm();
+  // 表单作用域默认跟随当前视图：项目作用域下新增默认归属该项目
+  if (scopeId.value !== GLOBAL_SCOPE) {
+    mcpForm.value.projectId = scopeId.value;
+  }
   mcpFormError.value = null;
   view.value = { name: "mcp-edit", id: null };
 }

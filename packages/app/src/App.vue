@@ -140,7 +140,11 @@
       @toggle-file-tree="showFileTree = !showFileTree"
     />
 
-    <SettingsModal :visible="showSettings" @close="showSettings = false" />
+    <SettingsModal
+      :visible="showSettings"
+      :active-project-id="activeProjectId"
+      @close="showSettings = false"
+    />
     <!-- 新建与编辑共用一个对话框：project 为 null 时是新建模式。 -->
     <ProjectDialog
       :visible="showNewProject || editingProject !== null"
