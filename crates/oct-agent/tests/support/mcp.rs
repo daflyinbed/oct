@@ -136,6 +136,7 @@ impl McpConnection for FakeMcpConnection {
                 text: format!("no scripted outcome for tool `{name}`"),
                 structured_json: None,
                 is_error: true,
+                images: Vec::new(),
             }),
         }
     }

@@ -86,13 +86,26 @@ pub struct McpToolInfo {
     pub input_schema: Value,
 }
 
+/// One image content block from a tool result, ready for LLM pass-through:
+/// base64-encoded bytes plus MIME type, verbatim from the server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpImage {
+    /// MIME type of the image, e.g. `image/png`.
+    pub mime_type: String,
+    /// Base64-encoded image data as the server sent it.
+    pub data: String,
+}
+
 /// The outcome of one tool call, flattened from MCP's content-block model.
 #[derive(Debug, Clone, PartialEq)]
 pub struct McpCallResult {
     /// All text content blocks joined with `"\n"`, in server order.
-    /// Non-text blocks (images, audio, resources) are skipped — oct has no
-    /// way to feed them to a text-only tool result today.
+    /// Non-image non-text blocks (audio, resources) are skipped — oct has no
+    /// way to feed them to a tool result today.
     pub text: String,
+    /// Image content blocks in server order, base64 data verbatim. Empty for
+    /// text-only results.
+    pub images: Vec<McpImage>,
     /// The server's `structuredContent` verbatim, when present.
     pub structured_json: Option<Value>,
     /// The server's `isError` flag (tool-level failure), defaulting to
@@ -431,17 +444,27 @@ fn map_tool_info(tool: Tool) -> McpToolInfo {
 }
 
 /// Flatten an rmcp `CallToolResult` into the public [`McpCallResult`]:
-/// text blocks joined with `"\n"`, `structuredContent` verbatim, `isError`
+/// text blocks joined with `"\n"`, image blocks extracted into
+/// [`McpCallResult::images`], `structuredContent` verbatim, `isError`
 /// defaulted to `false`. See [`McpCallResult`] field docs for the rules.
 fn map_call_result(result: &CallToolResult) -> McpCallResult {
     let mut parts = Vec::new();
+    let mut images = Vec::new();
     for block in &result.content {
-        if let ContentBlock::Text(text) = block {
-            parts.push(text.text.clone());
+        match block {
+            ContentBlock::Text(text) => parts.push(text.text.clone()),
+            ContentBlock::Image(image) => images.push(McpImage {
+                mime_type: image.mime_type.clone(),
+                data: image.data.clone(),
+            }),
+            // Audio and embedded resources stay skipped: oct has no channel
+            // for them in a tool result.
+            _ => {}
         }
     }
     McpCallResult {
         text: parts.join("\n"),
+        images,
         structured_json: result.structured_content.clone(),
         is_error: result.is_error.unwrap_or(false),
     }
@@ -498,6 +521,7 @@ mod tests {
         assert_eq!(mapped.text, "hello\nworld");
         assert_eq!(mapped.structured_json, None);
         assert!(!mapped.is_error);
+        assert!(mapped.images.is_empty());
     }
 
     #[test]
@@ -541,11 +565,38 @@ mod tests {
     }
 
     #[test]
-    fn result_skips_non_text_blocks() {
+    fn result_extracts_image_blocks_and_skips_other_non_text_blocks() {
         let image = ContentBlock::image("aGVsbG8=", "image/png");
         let audio = ContentBlock::audio("aGVsbG8=", "audio/wav");
         let raw = CallToolResult::success(vec![text_block("before"), image, audio]);
-        assert_eq!(map_call_result(&raw).text, "before");
+        let mapped = map_call_result(&raw);
+        assert_eq!(mapped.text, "before");
+        assert_eq!(
+            mapped.images,
+            vec![McpImage {
+                mime_type: "image/png".to_string(),
+                data: "aGVsbG8=".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn result_multiple_images_keep_server_order() {
+        let raw = CallToolResult::success(vec![
+            ContentBlock::image("AAAA", "image/png"),
+            text_block("caption"),
+            ContentBlock::image("BBBB", "image/jpeg"),
+        ]);
+        let mapped = map_call_result(&raw);
+        assert_eq!(mapped.text, "caption");
+        assert_eq!(
+            mapped
+                .images
+                .iter()
+                .map(|i| (i.mime_type.as_str(), i.data.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("image/png", "AAAA"), ("image/jpeg", "BBBB")]
+        );
     }
 
     #[test]
@@ -606,6 +657,14 @@ mod tests {
             "mirror" => json!({
                 "content": [
                     {"type": "text", "text": serde_json::to_string(&arguments).unwrap()},
+                ],
+            }),
+            "shot" => json!({
+                "content": [
+                    {"type": "text", "text": "chart rendered"},
+                    {"type": "image", "data": "aVBuZw==", "mimeType": "image/png"},
+                    {"type": "image", "data": "aGVpZw==", "mimeType": "image/jpeg"},
+                    {"type": "audio", "data": "YW==", "mimeType": "audio/wav"},
                 ],
             }),
             other => json!({
@@ -838,6 +897,28 @@ mod tests {
             .await
             .expect("mirror call");
         assert_eq!(mirror.text, r#"{"deep":{"x":[1,"两"]}}"#);
+
+        // Image content blocks survive the round trip as base64+MIME pairs
+        // in server order; audio blocks are skipped.
+        let shot = connection
+            .call_tool("shot", &Value::Null)
+            .await
+            .expect("shot call");
+        assert_eq!(shot.text, "chart rendered");
+        assert_eq!(
+            shot.images,
+            vec![
+                McpImage {
+                    mime_type: "image/png".to_string(),
+                    data: "aVBuZw==".to_string(),
+                },
+                McpImage {
+                    mime_type: "image/jpeg".to_string(),
+                    data: "aGVpZw==".to_string(),
+                },
+            ]
+        );
+        assert!(!shot.is_error);
 
         connection.shutdown().await;
     }

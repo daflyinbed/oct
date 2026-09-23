@@ -68,15 +68,61 @@ fn parse_anthropic_messages_from_request(body: &serde_json::Value) -> Vec<Messag
                             "tool_result" => {
                                 let call_id =
                                     part["tool_use_id"].as_str().unwrap_or_default().to_string();
-                                let content = part
+                                let is_error =
+                                    part["is_error"].as_bool().unwrap_or(false);
+                                let raw_content = part
                                     .get("content")
                                     .cloned()
                                     .unwrap_or(serde_json::Value::Null);
+                                // Block-array content (text + image blocks —
+                                // the shape oct emits for image-carrying tool
+                                // results) is split the same way the wire
+                                // mapper builds it: image blocks become
+                                // ToolResult.images, text blocks re-join as
+                                // the string content.
+                                let (content, images) = match &raw_content {
+                                    serde_json::Value::Array(blocks) => {
+                                        let mut texts = Vec::new();
+                                        let mut images = Vec::new();
+                                        for block in blocks {
+                                            match block["type"].as_str().unwrap_or("") {
+                                                "text" => {
+                                                    if let Some(text) =
+                                                        block.get("text").and_then(|t| t.as_str())
+                                                    {
+                                                        texts.push(text.to_string());
+                                                    }
+                                                }
+                                                "image" => {
+                                                    let source = &block["source"];
+                                                    if source["type"] == "base64" {
+                                                        images.push(
+                                                            oct_llm_provider::core::ToolResultImage {
+                                                                mime_type: source["media_type"]
+                                                                    .as_str()
+                                                                    .unwrap_or_default()
+                                                                    .to_string(),
+                                                                data: source["data"]
+                                                                    .as_str()
+                                                                    .unwrap_or_default()
+                                                                    .to_string(),
+                                                            },
+                                                        );
+                                                    }
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                        (serde_json::Value::String(texts.join("\n")), images)
+                                    }
+                                    other => (other.clone(), Vec::new()),
+                                };
                                 parts.push(ContentPart::ToolResult(
                                     oct_llm_provider::core::ToolResult {
                                         call_id,
                                         content,
-                                        is_error: false,
+                                        is_error,
+                                        images,
                                     },
                                 ));
                             }
@@ -134,6 +180,56 @@ fn snapshot_parse_tool_result_request() {
 #[test]
 fn snapshot_parse_tool_result_response() {
     let fixture = load_fixture("tests/anthropic/fixtures/generate/tool_result.json");
+    let body = extract_response_body(&fixture);
+    let response = parse_anthropic_generate_body(&body).expect("Failed to parse response");
+    insta::assert_yaml_snapshot!(response);
+}
+
+#[test]
+fn snapshot_parse_tool_result_with_images_request() {
+    let fixture = load_fixture("tests/anthropic/fixtures/generate/tool_result_with_images.json");
+    let body = extract_request_body(&fixture);
+    let messages = parse_anthropic_messages_from_request(&body);
+    insta::assert_yaml_snapshot!(messages);
+}
+
+#[test]
+fn snapshot_parse_tool_result_with_images_response() {
+    let fixture = load_fixture("tests/anthropic/fixtures/generate/tool_result_with_images.json");
+    let body = extract_response_body(&fixture);
+    let response = parse_anthropic_generate_body(&body).expect("Failed to parse response");
+    insta::assert_yaml_snapshot!(response);
+}
+
+#[test]
+fn snapshot_parse_tool_result_image_only_request() {
+    let fixture = load_fixture("tests/anthropic/fixtures/generate/tool_result_image_only.json");
+    let body = extract_request_body(&fixture);
+    let messages = parse_anthropic_messages_from_request(&body);
+    insta::assert_yaml_snapshot!(messages);
+}
+
+#[test]
+fn snapshot_parse_tool_result_image_only_response() {
+    let fixture = load_fixture("tests/anthropic/fixtures/generate/tool_result_image_only.json");
+    let body = extract_response_body(&fixture);
+    let response = parse_anthropic_generate_body(&body).expect("Failed to parse response");
+    insta::assert_yaml_snapshot!(response);
+}
+
+#[test]
+fn snapshot_parse_tool_result_error_with_image_request() {
+    let fixture =
+        load_fixture("tests/anthropic/fixtures/generate/tool_result_error_with_image.json");
+    let body = extract_request_body(&fixture);
+    let messages = parse_anthropic_messages_from_request(&body);
+    insta::assert_yaml_snapshot!(messages);
+}
+
+#[test]
+fn snapshot_parse_tool_result_error_with_image_response() {
+    let fixture =
+        load_fixture("tests/anthropic/fixtures/generate/tool_result_error_with_image.json");
     let body = extract_response_body(&fixture);
     let response = parse_anthropic_generate_body(&body).expect("Failed to parse response");
     insta::assert_yaml_snapshot!(response);

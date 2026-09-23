@@ -208,6 +208,7 @@ pub async fn repair_dangling_tool_calls(
                 call_id: call_id.clone(),
                 content: Value::String(INTERRUPTED_TOOL_RESULT_CONTENT.into()),
                 is_error: true,
+                images: Vec::new(),
             })],
         };
         // details carry UI-only metadata ("执行被中断" title), never anything

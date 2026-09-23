@@ -419,11 +419,7 @@ impl OpenAiCompatibleChatModel {
     }
 
     pub fn to_wire_request(&self, req: &ChatRequest) -> Result<ChatCompletionRequest, ModelError> {
-        let messages = req
-            .messages
-            .iter()
-            .map(map_message)
-            .collect::<Result<Vec<_>, _>>()?;
+        let messages = map_request_messages(&req.messages)?;
 
         let tools = req.tools.iter().map(map_tool).collect();
         let tool_choice = req.options.tool_choice.as_ref().map(map_tool_choice);
@@ -606,6 +602,73 @@ pub fn parse_openai_generate_body(body: &str) -> Result<ChatResponse, ModelError
     let payload: ChatCompletionResponse = serde_json::from_str(body)
         .map_err(|err| ModelError::transport(format!("invalid openai response json: {err}")))?;
     map_chat_completion_response(payload)
+}
+
+/// Map the whole conversation to OpenAI chat-completion messages, threading
+/// tool-result images through the protocol's only legal shape: a `tool`
+/// role message cannot carry image parts, so images collected from a run of
+/// consecutive tool messages are appended as ONE follow-up user message
+/// (data URLs) after the run — the tool messages themselves stay
+/// consecutive and text-only, exactly as before images existed.
+///
+/// Requests without tool-result images map message-for-message, identical
+/// to calling [`map_message`] directly on each.
+fn map_request_messages(
+    messages: &[Message],
+) -> Result<Vec<ChatCompletionRequestMessage>, ModelError> {
+    let mut out = Vec::with_capacity(messages.len());
+    let mut images: Vec<RequestMessageContentPart> = Vec::new();
+    for message in messages {
+        if message.role == crate::core::Role::Tool {
+            for part in &message.parts {
+                if let ContentPart::ToolResult(result) = part {
+                    images.extend(result.images.iter().map(image_data_url_part));
+                }
+            }
+        } else if !images.is_empty() {
+            // The run of tool messages ended: flush their images as one user
+            // message BEFORE this message, keeping tool messages consecutive.
+            out.push(image_carrying_user_message(std::mem::take(&mut images)));
+        }
+        out.push(map_message(message)?);
+    }
+    if !images.is_empty() {
+        // A request may legitimately end on its tool results (the agent loop
+        // feeds results back as the final messages).
+        out.push(image_carrying_user_message(images));
+    }
+    Ok(out)
+}
+
+/// One tool-result image as an OpenAI vision content part (data URL).
+fn image_data_url_part(image: &crate::core::ToolResultImage) -> RequestMessageContentPart {
+    RequestMessageContentPart::ImageUrl {
+        image_url: ChatCompletionImageUrl {
+            url: format!("data:{};base64,{}", image.mime_type, image.data),
+            detail: None,
+        },
+    }
+}
+
+/// The follow-up user message carrying one run's tool-result images. A short
+/// text label leads the parts so the model can attribute them to the tool
+/// calls above.
+fn image_carrying_user_message(
+    images: Vec<RequestMessageContentPart>,
+) -> ChatCompletionRequestMessage {
+    let mut parts = Vec::with_capacity(images.len() + 1);
+    parts.push(RequestMessageContentPart::Text {
+        text: "Images returned by the tool calls above:".to_string(),
+    });
+    parts.extend(images);
+    ChatCompletionRequestMessage {
+        role: "user".to_string(),
+        content: Some(RequestMessageContentValue::Parts(parts)),
+        name: None,
+        tool_call_id: None,
+        tool_calls: None,
+        reasoning_content: None,
+    }
 }
 
 fn map_message(message: &Message) -> Result<ChatCompletionRequestMessage, ModelError> {

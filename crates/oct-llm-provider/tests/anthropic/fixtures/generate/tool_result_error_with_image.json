@@ -1,0 +1,55 @@
+{
+  "request": {
+    "body": {
+      "model": "claude-sonnet-4-20250514",
+      "max_tokens": 1024,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Diff the two renders and tell me what broke"
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "call_5b9a3c7e1d604f28ac71be34",
+              "name": "visual_diff",
+              "input": {
+                "baseline": "v1.png",
+                "candidate": "v2.png"
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "call_5b9a3c7e1d604f28ac71be34",
+              "is_error": true,
+              "content": [
+                {
+                  "type": "text",
+                  "text": "visual_diff failed: 3 regions diverge beyond the threshold."
+                },
+                {
+                  "type": "image",
+                  "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "ZGlmZkhpZ2hsaWdodERhdGEwMDExMjI="
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "response": {
+    "body": "{\"id\":\"msg_20260326021856faa27ad516cf48e3\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-20250514\",\"content\":[{\"type\":\"text\",\"text\":\"The diff highlights three diverging regions.\"}],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":240,\"output_tokens\":22}}"
+  }
+}

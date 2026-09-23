@@ -841,6 +841,7 @@ async fn mcp_tools_join_the_chat_loop_and_status_reports_live_state() {
             text: "hello from mcp".to_string(),
             structured_json: Some(serde_json::json!({"sum": 3})),
             is_error: false,
+            images: Vec::new(),
         },
     ));
     app.mcp
@@ -1226,6 +1227,7 @@ async fn mcp_project_scoped_tools_are_isolated_across_projects() {
             text: "hello from scoped".to_string(),
             structured_json: None,
             is_error: false,
+            images: Vec::new(),
         },
     ));
     app.mcp.insert_connection_for_test(

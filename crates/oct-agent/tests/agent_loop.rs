@@ -15,8 +15,11 @@ use oct_agent::agent::AgentEvent;
 use oct_agent::db;
 use oct_agent::mcp::{McpManager, McpTool};
 use oct_agent::tools::{self, AgentTool, ToolContext, ToolOutput};
-use oct_llm_provider::core::{ContentPart, FinishReason, ModelError, Role, ToolCall, ToolResult};
+use oct_llm_provider::core::{
+    ContentPart, FinishReason, ModelError, Role, ToolCall, ToolResult, ToolResultImage,
+};
 use oct_mcp::McpCallResult;
+use oct_mcp::McpImage;
 
 use support::mcp::{FakeMcpConnection, fake_tool};
 use support::{
@@ -286,6 +289,7 @@ async fn tool_call_round_trip_executes_tool_and_feeds_result_back() {
             call_id,
             content,
             is_error,
+            ..
         }) => {
             assert_eq!(call_id, "call-1");
             assert_eq!(
@@ -622,6 +626,7 @@ async fn cancel_during_tool_execution_persists_cancel_placeholders() {
             call_id,
             content,
             is_error,
+            ..
         }) => {
             assert_eq!(call_id, "call-1");
             assert_eq!(content, &json!("用户取消了执行"));
@@ -772,6 +777,7 @@ fn tool_results(events: &[AgentEvent]) -> Vec<(String, String, bool, Option<serd
                 content,
                 is_error,
                 details,
+                ..
             } => Some((call_id.clone(), content.clone(), *is_error, details.clone())),
             _ => None,
         })
@@ -797,6 +803,7 @@ async fn mcp_tool_round_trip_translates_names_and_feeds_result_back() {
                     text: "hello from mcp".to_string(),
                     structured_json: Some(json!({"sum": 3})),
                     is_error: false,
+                    images: Vec::new(),
                 },
             )
             .with_result(
@@ -805,6 +812,7 @@ async fn mcp_tool_round_trip_translates_names_and_feeds_result_back() {
                     text: String::new(),
                     structured_json: Some(json!({"rows": [], "count": 0})),
                     is_error: false,
+                    images: Vec::new(),
                 },
             ),
     );
@@ -920,8 +928,11 @@ async fn mcp_tool_round_trip_translates_names_and_feeds_result_back() {
             &parts[0],
             ContentPart::ToolResult(ToolResult {
                 is_error: false,
+                // Text-only results must carry no images; a vec cannot be
+                // pattern-matched with Vec::new(), so bind and guard.
+                images,
                 ..
-            })
+            }) if images.is_empty()
         ));
         assert!(
             row.details_json
@@ -938,6 +949,121 @@ async fn mcp_tool_round_trip_translates_names_and_feeds_result_back() {
 }
 
 #[tokio::test]
+async fn mcp_tool_image_result_flows_through_to_the_model_and_persistence() {
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+
+    // One tool whose result carries text plus two image content blocks.
+    let listing = vec![fake_tool("shot", Some("takes a screenshot"))];
+    let fake = Arc::new(FakeMcpConnection::new(listing.clone()).with_result(
+        "shot",
+        McpCallResult {
+            text: "screenshot captured".to_string(),
+            images: vec![
+                McpImage {
+                    mime_type: "image/png".to_string(),
+                    data: "c2NyZWVuc2hvdDE=".to_string(),
+                },
+                McpImage {
+                    mime_type: "image/jpeg".to_string(),
+                    data: "c2NyZWVuc2hvdDI=".to_string(),
+                },
+            ],
+            structured_json: None,
+            is_error: false,
+        },
+    ));
+    let manager = McpManager::default();
+    manager.insert_connection_for_test("srv-fake", "fake", None, fake.clone(), listing);
+
+    let mut all_tools = tools::default_tools(tools::workspace::WorkspaceRoots::new(
+        env.dir.path().to_path_buf(),
+        vec![],
+    ));
+    all_tools.extend(manager.tools_for_run(None));
+
+    let model = ScriptedModel::new(vec![
+        Turn::Stream(vec![
+            tool_call("call-1", "mcp__fake__shot", json!({})),
+            finish(FinishReason::ToolCalls),
+        ]),
+        Turn::Stream(vec![text("seen"), finish(FinishReason::Stop)]),
+    ]);
+    let observer = model.observer();
+
+    let (_handle, mut rx) = spawn_agent(
+        model,
+        all_tools,
+        env.pool.clone(),
+        &conv_id,
+        "take the screenshot",
+    )
+    .await;
+    let events = collect_events(&mut rx, is_terminal).await;
+
+    // The ToolResult event carries the images next to the text content.
+    match events
+        .iter()
+        .find(|e| matches!(e, AgentEvent::ToolResult { .. }))
+    {
+        Some(AgentEvent::ToolResult {
+            content, images, ..
+        }) => {
+            assert_eq!(content, "screenshot captured");
+            assert_eq!(images.len(), 2);
+            assert_eq!(images[0].mime_type, "image/png");
+            assert_eq!(images[0].data, "c2NyZWVuc2hvdDE=");
+            assert_eq!(images[1].mime_type, "image/jpeg");
+        }
+        other => panic!("expected ToolResult, got {other:?}"),
+    }
+
+    // The feed-back request to the model keeps the images on the ToolResult
+    // part of the tool message.
+    let second = &observer.requests()[1];
+    let tool_message = second
+        .messages
+        .iter()
+        .find(|m| m.role == Role::Tool)
+        .expect("tool message in the second request");
+    match &tool_message.parts[0] {
+        ContentPart::ToolResult(ToolResult { images, .. }) => {
+            assert_eq!(
+                images,
+                &vec![
+                    ToolResultImage {
+                        mime_type: "image/png".to_string(),
+                        data: "c2NyZWVuc2hvdDE=".to_string(),
+                    },
+                    ToolResultImage {
+                        mime_type: "image/jpeg".to_string(),
+                        data: "c2NyZWVuc2hvdDI=".to_string(),
+                    },
+                ]
+            );
+        }
+        other => panic!("expected ToolResult part, got {other:?}"),
+    }
+
+    // Persistence replay: parts_json round-trips the images, so a later
+    // turn (load_messages_for_llm) still sees them.
+    let replayed = db::messages::load_messages_for_llm(&env.pool, &conv_id)
+        .await
+        .unwrap();
+    let stored_tool = replayed
+        .iter()
+        .find(|m| m.role == Role::Tool)
+        .expect("persisted tool message");
+    match &stored_tool.parts[0] {
+        ContentPart::ToolResult(ToolResult { images, .. }) => {
+            assert_eq!(images.len(), 2);
+            assert_eq!(images[1].data, "c2NyZWVuc2hvdDI=");
+        }
+        other => panic!("expected ToolResult part, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn mcp_tool_error_result_maps_to_error_tool_output_and_loop_continues() {
     let env = TestEnv::new().await;
     let conv_id = new_conversation(&env.pool, env.dir.path()).await;
@@ -949,6 +1075,7 @@ async fn mcp_tool_error_result_maps_to_error_tool_output_and_loop_continues() {
             text: "exploded".to_string(),
             structured_json: None,
             is_error: true,
+            images: Vec::new(),
         },
     ));
     let manager = McpManager::default();
@@ -1082,6 +1209,7 @@ async fn single_cancelled_tool_result(
             call_id: id,
             content,
             is_error,
+            ..
         }) => {
             assert_eq!(id, call_id);
             assert!(

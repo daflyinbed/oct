@@ -270,6 +270,7 @@ pub async fn run_agent_loop(
                                 call_id: tc.id.clone(),
                                 content: output.content.clone(),
                                 is_error: output.is_error,
+                                images: output.images.clone(),
                                 details: output.details.clone(),
                             });
 
@@ -279,6 +280,15 @@ pub async fn run_agent_loop(
                                     call_id: tc.id.clone(),
                                     content: Value::String(output.content),
                                     is_error: output.is_error,
+                                    // Multimodal pass-through: images ride the
+                                    // ToolResult (persisted via parts_json,
+                                    // replayed for later turns) next to the
+                                    // text content.
+                                    images: output
+                                        .images
+                                        .into_iter()
+                                        .map(From::from)
+                                        .collect(),
                                 })],
                             };
                             // details are UI-only: persisted in their own
@@ -321,6 +331,7 @@ pub async fn run_agent_loop(
                             call_id: tc.id.clone(),
                             content: Value::String("用户取消了执行".into()),
                             is_error: true,
+                            images: Vec::new(),
                         })],
                     };
                     if let Err(e) =

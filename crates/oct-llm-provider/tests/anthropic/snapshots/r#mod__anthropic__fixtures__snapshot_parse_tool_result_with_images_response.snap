@@ -1,0 +1,22 @@
+---
+source: crates/oct-llm-provider/tests/anthropic/fixtures.rs
+expression: response
+---
+message:
+  role: Assistant
+  parts:
+    - Text: Here is the build-time chart.
+finish_reason: Stop
+usage:
+  input_tokens: 210
+  output_tokens: 18
+  total_tokens: 228
+  reasoning_tokens: ~
+  cached_input_tokens: ~
+  provider_details:
+    raw:
+      input_tokens: 210
+      output_tokens: 18
+provider_response_id: msg_20260326021856faa27ad516cf48e1
+provider_metadata:
+  model: claude-sonnet-4-20250514

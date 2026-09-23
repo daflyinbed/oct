@@ -1,0 +1,47 @@
+{
+  "request": {
+    "body": {
+      "model": "claude-sonnet-4-20250514",
+      "max_tokens": 1024,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Show me the latest screenshot"
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "call_0c3f8e2a6b4d47c1bb90e877",
+              "name": "screenshot",
+              "input": {}
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "call_0c3f8e2a6b4d47c1bb90e877",
+              "content": [
+                {
+                  "type": "image",
+                  "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "c2NyZWVuc2hvdERhdGEwMTIzNDU2Nzg5"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "response": {
+    "body": "{\"id\":\"msg_20260326021856faa27ad516cf48e2\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-20250514\",\"content\":[{\"type\":\"text\",\"text\":\"Here is the screenshot.\"}],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":180,\"output_tokens\":12}}"
+  }
+}

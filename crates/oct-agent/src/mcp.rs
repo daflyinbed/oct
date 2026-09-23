@@ -56,7 +56,7 @@ use crate::db;
 use crate::db::mcp::McpServer;
 use crate::tools::truncate::MAX_TOOL_OUTPUT_BYTES;
 use crate::tools::truncate::truncate_middle;
-use crate::tools::{AgentTool, ToolContext, ToolOutput};
+use crate::tools::{AgentTool, ToolContext, ToolImage, ToolOutput};
 
 /// Budget for spawning one MCP server and finishing the initialize
 /// handshake (and, separately, for the follow-up `tools/list`).
@@ -84,6 +84,15 @@ const NO_DESCRIPTION: &str = "MCP tool (the server provided no description)";
 /// content: an empty tool result is technically legal but unhelpful to the
 /// model, so say so explicitly.
 const NO_CONTENT: &str = "(MCP tool returned no content)";
+
+/// Cap on images kept per MCP tool result; extras are dropped (count noted
+/// in details) so a server returning dozens of images cannot flood the LLM
+/// context.
+const MAX_RESULT_IMAGES: usize = 8;
+
+/// Cap on one image's base64 payload (chars, i.e. ~3/4 of the decoded
+/// bytes); larger images are dropped (count noted in details).
+const MAX_IMAGE_BASE64_CHARS: usize = 5 * 1024 * 1024;
 
 /// Live state of one managed server, also surfaced to the API layer through
 /// [`McpManager::status_snapshot`].
@@ -822,17 +831,43 @@ impl AgentTool for McpTool {
         };
 
         // Reuse the shared output budget (head+tail truncation) so a server
-        // dumping megabytes cannot flood the LLM context.
+        // dumping megabytes cannot flood the LLM context. Images bypass the
+        // text budget but are capped separately (count + per-image size);
+        // dropped ones are counted in details so the UI (and the log) can
+        // tell something was withheld.
         let content = truncate_middle(&result_content(&result), MAX_TOOL_OUTPUT_BYTES);
-        let details = json!({
+        let mut images = Vec::new();
+        let mut dropped_images = 0usize;
+        for image in &result.images {
+            if images.len() >= MAX_RESULT_IMAGES || image.data.len() > MAX_IMAGE_BASE64_CHARS {
+                dropped_images += 1;
+                continue;
+            }
+            images.push(ToolImage {
+                mime_type: image.mime_type.clone(),
+                data: image.data.clone(),
+            });
+        }
+        if dropped_images > 0 {
+            warn!(
+                server = %self.server_name,
+                tool = %self.original_name,
+                dropped = dropped_images,
+                "dropped MCP result images over the count/size budget"
+            );
+        }
+        let mut details = json!({
             "server": self.server_name,
             "tool": self.original_name,
             "structured": result.structured_json,
         });
+        if dropped_images > 0 {
+            details["images_dropped"] = json!(dropped_images);
+        }
         if result.is_error {
-            Ok(ToolOutput::error_with_details(content, details))
+            Ok(ToolOutput::error_with_details(content, details).with_images(images))
         } else {
-            Ok(ToolOutput::success_with_details(content, details))
+            Ok(ToolOutput::success_with_details(content, details).with_images(images))
         }
     }
 }
@@ -859,6 +894,7 @@ mod tests {
                     text: text.to_string(),
                     structured_json: None,
                     is_error: false,
+                    images: Vec::new(),
                 },
             })
         }
@@ -1114,6 +1150,7 @@ mod tests {
             text: "hello".to_string(),
             structured_json: Some(json!({"sum": 3})),
             is_error: false,
+            images: Vec::new(),
         });
         let output = run(&tool).await;
         assert!(!output.is_error);
@@ -1130,6 +1167,7 @@ mod tests {
             text: String::new(),
             structured_json: Some(json!({"rows": [], "count": 0})),
             is_error: false,
+            images: Vec::new(),
         });
         let output = run(&tool).await;
         assert!(!output.is_error);
@@ -1146,6 +1184,7 @@ mod tests {
             text: "exploded".to_string(),
             structured_json: None,
             is_error: true,
+            images: Vec::new(),
         });
         let output = run(&tool).await;
         assert!(output.is_error);
@@ -1159,6 +1198,7 @@ mod tests {
             text: String::new(),
             structured_json: None,
             is_error: false,
+            images: Vec::new(),
         });
         let output = run(&tool).await;
         assert!(!output.is_error);
@@ -1171,10 +1211,105 @@ mod tests {
             text: "x".repeat(MAX_TOOL_OUTPUT_BYTES * 2),
             structured_json: None,
             is_error: false,
+            images: Vec::new(),
         });
         let output = run(&tool).await;
         assert!(output.content.starts_with("[output truncated"));
         assert!(output.content.len() < MAX_TOOL_OUTPUT_BYTES * 2);
+    }
+
+    #[tokio::test]
+    async fn execute_maps_result_images_into_the_output() {
+        let (_conn, tool) = tool_with(McpCallResult {
+            text: "chart rendered".to_string(),
+            images: vec![
+                oct_mcp::McpImage {
+                    mime_type: "image/png".to_string(),
+                    data: "aVBuZw==".to_string(),
+                },
+                oct_mcp::McpImage {
+                    mime_type: "image/jpeg".to_string(),
+                    data: "aGVpZw==".to_string(),
+                },
+            ],
+            structured_json: None,
+            is_error: false,
+        });
+        let output = run(&tool).await;
+        assert!(!output.is_error);
+        assert_eq!(output.content, "chart rendered");
+        assert_eq!(
+            output.images,
+            vec![
+                ToolImage {
+                    mime_type: "image/png".to_string(),
+                    data: "aVBuZw==".to_string(),
+                },
+                ToolImage {
+                    mime_type: "image/jpeg".to_string(),
+                    data: "aGVpZw==".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_image_only_result_keeps_placeholder_text_with_images() {
+        let (_conn, tool) = tool_with(McpCallResult {
+            text: String::new(),
+            images: vec![oct_mcp::McpImage {
+                mime_type: "image/png".to_string(),
+                data: "c2hvdA==".to_string(),
+            }],
+            structured_json: None,
+            is_error: false,
+        });
+        let output = run(&tool).await;
+        assert_eq!(output.content, NO_CONTENT);
+        assert_eq!(output.images.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn execute_drops_images_over_the_count_and_size_budget() {
+        // Count budget: only the first MAX_RESULT_IMAGES survive, the rest
+        // are counted in details.
+        let many: Vec<_> = (0..(MAX_RESULT_IMAGES + 3))
+            .map(|i| oct_mcp::McpImage {
+                mime_type: "image/png".to_string(),
+                data: format!("img{i}"),
+            })
+            .collect();
+        let (_conn, tool) = tool_with(McpCallResult {
+            text: "shots".to_string(),
+            images: many,
+            structured_json: None,
+            is_error: false,
+        });
+        let output = run(&tool).await;
+        assert_eq!(output.images.len(), MAX_RESULT_IMAGES);
+        assert_eq!(output.images[0].data, "img0");
+        assert_eq!(output.details.as_ref().unwrap()["images_dropped"], json!(3));
+
+        // Size budget: one oversized image is dropped whole, the rest kept.
+        let (_conn, tool) = tool_with(McpCallResult {
+            text: "big".to_string(),
+            images: vec![
+                oct_mcp::McpImage {
+                    mime_type: "image/png".to_string(),
+                    data: "ok".to_string(),
+                },
+                oct_mcp::McpImage {
+                    mime_type: "image/png".to_string(),
+                    data: "x".repeat(MAX_IMAGE_BASE64_CHARS + 1),
+                },
+            ],
+            structured_json: None,
+            is_error: false,
+        });
+        let output = run(&tool).await;
+        assert_eq!(output.images.len(), 1);
+        assert_eq!(output.images[0].data, "ok");
+        assert_eq!(output.details.as_ref().unwrap()["images_dropped"], json!(1));
     }
 
     /// A connection whose calls never resolve (exercises the timeout and
@@ -1701,6 +1836,7 @@ mod tests {
                 text: String::new(),
                 structured_json: None,
                 is_error: false,
+                images: Vec::new(),
             })
         }
 

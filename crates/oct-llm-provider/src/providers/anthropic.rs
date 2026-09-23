@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 
-use crate::core::{ContentPart, FinishReason, Message, ModelError, Role, StreamEvent, Usage};
+use crate::core::{
+    ContentPart, FinishReason, Message, ModelError, Role, StreamEvent, ToolResult, Usage,
+};
 use crate::model::{ChatModel, ChatRequest, ChatResponse, ChatStream};
 use crate::provider::{ModelCapabilities, ModelInfo, ModelLimits, Provider};
 
@@ -91,11 +93,36 @@ struct AnthropicImageBlock {
     source: AnthropicImageSource,
 }
 
+/// Anthropic image source: a hosted URL or inline base64 bytes. `base64` is
+/// what tool results (and data-URL user images) use — the API accepts raw
+/// bytes only in that form.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct AnthropicImageSource {
-    #[serde(rename = "type")]
-    source_type: String,
-    url: String,
+#[serde(tag = "type")]
+enum AnthropicImageSource {
+    #[serde(rename = "url")]
+    Url { url: String },
+    #[serde(rename = "base64")]
+    Base64 { media_type: String, data: String },
+}
+
+/// Map an internal image URL to an Anthropic image source. Data URLs
+/// (`data:image/png;base64,…`) become inline base64 sources — Anthropic
+/// expects the decoded form, not the data URL verbatim; anything else
+/// passes through as a hosted URL source.
+fn anthropic_image_source(url: &str) -> AnthropicImageSource {
+    if let Some(rest) = url.strip_prefix("data:")
+        && let Some((mime_type, data)) = rest.split_once(";base64,")
+        && !mime_type.is_empty()
+        && !data.is_empty()
+    {
+        return AnthropicImageSource::Base64 {
+            media_type: mime_type.to_string(),
+            data: data.to_string(),
+        };
+    }
+    AnthropicImageSource::Url {
+        url: url.to_string(),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -593,10 +620,7 @@ fn map_anthropic_message(message: &Message) -> Result<AnthropicRequestMessage, M
                 citations: None,
             }),
             ContentPart::ImageUrl { url } => AnthropicContentBlock::Image(AnthropicImageBlock {
-                source: AnthropicImageSource {
-                    source_type: "url".to_string(),
-                    url: url.clone(),
-                },
+                source: anthropic_image_source(url),
             }),
             ContentPart::Reasoning(text) => {
                 AnthropicContentBlock::Thinking(AnthropicThinkingBlock {
@@ -613,7 +637,7 @@ fn map_anthropic_message(message: &Message) -> Result<AnthropicRequestMessage, M
             ContentPart::ToolResult(result) => {
                 AnthropicContentBlock::ToolResult(AnthropicToolResultBlock {
                     tool_use_id: result.call_id.clone(),
-                    content: result.content.clone(),
+                    content: anthropic_tool_result_content(result),
                     is_error: if result.is_error { Some(true) } else { None },
                 })
             }
@@ -621,6 +645,48 @@ fn map_anthropic_message(message: &Message) -> Result<AnthropicRequestMessage, M
     }
 
     Ok(AnthropicRequestMessage { role, content })
+}
+
+/// Wire `content` of one tool result. Text-only results stay a plain string
+/// (the compact form every pre-images snapshot depends on); results carrying
+/// images become Anthropic's block array — a text block first (when the text
+/// is non-empty), then one base64 image block per attached image, which the
+/// API renders natively inside `tool_result`.
+fn anthropic_tool_result_content(result: &ToolResult) -> Value {
+    if result.images.is_empty() {
+        return result.content.clone();
+    }
+    let mut blocks = Vec::with_capacity(result.images.len() + 1);
+    let text = match &result.content {
+        Value::String(text) => Some(text.clone()),
+        Value::Null => None,
+        // Non-string content (never produced by the agent loop today) still
+        // travels as its compact JSON rendering so nothing is lost.
+        other => Some(other.to_string()),
+    };
+    if let Some(text) = text.filter(|t| !t.is_empty()) {
+        // Wrap in the content-block enum so serialization carries the
+        // `type: "text"` tag the array form requires.
+        blocks.push(
+            serde_json::to_value(AnthropicContentBlock::Text(AnthropicTextBlock {
+                text,
+                citations: None,
+            }))
+            .unwrap_or(Value::Null),
+        );
+    }
+    for image in &result.images {
+        blocks.push(
+            serde_json::to_value(AnthropicContentBlock::Image(AnthropicImageBlock {
+                source: AnthropicImageSource::Base64 {
+                    media_type: image.mime_type.clone(),
+                    data: image.data.clone(),
+                },
+            }))
+            .unwrap_or(Value::Null),
+        );
+    }
+    Value::Array(blocks)
 }
 
 fn map_anthropic_tool(tool: &crate::core::ToolSpec) -> AnthropicToolDefinition {
@@ -695,6 +761,9 @@ fn parse_anthropic_content_block(block: AnthropicContentBlock) -> Result<Content
                 call_id: result_block.tool_use_id,
                 content: result_block.content,
                 is_error: result_block.is_error.unwrap_or(false),
+                // Assistant responses never carry tool_result blocks with
+                // images (that is a request-side shape), so nothing to parse.
+                images: Vec::new(),
             }))
         }
         AnthropicContentBlock::Thinking(thinking_block) => {

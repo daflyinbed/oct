@@ -1,0 +1,61 @@
+{
+  "request": {
+    "body": {
+      "model": "claude-sonnet-4-20250514",
+      "max_tokens": 1024,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Plot the build times and show me the chart"
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "call_7d1e0b9c4a2f48e1aa03c512",
+              "name": "render_chart",
+              "input": {
+                "metric": "build_time"
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "call_7d1e0b9c4a2f48e1aa03c512",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Rendered build-time chart for the last 30 commits."
+                },
+                {
+                  "type": "image",
+                  "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "aVBuZ0RhdGExMjM0NTY3ODk="
+                  }
+                },
+                {
+                  "type": "image",
+                  "source": {
+                    "type": "base64",
+                    "media_type": "image/jpeg",
+                    "data": "aGVpZ0RhdGE5ODc2NTQzMjE="
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "response": {
+    "body": "{\"id\":\"msg_20260326021856faa27ad516cf48e1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-20250514\",\"content\":[{\"type\":\"text\",\"text\":\"Here is the build-time chart.\"}],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":210,\"output_tokens\":18}}"
+  }
+}

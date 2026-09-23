@@ -1,0 +1,22 @@
+---
+source: crates/oct-llm-provider/tests/anthropic/fixtures.rs
+expression: messages
+---
+- role: User
+  parts:
+    - Text: Diff the two renders and tell me what broke
+- role: Assistant
+  parts:
+    - ToolCall:
+        id: call_5b9a3c7e1d604f28ac71be34
+        name: visual_diff
+        arguments: "{\"baseline\":\"v1.png\",\"candidate\":\"v2.png\"}"
+- role: User
+  parts:
+    - ToolResult:
+        call_id: call_5b9a3c7e1d604f28ac71be34
+        content: "visual_diff failed: 3 regions diverge beyond the threshold."
+        is_error: true
+        images:
+          - mime_type: image/png
+            data: ZGlmZkhpZ2hsaWdodERhdGEwMDExMjI=

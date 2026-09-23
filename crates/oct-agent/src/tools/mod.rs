@@ -23,6 +23,25 @@ pub mod truncate;
 pub mod workspace;
 pub mod write;
 
+/// One image attached to a tool result (e.g. an MCP server's image content
+/// block), passed through to the model alongside the text content.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+pub struct ToolImage {
+    /// MIME type of the image, e.g. `image/png`.
+    pub mime_type: String,
+    /// Base64-encoded image bytes.
+    pub data: String,
+}
+
+impl From<ToolImage> for oct_llm_provider::core::ToolResultImage {
+    fn from(image: ToolImage) -> Self {
+        Self {
+            mime_type: image.mime_type,
+            data: image.data,
+        }
+    }
+}
+
 /// Output from a tool execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolOutput {
@@ -30,6 +49,11 @@ pub struct ToolOutput {
     /// is sent to the LLM (via parts_json).
     pub content: String,
     pub is_error: bool,
+    /// Images attached to this result, delivered to the LLM as multimodal
+    /// tool-result content. Not subject to the text truncation budget.
+    /// Empty for text-only tools; skipped on the wire when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ToolImage>,
     /// UI-only structured metadata. NEVER persisted into parts_json and
     /// never sent to the LLM; it lives in the messages.details_json column
     /// and in ToolResult events for the frontend.
@@ -41,6 +65,7 @@ impl ToolOutput {
         Self {
             content: content.into(),
             is_error: false,
+            images: Vec::new(),
             details: None,
         }
     }
@@ -49,6 +74,7 @@ impl ToolOutput {
         Self {
             content: content.into(),
             is_error: true,
+            images: Vec::new(),
             details: None,
         }
     }
@@ -58,6 +84,7 @@ impl ToolOutput {
         Self {
             content: content.into(),
             is_error: false,
+            images: Vec::new(),
             details: serde_json::to_value(details).ok(),
         }
     }
@@ -67,8 +94,16 @@ impl ToolOutput {
         Self {
             content: content.into(),
             is_error: true,
+            images: Vec::new(),
             details: serde_json::to_value(details).ok(),
         }
+    }
+
+    /// Attach model-visible images to this output (chainable). Mirrors
+    /// `is_error`/`details` semantics for success and error outputs alike.
+    pub fn with_images(mut self, images: Vec<ToolImage>) -> Self {
+        self.images = images;
+        self
     }
 }
 

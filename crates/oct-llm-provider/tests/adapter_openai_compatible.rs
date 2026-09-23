@@ -9,7 +9,8 @@ use oct_llm_provider::adapter::{
     parse_openai_sse_transcript,
 };
 use oct_llm_provider::core::{
-    ContentPart, FinishReason, GenerateOptions, Message, Role, ToolChoice, ToolSpec,
+    ContentPart, FinishReason, GenerateOptions, Message, Role, ToolChoice, ToolResult,
+    ToolResultImage, ToolSpec,
 };
 use oct_llm_provider::model::ChatRequest;
 use oct_llm_provider::provider::{ModelCapabilities, ModelInfo, ModelLimits};
@@ -546,4 +547,173 @@ fn maps_reasoning_to_reasoning_content_in_request() {
     assert!(
         matches!(&assistant_msg.content, Some(oct_llm_provider::adapter::RequestMessageContentValue::String(s)) if s == "The answer is 4.")
     );
+}
+
+// --- tool-result images: follow-up user message (protocol-safe shape) -------
+
+fn wire_model() -> OpenAiCompatibleChatModel {
+    OpenAiCompatibleChatModel::new(OpenAiCompatibleConfig {
+        provider_name: "openai".to_string(),
+        base_url: "https://api.openai.com/v1".to_string(),
+        api_key_env: "OPENAI_API_KEY".to_string(),
+        default_headers: Default::default(),
+        model_info: ModelInfo::new("openai", "gpt-4.1"),
+        use_responses_api: false,
+    })
+}
+
+fn image(mime_type: &str, data: &str) -> ToolResultImage {
+    ToolResultImage {
+        mime_type: mime_type.to_string(),
+        data: data.to_string(),
+    }
+}
+
+fn tool_result_message(call_id: &str, text: &str, images: Vec<ToolResultImage>) -> Message {
+    Message::new(
+        Role::Tool,
+        vec![ContentPart::ToolResult(ToolResult {
+            call_id: call_id.to_string(),
+            content: serde_json::Value::String(text.to_string()),
+            is_error: false,
+            images,
+        })],
+    )
+}
+
+#[test]
+fn tool_result_images_become_a_follow_up_user_message_after_the_tool_run() {
+    let req = ChatRequest {
+        messages: vec![
+            Message::text(Role::User, "plot it"),
+            Message::new(
+                Role::Assistant,
+                vec![ContentPart::ToolCall(oct_llm_provider::core::ToolCall {
+                    id: "call_1".to_string(),
+                    name: "chart".to_string(),
+                    arguments: "{}".to_string(),
+                })],
+            ),
+            tool_result_message(
+                "call_1",
+                "chart rendered",
+                vec![image("image/png", "aVBuZw==")],
+            ),
+        ],
+        tools: vec![],
+        options: GenerateOptions::default(),
+    };
+
+    let wire = wire_model().to_wire_request(&req).unwrap();
+    assert_eq!(wire.messages.len(), 4);
+
+    // The tool message itself stays text-only with its tool_call_id —
+    // exactly the pre-images shape.
+    assert_eq!(wire.messages[2].role, "tool");
+    assert_eq!(wire.messages[2].tool_call_id.as_deref(), Some("call_1"));
+    assert_eq!(
+        wire.messages[2].content,
+        Some(
+            oct_llm_provider::adapter::RequestMessageContentValue::String(
+                "chart rendered".to_string()
+            )
+        )
+    );
+
+    // One follow-up user message carries the image as a data URL part.
+    assert_eq!(wire.messages[3].role, "user");
+    let parts = match &wire.messages[3].content {
+        Some(oct_llm_provider::adapter::RequestMessageContentValue::Parts(parts)) => parts.clone(),
+        other => panic!("expected image parts, got {other:?}"),
+    };
+    assert_eq!(parts.len(), 2, "label text part + image part");
+    assert!(
+        matches!(&parts[0], oct_llm_provider::adapter::RequestMessageContentPart::Text { text } if !text.is_empty())
+    );
+    match &parts[1] {
+        oct_llm_provider::adapter::RequestMessageContentPart::ImageUrl { image_url } => {
+            assert_eq!(image_url.url, "data:image/png;base64,aVBuZw==");
+        }
+        other => panic!("expected image part, got {other:?}"),
+    }
+}
+
+#[test]
+fn parallel_tool_results_keep_messages_consecutive_and_merge_their_images() {
+    let req = ChatRequest {
+        messages: vec![
+            Message::text(Role::User, "shoot both"),
+            Message::new(
+                Role::Assistant,
+                vec![
+                    ContentPart::ToolCall(oct_llm_provider::core::ToolCall {
+                        id: "call_1".to_string(),
+                        name: "shot_a".to_string(),
+                        arguments: "{}".to_string(),
+                    }),
+                    ContentPart::ToolCall(oct_llm_provider::core::ToolCall {
+                        id: "call_2".to_string(),
+                        name: "shot_b".to_string(),
+                        arguments: "{}".to_string(),
+                    }),
+                ],
+            ),
+            tool_result_message("call_1", "a", vec![image("image/png", "QUE=")]),
+            tool_result_message("call_2", "b", vec![image("image/jpeg", "QkQ=")]),
+        ],
+        tools: vec![],
+        options: GenerateOptions::default(),
+    };
+
+    let wire = wire_model().to_wire_request(&req).unwrap();
+    // user, assistant, tool, tool, then ONE user message with both images
+    // (the tool messages stay consecutive).
+    assert_eq!(wire.messages.len(), 5);
+    assert_eq!(wire.messages[1].role, "assistant");
+    assert_eq!(wire.messages[2].role, "tool");
+    assert_eq!(wire.messages[3].role, "tool");
+    assert_eq!(wire.messages[4].role, "user");
+    let parts = match &wire.messages[4].content {
+        Some(oct_llm_provider::adapter::RequestMessageContentValue::Parts(parts)) => parts.clone(),
+        other => panic!("expected image parts, got {other:?}"),
+    };
+    let urls: Vec<&str> = parts
+        .iter()
+        .filter_map(|p| match p {
+            oct_llm_provider::adapter::RequestMessageContentPart::ImageUrl { image_url } => {
+                Some(image_url.url.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        urls,
+        vec!["data:image/png;base64,QUE=", "data:image/jpeg;base64,QkQ="]
+    );
+}
+
+#[test]
+fn text_only_tool_results_add_no_extra_messages() {
+    // The no-images path maps message-for-message: zero wire-level change
+    // for pre-images requests.
+    let req = ChatRequest {
+        messages: vec![
+            Message::text(Role::User, "plain"),
+            Message::new(
+                Role::Assistant,
+                vec![ContentPart::ToolCall(oct_llm_provider::core::ToolCall {
+                    id: "call_1".to_string(),
+                    name: "lookup".to_string(),
+                    arguments: "{}".to_string(),
+                })],
+            ),
+            tool_result_message("call_1", "found it", Vec::new()),
+        ],
+        tools: vec![],
+        options: GenerateOptions::default(),
+    };
+
+    let wire = wire_model().to_wire_request(&req).unwrap();
+    assert_eq!(wire.messages.len(), 3);
+    assert_eq!(wire.messages[2].role, "tool");
 }

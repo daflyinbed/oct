@@ -1,0 +1,24 @@
+---
+source: crates/oct-llm-provider/tests/anthropic/fixtures.rs
+expression: messages
+---
+- role: User
+  parts:
+    - Text: Plot the build times and show me the chart
+- role: Assistant
+  parts:
+    - ToolCall:
+        id: call_7d1e0b9c4a2f48e1aa03c512
+        name: render_chart
+        arguments: "{\"metric\":\"build_time\"}"
+- role: User
+  parts:
+    - ToolResult:
+        call_id: call_7d1e0b9c4a2f48e1aa03c512
+        content: Rendered build-time chart for the last 30 commits.
+        is_error: false
+        images:
+          - mime_type: image/png
+            data: aVBuZ0RhdGExMjM0NTY3ODk=
+          - mime_type: image/jpeg
+            data: aGVpZ0RhdGE5ODc2NTQzMjE=

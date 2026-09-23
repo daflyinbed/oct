@@ -1,0 +1,22 @@
+---
+source: crates/oct-llm-provider/tests/anthropic/fixtures.rs
+expression: messages
+---
+- role: User
+  parts:
+    - Text: Show me the latest screenshot
+- role: Assistant
+  parts:
+    - ToolCall:
+        id: call_0c3f8e2a6b4d47c1bb90e877
+        name: screenshot
+        arguments: "{}"
+- role: User
+  parts:
+    - ToolResult:
+        call_id: call_0c3f8e2a6b4d47c1bb90e877
+        content: ""
+        is_error: false
+        images:
+          - mime_type: image/png
+            data: c2NyZWVuc2hvdERhdGEwMTIzNDU2Nzg5

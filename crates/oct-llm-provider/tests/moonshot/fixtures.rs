@@ -72,6 +72,7 @@ fn parse_messages_from_request(body: &serde_json::Value) -> Vec<Message> {
                         content: serde_json::from_str(content)
                             .unwrap_or_else(|_| serde_json::Value::String(content.to_string())),
                         is_error: false,
+                        images: Vec::new(),
                     },
                 ));
             }

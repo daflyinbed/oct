@@ -1,0 +1,22 @@
+---
+source: crates/oct-llm-provider/tests/anthropic/fixtures.rs
+expression: response
+---
+message:
+  role: Assistant
+  parts:
+    - Text: The diff highlights three diverging regions.
+finish_reason: Stop
+usage:
+  input_tokens: 240
+  output_tokens: 22
+  total_tokens: 262
+  reasoning_tokens: ~
+  cached_input_tokens: ~
+  provider_details:
+    raw:
+      input_tokens: 240
+      output_tokens: 22
+provider_response_id: msg_20260326021856faa27ad516cf48e3
+provider_metadata:
+  model: claude-sonnet-4-20250514

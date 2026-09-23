@@ -56,6 +56,12 @@ pub enum AgentEvent {
         call_id: String,
         content: String,
         is_error: bool,
+        /// Images attached to the result (base64 + MIME type), passed
+        /// through to the model as multimodal tool-result content. Absent
+        /// when the result is text-only; the frontend does not render them
+        /// yet.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<crate::tools::ToolImage>,
         /// UI-only structured metadata; never sent to the LLM.
         #[schema(value_type = Object)]
         details: Option<serde_json::Value>,

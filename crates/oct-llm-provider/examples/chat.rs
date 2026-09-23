@@ -79,6 +79,7 @@ fn read_tool_result(call: &ToolCall, interactive: bool) -> ToolResult {
         call_id: call.id.clone(),
         content: result.clone(),
         is_error: false,
+        images: Vec::new(),
     }
 }
 

@@ -31,6 +31,7 @@ mod naming;
 pub use connection::HttpServerConfig;
 pub use connection::McpCallResult;
 pub use connection::McpConnection;
+pub use connection::McpImage;
 pub use connection::McpToolInfo;
 pub use connection::StdioServerConfig;
 pub use connection::ToolListChanged;

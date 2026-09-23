@@ -398,3 +398,149 @@ async fn anthropic_generate_extracts_system_prompt_and_maps_response() {
     assert_eq!(body["messages"][0]["content"][0]["text"], "hello");
     assert!(body["stream"].is_null());
 }
+
+#[tokio::test]
+async fn anthropic_tool_result_images_ride_the_wire_as_base64_blocks() {
+    let body = serde_json::json!({
+        "id": "msg_images",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-test",
+        "content": [{"type": "text", "text": "got it"}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 9, "output_tokens": 3}
+    })
+    .to_string();
+    let server = spawn_server(vec![MockResponse::json(200, body)]).await;
+    let model = anthropic_model(
+        server.url(),
+        "OCT_TEST_ANTHROPIC_KEY_IMAGES",
+        "sk-test-images",
+    );
+
+    let image = |mime: &str, data: &str| oct_llm_provider::core::ToolResultImage {
+        mime_type: mime.to_string(),
+        data: data.to_string(),
+    };
+    let tool_result = |call_id: &str, text: &str, is_error: bool, images| {
+        Message::new(
+            Role::Tool,
+            vec![ContentPart::ToolResult(
+                oct_llm_provider::core::ToolResult {
+                    call_id: call_id.to_string(),
+                    content: serde_json::Value::String(text.to_string()),
+                    is_error,
+                    images,
+                },
+            )],
+        )
+    };
+    let request = ChatRequest {
+        messages: vec![
+            Message::new(
+                Role::Assistant,
+                vec![ContentPart::ToolCall(oct_llm_provider::core::ToolCall {
+                    id: "toolu_1".to_string(),
+                    name: "chart".to_string(),
+                    arguments: "{}".to_string(),
+                })],
+            ),
+            // Text + two images: block array (text first, then base64
+            // image blocks in order).
+            tool_result(
+                "toolu_1",
+                "chart rendered",
+                false,
+                vec![
+                    image("image/png", "aVBuZw=="),
+                    image("image/jpeg", "aGVpZw=="),
+                ],
+            ),
+            // Error result with an image keeps is_error AND the blocks.
+            Message::new(
+                Role::Assistant,
+                vec![ContentPart::ToolCall(oct_llm_provider::core::ToolCall {
+                    id: "toolu_2".to_string(),
+                    name: "diff".to_string(),
+                    arguments: "{}".to_string(),
+                })],
+            ),
+            tool_result(
+                "toolu_2",
+                "diverged",
+                true,
+                vec![image("image/png", "ZGlmZg==")],
+            ),
+            // Image-only result: array with no text block, plus a data-URL
+            // user image mapping to an inline base64 source.
+            Message::new(
+                Role::Assistant,
+                vec![ContentPart::ToolCall(oct_llm_provider::core::ToolCall {
+                    id: "toolu_3".to_string(),
+                    name: "shot".to_string(),
+                    arguments: "{}".to_string(),
+                })],
+            ),
+            tool_result("toolu_3", "", false, vec![image("image/png", "c2hvdA==")]),
+            Message::new(
+                Role::User,
+                vec![ContentPart::ImageUrl {
+                    url: "data:image/gif;base64,R0lGODlh".to_string(),
+                }],
+            ),
+            // Text-only result: stays a plain string (pre-images shape).
+            Message::new(
+                Role::Assistant,
+                vec![ContentPart::ToolCall(oct_llm_provider::core::ToolCall {
+                    id: "toolu_4".to_string(),
+                    name: "read".to_string(),
+                    arguments: "{}".to_string(),
+                })],
+            ),
+            tool_result("toolu_4", "plain text result", false, vec![]),
+        ],
+        tools: vec![],
+        options: GenerateOptions::default(),
+    };
+    model.generate(request).await.unwrap();
+
+    let captured = server.captured();
+    assert_eq!(captured.len(), 1);
+    let body = captured[0].body_json();
+
+    // toolu_1: [text, image, image] block array (messages alternate
+    // assistant tool_use / user tool_result, Tool mapping to user).
+    let block = &body["messages"][1]["content"][0];
+    assert_eq!(block["type"], "tool_result");
+    assert_eq!(block["tool_use_id"], "toolu_1");
+    assert_eq!(block["content"][0]["type"], "text");
+    assert_eq!(block["content"][0]["text"], "chart rendered");
+    assert_eq!(block["content"][1]["type"], "image");
+    assert_eq!(block["content"][1]["source"]["type"], "base64");
+    assert_eq!(block["content"][1]["source"]["media_type"], "image/png");
+    assert_eq!(block["content"][1]["source"]["data"], "aVBuZw==");
+    assert_eq!(block["content"][2]["source"]["media_type"], "image/jpeg");
+
+    // toolu_2: is_error flag survives alongside the image block.
+    let block = &body["messages"][3]["content"][0];
+    assert_eq!(block["is_error"], true);
+    assert_eq!(block["content"][0]["text"], "diverged");
+    assert_eq!(block["content"][1]["source"]["data"], "ZGlmZg==");
+
+    // toolu_3: image-only — the array starts at the image block, no text.
+    let block = &body["messages"][5]["content"][0];
+    assert_eq!(block["content"].as_array().unwrap().len(), 1);
+    assert_eq!(block["content"][0]["type"], "image");
+    assert_eq!(block["content"][0]["source"]["data"], "c2hvdA==");
+
+    // Data-URL user image becomes an inline base64 source (not a URL).
+    let image_block = &body["messages"][6]["content"][0];
+    assert_eq!(image_block["type"], "image");
+    assert_eq!(image_block["source"]["type"], "base64");
+    assert_eq!(image_block["source"]["media_type"], "image/gif");
+    assert_eq!(image_block["source"]["data"], "R0lGODlh");
+
+    // toolu_4: text-only result stays a plain string, no array.
+    let block = &body["messages"][8]["content"][0];
+    assert_eq!(block["content"], "plain text result");
+}
