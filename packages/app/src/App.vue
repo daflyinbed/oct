@@ -69,8 +69,10 @@
             />
             <DiffTabView
               v-else-if="activeTab?.kind === 'diff'"
-              title="Working Tree"
-              :diff-files="diffFiles"
+              :key="activeTab.id"
+              :title="activeTab.title"
+              :project-id="activeTab.projectId ?? null"
+              :selection="activeTab.diffSelection"
             />
             <GitGraphTabView v-else-if="activeTab?.kind === 'git-graph'" />
             <McpTabView
@@ -97,7 +99,8 @@
       >
         <DiffPanel
           :visible="showDiffPanel"
-          :diff-files="diffFiles"
+          :project-id="activeProjectId"
+          @open-diff="handleOpenDiffTab"
           @close="showDiffPanel = false"
         />
       </SplitterPanel>
@@ -182,6 +185,7 @@ import { useProjects } from "@/composables/useProjects";
 import { useProviders } from "@/composables/useProviders";
 import { useTabs } from "@/composables/useTabs";
 import type { components } from "@/api/schema";
+import type { DiffSelection } from "@/composables/useGit";
 import type { TabAction } from "@/components/layout/WorkspaceTabBar.vue";
 
 const route = useRoute();
@@ -350,8 +354,19 @@ function handleOpenFile(path: string) {
   });
 }
 
-function handleOpenDiffTab() {
-  openTab({ id: "diff:working-tree", kind: "diff", title: "Working Tree" });
+function handleOpenDiffTab(selection: DiffSelection = {}) {
+  if (!activeProjectId.value) return;
+  showChat.value = true;
+  const title = selection.revision
+    ? `${selection.stash ? "Stash" : "Commit"} ${selection.revision.slice(0, 8)}`
+    : (selection.path ?? "Working Tree");
+  openTab({
+    id: `diff:${activeProjectId.value}:${JSON.stringify(selection)}`,
+    kind: "diff",
+    title,
+    projectId: activeProjectId.value,
+    diffSelection: selection,
+  });
 }
 
 function handleOpenGraphTab() {
@@ -376,32 +391,6 @@ async function handleCreateConversation(projectId: string) {
     router.push(`/conversation/${conv.id}`);
   }
 }
-
-const diffFiles = ref([
-  {
-    path: "crates/oct-llm-provider/src/adapter/openai_compatible.rs",
-    lines: [
-      {
-        num: 1,
-        type: "context",
-        content: "use crate::types::{ChatRequest, ChatResponse};",
-      },
-      { num: 2, type: "remove", content: "use crate::openai::LegacyRequest;" },
-      { num: 3, type: "add", content: "use crate::types::UnifiedRequest;" },
-      { num: 4, type: "context", content: "" },
-      { num: 5, type: "context", content: "pub struct OpenAIAdapter;" },
-    ],
-  },
-  {
-    path: "crates/oct-llm-provider/src/types.rs",
-    lines: [
-      { num: 1, type: "add", content: "pub struct UnifiedRequest {" },
-      { num: 2, type: "add", content: "    pub model: String," },
-      { num: 3, type: "add", content: "    pub messages: Vec<Message>," },
-      { num: 4, type: "add", content: "}" },
-    ],
-  },
-]);
 
 onMounted(() => {
   fetchProjects();

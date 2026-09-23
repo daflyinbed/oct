@@ -242,6 +242,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{projectId}/git/actions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["run_action"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{projectId}/git/diff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_diff"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{projectId}/git/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_history"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{projectId}/git/stashes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_stashes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{projectId}/git/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{projectId}/mcp/ensure": {
         parameters: {
             query?: never;
@@ -615,6 +695,59 @@ export interface components {
         };
         /** @enum {string} */
         FileEntryKind: "dir" | "file";
+        /** @enum {string} */
+        GitAction: "stage" | "unstage" | "restore" | "discard_tracked" | "trash_untracked" | "stash_all" | "stash_tracked" | "stash_pop" | "fetch" | "pull" | "pull_rebase" | "push" | "force_push";
+        GitActionRequest: {
+            action: components["schemas"]["GitAction"];
+            /** @description None means all eligible files; an empty selection is rejected. */
+            paths?: string[] | null;
+            remote?: string | null;
+        };
+        GitActionResult: {
+            message: string;
+        };
+        GitDiff: {
+            patch: string;
+        };
+        GitEntry: {
+            author: string;
+            date: string;
+            id: string;
+            short_id: string;
+            subject: string;
+        };
+        GitFile: {
+            /** Format: int64 */
+            additions: number;
+            binary: boolean;
+            conflicted: boolean;
+            /** Format: int64 */
+            deletions: number;
+            index: string;
+            original_path?: string | null;
+            path: string;
+            /** Format: int64 */
+            staged_additions: number;
+            /** Format: int64 */
+            staged_deletions: number;
+            /** Format: int64 */
+            unstaged_additions: number;
+            /** Format: int64 */
+            unstaged_deletions: number;
+            untracked: boolean;
+            worktree: string;
+        };
+        GitStatus: {
+            /** Format: int64 */
+            ahead: number;
+            /** Format: int64 */
+            behind: number;
+            branch: string;
+            files: components["schemas"]["GitFile"][];
+            remotes: string[];
+            root: string;
+            upstream?: string | null;
+        };
         /**
          * @description An MCP server row merged with the connection manager's live status.
          *
@@ -1680,6 +1813,120 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    run_action: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GitActionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitActionResult"];
+                };
+            };
+        };
+    };
+    get_diff: {
+        parameters: {
+            query?: {
+                path?: string | null;
+                staged?: boolean | null;
+                revision?: string | null;
+                stash?: boolean | null;
+            };
+            header?: never;
+            path: {
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitDiff"];
+                };
+            };
+        };
+    };
+    get_history: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitEntry"][];
+                };
+            };
+        };
+    };
+    get_stashes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitEntry"][];
+                };
+            };
+        };
+    };
+    get_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitStatus"];
+                };
             };
         };
     };

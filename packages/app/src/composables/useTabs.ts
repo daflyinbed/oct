@@ -2,6 +2,8 @@ import { computed, readonly, ref } from "vue";
 import { useMcpStatus } from "./useMcpStatus";
 import { useProjects } from "./useProjects";
 
+import type { DiffSelection } from "./useGit";
+
 export type TabKind = "chat" | "file" | "diff" | "git-graph" | "mcp";
 
 export interface WorkspaceTab {
@@ -13,6 +15,7 @@ export interface WorkspaceTab {
   /** 静态标题兜底；chat 的标题始终从会话数据实时解析 */
   title?: string;
   projectId?: string | null;
+  diffSelection?: DiffSelection;
 }
 
 const tabs = ref<WorkspaceTab[]>([]);

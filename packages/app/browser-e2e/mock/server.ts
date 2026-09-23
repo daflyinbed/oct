@@ -18,6 +18,7 @@
 
 import { Buffer } from "node:buffer";
 import http from "node:http";
+import type { components } from "../../src/api/schema";
 import type { AddressInfo, IncomingMessage, ServerResponse } from "node:http";
 
 // ---------------------------------------------------------------------------
@@ -71,6 +72,13 @@ export type ScriptStep =
   | StepHang;
 
 export interface Scenario {
+  git?: {
+    status: components["schemas"]["GitStatus"];
+    history?: components["schemas"]["GitEntry"][];
+    stashes?: components["schemas"]["GitEntry"][];
+    patch?: string;
+    actionError?: string;
+  };
   /** GET /api/projects 的返回体(形状见 schema.d.ts 的 Project)。 */
   projects?: unknown[];
   /** 全部会话(按 project_id 过滤返回)。 */
@@ -337,6 +345,48 @@ async function handleApi(
   searchParams: URLSearchParams,
 ): Promise<void> {
   const s = state.scenario;
+
+  // Deterministic Git responses and index mutations for Changes UI tests.
+  if (pathname.includes("/git/")) {
+    const fixture = s.git;
+    if (pathname.endsWith("/actions")) {
+      const body = (await readBodyCached(
+        req,
+      )) as components["schemas"]["GitActionRequest"];
+      if (fixture?.actionError)
+        return sendJson(res, 409, { error: fixture.actionError });
+      if (fixture && (body.action === "stage" || body.action === "unstage")) {
+        for (const file of fixture.status.files) {
+          if (body.paths && !body.paths.includes(file.path)) continue;
+          const stage = body.action === "stage";
+          file.index = stage ? "M" : " ";
+          file.worktree = stage ? " " : "M";
+          file.untracked = false;
+        }
+      }
+      return sendJson(res, 200, { message: "Done" });
+    }
+    if (pathname.endsWith("/status"))
+      return sendJson(
+        res,
+        200,
+        fixture?.status ?? {
+          root: "/tmp/demo",
+          branch: "main",
+          upstream: null,
+          ahead: 0,
+          behind: 0,
+          remotes: [],
+          files: [],
+        },
+      );
+    if (pathname.endsWith("/history"))
+      return sendJson(res, 200, fixture?.history ?? []);
+    if (pathname.endsWith("/stashes"))
+      return sendJson(res, 200, fixture?.stashes ?? []);
+    if (pathname.endsWith("/diff"))
+      return sendJson(res, 200, { patch: fixture?.patch ?? "" });
+  }
 
   // GET /api/projects
   if (req.method === "GET" && pathname === "/api/projects") {
