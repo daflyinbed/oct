@@ -4,7 +4,7 @@
 
 Two separate package managers coexist:
 
-- **Rust workspace** (`Cargo.toml`): `crates/oct-llm-provider` (library) → `crates/oct-mcp` (MCP client quarantine crate: wraps rmcp behind a narrow `McpConnection` trait; stdio transport only, no reqwest in its dependency tree) → `crates/oct-agent` (library + `oct-agent` binary; integration tests import `oct_agent::…`)
+- **Rust workspace** (`Cargo.toml`): `crates/oct-llm-provider` (library) → `crates/oct-mcp` (MCP client quarantine crate: wraps rmcp behind a narrow `McpConnection` trait; stdio + Streamable HTTP transports, reqwest 全仓统一 0.13) → `crates/oct-agent` (library + `oct-agent` binary; integration tests import `oct_agent::…`)
 - **pnpm workspace** (`pnpm-workspace.yaml`): `packages/app` (Vue 3 frontend)
 
 ## Commands
@@ -74,29 +74,30 @@ pnpm -r exec eslint .                 # ESLint with @xwbx/eslint-config flat con
 - **Agent loop** (`oct-agent/agent/`): Streams LLM responses, executes tool calls, feeds results back. Supports cancellation via `tokio_util::sync::CancellationToken`. No iteration limit.
 - **Agent tools** (`oct-agent/tools/`): `read`, `write`, `listdir`, `execute`
 - **Context compaction** (`oct-agent/agent/compact.rs` + `db/messages.rs::load_llm_view` + loop 集成): 对话过长时把切割点之前的历史摘要成一条标记行。触发：turn 顶部（每次 LLM 请求前，覆盖 run 首轮与工具轮之间）按「provider 真实 usage 锚点（上一笔请求 input+output）+ 本地增量估算（ASCII÷4 + 非 ASCII×1；无锚点时含 system+工具 schema）」对比窗口 ×0.85，或手动 `/compact`。窗口解析链 `ModelInfo.limits.max_input_tokens` → DB `models.limit_context` → 未知则禁用自动。压缩 = 同模型单轮无工具 `generate`（结构化分段 prompt，输入序列化截断：reasoning 丢弃、tool result 截 1500 字符、总量超限中部丢弃）+ 落一条 role=user 标记行（parts 带摘要框架文本，details_json `kind:"compaction"` 元数据）；**老行永不删除**，`load_llm_view` 只返回「最新标记行之后」的视图并过滤孤儿 ToolResult（repair 也只修标记之后的悬空调用）。尾部 verbatim 保留（窗口/10，封顶 32k，绝不拆 tool_call/tool_result 对）；防死循环（再触发需 est ≥ 压缩后估算 + tail 预算；摘要失败本 run 禁用自动）。SSE 事件 `compacting`/`compacted`（带全量 summary）；`usage` 事件带 `context_window_tokens`；手动端点 `POST /api/conversations/{id}/compact`（session 活动中 409）。前端：`CompactionDivider` 分隔条（stored 标记行 + live 事件两路归一）、`useContextUsage` + 输入框内 `ContextRing` 上下文占用圆环（hover 弹容量详情）、输入框 `/compact` 命令拦截。
-- **MCP support** (`oct-mcp` + `oct-agent/src/mcp.rs` + `oct-agent/api/mcp.rs` + `oct-agent/db/mcp.rs`): MCP 客户端 Phase 1（仅 tools 能力、stdio 传输）。`oct-mcp` 隔离 rmcp（stdio-only features，依赖树禁 reqwest，防与 workspace 的 reqwest 0.12 冲突），公开窄接口 `McpConnection`/`connect_stdio`/`qualified_tool_name`（`mcp__{server}__{tool}`，64 字符截断+哈希后缀）/`ToolNameMap`。`McpManager` 进 AppState，每个 chat turn 前按当前项目对账 enabled `mcp_servers` 行（作用域两级合并：`project_id` NULL=全局、非 NULL=仅该项目；增删改/指纹变更重连、out-of-scope 的过期 entry 仅移除不重连、失败记 Failed、best-effort；连接 key 始终是 server id，跨项目/对话复用同一条连接，scope 只过滤建连触发方与 run 工具集），连接的工具以 `McpTool`（实现 `AgentTool`）拼进 run toolset；工具调用超时默认 60s（行级 `tool_timeout_ms` 覆盖）。REST CRUD 在 `/api/mcp/servers`（列表/详情并入实时连接状态，`?project_id=` 返回该项目的有效集合）；`POST /api/projects/{projectId}/mcp/ensure` 对当前项目做一次同样的 reconcile 后返回有效集合及实时状态（前端选中会话时调用，驱动状态栏 MCP 指示器，见 `useMcpStatus`）；连接态的响应额外并入 manager 缓存的 `tools` 列表（原始名/描述，`McpToolSummary`），供 MCP Tools 面板（`McpTabView`，tab kind `mcp`）展示工具清单与失败错误。
+- **MCP support** (`oct-mcp` + `oct-agent/src/mcp.rs` + `oct-agent/api/mcp.rs` + `oct-agent/db/mcp.rs` + `oct-agent/src/oauth.rs` + `oct-agent/db/mcp_tokens.rs`): MCP 客户端 Phase 2（tools + prompts + resources、stdio + Streamable HTTP、OAuth）。`oct-mcp` 隔离 rmcp（features：`client` + `transport-child-process` + `transport-streamable-http-client-reqwest`），公开窄接口 `McpConnection`（list/call tools、list/render prompts、list/read resources、`tool_list_changed` 通知通道）、`connect_stdio`/`connect_http`（custom headers 透传 Authorization）、`qualified_tool_name`（`mcp__{server}__{tool}`）/`ToolNameMap`；自定义 rmcp ClientHandler（`NotifyHandler`）接 `tools/list_changed` → `watch<u64>` 计数通道。`McpManager` 进 AppState，每个 chat turn 前按当前项目对账 enabled `mcp_servers` 行（作用域两级合并；增删改/指纹变更重连、失败记 Failed；连接 key 是 server id 跨项目复用），连接时同时拉取 tools/prompts/resources 目录，`tools/list_changed` 通知 500ms 去抖后重 list 刷新（`ManagedServer.generation` 防旧监听任务写新 entry）；工具以 `McpTool` 拼进 run toolset，超时默认 60s（行级 `tool_timeout_ms` 覆盖），取消经 `ToolContext.cancel_token()` select 中断在飞调用（不 shutdown 共享连接）；stdio 子进程与 `execute` 工具同设 Linux PDEATHSIG 防孤儿。工具结果多模态：`McpCallResult.images`（base64）→ `ToolOutput.images` → `ToolResult.images`，anthropic 侧 tool_result 变块数组（text + image base64 source），openai 兼容侧在连续 tool 消息后追加一条 user 消息带 data URL（无图时两侧行为/快照不变）。OAuth：显式发起（`POST /api/mcp/servers/{id}/oauth/start` 做 RFC 8414 发现 + RFC 7591 DCR + PKCE S256 + resource 参数）→ `GET /api/mcp/oauth/callback`（state 单次）换 token 存 `mcp_server_tokens` 表 → 连接时 Bearer 合入 headers（token 优先于 headers_json）、过期自动刷新、失败提示重登；token/secret 不进日志与 OpenAPI。prompts 经斜杠命令消费（`useSlashCommands`：输入 `/` 弹菜单，内置命令（如 `/compact`，ChatPanel 就地注册）+ 各 server prompts 分组；带参 prompt 弹 `PromptArgsDialog`，渲染结果填入输入框不自动发送；后端 `POST /api/mcp/servers/{id}/prompts/{name}`）；resources 只读侧在 MCP 面板查看（`POST /api/mcp/servers/{id}/resources/read`）。REST CRUD 在 `/api/mcp/servers`（列表/详情并入实时连接状态与 tools/prompts/resources 目录）；`POST /api/projects/{projectId}/mcp/ensure` reconcile 后返回有效集合（驱动状态栏指示器与 `McpTabView` 面板）。
 - **API** (`oct-agent/api/`): Axum + utoipa OpenAPI generation. Scalar UI at `/scalar`. OpenAPI JSON at `/api/openapi.json`. SSE streaming for chat. Routes:
   - **Providers & Models**: CRUD for providers and models (list, create, update, delete). Models support rich metadata (capabilities, limits, costs, modalities).
   - **Projects**: CRUD (list, create, get, update, delete). Projects have `name` and `working_dir`.
   - **Conversations**: CRUD (list, create, get, update, delete). Conversations belong to a project.
   - **Chat**: Send message (SSE streaming), get messages, manual compaction (`POST /api/conversations/{id}/compact`).
-  - **MCP servers**: CRUD at `/api/mcp/servers`（列表/详情并入 `McpManager` 实时连接状态）；`POST /api/projects/{projectId}/mcp/ensure` 先 reconcile 再返回该项目有效集合。
-- **AppState**: Holds `SqlitePool`, `Arc<ProviderRegistry>`, `Arc<DashMap<String, RunHandle>>` for tracking active agent sessions, and `Arc<McpManager>` for MCP connections.
+  - **MCP servers**: CRUD at `/api/mcp/servers`（列表/详情并入 `McpManager` 实时连接状态与 tools/prompts/resources 目录）；`POST /api/projects/{projectId}/mcp/ensure` 先 reconcile 再返回该项目有效集合；`POST /api/mcp/servers/{id}/prompts/{name}` 渲染 prompt（带参）；`POST /api/mcp/servers/{id}/resources/read` 读 resource；`POST /api/mcp/servers/{id}/oauth/start` + `GET /api/mcp/oauth/callback` + `DELETE /api/mcp/servers/{id}/oauth` 构成 OAuth 授权码 + PKCE 流。
+- **AppState**: Holds `SqlitePool`, `Arc<ProviderRegistry>`, `Arc<DashMap<String, RunHandle>>` for tracking active agent sessions, `Arc<McpManager>` for MCP connections, and `Arc<OAuthFlowStore>` for in-flight MCP OAuth authorization flows (memory-only).
 - **Frontend** (`packages/app`): Vue 3 + Vite 8 + UnoCSS (OKLCH tokens). Uses `openapi-fetch` to consume the generated OpenAPI schema. `@vueuse/core` for composables. `unplugin-vue-components` for auto-imports. Key directories:
-  - `src/composables/`: `useChat.ts`, `useProjects.ts`, `useProviders.ts`, `useMcpServers.ts`, `useContextUsage.ts`（上下文占用指示器）
+  - `src/composables/`: `useChat.ts`, `useProjects.ts`, `useProviders.ts`, `useMcpServers.ts`, `useMcpStatus.ts`, `useSlashCommands.ts`（斜杠命令菜单）, `useContextUsage.ts`（上下文占用指示器）
   - `src/components/chat/`, `diff/`, `file-tree/`, `settings/`, `sidebar/`
   - `src/api/`: `client.ts` (openapi-fetch), `schema.d.ts` (auto-generated)
 
 ## Database Schema
 
-6 tables (init `migrations/20260417182650_init_schema` + `migrations/20260922100000_add_mcp_servers`):
+7 tables (init `migrations/20260417182650_init_schema` + `migrations/20260922100000_add_mcp_servers` + `migrations/20260923110000_add_mcp_server_tokens`):
 
 - `providers`: id, name, adapter_type, base_url, api_key, doc_url, source (`seeded`/`custom`), timestamps
 - `models`: id, provider*id, model_id, name, family, reasoning, tool_call, attachment, structured_output, temperature, knowledge, release_date, open_weights, cost*\_, limit\_\_, modalities\_\*, source, is_enabled, timestamps
 - `projects`: id, name, working_dir, additional_dirs (JSON 数组；附加工作目录，绝对路径 only，工具沙箱多根「任一根内即放行」，相对路径仍锚定 working_dir), timestamps
 - `conversations`: id, project_id, title, title_source (`default`/`ai`/`user`；手动命名永不被自动标题覆盖，自动标题只在 `default` 时条件写入), timestamps
 - `messages`: id, conversation_id, role, parts_json, ordering, provider_id, model_id, input_tokens, output_tokens, reasoning_tokens, created_at
-- `mcp_servers`: id, name (UNIQUE), transport (`stdio`；`http` 字段已预留但 API 尚拒绝), command, args_json, env_json, url, headers_json, enabled, tool_timeout_ms, project_id (NULL=全局；非 NULL=仅该项目，FK cascade 随项目删除), timestamps
+- `mcp_servers`: id, name (UNIQUE), transport (`stdio`/`http`), command, args_json, env_json, url, headers_json (http 侧静态 headers/bearer), enabled, tool_timeout_ms, project_id (NULL=全局；非 NULL=仅该项目，FK cascade 随项目删除), timestamps
+- `mcp_server_tokens`: server_id (PK=UNIQUE, FK cascade → mcp_servers), client_id, client_secret, access_token, refresh_token, token_type, scope, expires_at, obtained_at, timestamps（OAuth 凭据，永不经 API 返回）
 
 ## Testing
 
