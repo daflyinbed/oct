@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT COUNT(*) FROM messages WHERE conversation_id = $1 AND role = 'user'",
+  "query": "SELECT COUNT(*) FROM conversation_messages cm JOIN messages m ON m.id = cm.message_id WHERE cm.conversation_id = $1 AND m.role = 'user'",
   "describe": {
     "columns": [
       {
@@ -16,5 +16,5 @@
       false
     ]
   },
-  "hash": "f1b31d3cfcae29023877ab14c04c4626c79f38d6db546bd36aa22d3cf57f8eda"
+  "hash": "20ea99c47fc503aa8ba82b3f8a4caf7cd154da3a5c4fc2bd33060fe01d9da654"
 }

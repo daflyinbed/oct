@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE conversation_messages SET ordering = -ordering + 1 WHERE conversation_id = $1 AND ordering < 0",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "abd782d1bbf0496651e7ff96f397a601327b9f48efc385db6aff5abba9d0d7d8"
+}

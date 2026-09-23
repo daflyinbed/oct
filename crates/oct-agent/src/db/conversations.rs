@@ -96,7 +96,16 @@ pub async fn delete_conversation(pool: &SqlitePool, id: &str) -> Result<bool> {
             .execute(pool)
             .await?;
 
-    Ok(result.rows_affected() > 0)
+    if result.rows_affected() > 0 {
+        // The cascade stopped at the membership rows; sweep the content rows
+        // this deletion orphaned (they are the big payloads — tool results,
+        // COW originals). Rows still referenced as a live copy's original
+        // survive; see `delete_orphan_content_rows`.
+        super::messages::delete_orphan_content_rows(pool).await?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 
 pub async fn update_conversation_title(pool: &SqlitePool, id: &str, title: &str) -> Result<bool> {

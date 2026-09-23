@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE conversations SET context_revision = context_revision + 1 WHERE id = $1 RETURNING context_revision",
+  "describe": {
+    "columns": [
+      {
+        "name": "context_revision",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "a08dfb9f20746dba81ac501aefca81d3dc96e85c2f4a42c2af23bf9a8560e011"
+}

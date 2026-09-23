@@ -34,7 +34,7 @@
       <ThinkingCard v-else-if="part.kind === 'reasoning'" :part="part" />
       <!-- 流式压缩事件落在当前流式消息的 parts 里（通常位于最前部） -->
       <CompactionDivider v-else-if="part.kind === 'compaction'" :part="part" />
-      <ToolCallCard v-else :part="part" />
+      <ToolCallCard v-else :part="part" :conversation-id="conversationId" />
     </template>
     <!-- 尚无任何内容时的流式占位光标 -->
     <div v-if="message.isStreaming && message.parts.length === 0">
@@ -55,6 +55,8 @@ import type {
 
 defineProps<{
   message: DisplayMessage;
+  /** 「查看原文」（microcompact 副本回查）需要会话作用域。 */
+  conversationId: string | null;
 }>();
 
 function partKey(part: DisplayPart, index: number): string {

@@ -81,6 +81,13 @@ const PER_MESSAGE_OVERHEAD_TOKENS: u64 = 4;
 /// Per tool-call/result pairing overhead.
 const PER_TOOL_PART_OVERHEAD_TOKENS: u64 = 8;
 
+/// Flat per-image estimate for tool results carrying images (base64 MCP
+/// attachments). Base64 length ÷ 4 would wildly over-count (a 1 MB image is
+/// ~343k "tokens" by chars); the real cost of an image to a provider scales
+/// with its pixels, so a flat value in the oh-my-pi / ZCode ballpark is the
+/// honest heuristic.
+pub const TOOL_IMAGE_ESTIMATE_TOKENS: u64 = 1_200;
+
 pub fn estimate_message(msg: &Message) -> u64 {
     PER_MESSAGE_OVERHEAD_TOKENS + msg.parts.iter().map(estimate_part).sum::<u64>()
 }
@@ -94,7 +101,9 @@ fn estimate_part(part: &ContentPart) -> u64 {
             PER_TOOL_PART_OVERHEAD_TOKENS + estimate_str(&tc.name) + estimate_str(&tc.arguments)
         }
         ContentPart::ToolResult(tr) => {
-            PER_TOOL_PART_OVERHEAD_TOKENS + estimate_str(&tool_result_text(&tr.content))
+            PER_TOOL_PART_OVERHEAD_TOKENS
+                + estimate_str(&tool_result_text(&tr.content))
+                + tr.images.len() as u64 * TOOL_IMAGE_ESTIMATE_TOKENS
         }
     }
 }
@@ -140,7 +149,7 @@ pub fn estimate_context(
     }
 }
 
-fn tool_result_text(content: &Value) -> String {
+pub(crate) fn tool_result_text(content: &Value) -> String {
     match content {
         Value::String(s) => s.clone(),
         other => other.to_string(),
@@ -197,8 +206,8 @@ pub fn find_cut_point(messages: &[Message], tail_keep: u64) -> Option<usize> {
 /// Start index of the last complete exchange: the trailing block of tool
 /// results plus the assistant message that issued them. When the last message
 /// is not a tool result, this is simply `messages.len()` (no minimum beyond
-/// the budget cut).
-fn last_round_start(messages: &[Message]) -> usize {
+/// the budget cut). Shared with microcompact's protection window.
+pub(crate) fn last_round_start(messages: &[Message]) -> usize {
     let mut i = messages.len();
     while i > 0 && messages[i - 1].role == Role::Tool {
         i -= 1;
@@ -430,10 +439,14 @@ pub enum CompactAttempt {
 }
 
 /// Run one auto-compaction at a turn boundary: summarize `cut` messages,
-/// persist the marker row, and rebuild `full_messages` to
-/// `[system, marker, tail]`. On success the usage anchor resets to `None` —
-/// no provider has ever seen the rebuilt history, so estimates fall back to
-/// the (schema-aware) local path until the next real usage arrives.
+/// persist the marker row INTO the timeline at the cut (between the
+/// summarized region and the tail — appending it at the end would place the
+/// tail before the marker and drop it from every future `load_llm_view`), and
+/// rebuild `full_messages` to `[system, marker, tail]`. On success the usage
+/// anchor resets to `None` — no provider has ever seen the rebuilt history,
+/// so estimates fall back to the (schema-aware) local path until the next
+/// real usage arrives. `message_orderings` is the loop's ordering vector
+/// parallel to `full_messages`; it is rebuilt alongside it.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_auto_compaction(
     model: &dyn ChatModel,
@@ -445,6 +458,7 @@ pub async fn run_auto_compaction(
     context_window: u32,
     tool_specs: &[ToolSpec],
     full_messages: &mut Vec<Message>,
+    message_orderings: &mut Vec<i64>,
     usage_anchor: &mut Option<(u64, usize)>,
     est_before: u64,
 ) -> CompactAttempt {
@@ -454,6 +468,9 @@ pub async fn run_auto_compaction(
     };
     let region = full_messages[1..1 + cut].to_vec();
     let tail = full_messages[1 + cut..].to_vec();
+    // The DB ordering of the first tail message: the marker takes over this
+    // slot and the tail shifts up by one.
+    let cut_ordering = message_orderings[1 + cut];
 
     hub.publish(AgentEvent::Compacting {
         triggered_by: CompactionTrigger::Auto,
@@ -481,16 +498,31 @@ pub async fn run_auto_compaction(
     let est_after = estimate_context(&rebuilt, tool_specs, None);
 
     let details = marker_details(CompactionTrigger::Auto, cut, est_before, est_after);
-    let stored =
-        match msg_db::insert_message(pool, conv_id, &marker, None, None, Some(&details)).await {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!("auto compaction failed to persist marker row: {e}");
-                return CompactAttempt::Failed;
-            }
-        };
+    let stored = match msg_db::insert_message_at_ordering(
+        pool,
+        conv_id,
+        &marker,
+        None,
+        None,
+        Some(&details),
+        cut_ordering,
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("auto compaction failed to persist marker row: {e}");
+            return CompactAttempt::Failed;
+        }
+    };
 
     *full_messages = rebuilt;
+    // The tail rows were shifted +1 in the DB; mirror that in the parallel
+    // ordering vector and splice the marker's ordering in after the sentinel.
+    let tail_orderings: Vec<i64> = message_orderings[1 + cut..].iter().map(|o| o + 1).collect();
+    message_orderings.truncate(1);
+    message_orderings.push(stored.ordering);
+    message_orderings.extend(tail_orderings);
     *usage_anchor = None;
     hub.publish(AgentEvent::Compacted {
         summary_message_id: stored.id,

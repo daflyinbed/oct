@@ -1,0 +1,44 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT o.id, o.role, o.parts_json, o.details_json, o.created_at FROM conversation_messages cm JOIN messages c ON c.id = cm.message_id JOIN messages o ON o.id = c.supersedes_message_id WHERE cm.conversation_id = $1 AND cm.message_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "role",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "parts_json",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "details_json",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 4,
+        "type_info": "Datetime"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "5cbd9799ba3385edf5709245c874035675fafb0212c802cd39cb87741ad7e9b4"
+}

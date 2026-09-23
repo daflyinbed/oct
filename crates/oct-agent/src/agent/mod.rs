@@ -1,6 +1,7 @@
 pub mod compact;
 pub mod events;
 pub mod loop_runner;
+pub mod micro;
 pub mod prompt;
 pub mod title;
 
@@ -102,6 +103,21 @@ pub enum AgentEvent {
         context_window_tokens: Option<u32>,
     },
 
+    /// Microcompact completed: old successful tool results were replaced by
+    /// placeholder copies (copy-on-write; no model call involved). Carries
+    /// the replacements so a live UI can swap its historical tool cards to
+    /// the cleared state in place; replay-safe (keyed by call_id).
+    #[serde(rename = "microcompacted")]
+    Microcompacted {
+        triggered_by: MicrocompactTrigger,
+        replacements: Vec<MicrocompactReplacement>,
+        /// Estimated tokens freed by the clear.
+        est_tokens_saved: u64,
+        /// Estimated context size of the NEXT request after the clear
+        /// (anchor-aware; same口径 as the compaction trigger's estimate).
+        est_context_tokens: u64,
+    },
+
     #[serde(rename = "finish")]
     Finish,
 
@@ -138,6 +154,11 @@ pub struct AgentContext {
     /// provider info first, then the models table's limit_context. `None`
     /// disables AUTO compaction (manual still works).
     pub context_window: Option<u32>,
+    /// How long the conversation sat idle before this run started, captured
+    /// in the API layer BEFORE the repair/new-user-message writes (anything
+    /// later would always look "just active"). Drives microcompact's idle
+    /// entry; `None`/short values mean waterline-only.
+    pub idle: Option<std::time::Duration>,
 }
 
 /// What started a compaction.
@@ -146,6 +167,26 @@ pub struct AgentContext {
 pub enum CompactionTrigger {
     Auto,
     Manual,
+}
+
+/// What started a microcompaction.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MicrocompactTrigger {
+    /// The estimated context crossed the waterline (70% of the window).
+    Waterline,
+    /// The run started long after the conversation's last activity.
+    Idle,
+}
+
+/// One copy-on-write replacement from a microcompact batch: the tool result
+/// named by `call_id` now shows its cleared copy. The copy row id is what a
+/// "view original" affordance follows (its supersedes back-pointer leads to
+/// the original content).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq)]
+pub struct MicrocompactReplacement {
+    pub call_id: String,
+    pub copy_message_id: String,
 }
 
 #[derive(Clone)]

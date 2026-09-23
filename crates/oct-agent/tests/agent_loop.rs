@@ -1259,6 +1259,7 @@ async fn auto_compaction_replaces_history_persists_marker_and_streams_events() {
 
     let view = db::messages::LlmView {
         messages: compact_history(4), // 9 messages
+        orderings: (1..=9).collect(),
         anchor: None,
     };
     let (_handle, mut rx) = support::spawn_agent_with(
@@ -1353,6 +1354,7 @@ fn event_name(e: &AgentEvent) -> &'static str {
     match e {
         AgentEvent::Compacting { .. } => "compacting",
         AgentEvent::Compacted { .. } => "compacted",
+        AgentEvent::Microcompacted { .. } => "microcompacted",
         AgentEvent::TextDelta(_) => "text_delta",
         AgentEvent::Finish => "finish",
         _ => "other",
@@ -1489,6 +1491,7 @@ async fn auto_compaction_failure_does_not_break_the_run() {
 
     let view = db::messages::LlmView {
         messages: compact_history(4),
+        orderings: (1..=9).collect(),
         anchor: None,
     };
     let (_handle, mut rx) = support::spawn_agent_with(
@@ -1634,4 +1637,1277 @@ async fn load_llm_view_starts_at_last_marker_drops_orphans_and_anchors() {
             .unwrap()
             .is_empty()
     );
+}
+
+// --- Membership split: compaction persistence, COW anchor semantics ------
+
+use oct_agent::db::messages::CowSwap;
+
+const CLEARED_PLACEHOLDER: &str = "[Old tool result content cleared]";
+
+/// Alternating user/assistant rounds plus a trailing user message, seeded
+/// INTO the DB (unlike `compact_history`, which only builds an in-memory
+/// view). The last assistant carries usage so it becomes the provider
+/// anchor.
+async fn seed_db_history(pool: &sqlx::SqlitePool, conv_id: &str, rounds: usize) {
+    for i in 0..rounds {
+        msg_db::insert_message(
+            pool,
+            conv_id,
+            &Message::text(Role::User, format!("old-user-{i}")),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let assistant = msg_db::insert_message(
+            pool,
+            conv_id,
+            &Message::text(Role::Assistant, format!("old-assistant-{i}")),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        if i == rounds - 1 {
+            msg_db::update_message_usage(pool, &assistant.id, Some(400), Some(30), None)
+                .await
+                .unwrap();
+        }
+    }
+    msg_db::insert_message(
+        pool,
+        conv_id,
+        &Message::text(Role::User, "the current request"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+}
+
+/// Regression (P1-3 + P1-2): after an auto compaction the verbatim tail must
+/// survive in the DB AFTER the marker (so the next `load_llm_view` keeps it),
+/// and the pre-compaction assistant usage in the tail must NOT be picked up
+/// as the anchor — its input tokens contain the compacted-away prefix.
+#[tokio::test]
+async fn auto_compaction_persists_tail_and_reloads_without_old_anchor() {
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+    seed_db_history(&env.pool, &conv_id, 8).await; // 17 messages
+
+    // No usage in the stream: the run's assistant stays usage-less, so the
+    // reloaded view must have NO anchor at all (local estimation takes over,
+    // mirroring the in-run anchor=None reset right after compaction).
+    let model = ScriptedModel::new(vec![Turn::Stream(vec![
+        text("done"),
+        finish(FinishReason::Stop),
+    ])]);
+    model.push_generation(Ok("SUMMARY: compacted".to_string()));
+
+    let view = msg_db::load_llm_view(&env.pool, &conv_id).await.unwrap();
+    // 430-token anchor + the trailing user message pushes past the 425
+    // threshold of a 500-token window.
+    assert!(view.anchor.is_some(), "seeded anchor present before run");
+    let (_handle, mut rx) = support::spawn_agent_with(
+        model,
+        Vec::new(),
+        env.pool.clone(),
+        &conv_id,
+        view,
+        Some(500),
+    )
+    .await;
+    let events = collect_events(&mut rx, is_terminal).await;
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Compacted { .. })),
+        "compaction ran: {events:?}"
+    );
+
+    let reloaded = msg_db::load_llm_view(&env.pool, &conv_id).await.unwrap();
+    // The view starts at the marker and KEEPS the tail verbatim.
+    let ContentPart::Text(marker_text) = &reloaded.messages[0].parts[0] else {
+        panic!("view starts at the marker");
+    };
+    assert!(marker_text.contains("[Context compaction]"));
+    let joined = reloaded
+        .messages
+        .iter()
+        .map(|m| serde_json::to_string(m).unwrap())
+        .collect::<String>();
+    assert!(joined.contains("old-assistant-7"), "tail assistant kept");
+    assert!(joined.contains("the current request"), "tail user kept");
+    assert!(!joined.contains("old-user-0"), "region excluded");
+    // The tail assistant carries usage but was appended BEFORE the marker.
+    assert_eq!(reloaded.anchor, None, "no pre-compaction anchor");
+
+    // The stored timeline is contiguous: marker sits between the region and
+    // the shifted-up tail (two-phase move leaves no holes or negatives).
+    let stored = msg_db::list_messages(&env.pool, &conv_id).await.unwrap();
+    let orderings: Vec<i64> = stored.iter().map(|m| m.ordering).collect();
+    assert_eq!(
+        orderings,
+        (1..=stored.len() as i64).collect::<Vec<_>>(),
+        "contiguous orderings"
+    );
+    let marker_row = stored
+        .iter()
+        .find(|m| {
+            m.details_json
+                .as_deref()
+                .is_some_and(|d| d.contains("\"kind\":\"compaction\""))
+        })
+        .expect("marker row");
+    let tail_rows_before: Vec<&db::messages::StoredMessage> = stored
+        .iter()
+        .filter(|m| m.ordering > marker_row.ordering)
+        .collect();
+    assert!(
+        tail_rows_before.len() >= 6,
+        "tail rows persisted after the marker"
+    );
+}
+
+/// Companion: once a NEW usage lands after the marker, the reloaded anchor is
+/// that fresh assistant — the revision rule must not exclude it.
+#[tokio::test]
+async fn post_compaction_usage_becomes_the_reloaded_anchor() {
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+    seed_db_history(&env.pool, &conv_id, 8).await;
+
+    let model = ScriptedModel::new(vec![Turn::Stream(vec![
+        text("done"),
+        usage(300, 60),
+        finish(FinishReason::Stop),
+    ])]);
+    model.push_generation(Ok("SUMMARY: compacted".to_string()));
+
+    let view = msg_db::load_llm_view(&env.pool, &conv_id).await.unwrap();
+    let (_handle, mut rx) = support::spawn_agent_with(
+        model,
+        Vec::new(),
+        env.pool.clone(),
+        &conv_id,
+        view,
+        Some(500),
+    )
+    .await;
+    let events = collect_events(&mut rx, is_terminal).await;
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Compacted { .. }))
+    );
+
+    let reloaded = msg_db::load_llm_view(&env.pool, &conv_id).await.unwrap();
+    let anchor = reloaded.anchor.expect("fresh usage anchors the view");
+    assert_eq!(anchor.tokens, 360);
+    assert_eq!(
+        anchor.message_index,
+        reloaded.messages.len() - 1,
+        "anchor is the post-marker assistant"
+    );
+}
+
+/// A cleared tool-result message: placeholder content, same call_id, images
+/// emptied.
+fn cleared_tool_result(call_id: &str) -> Message {
+    Message {
+        role: Role::Tool,
+        parts: vec![ContentPart::ToolResult(ToolResult {
+            call_id: call_id.to_string(),
+            content: json!(CLEARED_PLACEHOLDER),
+            is_error: false,
+            images: Vec::new(),
+        })],
+    }
+}
+
+/// COW swap that happened AFTER the anchor's request: the anchor's provider
+/// tokens must be adjusted by the recomputed savings; re-applying is a no-op.
+#[tokio::test]
+async fn cow_swap_after_anchor_deducts_tokens_across_reload() {
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+
+    msg_db::insert_message(
+        &env.pool,
+        &conv_id,
+        &Message::text(Role::User, "q"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    msg_db::insert_message(
+        &env.pool,
+        &conv_id,
+        &Message {
+            role: Role::Assistant,
+            parts: vec![ContentPart::ToolCall(ToolCall {
+                id: "c1".to_string(),
+                name: "read".to_string(),
+                arguments: "{}".to_string(),
+            })],
+        },
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    msg_db::insert_message(
+        &env.pool,
+        &conv_id,
+        &Message {
+            role: Role::Tool,
+            parts: vec![ContentPart::ToolResult(ToolResult {
+                call_id: "c1".to_string(),
+                content: json!("x".repeat(800)),
+                is_error: false,
+                images: Vec::new(),
+            })],
+        },
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let anchor = msg_db::insert_message(
+        &env.pool,
+        &conv_id,
+        &Message::text(Role::Assistant, "a2"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    msg_db::update_message_usage(&env.pool, &anchor.id, Some(500), Some(50), None)
+        .await
+        .unwrap();
+
+    let before = msg_db::load_llm_view(&env.pool, &conv_id).await.unwrap();
+    assert_eq!(before.anchor.as_ref().unwrap().tokens, 550);
+
+    // Swap AFTER the anchor exists (its revision is later than the anchor's
+    // append revision) — the anchor's 550 tokens counted the full content.
+    let swapped = msg_db::apply_cow_swaps(
+        &env.pool,
+        &conv_id,
+        &[CowSwap {
+            call_id: "c1".to_string(),
+            copy: cleared_tool_result("c1"),
+            details: None,
+        }],
+    )
+    .await
+    .unwrap();
+    assert_eq!(swapped.len(), 1);
+
+    let after = msg_db::load_llm_view(&env.pool, &conv_id).await.unwrap();
+    // The view shows the placeholder.
+    let ContentPart::ToolResult(tr) = &after.messages[2].parts[0] else {
+        panic!("tool row");
+    };
+    assert_eq!(tr.content, json!(CLEARED_PLACEHOLDER));
+
+    let original_msg = Message {
+        role: Role::Tool,
+        parts: vec![ContentPart::ToolResult(ToolResult {
+            call_id: "c1".to_string(),
+            content: json!("x".repeat(800)),
+            is_error: false,
+            images: Vec::new(),
+        })],
+    };
+    let savings = compact::estimate_message(&original_msg)
+        - compact::estimate_message(&cleared_tool_result("c1"));
+    assert_eq!(
+        after.anchor.as_ref().unwrap().tokens,
+        550 - savings,
+        "anchor adjusted by recomputed savings"
+    );
+
+    // Idempotent: the original no longer holds the slot.
+    let again = msg_db::apply_cow_swaps(
+        &env.pool,
+        &conv_id,
+        &[CowSwap {
+            call_id: "c1".to_string(),
+            copy: cleared_tool_result("c1"),
+            details: None,
+        }],
+    )
+    .await
+    .unwrap();
+    assert!(again.is_empty(), "re-swap skipped");
+    let stable = msg_db::load_llm_view(&env.pool, &conv_id).await.unwrap();
+    assert_eq!(
+        stable.anchor.as_ref().unwrap().tokens,
+        after.anchor.as_ref().unwrap().tokens
+    );
+}
+
+/// COW swap that happened BEFORE the anchor's request: the anchor's usage
+/// already reflects the placeholder — no deduction.
+#[tokio::test]
+async fn cow_swap_before_anchor_is_not_deducted() {
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+
+    msg_db::insert_message(
+        &env.pool,
+        &conv_id,
+        &Message::text(Role::User, "q"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    msg_db::insert_message(
+        &env.pool,
+        &conv_id,
+        &Message {
+            role: Role::Assistant,
+            parts: vec![ContentPart::ToolCall(ToolCall {
+                id: "c1".to_string(),
+                name: "read".to_string(),
+                arguments: "{}".to_string(),
+            })],
+        },
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    msg_db::insert_message(
+        &env.pool,
+        &conv_id,
+        &Message {
+            role: Role::Tool,
+            parts: vec![ContentPart::ToolResult(ToolResult {
+                call_id: "c1".to_string(),
+                content: json!("x".repeat(800)),
+                is_error: false,
+                images: Vec::new(),
+            })],
+        },
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Swap FIRST, then the anchor assistant is appended (its request saw the
+    // placeholder already).
+    msg_db::apply_cow_swaps(
+        &env.pool,
+        &conv_id,
+        &[CowSwap {
+            call_id: "c1".to_string(),
+            copy: cleared_tool_result("c1"),
+            details: None,
+        }],
+    )
+    .await
+    .unwrap();
+    let anchor = msg_db::insert_message(
+        &env.pool,
+        &conv_id,
+        &Message::text(Role::Assistant, "a2"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    msg_db::update_message_usage(&env.pool, &anchor.id, Some(500), Some(50), None)
+        .await
+        .unwrap();
+
+    let view = msg_db::load_llm_view(&env.pool, &conv_id).await.unwrap();
+    assert_eq!(
+        view.anchor.as_ref().unwrap().tokens,
+        550,
+        "no deduction for a swap older than the anchor"
+    );
+}
+
+/// The two-phase tail shift must keep orderings contiguous and unique under
+/// repeated mid-timeline inserts (and never leave parked negative values).
+#[tokio::test]
+async fn insert_at_ordering_shifts_tail_without_unique_collision() {
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+
+    for i in 0..5 {
+        msg_db::insert_message(
+            &env.pool,
+            &conv_id,
+            &Message::text(Role::User, format!("m{i}")),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    let marker = msg_db::insert_message_at_ordering(
+        &env.pool,
+        &conv_id,
+        &Message::text(Role::User, "marker"),
+        None,
+        None,
+        None,
+        3,
+    )
+    .await
+    .unwrap();
+    assert_eq!(marker.ordering, 3);
+
+    let stored = msg_db::list_messages(&env.pool, &conv_id).await.unwrap();
+    assert_eq!(stored.len(), 6);
+    assert_eq!(
+        stored.iter().map(|m| m.ordering).collect::<Vec<_>>(),
+        (1..=6).collect::<Vec<_>>(),
+        "contiguous after first insert"
+    );
+    assert_eq!(stored[2].parts_json, marker.parts_json, "marker at slot 3");
+    assert!(stored[3].parts_json.contains("m2"), "m2 shifted up");
+
+    let again = msg_db::insert_message_at_ordering(
+        &env.pool,
+        &conv_id,
+        &Message::text(Role::User, "marker2"),
+        None,
+        None,
+        None,
+        2,
+    )
+    .await
+    .unwrap();
+    assert_eq!(again.ordering, 2);
+
+    let stored = msg_db::list_messages(&env.pool, &conv_id).await.unwrap();
+    assert_eq!(stored.len(), 7);
+    assert_eq!(
+        stored.iter().map(|m| m.ordering).collect::<Vec<_>>(),
+        (1..=7).collect::<Vec<_>>(),
+        "contiguous after second insert"
+    );
+    assert!(
+        stored.iter().all(|m| m.ordering > 0),
+        "no parked negatives remain"
+    );
+    // Revisions are unique per mutation and ordered by MUTATION time, not by
+    // timeline position — the markers were appended last (highest revisions)
+    // yet sit at middle slots. That decoupling is the whole point of the
+    // revision counter.
+    let mut revisions: Vec<i64> = stored.iter().map(|m| m.appended_at_revision).collect();
+    revisions.sort_unstable();
+    assert_eq!(revisions, (1..=7).collect::<Vec<_>>());
+    let mut marker_revisions: Vec<i64> = stored
+        .iter()
+        .filter(|m| m.parts_json.contains("marker"))
+        .map(|m| m.appended_at_revision)
+        .collect();
+    marker_revisions.sort_unstable();
+    assert_eq!(marker_revisions, vec![6, 7], "markers mutated last");
+}
+
+/// A pool with the PRE-split schema (every older migration replayed by raw
+/// SQL, no sqlx bookkeeping) for testing the split migration's SQL directly.
+/// The migrator wiring itself is exercised by every TestEnv (fresh chain).
+async fn legacy_split_pool() -> (tempfile::TempDir, sqlx::SqlitePool) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let url = format!("sqlite://{}", dir.path().join("legacy.db").display());
+    let options = <sqlx::sqlite::SqliteConnectOptions as std::str::FromStr>::from_str(&url)
+        .expect("url")
+        .create_if_missing(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .expect("legacy pool");
+
+    for up in [
+        include_str!("../../../migrations/20260417182650_init_schema.up.sql"),
+        include_str!("../../../migrations/20260916100000_add_details_json_to_messages.up.sql"),
+        include_str!("../../../migrations/20260921120000_add_conversation_title_source.up.sql"),
+        include_str!("../../../migrations/20260922090000_add_project_additional_dirs.up.sql"),
+        include_str!("../../../migrations/20260922100000_add_mcp_servers.up.sql"),
+        include_str!("../../../migrations/20260922110000_add_project_scope_to_mcp_servers.up.sql"),
+        include_str!("../../../migrations/20260923110000_add_mcp_server_tokens.up.sql"),
+    ] {
+        sqlx::raw_sql(up).execute(&pool).await.expect("legacy up");
+    }
+    (dir, pool)
+}
+
+/// Migration fidelity: a legacy-shaped database (old single-table layout,
+/// append-only) must migrate into the split with `appended_at_revision`
+/// derived from the old ordering, keeping a post-marker assistant eligible
+/// as the usage anchor.
+#[tokio::test]
+async fn membership_migration_backfill_preserves_anchor_eligibility() {
+    let (_dir, pool) = legacy_split_pool().await;
+
+    sqlx::query("INSERT INTO projects (id, name, working_dir, created_at, updated_at) VALUES ('p1', 'legacy', '/tmp', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)")
+        .execute(&pool)
+        .await
+        .expect("legacy project");
+    sqlx::query("INSERT INTO conversations (id, project_id, title, created_at, updated_at) VALUES ('c1', 'p1', 'legacy', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)")
+        .execute(&pool)
+        .await
+        .expect("legacy conversation");
+    let parts = |text: &str| serde_json::to_string(&Message::text(Role::User, text).parts).unwrap();
+    // (ordering 1) user, (2) marker, (3) assistant with usage.
+    sqlx::query("INSERT INTO messages (id, conversation_id, role, parts_json, details_json, ordering, created_at) VALUES ('m1', 'c1', 'user', $1, NULL, 1, CURRENT_TIMESTAMP)")
+        .bind(parts("legacy q"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO messages (id, conversation_id, role, parts_json, details_json, ordering, created_at) VALUES ('m2', 'c1', 'user', $1, $2, 2, CURRENT_TIMESTAMP)")
+        .bind(parts("[Context compaction] legacy summary"))
+        .bind(r#"{"kind":"compaction"}"#)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO messages (id, conversation_id, role, parts_json, details_json, ordering, provider_id, model_id, input_tokens, output_tokens, created_at) VALUES ('m3', 'c1', 'assistant', $1, NULL, 3, 'p', 'm', 100, 20, CURRENT_TIMESTAMP)")
+        .bind(serde_json::to_string(&Message::text(Role::Assistant, "a").parts).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    sqlx::raw_sql(include_str!(
+        "../../../migrations/20260923140000_split_message_membership.up.sql"
+    ))
+    .execute(&pool)
+    .await
+    .expect("split migration");
+
+    // The post-marker assistant stays eligible: old ordering made its
+    // appended_at_revision (3) later than the marker's (2).
+    let view = msg_db::load_llm_view(&pool, "c1").await.expect("view");
+    assert_eq!(view.messages.len(), 2, "view starts at the marker");
+    let anchor = view.anchor.expect("legacy anchor preserved");
+    assert_eq!(anchor.tokens, 120);
+    assert_eq!(anchor.message_index, 1);
+
+    let stored = msg_db::list_messages(&pool, "c1").await.unwrap();
+    assert_eq!(
+        stored.iter().map(|m| m.ordering).collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
+    let revision: i64 =
+        sqlx::query_scalar("SELECT context_revision FROM conversations WHERE id = 'c1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(revision, 3, "counter continues past the old max ordering");
+}
+
+// --- Microcompact -----------------------------------------------------------
+
+use oct_agent::agent::micro;
+
+/// [user, (assistant+call, big result) × n, user] seeded into the DB. Result
+/// contents are distinct (`p{i}` + pad) so cleared/kept boundaries are
+/// assertable in wire requests.
+async fn seed_tool_history(pool: &sqlx::SqlitePool, conv_id: &str, rounds: usize, pad: usize) {
+    msg_db::insert_message(
+        pool,
+        conv_id,
+        &Message::text(Role::User, "go"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    for i in 0..rounds {
+        msg_db::insert_message(
+            pool,
+            conv_id,
+            &Message {
+                role: Role::Assistant,
+                parts: vec![ContentPart::ToolCall(ToolCall {
+                    id: format!("c{i}"),
+                    name: "read".to_string(),
+                    arguments: "{}".to_string(),
+                })],
+            },
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        msg_db::insert_message(
+            pool,
+            conv_id,
+            &Message {
+                role: Role::Tool,
+                parts: vec![ContentPart::ToolResult(ToolResult {
+                    call_id: format!("c{i}"),
+                    content: json!(format!("p{i} ") + &"x".repeat(pad)),
+                    is_error: false,
+                    images: Vec::new(),
+                })],
+            },
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    msg_db::insert_message(
+        pool,
+        conv_id,
+        &Message::text(Role::User, "next"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn microcompact_waterline_clears_old_results_and_keeps_recent() {
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+    seed_tool_history(&env.pool, &conv_id, 8, 4_000).await;
+
+    // est ≈ 8200 tokens: over the 70% waterline of a 10k window (7000) but
+    // under the summary threshold (8500) even BEFORE clearing — isolating
+    // micro from summary compaction entirely.
+    let model = ScriptedModel::new(vec![Turn::Stream(vec![
+        text("ok"),
+        finish(FinishReason::Stop),
+    ])]);
+    let observer = model.observer();
+
+    let view = msg_db::load_llm_view(&env.pool, &conv_id).await.unwrap();
+    let (_handle, mut rx) = support::spawn_agent_full(
+        model,
+        Vec::new(),
+        env.pool.clone(),
+        &conv_id,
+        view,
+        Some(10_000),
+        None,
+    )
+    .await;
+    let events = collect_events(&mut rx, is_terminal).await;
+
+    let micro_events: Vec<&AgentEvent> = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::Microcompacted { .. }))
+        .collect();
+    assert_eq!(micro_events.len(), 1, "one microcompact at the turn top");
+    let AgentEvent::Microcompacted {
+        triggered_by,
+        replacements,
+        est_tokens_saved,
+        ..
+    } = micro_events[0]
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        *triggered_by,
+        oct_agent::agent::MicrocompactTrigger::Waterline
+    );
+    // 8 results − trailing round (none, ends on user) − 5 protected = 3.
+    assert_eq!(replacements.len(), 3);
+    let cleared: Vec<&str> = replacements.iter().map(|r| r.call_id.as_str()).collect();
+    assert_eq!(cleared, vec!["c0", "c1", "c2"]);
+    assert!(*est_tokens_saved >= micro::MIN_SAVINGS_TOKENS);
+
+    // No summary compaction happened alongside.
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Compacted { .. })),
+        "waterline micro alone; no summary call"
+    );
+
+    // The wire request carries placeholders for the cleared three and the
+    // verbatim payloads for the protected five.
+    let req = &observer.requests()[0];
+    let serialized = serde_json::to_string(&req.messages).unwrap();
+    assert_eq!(
+        serialized.matches(micro::PLACEHOLDER_CONTENT).count(),
+        3,
+        "cleared results are placeholders on the wire"
+    );
+    for i in 0..3 {
+        assert!(!serialized.contains(&format!("p{i} ")), "p{i} cleared");
+    }
+    for i in 3..8 {
+        assert!(serialized.contains(&format!("p{i} ")), "p{i} protected");
+    }
+
+    // Persisted as COW: the reloaded view shows placeholders, the originals
+    // stay reachable via supersedes.
+    let reloaded = msg_db::load_llm_view(&env.pool, &conv_id).await.unwrap();
+    let reloaded_serialized = serde_json::to_string(&reloaded.messages).unwrap();
+    assert_eq!(
+        reloaded_serialized
+            .matches(micro::PLACEHOLDER_CONTENT)
+            .count(),
+        3,
+        "reloaded view matches the in-run rewrite"
+    );
+    let stored = msg_db::list_messages(&env.pool, &conv_id).await.unwrap();
+    let swapped_rows: Vec<&db::messages::StoredMessage> = stored
+        .iter()
+        .filter(|m| m.swapped_at_revision.is_some())
+        .collect();
+    assert_eq!(swapped_rows.len(), 3);
+    assert!(
+        swapped_rows
+            .iter()
+            .all(|m| m.supersedes_message_id.is_some()
+                && m.parts_json.contains(micro::PLACEHOLDER_CONTENT))
+    );
+}
+
+#[tokio::test]
+async fn microcompact_idle_entry_fires_without_a_window() {
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+    seed_tool_history(&env.pool, &conv_id, 8, 4_000).await;
+
+    // No context window at all (waterline entry disabled) — the idle entry
+    // alone must still clear once.
+    let model = ScriptedModel::new(vec![Turn::Stream(vec![
+        text("ok"),
+        finish(FinishReason::Stop),
+    ])]);
+    let observer = model.observer();
+
+    let view = msg_db::load_llm_view(&env.pool, &conv_id).await.unwrap();
+    let (_handle, mut rx) = support::spawn_agent_full(
+        model,
+        Vec::new(),
+        env.pool.clone(),
+        &conv_id,
+        view,
+        None,
+        Some(Duration::from_secs(2 * 3_600)),
+    )
+    .await;
+    let events = collect_events(&mut rx, is_terminal).await;
+
+    let AgentEvent::Microcompacted {
+        triggered_by,
+        replacements,
+        ..
+    } = events
+        .iter()
+        .find(|e| matches!(e, AgentEvent::Microcompacted { .. }))
+        .expect("idle microcompact fired")
+    else {
+        unreachable!()
+    };
+    assert_eq!(*triggered_by, oct_agent::agent::MicrocompactTrigger::Idle);
+    assert_eq!(replacements.len(), 3);
+
+    let serialized = serde_json::to_string(&observer.requests()[0].messages).unwrap();
+    assert_eq!(serialized.matches(micro::PLACEHOLDER_CONTENT).count(), 3);
+}
+
+/// Same-turn composition: the waterline microcompact fires AND the estimate
+/// still sits over the 85% summary threshold afterwards — the marker insert
+/// then shifts the (already swapped) tail slots. The riskiest combination.
+#[tokio::test]
+async fn microcompact_waterline_then_summary_compacts_same_turn() {
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+
+    msg_db::insert_message(
+        &env.pool,
+        &conv_id,
+        &Message::text(Role::User, "go"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    for i in 0..8 {
+        msg_db::insert_message(
+            &env.pool,
+            &conv_id,
+            &Message {
+                role: Role::Assistant,
+                parts: vec![ContentPart::ToolCall(ToolCall {
+                    id: format!("c{i}"),
+                    name: "read".to_string(),
+                    arguments: "{}".to_string(),
+                })],
+            },
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        // The three OLDEST results are small-but-worth-it (≥ MIN_SAVINGS in
+        // total); the five protected ones are huge — post-micro est stays
+        // over the summary threshold, so compaction fires in the same turn.
+        let pad = if i < 3 { 1_600 } else { 8_000 };
+        msg_db::insert_message(
+            &env.pool,
+            &conv_id,
+            &Message {
+                role: Role::Tool,
+                parts: vec![ContentPart::ToolResult(ToolResult {
+                    call_id: format!("c{i}"),
+                    content: json!(format!("p{i} ") + &"x".repeat(pad)),
+                    is_error: false,
+                    images: Vec::new(),
+                })],
+            },
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    msg_db::insert_message(
+        &env.pool,
+        &conv_id,
+        &Message::text(Role::User, "next"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let model = ScriptedModel::new(vec![Turn::Stream(vec![
+        text("done"),
+        finish(FinishReason::Stop),
+    ])]);
+    model.push_generation(Ok("SUMMARY: same turn".to_string()));
+
+    let view = msg_db::load_llm_view(&env.pool, &conv_id).await.unwrap();
+    let (_handle, mut rx) = support::spawn_agent_full(
+        model,
+        Vec::new(),
+        env.pool.clone(),
+        &conv_id,
+        view,
+        Some(11_000),
+        None,
+    )
+    .await;
+    let events = collect_events(&mut rx, is_terminal).await;
+
+    // Event order: micro first, then the summary compaction, then the turn.
+    let pos = |name: &str| {
+        events
+            .iter()
+            .position(|e| event_name(e) == name)
+            .unwrap_or_else(|| panic!("missing event {name} in {events:?}"))
+    };
+    assert!(pos("microcompacted") < pos("compacting"));
+    assert!(pos("compacting") < pos("compacted"));
+    assert!(pos("compacted") < pos("text_delta"));
+
+    // The wire request is [system, marker, tail user] — the region (with its
+    // cleared placeholders) is summarized away.
+    let AgentEvent::Microcompacted { replacements, .. } = &events[pos("microcompacted")] else {
+        unreachable!()
+    };
+    assert_eq!(replacements.len(), 3);
+
+    // DB: timeline contiguous; the swapped slots kept their orderings (they
+    // sit BEFORE the cut, untouched by the marker's tail shift) and their
+    // revision stamps.
+    let stored = msg_db::list_messages(&env.pool, &conv_id).await.unwrap();
+    assert_eq!(
+        stored.iter().map(|m| m.ordering).collect::<Vec<_>>(),
+        (1..=stored.len() as i64).collect::<Vec<_>>(),
+        "contiguous after micro+compact in one turn"
+    );
+    let swapped: Vec<&db::messages::StoredMessage> = stored
+        .iter()
+        .filter(|m| m.swapped_at_revision.is_some())
+        .collect();
+    assert_eq!(swapped.len(), 3);
+    assert!(
+        swapped
+            .iter()
+            .all(|m| m.parts_json.contains(micro::PLACEHOLDER_CONTENT))
+    );
+    assert!(
+        swapped.iter().all(|m| m.ordering <= 9),
+        "region slots unshifted"
+    );
+}
+
+/// The in-run anchor deduction must equal what `load_llm_view` recomputes on
+/// reload — one batch with targets on BOTH sides of the anchor.
+#[tokio::test]
+async fn microcompact_anchor_mixed_deduction_matches_reload() {
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+
+    let tool_msg = |call_id: &str| Message {
+        role: Role::Tool,
+        parts: vec![ContentPart::ToolResult(ToolResult {
+            call_id: call_id.to_string(),
+            content: json!(format!("payload-{call_id} ") + &"x".repeat(4_000)),
+            is_error: false,
+            images: Vec::new(),
+        })],
+    };
+    let call_msg = |call_id: &str| Message {
+        role: Role::Assistant,
+        parts: vec![ContentPart::ToolCall(ToolCall {
+            id: call_id.to_string(),
+            name: "read".to_string(),
+            arguments: "{}".to_string(),
+        })],
+    };
+
+    let mut seed: Vec<Message> = vec![Message::text(Role::User, "go")];
+    seed.push(call_msg("t0"));
+    seed.push(tool_msg("t0"));
+    seed.push(call_msg("t1"));
+    seed.push(tool_msg("t1"));
+    seed.push(Message::text(Role::Assistant, "anchor assistant"));
+    seed.push(call_msg("t2"));
+    seed.push(tool_msg("t2"));
+    for i in 3..8 {
+        seed.push(call_msg(&format!("t{i}")));
+        seed.push(tool_msg(&format!("t{i}")));
+    }
+    seed.push(Message::text(Role::User, "next"));
+
+    for msg in &seed {
+        let stored = msg_db::insert_message(&env.pool, &conv_id, msg, None, None, None)
+            .await
+            .unwrap();
+        // The plain-text anchor assistant (index 5 in the view) gets usage.
+        if let ContentPart::Text(t) = msg.parts.first().unwrap()
+            && t.contains("anchor assistant")
+        {
+            msg_db::update_message_usage(&env.pool, &stored.id, Some(500), Some(50), None)
+                .await
+                .unwrap();
+        }
+    }
+
+    let model = ScriptedModel::new(vec![Turn::Stream(vec![
+        text("ok"),
+        finish(FinishReason::Stop),
+    ])]);
+    let (_handle, mut rx) = support::spawn_agent_full(
+        model,
+        Vec::new(),
+        env.pool.clone(),
+        &conv_id,
+        msg_db::load_llm_view(&env.pool, &conv_id).await.unwrap(),
+        // est ≈ 550 + ~6.1k of post-anchor bulk: over the 70% waterline of an
+        // 8k window (5600) but under the summary threshold (6800).
+        Some(8_000),
+        None,
+    )
+    .await;
+    let events = collect_events(&mut rx, is_terminal).await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Compacted { .. })),
+        "summary compaction stays out of the picture"
+    );
+    let AgentEvent::Microcompacted {
+        est_context_tokens, ..
+    } = events
+        .iter()
+        .find(|e| matches!(e, AgentEvent::Microcompacted { .. }))
+        .expect("microcompact fired")
+    else {
+        unreachable!()
+    };
+
+    // Expected: full_messages with t0/t1/t2 cleared and the anchor adjusted
+    // by exactly the BEFORE-anchor savings (t0, t1) — t2 sits after the
+    // anchor, its savings only shrink the local increment.
+    let mut expected = vec![Message::text(Role::System, "test system prompt")];
+    for (i, msg) in seed.iter().enumerate() {
+        let mut m = msg.clone();
+        if matches!(m.role, Role::Tool) {
+            for part in &mut m.parts {
+                if let ContentPart::ToolResult(tr) = part
+                    && ["t0", "t1", "t2"].contains(&tr.call_id.as_str())
+                {
+                    tr.content = json!(micro::PLACEHOLDER_CONTENT);
+                    tr.images.clear();
+                }
+            }
+        }
+        let _ = i;
+        expected.push(m);
+    }
+    let s = |id: &str| {
+        let copy = micro::cleared_copy(&tool_msg(id));
+        compact::estimate_message(&tool_msg(id)).saturating_sub(compact::estimate_message(&copy))
+    };
+    let expected_anchor = (
+        550u64.saturating_sub(s("t0")).saturating_sub(s("t1")),
+        6usize,
+    );
+    let expected_est = compact::estimate_context(&expected, &[], Some(expected_anchor));
+    assert_eq!(*est_context_tokens, expected_est, "in-run 口径 == expected");
+
+    // Reload: the DB-side recomputation agrees on the anchor tokens.
+    let reloaded = msg_db::load_llm_view(&env.pool, &conv_id).await.unwrap();
+    assert_eq!(
+        reloaded.anchor.as_ref().unwrap().tokens,
+        expected_anchor.0,
+        "reload deduction == in-run deduction"
+    );
+}
+
+/// Conversation deletion sweeps the orphaned content rows (membership is
+/// gone; originals kept alive only by the deleted conversation's copies go
+/// too).
+#[tokio::test]
+async fn deleting_conversation_sweeps_orphaned_content_rows() {
+    let env = TestEnv::new().await;
+    let conv_a = new_conversation(&env.pool, env.dir.path()).await;
+    let conv_b = new_conversation(&env.pool, env.dir.path()).await;
+
+    for conv in [&conv_a, &conv_b] {
+        msg_db::insert_message(
+            &env.pool,
+            conv,
+            &Message::text(Role::User, "q"),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        msg_db::insert_message(
+            &env.pool,
+            conv,
+            &Message {
+                role: Role::Assistant,
+                parts: vec![ContentPart::ToolCall(ToolCall {
+                    id: "c1".to_string(),
+                    name: "read".to_string(),
+                    arguments: "{}".to_string(),
+                })],
+            },
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        msg_db::insert_message(
+            &env.pool,
+            conv,
+            &Message {
+                role: Role::Tool,
+                parts: vec![ContentPart::ToolResult(ToolResult {
+                    call_id: "c1".to_string(),
+                    content: json!("x".repeat(800)),
+                    is_error: false,
+                    images: Vec::new(),
+                })],
+            },
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    }
+
+    // Swap conv_a's result: conv_a now owns an extra copy row + its original
+    // loses the (single) membership reference.
+    msg_db::apply_cow_swaps(
+        &env.pool,
+        &conv_a,
+        &[CowSwap {
+            call_id: "c1".to_string(),
+            copy: cleared_tool_result("c1"),
+            details: None,
+        }],
+    )
+    .await
+    .unwrap();
+
+    let count = |pool: &sqlx::SqlitePool, conv: &str| {
+        let pool = pool.clone();
+        let conv = conv.to_string();
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM conversation_messages WHERE conversation_id = ?",
+            )
+            .bind(&conv)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    let content_count = |pool: &sqlx::SqlitePool| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM messages")
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    assert_eq!(count(&env.pool, &conv_a).await, 3);
+    // 2×3 originals + 1 copy.
+    assert_eq!(content_count(&env.pool).await, 7);
+
+    oct_agent::db::conversations::delete_conversation(&env.pool, &conv_a)
+        .await
+        .unwrap();
+
+    // Only conv_b's three rows survive: the copy, its original AND the other
+    // originals of conv_a are all swept.
+    assert_eq!(content_count(&env.pool).await, 3);
+    assert_eq!(count(&env.pool, &conv_b).await, 3, "conv_b untouched");
+}
+
+/// The down migration is lossless EVEN AFTER microcompact swaps: slots
+/// pointing at cleared copies are repointed at their originals before the
+/// fold, so the legacy table carries the original content forward.
+#[tokio::test]
+async fn split_migration_down_restores_cow_and_folds_losslessly() {
+    let (_dir, pool) = legacy_split_pool().await;
+
+    sqlx::query("INSERT INTO projects (id, name, working_dir, created_at, updated_at) VALUES ('p1', 'legacy', '/tmp', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO conversations (id, project_id, title, created_at, updated_at) VALUES ('c1', 'p1', 'legacy', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let parts = |text: &str, role: &str| {
+        serde_json::to_string(
+            &Message::text(
+                if role == "tool" {
+                    Role::Tool
+                } else if role == "assistant" {
+                    Role::Assistant
+                } else {
+                    Role::User
+                },
+                text,
+            )
+            .parts,
+        )
+        .unwrap()
+    };
+    sqlx::query("INSERT INTO messages (id, conversation_id, role, parts_json, ordering, created_at) VALUES ('m1', 'c1', 'user', $1, 1, CURRENT_TIMESTAMP)")
+        .bind(parts("q", "user"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO messages (id, conversation_id, role, parts_json, ordering, created_at) VALUES ('m2', 'c1', 'assistant', $1, 2, CURRENT_TIMESTAMP)")
+        .bind(serde_json::to_string(&Message {
+            role: Role::Assistant,
+            parts: vec![ContentPart::ToolCall(ToolCall {
+                id: "c9".to_string(),
+                name: "read".to_string(),
+                arguments: "{}".to_string(),
+            })],
+        }
+        .parts)
+        .unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO messages (id, conversation_id, role, parts_json, ordering, created_at) VALUES ('m3', 'c1', 'tool', $1, 3, CURRENT_TIMESTAMP)")
+        .bind(serde_json::to_string(&Message {
+            role: Role::Tool,
+            parts: vec![ContentPart::ToolResult(ToolResult {
+                call_id: "c9".to_string(),
+                content: json!("original big output"),
+                is_error: false,
+                images: Vec::new(),
+            })],
+        }
+        .parts)
+        .unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    sqlx::raw_sql(include_str!(
+        "../../../migrations/20260923140000_split_message_membership.up.sql"
+    ))
+    .execute(&pool)
+    .await
+    .expect("split up");
+
+    // Swap the tool result, then reverse the whole migration.
+    msg_db::apply_cow_swaps(
+        &pool,
+        "c1",
+        &[CowSwap {
+            call_id: "c9".to_string(),
+            copy: cleared_tool_result("c9"),
+            details: None,
+        }],
+    )
+    .await
+    .unwrap();
+    let after_swap = msg_db::list_messages(&pool, "c1").await.unwrap();
+    assert!(
+        after_swap[2]
+            .parts_json
+            .contains(micro::PLACEHOLDER_CONTENT)
+    );
+
+    sqlx::raw_sql(include_str!(
+        "../../../migrations/20260923140000_split_message_membership.down.sql"
+    ))
+    .execute(&pool)
+    .await
+    .expect("split down");
+
+    // The legacy shape is back and carries the ORIGINAL content in the tool
+    // slot — the swap was restored, not folded into the placeholder.
+    let rows = sqlx::query_as::<_, (String, String, String, i64, String)>(
+        "SELECT id, role, parts_json, ordering, conversation_id FROM messages ORDER BY ordering",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 3, "no rows lost");
+    let tool_row = rows.iter().find(|r| r.1 == "tool").unwrap();
+    assert_eq!(tool_row.0, "m3", "original row restored into the slot");
+    assert!(tool_row.2.contains("original big output"));
+    assert!(!tool_row.2.contains(micro::PLACEHOLDER_CONTENT));
+    assert_eq!(tool_row.3, 3);
+    assert_eq!(tool_row.4, "c1");
 }

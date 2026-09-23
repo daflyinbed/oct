@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT cm.message_id AS message_id, m.parts_json AS parts_json, cm.ordering AS ordering, cm.appended_at_revision AS appended_at_revision FROM conversation_messages cm JOIN messages m ON m.id = cm.message_id WHERE cm.conversation_id = $1 AND m.role = 'tool' AND m.supersedes_message_id IS NULL ORDER BY cm.ordering ASC",
+  "describe": {
+    "columns": [
+      {
+        "name": "message_id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "parts_json",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "ordering",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "appended_at_revision",
+        "ordinal": 3,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "eb1fc7118493a228df88cc487ca0f24d7cf4b1d5d3680ecd045e3045460bc204"
+}

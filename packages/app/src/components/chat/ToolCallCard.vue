@@ -88,6 +88,12 @@
           class="h-[16px] inline-flex items-center whitespace-nowrap rounded-full bg-warning-7 px-1.5 text-[10.5px] text-warning-10 font-medium leading-none"
           >已中断</span
         >
+        <!-- 已清除：微压缩把旧结果替换为占位符，原文可回查 -->
+        <span
+          v-else-if="part.cleared"
+          class="h-[16px] inline-flex items-center whitespace-nowrap rounded-full bg-neutral-3 px-1.5 text-[10.5px] text-dim font-medium leading-none"
+          >已清除</span
+        >
         <template v-else-if="open">
           <span
             v-for="chip in chips"
@@ -157,7 +163,7 @@
               >{{ `\n${seg.text}` }}</span
             ></template
           ><span
-            v-if="part.status === 'done' && part.content"
+            v-if="part.status === 'done' && part.content && !part.cleared"
             :class="part.isError ? 'text-danger-10' : ''"
             >{{ `\n${part.content}` }}</span
           >
@@ -186,30 +192,57 @@
           </template>
         </div>
 
-        <!-- 返回给模型。编辑/写入的成功结果（如 "Edited 1 occurrence."）与终端输出（已并入
-             上方命令块）无需展示；TODO: 编辑/写入失败（isError）时目前没有任何结果反馈，
-             后续专门设计失败态的展示 -->
-        <div
-          v-if="
-            part.status === 'done' &&
-            part.content !== null &&
-            !fileEdit &&
-            !terminal
-          "
-        >
-          <div class="mb-1 text-[11px] text-faint">返回给模型</div>
-          <pre
-            class="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md px-2.5 py-1.5 text-[11.5px] leading-[1.55] font-mono"
-            :class="
-              part.isError
-                ? 'bg-danger-1 text-danger-10'
-                : 'bg-surface text-neutral-10'
-            "
-            >{{ part.content }}</pre
-          >
-          <p v-if="isTruncated" class="mt-1 text-[11px] text-faint">
-            此内容已返回给模型（含截断）
-          </p>
+        <!-- 结果区。微压缩已清除：content 是占位符，清除态块对终端/编辑类
+             卡片同样渲染（命令/diff 仍在其上方），原文经副本 id 回查
+             original 端点。编辑/写入的成功结果与终端输出（已并入上方命令
+             块）无需重复展示；TODO: 编辑/写入失败（isError）时目前没有任何
+             结果反馈，后续专门设计失败态的展示 -->
+        <div v-if="part.status === 'done' && part.content !== null">
+          <template v-if="part.cleared">
+            <div class="mb-1 flex items-center justify-between gap-2">
+              <div class="text-[11px] text-faint">
+                该结果已从模型上下文清除（微压缩）
+              </div>
+              <button
+                v-if="originalText === null && conversationId"
+                type="button"
+                class="text-[11px] text-accent-10 control-focus hover:underline disabled:opacity-60"
+                :disabled="loadingOriginal"
+                @click="loadOriginal"
+              >
+                {{
+                  loadingOriginal
+                    ? "加载中…"
+                    : originalFailed
+                      ? "加载失败，重试"
+                      : "查看原文"
+                }}
+              </button>
+            </div>
+            <pre
+              v-if="originalText !== null"
+              class="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface px-2.5 py-1.5 text-[11.5px] text-neutral-10 leading-[1.55] font-mono"
+              >{{ originalText }}</pre
+            >
+            <div v-else class="text-[11px] text-faint font-mono">
+              {{ part.content }}
+            </div>
+          </template>
+          <template v-else-if="!fileEdit && !terminal">
+            <div class="mb-1 text-[11px] text-faint">返回给模型</div>
+            <pre
+              class="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md px-2.5 py-1.5 text-[11.5px] leading-[1.55] font-mono"
+              :class="
+                part.isError
+                  ? 'bg-danger-1 text-danger-10'
+                  : 'bg-surface text-neutral-10'
+              "
+              >{{ part.content }}</pre
+            >
+            <p v-if="isTruncated" class="mt-1 text-[11px] text-faint">
+              此内容已返回给模型（含截断）
+            </p>
+          </template>
         </div>
       </template>
     </div>
@@ -218,15 +251,76 @@
 
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
+import client from "@/api/client";
 import DiffLines from "@/components/diff/DiffLines.vue";
 import type { ToolCallPart } from "@/composables/useChat";
 
 const props = defineProps<{
   part: ToolCallPart;
+  /** 「查看原文」的回查作用域（microcompact 副本按会话 membership 校验）。 */
+  conversationId: string | null;
 }>();
 
 // 折叠/展开（默认折叠）
 const open = ref(false);
+
+// --- 微压缩「查看原文」 ------------------------------------------------------
+
+const originalText = ref<string | null>(null);
+const loadingOriginal = ref(false);
+const originalFailed = ref(false);
+
+/** 经副本 id 回查被 supersedes 的原文（一次加载，失败可重试）。 */
+async function loadOriginal(): Promise<void> {
+  const copyId = props.part.clearedCopyMessageId;
+  if (
+    !copyId ||
+    !props.conversationId ||
+    loadingOriginal.value ||
+    originalText.value !== null
+  ) {
+    return;
+  }
+  loadingOriginal.value = true;
+  originalFailed.value = false;
+  try {
+    const { data, error } = await client.GET(
+      "/api/conversations/{id}/messages/{copy_id}/original",
+      {
+        params: {
+          path: { id: props.conversationId, copy_id: copyId },
+        },
+      },
+    );
+    if (error || !data) {
+      originalFailed.value = true;
+      return;
+    }
+    // parts_json 是 serde 外标签形式：[{"ToolResult": { content: ... }}]
+    const chunks: string[] = [];
+    try {
+      const parts = JSON.parse(data.parts_json) as unknown[];
+      for (const raw of parts) {
+        const part = raw as Record<string, unknown>;
+        const result = part.ToolResult as Record<string, unknown> | undefined;
+        const content = result?.content;
+        chunks.push(
+          typeof content === "string"
+            ? content
+            : JSON.stringify(content ?? "", null, 2),
+        );
+      }
+    } catch {
+      chunks.push(data.parts_json);
+    }
+    originalText.value = chunks.join("\n");
+  } catch {
+    // 网络层异常（fetch 拒绝）：与 HTTP 错误同路径，允许重试。
+    originalFailed.value = true;
+  } finally {
+    loadingOriginal.value = false;
+  }
+}
 
 // 图标按工具名映射（完整类名写在此处，UnoCSS 可从源码提取）
 const iconClass = computed(() => {

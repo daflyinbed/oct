@@ -2566,18 +2566,35 @@ async fn manual_compact_replaces_history_for_next_request() {
         body["est_tokens_before"].as_u64().unwrap() > body["est_tokens_after"].as_u64().unwrap()
     );
 
-    // The marker row is the new last row; the old rows remain (append-only).
+    // The marker sits at the CUT — between the summarized region and the
+    // tail — so the last row is still the seeded tail assistant, and the old
+    // rows remain in the timeline (append-only).
     let stored = stored_messages(&app, &conv).await;
     let last = stored.last().unwrap();
-    assert_eq!(last["role"], "user");
-    let details: Value =
-        serde_json::from_str(last["details_json"].as_str().expect("details")).unwrap();
-    assert_eq!(details["kind"], "compaction");
-    assert_eq!(details["triggered_by"], "manual");
+    assert_eq!(last["role"], "assistant");
     assert_eq!(stored.len(), 8 + 1, "seeded rows kept + marker");
+    let marker = stored
+        .iter()
+        .find(|m| {
+            m["details_json"]
+                .as_str()
+                .and_then(|d| serde_json::from_str::<Value>(d).ok())
+                .is_some_and(|d| d["kind"] == "compaction")
+        })
+        .expect("marker row");
+    let details: Value =
+        serde_json::from_str(marker["details_json"].as_str().expect("details")).unwrap();
+    assert_eq!(details["triggered_by"], "manual");
+    assert_eq!(
+        marker["ordering"].as_i64(),
+        Some(8),
+        "marker takes over the first tail slot"
+    );
+    assert_eq!(last["ordering"].as_i64(), Some(9), "tail shifted up");
 
-    // The next send's wire request must carry [system, marker, user] — the
-    // seeded history is gone from the model's view.
+    // The next send's wire request must carry [system, marker, tail assistant,
+    // user] — the seeded region is gone from the model's view, the tail
+    // survives.
     let resp = app.send_message(&conv, "next question").await;
     let events = app.read_sse(resp).await;
     assert!(event_types(&events).contains(&"finish"));
@@ -2591,6 +2608,7 @@ async fn manual_compact_replaces_history_for_next_request() {
     let serialized = serde_json::to_string(&stream_req["messages"]).unwrap();
     assert!(serialized.contains("MANUAL-SUMMARY of the work"));
     assert!(serialized.contains("[Context compaction]"));
+    assert!(serialized.contains("seed-assistant-3"), "tail survives");
     assert!(!serialized.contains("seed-user-0"), "old history excluded");
 }
 
@@ -2730,5 +2748,253 @@ async fn dangling_tool_call_before_marker_is_not_repaired() {
     assert!(
         !serialized.contains("call-1"),
         "dangling call excluded: {serialized}"
+    );
+}
+
+// --- Microcompact: original-message endpoint --------------------------------
+
+use oct_llm_provider::core::ToolResult;
+
+#[tokio::test]
+async fn microcompact_original_endpoint_serves_superseded_content() {
+    let llm = llm::spawn_llm_mock(vec![LlmTurn::Complete(vec![
+        text_chunk("ok"),
+        finish_chunk("stop"),
+    ])])
+    .await;
+    let app = TestApp::new().await;
+    app.register_llm_provider(&llm).await;
+    // Window 10k: the seeded bulk (~8.2k) sits between the 70% waterline and
+    // the 85% summary threshold — microcompact fires, compaction does not.
+    create_model_row_with_window(&app, 10_000).await;
+    let project = app.create_project().await;
+    let conv = app.create_conversation(&project).await;
+
+    msg_db::insert_message(
+        &app.pool,
+        &conv,
+        &Message::text(Role::User, "go"),
+        Some("mock-llm"),
+        Some("test-model"),
+        None,
+    )
+    .await
+    .unwrap();
+    for i in 0..8 {
+        msg_db::insert_message(
+            &app.pool,
+            &conv,
+            &Message {
+                role: Role::Assistant,
+                parts: vec![ContentPart::ToolCall(ToolCall {
+                    id: format!("c{i}"),
+                    name: "read".to_string(),
+                    arguments: "{}".to_string(),
+                })],
+            },
+            Some("mock-llm"),
+            Some("test-model"),
+            None,
+        )
+        .await
+        .unwrap();
+        msg_db::insert_message(
+            &app.pool,
+            &conv,
+            &Message {
+                role: Role::Tool,
+                parts: vec![ContentPart::ToolResult(ToolResult {
+                    call_id: format!("c{i}"),
+                    content: serde_json::json!(format!("p{i} ") + &"x".repeat(4_000)),
+                    is_error: false,
+                    images: Vec::new(),
+                })],
+            },
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    msg_db::insert_message(
+        &app.pool,
+        &conv,
+        &Message::text(Role::User, "next"),
+        Some("mock-llm"),
+        Some("test-model"),
+        None,
+    )
+    .await
+    .unwrap();
+
+    let resp = app.send_message(&conv, "keep going").await;
+    let events = app.read_sse(resp).await;
+    assert!(event_types(&events).contains(&"finish"));
+    let micro = events
+        .iter()
+        .find(|e| e["type"] == "microcompacted")
+        .expect("microcompacted event");
+    assert_eq!(micro["data"]["triggered_by"], "waterline");
+    let replacements = micro["data"]["replacements"]
+        .as_array()
+        .expect("replacements");
+    assert_eq!(replacements.len(), 3, "8 results − 5 protected");
+
+    // The endpoint serves the ORIGINAL content through the copy's
+    // membership-scoped supersedes hop.
+    let copy_id = replacements[0]["copy_message_id"].as_str().unwrap();
+    let resp = app
+        .get_json(&format!(
+            "/api/conversations/{conv}/messages/{copy_id}/original"
+        ))
+        .await;
+    assert_eq!(resp.status(), 200);
+    let original: Value = resp.json().await.expect("original json");
+    assert!(
+        original["parts_json"]
+            .as_str()
+            .expect("parts")
+            .contains("p0 ")
+    );
+    assert_eq!(original["role"], "tool");
+
+    // Scope checks: a non-copy row (plain user message) and an unknown id
+    // both 404 — the join through supersedes/membership rejects them.
+    let user_row = &stored_messages(&app, &conv).await[0];
+    let user_id = user_row["id"].as_str().unwrap();
+    let resp = app
+        .get_json(&format!(
+            "/api/conversations/{conv}/messages/{user_id}/original"
+        ))
+        .await;
+    assert_eq!(resp.status(), 404, "non-copy row has no original");
+    let resp = app
+        .get_json(&format!(
+            "/api/conversations/{conv}/messages/00000000-0000-0000-0000-000000000000/original"
+        ))
+        .await;
+    assert_eq!(resp.status(), 404, "unknown id");
+
+    // Cross-conversation scope: another conversation cannot read this copy.
+    let conv2 = app.create_conversation(&project).await;
+    let resp = app
+        .get_json(&format!(
+            "/api/conversations/{conv2}/messages/{copy_id}/original"
+        ))
+        .await;
+    assert_eq!(
+        resp.status(),
+        404,
+        "copy not in that conversation's timeline"
+    );
+}
+
+/// The idle entry must fire through the real API path: `last_activity` is
+/// captured BEFORE the new user message is inserted, so a conversation whose
+/// stored history is old enough clears on send — and a fresh one does not.
+#[tokio::test]
+async fn idle_microcompact_triggers_via_api_after_backdated_activity() {
+    let llm = llm::spawn_llm_mock(vec![LlmTurn::Complete(vec![
+        text_chunk("ok"),
+        finish_chunk("stop"),
+    ])])
+    .await;
+    let app = TestApp::new().await;
+    app.register_llm_provider(&llm).await;
+    create_model_row_with_window(&app, 10_000).await;
+    let project = app.create_project().await;
+    let conv = app.create_conversation(&project).await;
+
+    msg_db::insert_message(
+        &app.pool,
+        &conv,
+        &Message::text(Role::User, "go"),
+        Some("mock-llm"),
+        Some("test-model"),
+        None,
+    )
+    .await
+    .unwrap();
+    for i in 0..8 {
+        msg_db::insert_message(
+            &app.pool,
+            &conv,
+            &Message {
+                role: Role::Assistant,
+                parts: vec![ContentPart::ToolCall(ToolCall {
+                    id: format!("c{i}"),
+                    name: "read".to_string(),
+                    arguments: "{}".to_string(),
+                })],
+            },
+            Some("mock-llm"),
+            Some("test-model"),
+            None,
+        )
+        .await
+        .unwrap();
+        msg_db::insert_message(
+            &app.pool,
+            &conv,
+            &Message {
+                role: Role::Tool,
+                parts: vec![ContentPart::ToolResult(ToolResult {
+                    call_id: format!("c{i}"),
+                    content: serde_json::json!(format!("p{i} ") + &"x".repeat(4_000)),
+                    is_error: false,
+                    images: Vec::new(),
+                })],
+            },
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    msg_db::insert_message(
+        &app.pool,
+        &conv,
+        &Message::text(Role::User, "next"),
+        Some("mock-llm"),
+        Some("test-model"),
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Backdate the whole history: the send path must observe the idle gap
+    // (captured before its own writes), not "just now".
+    sqlx::query("UPDATE messages SET created_at = '2020-01-01 00:00:00'")
+        .execute(&app.pool)
+        .await
+        .unwrap();
+
+    let resp = app.send_message(&conv, "keep going").await;
+    let events = app.read_sse(resp).await;
+    let micro = events
+        .iter()
+        .find(|e| e["type"] == "microcompacted")
+        .expect("idle microcompact fired via the API path");
+    assert_eq!(micro["data"]["triggered_by"], "idle");
+
+    // Fresh conversation, recent activity: no microcompact at all.
+    let conv2 = app.create_conversation(&project).await;
+    msg_db::insert_message(
+        &app.pool,
+        &conv2,
+        &Message::text(Role::User, "hello"),
+        Some("mock-llm"),
+        Some("test-model"),
+        None,
+    )
+    .await
+    .unwrap();
+    let resp = app.send_message(&conv2, "again").await;
+    let events = app.read_sse(resp).await;
+    assert!(
+        !events.iter().any(|e| e["type"] == "microcompacted"),
+        "recent activity ⇒ no idle clear"
     );
 }

@@ -2,7 +2,12 @@
   <main class="workspace-panel min-w-0 flex-1 bg-background">
     <div ref="scrollContainer" class="workspace-panel-body">
       <div class="mx-auto max-w-[760px] px-7 pb-3 pt-[18px] space-y-[18px]">
-        <ChatMessage v-for="msg in messages" :key="msg.id" :message="msg" />
+        <ChatMessage
+          v-for="msg in messages"
+          :key="msg.id"
+          :message="msg"
+          :conversation-id="conversationId"
+        />
         <div v-if="messages.length === 0" class="pt-20 text-center text-faint">
           <p class="mb-1.5 text-[15px] text-dim font-medium">
             Start a conversation

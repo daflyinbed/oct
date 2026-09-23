@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT COALESCE(MAX(ordering), 0) + 1 FROM conversation_messages WHERE conversation_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "name": "COALESCE(MAX(ordering), 0) + 1",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "bef2a67b384373399f37836771dab9066c9d445d5080a3bc03bfbeafe752f140"
+}

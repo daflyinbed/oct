@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT MAX(m.created_at) AS \"last: chrono::NaiveDateTime\" FROM conversation_messages cm JOIN messages m ON m.id = cm.message_id WHERE cm.conversation_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "name": "last: chrono::NaiveDateTime",
+        "ordinal": 0,
+        "type_info": "Null"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "3f63dfc1a5c1e0ef0225925ad395cf52c3dcd6865a3b5953e034e7e8e1594cb6"
+}

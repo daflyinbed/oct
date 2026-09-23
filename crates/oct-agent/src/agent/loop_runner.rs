@@ -13,7 +13,8 @@ use oct_llm_provider::core::{
 use oct_llm_provider::model::ChatRequest;
 
 use crate::agent::compact::{self, CompactAttempt};
-use crate::agent::{AgentContext, AgentEvent, RunHandle};
+use crate::agent::micro::{self, MicroAttempt};
+use crate::agent::{AgentContext, AgentEvent, MicrocompactTrigger, RunHandle};
 use crate::db::messages as msg_db;
 use crate::db::messages::LlmView;
 use crate::tools;
@@ -21,6 +22,14 @@ use crate::tools;
 pub async fn run_agent_loop(ctx: AgentContext, conv_id: String, view: LlmView, handle: RunHandle) {
     let mut full_messages = vec![Message::text(Role::System, &ctx.system_prompt)];
     full_messages.extend(view.messages);
+
+    // DB orderings parallel to `full_messages` (index 0 = the system prompt,
+    // mirrored by a 0 sentinel). Compaction consumes it to place its marker
+    // between the summarized region and the tail; every append below pushes
+    // the ordering the insert returned. On an insert failure a fabricated
+    // last+1 keeps the vectors parallel — degraded, like the history itself.
+    let mut message_orderings: Vec<i64> = vec![0];
+    message_orderings.extend(view.orderings);
 
     // Provider-truth anchor for compaction estimates (see compact::
     // estimate_context). +1 offsets the system message prepended above.
@@ -34,6 +43,11 @@ pub async fn run_agent_loop(ctx: AgentContext, conv_id: String, view: LlmView, h
     let mut compact_floor: u64 = 0;
     let mut auto_compact_disabled = false;
 
+    // Microcompact bookkeeping: the idle entry is one-shot (first turn top
+    // only); a failed swap batch disables micro for the rest of the run.
+    let mut idle_micro_due = ctx.idle.is_some_and(|d| d >= micro::IDLE_TRIGGER);
+    let mut micro_disabled = false;
+
     let tool_specs: Vec<_> = ctx
         .tools
         .iter()
@@ -46,17 +60,58 @@ pub async fn run_agent_loop(ctx: AgentContext, conv_id: String, view: LlmView, h
             return;
         }
 
-        // Turn-top compaction check — BEFORE the request, so both the first
-        // turn of an over-long conversation and every tool round in between
-        // are covered. Usage arriving during a stream only refreshes the
-        // anchor: the decision must see everything accumulated SINCE the
-        // last request (tool results are the big increment).
+        // Turn-top maintenance — BEFORE the request, so both the first turn
+        // of an over-long conversation and every tool round in between are
+        // covered. Usage arriving during a stream only refreshes the anchor:
+        // the decisions must see everything accumulated SINCE the last
+        // request (tool results are the big increment).
+        //
+        // Microcompact (cheap, local, no model call) runs before the summary
+        // check — clearing old tool results may pull the estimate back under
+        // the summary threshold entirely, and micro stays available as the
+        // fallback tier after a summary failure. The idle entry fires
+        // regardless of the window; the waterline entry needs one.
+        if idle_micro_due {
+            idle_micro_due = false;
+            match micro::run_microcompaction(
+                &ctx.pool,
+                &conv_id,
+                &handle.hub,
+                MicrocompactTrigger::Idle,
+                &mut full_messages,
+                &mut usage_anchor,
+                &tool_specs,
+            )
+            .await
+            {
+                MicroAttempt::Done(_) | MicroAttempt::Nothing => {}
+                MicroAttempt::Failed => micro_disabled = true,
+            }
+        }
+
         if let Some(window) = ctx.context_window
             && !auto_compact_disabled
         {
             let threshold = compact::trigger_threshold(window);
             let tail_keep = compact::tail_keep_tokens(window);
-            let est = compact::estimate_context(&full_messages, &tool_specs, usage_anchor);
+            let mut est = compact::estimate_context(&full_messages, &tool_specs, usage_anchor);
+            if !micro_disabled && est >= micro::trigger_threshold(window) {
+                match micro::run_microcompaction(
+                    &ctx.pool,
+                    &conv_id,
+                    &handle.hub,
+                    MicrocompactTrigger::Waterline,
+                    &mut full_messages,
+                    &mut usage_anchor,
+                    &tool_specs,
+                )
+                .await
+                {
+                    MicroAttempt::Done(est_after) => est = est_after,
+                    MicroAttempt::Nothing => {}
+                    MicroAttempt::Failed => micro_disabled = true,
+                }
+            }
             if est >= threshold && est >= compact_floor.saturating_add(tail_keep) {
                 let attempt = compact::run_auto_compaction(
                     ctx.model.as_ref(),
@@ -68,6 +123,7 @@ pub async fn run_agent_loop(ctx: AgentContext, conv_id: String, view: LlmView, h
                     window,
                     &tool_specs,
                     &mut full_messages,
+                    &mut message_orderings,
                     &mut usage_anchor,
                     est,
                 )
@@ -245,9 +301,12 @@ pub async fn run_agent_loop(ctx: AgentContext, conv_id: String, view: LlmView, h
                     {
                         error!("Failed to persist usage for message {}: {e}", stored.id);
                     }
+                    message_orderings.push(stored.ordering);
                 }
                 Err(e) => {
                     error!("Failed to persist assistant message: {e}");
+                    message_orderings
+                        .push(message_orderings.last().copied().unwrap_or_default() + 1);
                 }
             }
             full_messages.push(assistant_msg);
@@ -359,7 +418,7 @@ pub async fn run_agent_loop(ctx: AgentContext, conv_id: String, view: LlmView, h
                             };
                             // details are UI-only: persisted in their own
                             // column, never inside parts_json.
-                            if let Err(e) = msg_db::insert_message(
+                            match msg_db::insert_message(
                                 &ctx.pool,
                                 &conv_id,
                                 &tool_msg,
@@ -369,7 +428,13 @@ pub async fn run_agent_loop(ctx: AgentContext, conv_id: String, view: LlmView, h
                             )
                             .await
                             {
-                                error!("Failed to persist tool result: {e}");
+                                Ok(stored) => message_orderings.push(stored.ordering),
+                                Err(e) => {
+                                    error!("Failed to persist tool result: {e}");
+                                    message_orderings.push(
+                                        message_orderings.last().copied().unwrap_or_default() + 1,
+                                    );
+                                }
                             }
                             full_messages.push(tool_msg);
                             completed.insert(idx);

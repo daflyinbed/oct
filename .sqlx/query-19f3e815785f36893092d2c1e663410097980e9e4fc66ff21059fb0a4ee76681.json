@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM messages WHERE id NOT IN (SELECT message_id FROM conversation_messages) AND id NOT IN (SELECT supersedes_message_id FROM messages WHERE supersedes_message_id IS NOT NULL)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "19f3e815785f36893092d2c1e663410097980e9e4fc66ff21059fb0a4ee76681"
+}

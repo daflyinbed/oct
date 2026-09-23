@@ -1115,6 +1115,136 @@ function compactionParts(): DeepReadonly<CompactionPart>[] {
   );
 }
 
+describe("微压缩 microcompact", () => {
+  beforeEach(() => {
+    POST.mockReset();
+  });
+
+  it("microcompacted 事件就地折叠历史工具卡片（跨消息，幂等重放）", async () => {
+    const conv = nextConvId();
+    // 后端语义：microcompact 在 turn-top 触发且不碰最后一轮，目标卡片几乎
+    // 总在历史消息里——先灌入历史，本轮流只带事件。
+    GET.mockResolvedValue({
+      data: [
+        storedMessage("user", '[{"Text":"旧问题"}]'),
+        storedMessage(
+          "assistant",
+          JSON.stringify([
+            { ToolCall: { id: "c1", name: "read_file", arguments: "{}" } },
+          ]),
+        ),
+        storedMessage(
+          "tool",
+          JSON.stringify([
+            {
+              ToolResult: {
+                call_id: "c1",
+                content: "很长的文件内容……",
+                is_error: false,
+              },
+            },
+          ]),
+        ),
+      ],
+    } as never);
+    await fetchMessages(conv);
+
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        sse([
+          {
+            type: "microcompacted",
+            data: {
+              triggered_by: "waterline",
+              replacements: [{ call_id: "c1", copy_message_id: "copy-1" }],
+              est_tokens_saved: 4200,
+              est_context_tokens: 5800,
+            },
+          },
+          // 重放同一事件：值不变，幂等。
+          {
+            type: "microcompacted",
+            data: {
+              triggered_by: "waterline",
+              replacements: [{ call_id: "c1", copy_message_id: "copy-1" }],
+              est_tokens_saved: 4200,
+              est_context_tokens: 5800,
+            },
+          },
+          textDelta("继续"),
+          finishEvent,
+        ]),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await sendMessage(conv, "hi");
+
+    // 历史消息里的卡片被就地折叠（响应式路径），流式新消息不受影响。
+    const historyCard =
+      (messages.value[1]?.parts[0] as {
+        content: string | null;
+        cleared: boolean;
+        clearedCopyMessageId: string | null;
+      }) ?? null;
+    expect(historyCard).not.toBeNull();
+    expect(historyCard.content).toBe("[Old tool result content cleared]");
+    expect(historyCard.cleared).toBe(true);
+    expect(historyCard.clearedCopyMessageId).toBe("copy-1");
+    const streaming = messages.value.at(-1)!;
+    expect(streaming.parts.some((p) => p.kind === "tool_call")).toBe(false);
+  });
+
+  it("stored 副本行（details kind=microcompact_cleared）回放为已清除卡片", async () => {
+    GET.mockResolvedValue({
+      data: [
+        storedMessage(
+          "assistant",
+          JSON.stringify([
+            {
+              ToolCall: { id: "c1", name: "read_file", arguments: "{}" },
+            },
+          ]),
+        ),
+        storedMessage(
+          "tool",
+          JSON.stringify([
+            {
+              ToolResult: {
+                call_id: "c1",
+                content: "[Old tool result content cleared]",
+                is_error: false,
+              },
+            },
+          ]),
+          {
+            id: "copy-row-1",
+            details_json: JSON.stringify({ kind: "microcompact_cleared" }),
+          },
+        ),
+      ],
+    } as never);
+
+    await fetchMessages(nextConvId());
+
+    const cards: unknown[] = [];
+    for (const m of messages.value) {
+      for (const p of m.parts) {
+        if (p.kind === "tool_call") cards.push(p);
+      }
+    }
+    expect(cards).toHaveLength(1);
+    const card = cards[0] as {
+      content: string | null;
+      cleared: boolean;
+      clearedCopyMessageId: string | null;
+    };
+    expect(card.cleared).toBe(true);
+    expect(card.clearedCopyMessageId).toBe("copy-row-1");
+    expect(card.content).toBe("[Old tool result content cleared]");
+  });
+});
+
 describe("上下文压缩", () => {
   beforeEach(() => {
     POST.mockReset();

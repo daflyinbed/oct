@@ -30,6 +30,9 @@ function storedMessage(
     input_tokens: null,
     output_tokens: null,
     reasoning_tokens: null,
+    supersedes_message_id: null,
+    appended_at_revision: 0,
+    swapped_at_revision: null,
     created_at: "2026-09-20T00:00:00",
     ...extra,
   };

@@ -72,6 +72,9 @@ pub struct AppState {
         chat::CompactQuery,
         chat::CompactResult,
         crate::agent::CompactionTrigger,
+        crate::agent::MicrocompactTrigger,
+        crate::agent::MicrocompactReplacement,
+        crate::db::messages::MessageContent,
         files::FileContent,
         files::FileEntry,
         files::FileEntryKind,
@@ -144,6 +147,7 @@ fn api_routes(state: AppState) -> OpenApiRouter<AppState> {
         // Chat
         .routes(utoipa_axum::routes!(chat::send_message))
         .routes(utoipa_axum::routes!(chat::get_messages))
+        .routes(utoipa_axum::routes!(chat::get_original_message))
         .routes(utoipa_axum::routes!(chat::cancel_agent))
         .routes(utoipa_axum::routes!(chat::resume_turn))
         .routes(utoipa_axum::routes!(chat::compact_conversation))

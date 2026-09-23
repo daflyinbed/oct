@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE conversation_messages SET message_id = $1, swapped_at_revision = $2 WHERE conversation_id = $3 AND message_id = $4",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "9544429c04dc80818cc296db75babff821f5ec8759e9044b021d6d596e31dc71"
+}

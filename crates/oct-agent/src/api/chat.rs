@@ -118,6 +118,8 @@ async fn resolve_context_window(
 /// `state.sessions` must already hold the entry for `id` (so concurrent
 /// starts get a 409); the entry stays until the loop returns, which keeps
 /// GET /run reporting `running` and GET /events able to replay.
+/// `idle` is how long the conversation sat idle BEFORE this run started —
+/// the microcompact idle trigger.
 fn start_agent_run(
     state: &AppState,
     id: &str,
@@ -125,6 +127,7 @@ fn start_agent_run(
     chat_model: Box<dyn oct_llm_provider::model::ChatModel>,
     view: msg_db::LlmView,
     context_window: Option<u32>,
+    idle: Option<std::time::Duration>,
 ) -> ApiResult<Response> {
     let handle = state
         .sessions
@@ -164,6 +167,7 @@ fn start_agent_run(
         pool: state.pool.clone(),
         system_prompt: system_prompt(&PathBuf::from(&project.working_dir), &additional),
         context_window,
+        idle,
     };
 
     let conv_id = id.to_string();
@@ -258,6 +262,11 @@ pub async fn send_message(
     let context_window =
         resolve_context_window(&state, chat_model.as_ref(), &provider_id, &model_id).await;
 
+    // Idle for the microcompact trigger: captured BEFORE the repair and the
+    // new user message below — anything later would always look "just
+    // active". Clock skew (negative delta) simply means "not idle".
+    let idle = conversation_idle(&state, &id).await;
+
     // Poison guard: a previous run interrupted mid-tool (e.g. backend crash)
     // leaves assistant ToolCalls without tool messages; repairing BEFORE the
     // new user message is appended keeps the stored history a legal
@@ -343,7 +352,25 @@ pub async fn send_message(
         .ensure_connections(&state.pool, Some(&project.id))
         .await;
 
-    start_agent_run(&state, &id, &project, chat_model, view, context_window)
+    start_agent_run(
+        &state,
+        &id,
+        &project,
+        chat_model,
+        view,
+        context_window,
+        idle,
+    )
+}
+
+/// How long the conversation sat idle before this request, per the stored
+/// history's last message timestamp.
+async fn conversation_idle(state: &AppState, id: &str) -> Option<std::time::Duration> {
+    msg_db::last_activity(&state.pool, id)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|last| (chrono::Utc::now().naive_utc() - last).to_std().ok())
 }
 
 #[utoipa::path(
@@ -435,6 +462,9 @@ pub async fn resume_turn(
     let context_window =
         resolve_context_window(&state, chat_model.as_ref(), &provider_id, &model_id).await;
 
+    // Idle captured before the repair writes below (see send_message).
+    let idle = conversation_idle(&state, &id).await;
+
     // Only now persist the repair (idempotent): placeholder ToolResults for
     // the dangling calls found above.
     if let Err(e) = msg_db::repair_dangling_tool_calls(&state.pool, &id).await {
@@ -458,7 +488,15 @@ pub async fn resume_turn(
         .ensure_connections(&state.pool, Some(&project.id))
         .await;
 
-    start_agent_run(&state, &id, &project, chat_model, view, context_window)
+    start_agent_run(
+        &state,
+        &id,
+        &project,
+        chat_model,
+        view,
+        context_window,
+        idle,
+    )
 }
 
 /// Query params for manual compaction.
@@ -558,13 +596,28 @@ async fn run_manual_compact(
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Compaction summary failed: {e}")))?;
 
     let marker = compact::build_marker_message(&summary);
-    let rebuilt_tail: Vec<Message> = std::iter::once(marker.clone())
-        .chain(view.messages[cut..].iter().cloned())
-        .collect();
-    let est_after = compact::estimate_messages(&rebuilt_tail);
+    // est_after on the SAME anchor-based 口径 as est_before: the region's
+    // estimate leaves, the marker's estimate enters. est_before already
+    // counts the system prompt and tool schemas through the anchor (or the
+    // full local estimate without one); a message-only estimate would
+    // understate the "after" figure against that baseline.
+    let est_after = est_before.saturating_sub(compact::estimate_messages(&region))
+        + compact::estimate_message(&marker);
     let details = compact::marker_details(CompactionTrigger::Manual, cut, est_before, est_after);
-    let stored =
-        msg_db::insert_message(&state.pool, id, &marker, None, None, Some(&details)).await?;
+    // The marker goes INTO the timeline at the cut — between the summarized
+    // region and the tail — so the tail stays after it and survives the next
+    // `load_llm_view` (appending at the end would hide the tail forever).
+    let cut_ordering = view.orderings[cut];
+    let stored = msg_db::insert_message_at_ordering(
+        &state.pool,
+        id,
+        &marker,
+        None,
+        None,
+        Some(&details),
+        cut_ordering,
+    )
+    .await?;
 
     Ok(Json(CompactResult {
         summary_message_id: stored.id,
@@ -684,4 +737,39 @@ pub async fn get_messages(
     let messages = msg_db::list_messages(&state.pool, &id).await?;
 
     Ok(Json(messages))
+}
+
+/// The original content a microcompact copy replaced. Scope-checked through
+/// the copy's membership slot in THIS conversation (the original itself no
+/// longer belongs to any timeline after the swap), so the endpoint neither
+/// leaks cross-conversation rows nor 404s on the original's missing
+/// membership.
+#[utoipa::path(
+    get,
+    path = "/conversations/{id}/messages/{copy_id}/original",
+    params(
+        ("id" = String, Path, description = "Conversation ID"),
+        ("copy_id" = String, Path, description = "Id of the cleared copy message (a stored-history row)"),
+    ),
+    responses(
+        (status = 200, description = "The original content row the copy supersedes", body = msg_db::MessageContent),
+        (status = 404, description = "Conversation not found, or the copy does not belong to it / supersedes nothing")
+    ),
+    tag = "chat"
+)]
+pub async fn get_original_message(
+    State(state): State<AppState>,
+    Path((id, copy_id)): Path<(String, String)>,
+) -> ApiResult<Json<msg_db::MessageContent>> {
+    conv_db::get_conversation(&state.pool, &id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Conversation not found".into()))?;
+
+    let original = msg_db::get_superseded_message(&state.pool, &id, &copy_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound("Message is not a cleared copy of this conversation".into())
+        })?;
+
+    Ok(Json(original))
 }

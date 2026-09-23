@@ -78,6 +78,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/conversations/{id}/messages/{copy_id}/original": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The original content a microcompact copy replaced. Scope-checked through
+         *     the copy's membership slot in THIS conversation (the original itself no
+         *     longer belongs to any timeline after the swap), so the endpoint neither
+         *     leaks cross-conversation rows nor 404s on the original's missing
+         *     membership.
+         */
+        get: operations["get_original_message"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/conversations/{id}/resume": {
         parameters: {
             query?: never;
@@ -641,6 +664,30 @@ export interface components {
             /** @enum {string} */
             type: "compacted";
         } | {
+            /**
+             * @description Microcompact completed: old successful tool results were replaced by
+             *     placeholder copies (copy-on-write; no model call involved). Carries
+             *     the replacements so a live UI can swap its historical tool cards to
+             *     the cleared state in place; replay-safe (keyed by call_id).
+             */
+            data: {
+                /**
+                 * Format: int64
+                 * @description Estimated context size of the NEXT request after the clear
+                 *     (schema-aware local path).
+                 */
+                est_context_tokens: number;
+                /**
+                 * Format: int64
+                 * @description Estimated tokens freed by the clear.
+                 */
+                est_tokens_saved: number;
+                replacements: components["schemas"]["MicrocompactReplacement"][];
+                triggered_by: components["schemas"]["MicrocompactTrigger"];
+            };
+            /** @enum {string} */
+            type: "microcompacted";
+        } | {
             /** @enum {string} */
             type: "finish";
         } | {
@@ -969,6 +1016,33 @@ export interface components {
             description?: string | null;
             name: string;
         };
+        /**
+         * @description A pure content row (no membership fields) — the response shape of the
+         *     "view original" endpoint.
+         */
+        MessageContent: {
+            /** Format: date-time */
+            created_at: string;
+            details_json?: string | null;
+            id: string;
+            parts_json: string;
+            role: string;
+        };
+        /**
+         * @description One copy-on-write replacement from a microcompact batch: the tool result
+         *     named by `call_id` now shows its cleared copy. The copy row id is what a
+         *     "view original" affordance follows (its supersedes back-pointer leads to
+         *     the original content).
+         */
+        MicrocompactReplacement: {
+            call_id: string;
+            copy_message_id: string;
+        };
+        /**
+         * @description What started a microcompaction.
+         * @enum {string}
+         */
+        MicrocompactTrigger: "waterline" | "idle";
         Model: {
             attachment: boolean;
             /** Format: double */
@@ -1115,7 +1189,21 @@ export interface components {
             content: string;
             provider_spec: string;
         };
+        /**
+         * @description One stored message as seen from a conversation: the pure content row
+         *     (`messages`) joined with its timeline slot (`conversation_messages`).
+         *     Content rows are insert-only (usage backfill aside) and shared across
+         *     future forks; ordering and the revision stamps are per-conversation
+         *     membership state.
+         */
         StoredMessage: {
+            /**
+             * Format: int64
+             * @description Conversation revision stamped when this row joined the timeline.
+             *     Never changed afterwards — rollback/fork cut points and usage-anchor
+             *     eligibility compare against it.
+             */
+            appended_at_revision: number;
             conversation_id: string;
             /** Format: date-time */
             created_at: string;
@@ -1137,6 +1225,17 @@ export interface components {
             /** Format: int64 */
             reasoning_tokens?: number | null;
             role: string;
+            /**
+             * @description Copy-on-write back-pointer: non-NULL on a replacement copy, naming the
+             *     original content row it superseded (always exactly one hop).
+             */
+            supersedes_message_id?: string | null;
+            /**
+             * Format: int64
+             * @description Conversation revision stamped when a copy-on-write swap replaced this
+             *     slot's message; NULL while the slot still shows its original content.
+             */
+            swapped_at_revision?: number | null;
         };
         /**
          * @description One image attached to a tool result (e.g. an MCP server's image content
@@ -1389,6 +1488,38 @@ export interface operations {
             };
             /** @description Agent is already running for this conversation */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_original_message: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Conversation ID */
+                id: string;
+                /** @description Id of the cleared copy message (a stored-history row) */
+                copy_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The original content row the copy supersedes */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MessageContent"];
+                };
+            };
+            /** @description Conversation not found, or the copy does not belong to it / supersedes nothing */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

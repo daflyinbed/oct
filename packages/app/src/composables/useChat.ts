@@ -49,6 +49,13 @@ export interface ToolCallPart {
   /** Structured per-tool metadata, set by tool_result / history details_json. */
   details: Record<string, unknown> | null;
   isError: boolean;
+  /**
+   * Microcompact 已把该结果替换为占位符（copy-on-write）：卡片折叠为
+   * 「已从上下文清除」；clearedCopyMessageId 是副本行 id，「查看原文」
+   * 经它回查 original 端点（副本的 supersedes 一跳指向原文）。
+   */
+  cleared: boolean;
+  clearedCopyMessageId: string | null;
 }
 
 export interface ReasoningPart {
@@ -165,6 +172,9 @@ function parseStoredParts(partsJson: string): Record<string, unknown>[] {
   return [{ Text: partsJson }];
 }
 
+/** Microcompact 占位符文案，与后端 `micro::PLACEHOLDER_CONTENT` 对齐。 */
+export const MICROCOMPACT_PLACEHOLDER = "[Old tool result content cleared]";
+
 function newToolCard(callId: string, name: string | null): ToolCallPart {
   return {
     kind: "tool_call",
@@ -177,6 +187,8 @@ function newToolCard(callId: string, name: string | null): ToolCallPart {
     content: null,
     details: null,
     isError: false,
+    cleared: false,
+    clearedCopyMessageId: null,
   };
 }
 
@@ -279,6 +291,7 @@ function storedToDisplayList(stored: StoredMessage[]): DisplayMessage[] {
     card: ToolCallPart,
     result: StoredToolResultShape,
     details: Record<string, unknown> | null,
+    rowId: string,
   ) => {
     card.status = "done";
     card.content =
@@ -290,6 +303,12 @@ function storedToDisplayList(stored: StoredMessage[]): DisplayMessage[] {
       card.title = details.title;
     }
     card.details = details;
+    // Microcompact 副本行（details kind 标记）：卡片折叠为已清除态；行 id
+    // 即副本 id，供「查看原文」回查。
+    if (details?.kind === "microcompact_cleared") {
+      card.cleared = true;
+      card.clearedCopyMessageId = rowId;
+    }
   };
 
   for (const m of stored) {
@@ -376,7 +395,7 @@ function storedToDisplayList(stored: StoredMessage[]): DisplayMessage[] {
         const result = raw.ToolResult as StoredToolResultShape;
         const card = cardsByCallId.get(result.call_id);
         if (card) {
-          fillCard(card, result, details);
+          fillCard(card, result, details, m.id);
         } else {
           // Orphan result (e.g. data from before cards were stored): host a
           // minimal done card on the most recent assistant message.
@@ -387,7 +406,7 @@ function storedToDisplayList(stored: StoredMessage[]): DisplayMessage[] {
           const orphan = newToolCard(result.call_id, "unknown");
           orphan.status = "done";
           lastAssistant.parts.push(orphan);
-          fillCard(orphan, result, details);
+          fillCard(orphan, result, details, m.id);
         }
       }
     }
@@ -644,6 +663,35 @@ function applyStreamEvent(event: AgentEvent) {
           string,
           unknown
         > | null;
+      }
+      break;
+    }
+
+    case "microcompacted": {
+      // 旧工具结果被 copy-on-write 替换为占位符：就地折叠工具卡片（所见
+      // 即模型所见）；重放幂等（按 call_id 覆盖，值不变）。
+      const d = event.data;
+      const applyCleared = (card: ToolCallPart, copyId: string) => {
+        card.content = MICROCOMPACT_PLACEHOLDER;
+        card.cleared = true;
+        card.clearedCopyMessageId = copyId;
+      };
+      for (const r of d.replacements ?? []) {
+        // microcompact 在 turn-top 触发且永不触碰最后一轮，目标几乎总在
+        // 历史消息的卡片里——必须遍历 messages.value 更新（经代理路径改，
+        // 保证响应性）。当前流式消息那份只在 streamState 里改：它在
+        // messages.value 中的克隆会被 flushStream 整体覆盖。
+        const live = findCard(r.call_id);
+        if (live) applyCleared(live, r.copy_message_id);
+        for (let i = messages.value.length - 1; i >= 0; i--) {
+          const m = messages.value[i]!;
+          if (streamState && m.id === streamState.messageId) continue;
+          for (const p of m.parts) {
+            if (p.kind === "tool_call" && p.callId === r.call_id) {
+              applyCleared(p, r.copy_message_id);
+            }
+          }
+        }
       }
       break;
     }

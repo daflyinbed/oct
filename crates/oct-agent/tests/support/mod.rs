@@ -254,6 +254,9 @@ pub async fn spawn_agent(
             Role::User,
             user_message,
         )],
+        // Synthetic views are not necessarily DB-backed; fabricated orderings
+        // keep the parallel vector intact (only compaction reads them).
+        orderings: vec![1],
         anchor: None,
     };
     spawn_agent_with(model, tools, pool, conv_id, view, None).await
@@ -269,6 +272,19 @@ pub async fn spawn_agent_with(
     view: oct_agent::db::messages::LlmView,
     context_window: Option<u32>,
 ) -> (RunHandle, SubscribeStream) {
+    spawn_agent_full(model, tools, pool, conv_id, view, context_window, None).await
+}
+
+/// [`spawn_agent_with`] plus the idle duration for microcompact's idle entry.
+pub async fn spawn_agent_full(
+    model: ScriptedModel,
+    tools: Vec<Box<dyn oct_agent::tools::AgentTool>>,
+    pool: sqlx::SqlitePool,
+    conv_id: &str,
+    view: oct_agent::db::messages::LlmView,
+    context_window: Option<u32>,
+    idle: Option<Duration>,
+) -> (RunHandle, SubscribeStream) {
     let cancel = CancellationToken::new();
     let handle = RunHandle {
         hub: Arc::new(EventHub::new()),
@@ -283,6 +299,7 @@ pub async fn spawn_agent_with(
         pool,
         system_prompt: "test system prompt".to_string(),
         context_window,
+        idle,
     };
 
     let conv = conv_id.to_string();
