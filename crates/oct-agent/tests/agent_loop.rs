@@ -1475,6 +1475,7 @@ async fn cancel_while_execute_runs_kills_child_and_ends_run_promptly() {
     );
 }
 
+#[tokio::test]
 async fn auto_compaction_failure_does_not_break_the_run() {
     let env = TestEnv::new().await;
     let conv_id = new_conversation(&env.pool, env.dir.path()).await;
