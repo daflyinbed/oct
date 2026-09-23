@@ -11,6 +11,7 @@ type StoredMessage = components["schemas"]["StoredMessage"];
 type AgentEvent = components["schemas"]["AgentEvent"];
 type OutputStream = components["schemas"]["OutputStream"];
 type McpServerResponse = components["schemas"]["McpServerResponse"];
+type McpServerOauthSummary = components["schemas"]["McpServerOauthSummary"];
 type McpPromptSummary = components["schemas"]["McpPromptSummary"];
 type McpResourceSummary = components["schemas"]["McpResourceSummary"];
 
@@ -95,6 +96,19 @@ export function mcpServerFixture(
     tools: null,
     prompts: null,
     resources: null,
+    oauth: mcpOauthSummaryFixture({ has_token: false }),
+    ...overrides,
+  };
+}
+
+/** 已授权形状的 OAuth 概要(默认远期过期;expires_at 是后端的 naive UTC)。 */
+export function mcpOauthSummaryFixture(
+  overrides: Partial<McpServerOauthSummary> = {},
+): McpServerOauthSummary {
+  return {
+    has_token: true,
+    has_refresh_token: true,
+    expires_at: "2030-01-01T00:00:00",
     ...overrides,
   };
 }

@@ -82,6 +82,12 @@ export interface Scenario {
   /** MCP server 初始行(McpServerResponse[]);POST/PATCH/DELETE 就地增删改。 */
   mcpServers?: unknown[];
   /**
+   * oauth start 剧本:serverId → 非默认结果。缺省走成功路径(发放
+   * authorization_url 指回 mock 的 callback);`status` 非 2xx 时连同
+   * `error` 直接返回(如 502 发现失败/400 非 http 行)。
+   */
+  mcpOauthStarts?: Record<string, { status?: number; error?: string }>;
+  /**
    * prompts 渲染剧本:serverId → prompt name → 结果。`status` 缺省 200,
    * `messages` 即响应体;`status` 非 2xx 时连同 `error` 直接返回。
    */
@@ -153,6 +159,17 @@ interface McpRow {
         mime_type: string | null;
       }[]
     | null;
+  /** OAuth 凭据概要(形状对齐 McpServerOauthSummary;行创建即兜底补全)。 */
+  oauth: {
+    has_token: boolean;
+    has_refresh_token: boolean;
+    expires_at: string | null;
+  };
+}
+
+/** 未授权形状的 oauth 概要。 */
+function absentOauth(): McpRow["oauth"] {
+  return { has_token: false, has_refresh_token: false, expires_at: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +189,8 @@ const state: {
   streams: Map<string, Set<OpenStream>>;
   gates: Map<string, Array<() => void>>;
   openedGates: Set<string>;
+  /** oauth start 发放的 pending flow:state → serverId(单次使用)。 */
+  oauthFlows: Map<string, string>;
 } = {
   scenario: {},
   autoId: 0,
@@ -179,6 +198,7 @@ const state: {
   streams: new Map(),
   gates: new Map(),
   openedGates: new Set(),
+  oauthFlows: new Map(),
 };
 
 /** 相邻两次 socket 写入的间隔:促使 TCP 分段,字节边界才会真实生效。 */
@@ -198,6 +218,8 @@ const RE_MCP_SERVER = /^\/api\/mcp\/servers\/([^/]+)$/;
 const RE_MCP_ENSURE = /^\/api\/projects\/([^/]+)\/mcp\/ensure$/;
 const RE_MCP_PROMPT_RENDER = /^\/api\/mcp\/servers\/([^/]+)\/prompts\/([^/]+)$/;
 const RE_MCP_RESOURCE_READ = /^\/api\/mcp\/servers\/([^/]+)\/resources\/read$/;
+const RE_MCP_OAUTH_START = /^\/api\/mcp\/servers\/([^/]+)\/oauth\/start$/;
+const RE_MCP_OAUTH_DELETE = /^\/api\/mcp\/servers\/([^/]+)\/oauth$/;
 const RE_GATE_OPEN = /^\/__mock\/gates\/([^/]+)\/open$/;
 
 function resetState() {
@@ -211,6 +233,7 @@ function resetState() {
     for (const s of streams) if (!s.closed) s.res.end();
   }
   state.streams.clear();
+  state.oauthFlows.clear();
 }
 
 function gateWait(name: string): Promise<void> {
@@ -486,8 +509,11 @@ async function handleApi(
 
   // --- MCP servers:内存态 CRUD,行形状对齐 schema.d.ts 的 McpServerResponse --
 
+  /** 行集合;顺手兜底补全 oauth 概要(剧本手写的行可能缺该字段)。 */
   function mcpRows(): McpRow[] {
-    return (s.mcpServers ?? []) as McpRow[];
+    const rows = (s.mcpServers ?? []) as McpRow[];
+    for (const row of rows) row.oauth ??= absentOauth();
+    return rows;
   }
 
   function projectExists(projectId: string): boolean {
@@ -670,6 +696,7 @@ async function handleApi(
         tools: null,
         prompts: null,
         resources: null,
+        oauth: absentOauth(),
       };
       (s.mcpServers ??= []).push(row);
       return sendJson(res, 201, row);
@@ -833,6 +860,95 @@ async function handleApi(
       text: scripted.text ?? null,
       blob_base64: scripted.blob_base64 ?? null,
     });
+  }
+
+  // --- MCP OAuth(http transport):start / callback / logout ---------------
+  // 真实后端把浏览器送往授权服务器再 302 回 callback;mock 把"授权服务器"
+  // 折叠成直接发放一个指回自身 callback 的 authorization_url——测试 stub 掉
+  // window.open,取该 URL 直接 fetch 即可驱动"回调落库"这一步。
+
+  // POST /api/mcp/servers/:id/oauth/start —— 校验 + 发放 authorization_url。
+  m = pathname.match(RE_MCP_OAUTH_START);
+  if (m && req.method === "POST") {
+    const id = decodeURIComponent(m[1]);
+    const row = mcpRows().find((r) => r.id === id);
+    if (!row) {
+      return sendJson(res, 404, { error: "MCP server not found" });
+    }
+    const scripted = s.mcpOauthStarts?.[id];
+    if (scripted?.status && scripted.status !== 200) {
+      return sendJson(res, scripted.status, {
+        error: scripted.error ?? `scripted ${scripted.status}`,
+      });
+    }
+    if (row.transport !== "http") {
+      return sendJson(res, 400, {
+        error: "OAuth login is only available for http-transport MCP servers",
+      });
+    }
+    const stateValue = `oauth-state-${++state.autoId}`;
+    state.oauthFlows.set(stateValue, id);
+    return sendJson(res, 200, {
+      authorization_url: `/api/mcp/oauth/callback?code=mock-code-${state.autoId}&state=${stateValue}`,
+    });
+  }
+
+  // GET /api/mcp/oauth/callback —— state 单次使用;成功把 oauth 概要翻为
+  // 已授权(远期过期),回极简 HTML(对齐真实后端的浏览器页)。
+  if (pathname === "/api/mcp/oauth/callback" && req.method === "GET") {
+    const sendPage = (status: number, ok: boolean, message: string) => {
+      res.writeHead(status, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(
+        `<!doctype html><html lang="zh"><body><h1>${ok ? "OAuth 授权成功" : "OAuth 授权失败"}</h1><p>${message}</p></body></html>`,
+      );
+    };
+    const code = searchParams.get("code");
+    const stateValue = searchParams.get("state");
+    const error = searchParams.get("error");
+    if (error) {
+      sendPage(
+        400,
+        false,
+        `${error}: ${searchParams.get("error_description") ?? ""}`,
+      );
+      return;
+    }
+    if (!code || !stateValue) {
+      sendPage(400, false, "回调缺少 code 或 state 参数");
+      return;
+    }
+    const serverId = state.oauthFlows.get(stateValue);
+    if (serverId === undefined) {
+      sendPage(400, false, "state 无效或已过期(可能是回调被重复访问)");
+      return;
+    }
+    state.oauthFlows.delete(stateValue);
+    const row = mcpRows().find((r) => r.id === serverId);
+    if (!row) {
+      sendPage(400, false, "MCP server not found");
+      return;
+    }
+    row.oauth = {
+      has_token: true,
+      has_refresh_token: true,
+      expires_at: "2030-01-01T00:00:00",
+    };
+    sendPage(200, true, "授权成功,可关闭此页返回应用。");
+    return;
+  }
+
+  // DELETE /api/mcp/servers/:id/oauth —— 退出登录:概要回到未授权,204。
+  m = pathname.match(RE_MCP_OAUTH_DELETE);
+  if (m && req.method === "DELETE") {
+    const id = decodeURIComponent(m[1]);
+    const row = mcpRows().find((r) => r.id === id);
+    if (!row) {
+      return sendJson(res, 404, { error: "MCP server not found" });
+    }
+    row.oauth = absentOauth();
+    res.writeHead(204);
+    res.end();
+    return;
   }
 
   sendJson(res, 404, { error: `mock has no route: ${req.method} ${pathname}` });

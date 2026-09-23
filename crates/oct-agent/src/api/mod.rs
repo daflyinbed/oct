@@ -16,6 +16,7 @@ use utoipa_scalar::{Scalar, Servable};
 
 use crate::agent::RunHandle;
 use crate::mcp::McpManager;
+use crate::oauth::OAuthFlowStore;
 use oct_llm_provider::provider::ProviderRegistry;
 
 #[derive(Clone)]
@@ -27,6 +28,10 @@ pub struct AppState {
     /// `mcp_servers` rows on every chat turn, and read by the MCP list/get
     /// endpoints for live connection status.
     pub mcp: Arc<McpManager>,
+    /// In-flight OAuth authorization flows (`state` → verifier + endpoints),
+    /// bridging `oauth/start` and the callback. Memory-only by design; see
+    /// `crate::oauth`.
+    pub oauth_flows: Arc<OAuthFlowStore>,
 }
 
 #[derive(OpenApi)]
@@ -54,6 +59,8 @@ pub struct AppState {
         mcp::McpPromptArgumentSummary,
         mcp::McpPromptSummary,
         mcp::McpResourceSummary,
+        mcp::McpServerOauthSummary,
+        mcp::OAuthStartResponse,
         mcp::RenderPromptRequest,
         mcp::RenderPromptResponse,
         mcp::PromptMessageResponse,
@@ -105,6 +112,10 @@ fn api_routes(state: AppState) -> OpenApiRouter<AppState> {
         // MCP prompts (slash menu) & resources (panel viewer)
         .routes(utoipa_axum::routes!(mcp::render_mcp_prompt))
         .routes(utoipa_axum::routes!(mcp::read_mcp_resource))
+        // MCP OAuth (http transport): start / browser callback / logout
+        .routes(utoipa_axum::routes!(mcp::start_mcp_oauth))
+        .routes(utoipa_axum::routes!(mcp::mcp_oauth_callback))
+        .routes(utoipa_axum::routes!(mcp::delete_mcp_oauth))
         // Projects
         .routes(utoipa_axum::routes!(projects::list_projects))
         .routes(utoipa_axum::routes!(projects::create_project))

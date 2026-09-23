@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM mcp_server_tokens WHERE server_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "723d8871a7cec46d26dc9cd0582d099845a2702287f18a8ff0ef60446412f206"
+}

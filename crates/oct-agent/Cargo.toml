@@ -12,7 +12,7 @@ oct-llm-provider = { path = "../oct-llm-provider" }
 oct-mcp = { path = "../oct-mcp" }
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
-reqwest = { version = "0.13", features = ["json"] }
+reqwest = { version = "0.13", features = ["json", "form"] }
 axum = "0.8"
 chrono = { version = "0.4", features = [ "serde" ] }
 futures-util = "0.3"
@@ -49,6 +49,12 @@ futures-core = "0.3"
 dashmap = "6"
 tokio-util = "0.7"
 schemars = "0.8"
+# OAuth 2.0 + PKCE for http-transport MCP servers (src/oauth.rs): SHA-256 for
+# the S256 code challenge, base64url encoding of it, and URL parsing for the
+# RFC 8414 well-known candidates / authorization URL assembly.
+sha2 = "0.10"
+base64 = "0.22"
+url = "2"
 # ripgrep-family library crates for the in-process grep/glob search tools
 ignore = "0.4"
 globset = "0.4"

@@ -861,6 +861,92 @@
                       class="mt-2 block w-full resize-y border border-neutral-5 rounded-md bg-surface px-3 py-2 text-[12.5px] text-neutral-10 font-mono control-focus outline-none transition-colors placeholder:text-faint"
                     />
                   </label>
+                  <!-- OAuth 登录区：仅已保存的 http 行（start 需要服务端行与
+                       落库的 url；新建表单先保存再回来登录）。 -->
+                  <div
+                    v-if="editingServer"
+                    class="border border-line-soft rounded-lg bg-surface p-3"
+                  >
+                    <div class="flex items-center gap-2">
+                      <span class="text-[13px] text-strong font-semibold">
+                        OAuth
+                      </span>
+                      <span
+                        v-if="oauthState?.kind === 'authorized'"
+                        class="rounded bg-success-7 px-1.5 py-px text-[10.5px] text-success-contrast font-medium leading-[16px]"
+                        :title="
+                          oauthState.expiresAt
+                            ? `有效期至 ${formatOauthExpiry(oauthState.expiresAt)}`
+                            : '长期有效'
+                        "
+                      >
+                        已授权
+                      </span>
+                      <span
+                        v-else-if="oauthState?.kind === 'expired'"
+                        class="rounded bg-danger-7 px-1.5 py-px text-[10.5px] text-danger-10 font-medium leading-[16px]"
+                      >
+                        需重新登录
+                      </span>
+                      <span
+                        v-else
+                        class="rounded bg-neutral-2 px-1.5 py-px text-[10.5px] text-dim font-medium leading-[16px]"
+                      >
+                        未授权
+                      </span>
+                    </div>
+                    <div class="mt-0.5 text-[12px] text-dim">
+                      远端服务器需要 OAuth 2.0 时在此登录（授权码 + PKCE，
+                      基于已保存的 URL 发起）；已登录的 Bearer 优先于 Headers
+                      里的静态 Authorization。
+                      <template v-if="oauthState?.kind === 'authorized'">
+                        {{
+                          oauthState.expiresAt
+                            ? `有效期至 ${formatOauthExpiry(oauthState.expiresAt)}`
+                            : "长期有效"
+                        }}
+                        {{
+                          editingServer?.oauth?.has_refresh_token
+                            ? "· 支持自动刷新"
+                            : ""
+                        }}
+                      </template>
+                    </div>
+                    <div class="mt-2 flex items-center gap-2">
+                      <button
+                        class="h-[26px] inline-flex items-center gap-1.5 control-solid rounded-md px-3 text-[12px] font-medium control-focus transition-colors disabled:opacity-50"
+                        :disabled="oauthBusy"
+                        :title="
+                          oauthState?.kind === 'absent'
+                            ? '登录并授权该服务器'
+                            : '重新登录（更换凭据）'
+                        "
+                        @click="loginOauth"
+                      >
+                        {{
+                          oauthWaiting
+                            ? "等待授权完成…"
+                            : oauthState?.kind === "absent"
+                              ? "登录"
+                              : "重新登录"
+                        }}
+                      </button>
+                      <button
+                        v-if="oauthState && oauthState.kind !== 'absent'"
+                        class="h-[26px] inline-flex items-center control-ghost rounded-md px-2.5 text-[12px] control-focus transition-colors disabled:opacity-50"
+                        :disabled="oauthBusy"
+                        @click="logoutOauthLogin"
+                      >
+                        退出登录
+                      </button>
+                    </div>
+                    <p
+                      v-if="oauthError"
+                      class="mt-1.5 text-[12px] text-danger-10"
+                    >
+                      {{ oauthError }}
+                    </p>
+                  </div>
                 </template>
                 <div class="flex items-start gap-4">
                   <label class="block w-[180px] flex-none">
@@ -948,7 +1034,7 @@ import {
 } from "reka-ui";
 import { computed, ref, watch } from "vue";
 import AppSelect from "@/components/ui/AppSelect.vue";
-import { useMcpServers } from "@/composables/useMcpServers";
+import { mcpOauthState, useMcpServers } from "@/composables/useMcpServers";
 import {
   mcpStatusClass,
   mcpStatusDot,
@@ -995,6 +1081,9 @@ const {
   deleteServer,
   toggleEnabled: toggleMcpServerEnabled,
   clearError: clearMcpError,
+  startOauthLogin: startMcpOauth,
+  waitForOauth: waitForMcpOauth,
+  logoutOauth: logoutMcpOauth,
 } = useMcpServers();
 
 const { projects } = useProjects();
@@ -1160,6 +1249,11 @@ function goBack() {
 const mcpForm = ref(emptyMcpForm());
 const mcpFormError = ref<string | null>(null);
 const mcpSubmitting = ref(false);
+// OAuth（http 行编辑表单）的局部状态；定义在此因下面的 watch 在离开
+// mcp-edit 视图时要清 oauthError（登录/等待/处理函数在文件后段）。
+const oauthBusy = ref(false);
+const oauthWaiting = ref(false);
+const oauthError = ref<string | null>(null);
 
 function emptyMcpForm() {
   return {
@@ -1203,7 +1297,10 @@ watch(
   () => view.value.name,
   (name, prev) => {
     if (name === "mcp") void fetchMcpServers();
-    if (prev === "mcp-edit" && name !== "mcp-edit") mcpFormError.value = null;
+    if (prev === "mcp-edit" && name !== "mcp-edit") {
+      mcpFormError.value = null;
+      oauthError.value = null;
+    }
   },
 );
 
@@ -1215,7 +1312,10 @@ watch(
   () => props.visible,
   (open) => {
     // 直接关弹窗（DialogClose/Esc/遮罩）也清表单错误，不留到下次打开
-    if (!open) mcpFormError.value = null;
+    if (!open) {
+      mcpFormError.value = null;
+      oauthError.value = null;
+    }
     if (open && (view.value.name === "mcp" || view.value.name === "mcp-edit")) {
       void fetchMcpServers();
     }
@@ -1441,6 +1541,62 @@ async function submitMcpServer() {
 
 function toggleMcpEnabled(server: McpServerResponse) {
   void toggleMcpServerEnabled(server, !server.enabled);
+}
+
+/* ---------- OAuth（http 行编辑表单）：状态徽章 / 登录 / 退出 ---------- */
+//（oauthBusy/oauthWaiting/oauthError 的声明在 MCP 表单状态区，见上。）
+
+/** 编辑目标的 OAuth 徽章状态（waitForOauth 会刷新列表行，徽章随之响应）。 */
+const oauthState = computed(() => {
+  const server = editingServer.value;
+  return server ? mcpOauthState(server) : null;
+});
+
+const oauthExpiryFormatter = new Intl.DateTimeFormat(undefined, {
+  dateStyle: "short",
+  timeStyle: "short",
+});
+
+function formatOauthExpiry(date: Date): string {
+  return oauthExpiryFormatter.format(date);
+}
+
+/**
+ * 登录：POST start 拿 authorization_url → 新标签页打开授权服务器 →
+ * 轮询本行详情直到回调把 token 入库（徽章翻为已授权）。发起失败（发现/
+ * 注册 502 等）与等待超时分开呈现。
+ */
+async function loginOauth() {
+  const server = editingServer.value;
+  if (!server || oauthBusy.value) return;
+  oauthError.value = null;
+  oauthBusy.value = true;
+  try {
+    const authorizationUrl = await startMcpOauth(server.id);
+    window.open(authorizationUrl, "_blank", "noopener,noreferrer");
+    oauthWaiting.value = true;
+    const ready = await waitForMcpOauth(server.id);
+    if (!ready) {
+      oauthError.value =
+        "等待授权完成超时（或该 server 已被删除），可重试登录。";
+    }
+  } catch (error) {
+    oauthError.value =
+      error instanceof Error ? error.message : "发起 OAuth 登录失败";
+  } finally {
+    oauthBusy.value = false;
+    oauthWaiting.value = false;
+  }
+}
+
+async function logoutOauthLogin() {
+  const server = editingServer.value;
+  if (!server || oauthBusy.value) return;
+  oauthError.value = null;
+  const ok = await logoutMcpOauth(server.id);
+  if (!ok) {
+    oauthError.value = mcpError.value ?? "退出 OAuth 登录失败";
+  }
 }
 
 function removeMcpServer(server: McpServerResponse) {

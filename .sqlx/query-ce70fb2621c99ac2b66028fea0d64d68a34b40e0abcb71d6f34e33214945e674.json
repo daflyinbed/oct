@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT server_id, refresh_token, expires_at FROM mcp_server_tokens",
+  "describe": {
+    "columns": [
+      {
+        "name": "server_id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "refresh_token",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "expires_at",
+        "ordinal": 2,
+        "type_info": "Datetime"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "ce70fb2621c99ac2b66028fea0d64d68a34b40e0abcb71d6f34e33214945e674"
+}

@@ -1,0 +1,80 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT server_id, client_id, client_secret, access_token, refresh_token, token_type, scope, expires_at, obtained_at, created_at, updated_at FROM mcp_server_tokens WHERE server_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "name": "server_id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "client_id",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "client_secret",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "access_token",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "refresh_token",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "token_type",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "scope",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "expires_at",
+        "ordinal": 7,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "obtained_at",
+        "ordinal": 8,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 9,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 10,
+        "type_info": "Datetime"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "6b6da31b6933bfc2455ea65e3863a99f2c5fd125872bda03606d76248d859960"
+}

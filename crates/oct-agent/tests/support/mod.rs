@@ -15,6 +15,7 @@
 pub mod llm;
 pub mod mcp;
 pub mod mcp_http;
+pub mod oauth_as;
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -308,6 +309,7 @@ impl TestApp {
             registry: Arc::new(default_registry()),
             sessions: Arc::new(dashmap::DashMap::new()),
             mcp: mcp.clone(),
+            oauth_flows: Arc::new(oct_agent::oauth::OAuthFlowStore::default()),
         };
         let app = oct_agent::api::build_router(state);
 

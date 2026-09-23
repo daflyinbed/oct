@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO mcp_server_tokens (server_id, client_id, client_secret, access_token, refresh_token, token_type, scope, expires_at, obtained_at, created_at, updated_at)\n         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)\n         ON CONFLICT(server_id) DO UPDATE SET\n            client_id = excluded.client_id,\n            client_secret = excluded.client_secret,\n            access_token = excluded.access_token,\n            refresh_token = excluded.refresh_token,\n            token_type = excluded.token_type,\n            scope = excluded.scope,\n            expires_at = excluded.expires_at,\n            obtained_at = excluded.obtained_at,\n            updated_at = excluded.updated_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 10
+    },
+    "nullable": []
+  },
+  "hash": "bef32d2e56bb18ab197e5b94809183ff1b47d948e154ba4be8469b73822bfb97"
+}

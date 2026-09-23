@@ -48,6 +48,7 @@ async fn run_server(database_url: &str, port: u16) -> Result<()> {
         registry,
         sessions: Arc::new(dashmap::DashMap::new()),
         mcp: Arc::new(oct_agent::mcp::McpManager::default()),
+        oauth_flows: Arc::new(oct_agent::oauth::OAuthFlowStore::default()),
     };
 
     let app = api::build_router(state).layer(CorsLayer::permissive());

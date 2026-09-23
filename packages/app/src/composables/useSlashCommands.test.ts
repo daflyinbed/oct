@@ -37,6 +37,7 @@ function mcpServer(
     tools: [{ name: "t", description: null }],
     prompts: null,
     resources: null,
+    oauth: { has_token: false, has_refresh_token: false, expires_at: null },
     ...overrides,
   };
 }

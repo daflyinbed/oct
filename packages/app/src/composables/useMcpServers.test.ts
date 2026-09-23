@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import client from "@/api/client";
 import {
+  mcpOauthState,
   readMcpResource,
   renderMcpPrompt,
   useMcpServers,
@@ -28,19 +29,40 @@ const {
   deleteServer,
   toggleEnabled,
   clearError,
+  startOauthLogin,
+  waitForOauth,
+  logoutOauth,
 } = useMcpServers();
 
 const T0 = "2026-09-21T00:00:00";
+
+function oauthSummary(
+  overrides: Partial<{
+    has_token: boolean;
+    has_refresh_token: boolean;
+    expires_at: string | null;
+  }> = {},
+) {
+  return {
+    has_token: false,
+    has_refresh_token: false,
+    expires_at: null,
+    ...overrides,
+  };
+}
 
 function server(
   id: string,
   overrides: Partial<{
     name: string;
+    transport: string;
+    url: string | null;
     command: string;
     enabled: boolean;
     status: string;
     tool_count: number | null;
     project_id: string | null;
+    oauth: ReturnType<typeof oauthSummary>;
   }> = {},
 ) {
   return {
@@ -60,6 +82,7 @@ function server(
     status: "not_connected",
     tool_count: null,
     error: null,
+    oauth: oauthSummary(),
     ...overrides,
   };
 }
@@ -324,5 +347,182 @@ describe("readMcpResource", () => {
     await expect(readMcpResource("s1", "nope://x")).rejects.toThrow(
       "reading resource `nope://x` failed: boom",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// OAuth（http transport）：start / 轮询就绪 / 退出登录 / 徽章状态派生
+// ---------------------------------------------------------------------------
+
+describe("startOauthLogin", () => {
+  it("pOST start 并返回 authorization_url", async () => {
+    POST.mockResolvedValue({
+      data: { authorization_url: "https://as.example/authorize?state=xyz" },
+      error: undefined,
+    } as never);
+
+    const url = await startOauthLogin("s1");
+
+    expect(POST).toHaveBeenCalledWith("/api/mcp/servers/{id}/oauth/start", {
+      params: { path: { id: "s1" } },
+    });
+    expect(url).toBe("https://as.example/authorize?state=xyz");
+  });
+
+  it("502（发现/注册失败）时抛出携带后端 error 文案的 Error", async () => {
+    POST.mockResolvedValue({
+      data: undefined,
+      error: { error: "OAuth discovery failed: no metadata found" },
+    } as never);
+
+    await expect(startOauthLogin("s1")).rejects.toThrow(
+      "OAuth discovery failed: no metadata found",
+    );
+  });
+});
+
+describe("waitForOauth", () => {
+  it("轮询详情直到 has_token，并把最终行同步进列表", async () => {
+    GET.mockResolvedValueOnce({
+      data: [
+        server("s1", { transport: "http", url: "https://mcp.example/mcp" }),
+      ],
+      error: undefined,
+    } as never);
+    await fetchServers();
+
+    // 第一次未就绪，第二次就绪（回调已把 token 入库）
+    GET.mockResolvedValueOnce({
+      data: server("s1", { transport: "http" }),
+      error: undefined,
+    } as never);
+    GET.mockResolvedValueOnce({
+      data: server("s1", {
+        transport: "http",
+        status: "connected",
+        oauth: oauthSummary({ has_token: true, has_refresh_token: true }),
+      }),
+      error: undefined,
+    } as never);
+
+    const ready = await waitForOauth("s1", { intervalMs: 1, timeoutMs: 1_000 });
+
+    expect(ready).toBe(true);
+    expect(GET).toHaveBeenCalledWith("/api/mcp/servers/{id}", {
+      params: { path: { id: "s1" } },
+    });
+    expect(servers.value[0]?.oauth.has_token).toBe(true);
+  });
+
+  it("超时返回 false（不再无限轮询）", async () => {
+    GET.mockResolvedValueOnce({
+      data: [server("s1")],
+      error: undefined,
+    } as never);
+    await fetchServers();
+    // 后续所有详情轮询都未就绪
+    GET.mockResolvedValue({ data: server("s1"), error: undefined } as never);
+
+    // 25ms 预算、10ms 间隔：真实计时器下最多三轮即到点（轮询节奏是被测
+    // 代码自身的行为，非测试同步 sleep）。
+    const result = await waitForOauth("s1", { intervalMs: 10, timeoutMs: 25 });
+
+    expect(result).toBe(false);
+    expect(GET.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("详情 404（行被删）立即放弃返回 false", async () => {
+    GET.mockResolvedValue({
+      data: undefined,
+      error: { error: "not found" },
+    } as never);
+
+    await expect(waitForOauth("gone", { intervalMs: 1 })).resolves.toBe(false);
+    expect(GET).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("logoutOauth", () => {
+  it("dELETE 凭据行后重 GET，本地条目回到未授权概要", async () => {
+    GET.mockResolvedValueOnce({
+      data: [
+        server("s1", {
+          transport: "http",
+          oauth: oauthSummary({ has_token: true }),
+        }),
+      ],
+      error: undefined,
+    } as never);
+    await fetchServers();
+
+    DELETE.mockResolvedValue({ data: undefined, error: undefined } as never);
+    GET.mockResolvedValueOnce({
+      data: server("s1", { transport: "http" }),
+      error: undefined,
+    } as never);
+
+    const ok = await logoutOauth("s1");
+
+    expect(ok).toBe(true);
+    expect(DELETE).toHaveBeenCalledWith("/api/mcp/servers/{id}/oauth", {
+      params: { path: { id: "s1" } },
+    });
+    expect(servers.value[0]?.oauth.has_token).toBe(false);
+  });
+
+  it("dELETE 失败透出错误、返回 false", async () => {
+    DELETE.mockResolvedValue({
+      data: undefined,
+      error: { error: "MCP server not found" },
+    } as never);
+
+    const ok = await logoutOauth("gone");
+
+    expect(ok).toBe(false);
+    expect(error.value).toBe("MCP server not found");
+  });
+});
+
+describe("mcpOauthState", () => {
+  it("无凭据 → absent", () => {
+    expect(mcpOauthState(server("s1"))).toEqual({ kind: "absent" });
+  });
+
+  it("有凭据且未过期 → authorized（含解析出的 UTC 过期时间）", () => {
+    const future = new Date(Date.now() + 60_000);
+    const iso = future.toISOString().replace("Z", "");
+    const state = mcpOauthState(
+      server("s1", {
+        oauth: oauthSummary({ has_token: true, expires_at: iso }),
+      }),
+    );
+    expect(state.kind).toBe("authorized");
+    if (state.kind === "authorized") {
+      // NaiveDateTime 无时区后缀但按 UTC 存储补 Z 解析，毫秒级截断容差
+      expect(
+        Math.abs((state.expiresAt?.getTime() ?? 0) - future.getTime()),
+      ).toBeLessThan(1000);
+    }
+  });
+
+  it("expires_at 为 null → authorized 且视为长期有效", () => {
+    const state = mcpOauthState(
+      server("s1", {
+        oauth: oauthSummary({ has_token: true, expires_at: null }),
+      }),
+    );
+    expect(state).toEqual({ kind: "authorized", expiresAt: null });
+  });
+
+  it("过期时间已过 → expired（引导重新登录）", () => {
+    const state = mcpOauthState(
+      server("s1", {
+        oauth: oauthSummary({
+          has_token: true,
+          expires_at: "2000-01-01T00:00:00",
+        }),
+      }),
+    );
+    expect(state).toEqual({ kind: "expired" });
   });
 });

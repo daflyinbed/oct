@@ -93,6 +93,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/mcp/oauth/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The authorization-server redirect target: validate `state` (single use),
+         *     exchange the code with the stored PKCE verifier, persist the tokens, and
+         *     drop the server's live connection so the next reconcile picks the fresh
+         *     credential up. Answers with a minimal HTML page — the browser (not the
+         *     frontend) lands here.
+         */
+        get: operations["mcp_oauth_callback"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/mcp/servers": {
         parameters: {
             query?: never;
@@ -123,6 +146,51 @@ export interface paths {
         options?: never;
         head?: never;
         patch: operations["update_mcp_server"];
+        trace?: never;
+    };
+    "/api/mcp/servers/{id}/oauth": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * OAuth logout: drop the stored credential row (client registration
+         *     included — a future login re-registers) and force a reconnect without a
+         *     token (a headers_json bearer, if any, takes over again).
+         */
+        delete: operations["delete_mcp_oauth"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/mcp/servers/{id}/oauth/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start the OAuth flow for one http-transport MCP server: discover the
+         *     authorization-server metadata (RFC 8414 well-known with an OIDC fallback),
+         *     register a client via DCR when none is stored, mint state + PKCE pair,
+         *     and hand back the authorization URL for the browser. Discovery /
+         *     registration failures surface as 502 (the upstream AS is the failing
+         *     party); anything else as 400/404.
+         */
+        post: operations["start_mcp_oauth"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/mcp/servers/{id}/prompts/{name}": {
@@ -598,6 +666,21 @@ export interface components {
             uri: string;
         };
         /**
+         * @description OAuth 概要 of one MCP server row: presence flags + expiry only. Token
+         *     bodies (access/refresh/client_secret) never ride an API response.
+         */
+        McpServerOauthSummary: {
+            /**
+             * Format: date-time
+             * @description Access-token expiry (`null` when unknown / non-expiring).
+             */
+            expires_at?: string | null;
+            /** @description Whether the stored credential carries a refresh token. */
+            has_refresh_token: boolean;
+            /** @description Whether a stored OAuth credential exists for this server. */
+            has_token: boolean;
+        };
+        /**
          * @description An MCP server row merged with the connection manager's live status.
          *
          *     The storage fields mirror [`db::McpServer`] one-to-one (utoipa cannot
@@ -623,6 +706,8 @@ export interface components {
             } | null;
             id: string;
             name: string;
+            /** @description OAuth credential summary (absent shape for servers without one). */
+            oauth: components["schemas"]["McpServerOauthSummary"];
             /**
              * @description Owning project: `null` = global (every project), otherwise the id of
              *     the single project this server is visible to.
@@ -708,6 +793,15 @@ export interface components {
             reasoning: boolean;
             source: string;
             tool_call: boolean;
+        };
+        /** @description Response body of `POST /mcp/servers/{id}/oauth/start`. */
+        OAuthStartResponse: {
+            /**
+             * @description The authorization-server URL the client should open in a browser
+             *     (already carrying PKCE challenge, state and the RFC 8707 `resource`
+             *     binding to this server's url).
+             */
+            authorization_url: string;
         };
         /**
          * @description Which of a command's output streams a delta belongs to.
@@ -1094,6 +1188,40 @@ export interface operations {
             };
         };
     };
+    mcp_oauth_callback: {
+        parameters: {
+            query?: {
+                code?: string;
+                state?: string;
+                error?: string;
+                error_description?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Tokens stored; success page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+            /** @description AS error response, unknown/expired/replayed state, or token exchange failed; failure page */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+        };
+    };
     list_mcp_servers: {
         parameters: {
             query?: {
@@ -1269,6 +1397,78 @@ export interface operations {
             };
             /** @description MCP server name already exists */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_mcp_oauth: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description MCP server ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stored OAuth credential cleared */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description MCP server not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    start_mcp_oauth: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description MCP server ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Flow started; open `authorization_url` in a browser */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OAuthStartResponse"];
+                };
+            };
+            /** @description Server is not http transport, or no Host header to derive the redirect URI from */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description MCP server not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authorization-server discovery or dynamic client registration failed */
+            502: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -19,7 +19,7 @@ use axum::routing::post;
 use serde_json::Value;
 use serde_json::json;
 
-/// Bearer value the mock demands on every request.
+/// Bearer value the stock mock demands on every request.
 pub const TOKEN: &str = "Bearer agent-e2e-token";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -31,6 +31,13 @@ pub struct RecordedRequest {
 #[derive(Default)]
 struct MockState {
     requests: Vec<RecordedRequest>,
+    /// Bearer the mock demands (defaults to [`TOKEN`]; the OAuth tests point
+    /// it at whatever the mock AS issued).
+    expected_token: String,
+    /// When set, the mock also serves the RFC 8414 well-known for its url
+    /// path, advertising the AS at this base url (the "protected resource
+    /// knows its AS" same-origin deployment shape).
+    as_base: Option<String>,
 }
 
 /// A running mock server; assert on `requests()` after driving the backend.
@@ -43,9 +50,29 @@ impl McpHttpMock {
     /// Bind an ephemeral localhost port and serve `/mcp`. The server task
     /// lives until the test's runtime ends.
     pub async fn spawn() -> Self {
-        let shared: Arc<Mutex<MockState>> = Arc::default();
+        Self::spawn_inner(TOKEN.to_string(), None).await
+    }
+
+    /// [`Self::spawn`] with a custom demanded bearer and an RFC 8414
+    /// well-known (`/.well-known/oauth-authorization-server/mcp`) advertising
+    /// the authorization server at `as_base` — the OAuth tests wire this to
+    /// an [`super::oauth_as::OAuthAsMock`].
+    pub async fn spawn_with_oauth(expected_token: &str, as_base: &str) -> Self {
+        Self::spawn_inner(expected_token.to_string(), Some(as_base.to_string())).await
+    }
+
+    async fn spawn_inner(expected_token: String, as_base: Option<String>) -> Self {
+        let shared: Arc<Mutex<MockState>> = Arc::new(Mutex::new(MockState {
+            expected_token,
+            as_base,
+            ..MockState::default()
+        }));
         let app = axum::Router::new()
             .route("/mcp", post(mcp_post).get(mcp_get).delete(mcp_delete))
+            .route(
+                "/.well-known/oauth-authorization-server/mcp",
+                axum::routing::get(well_known),
+            )
             .with_state(shared.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -70,6 +97,42 @@ impl McpHttpMock {
             .requests
             .clone()
     }
+
+    /// Change the demanded bearer (drives the stored-token-rejected 401
+    /// path: the server "revoked" the token oct is holding).
+    pub fn set_expected_token(&self, token: &str) {
+        self.shared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .expected_token = token.to_string();
+    }
+}
+
+/// RFC 8414 metadata: the AS endpoints live on the separately spawned mock
+/// AS. Only reachable when the mock was built with `as_base` (the plain
+/// stock mock answers 404, i.e. "no OAuth here").
+async fn well_known(State(shared): State<Arc<Mutex<MockState>>>) -> axum::response::Response {
+    let as_base = shared
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_base
+        .clone();
+    match as_base {
+        Some(as_base) => (
+            StatusCode::OK,
+            AxumJson(serde_json::json!({
+                "issuer": as_base,
+                "authorization_endpoint": format!("{as_base}/authorize"),
+                "token_endpoint": format!("{as_base}/token"),
+                "registration_endpoint": format!("{as_base}/register"),
+                "response_types_supported": ["code"],
+                "grant_types_supported": ["authorization_code", "refresh_token"],
+                "code_challenge_methods_supported": ["S256"],
+            })),
+        )
+            .into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 async fn mcp_post(
@@ -82,16 +145,18 @@ async fn mcp_post(
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
-    shared
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .requests
-        .push(RecordedRequest {
+    let expected_token = {
+        let mut state = shared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.requests.push(RecordedRequest {
             method: method.clone(),
             authorization: authorization.clone(),
         });
+        state.expected_token.clone()
+    };
 
-    if authorization.as_deref() != Some(TOKEN) {
+    if authorization.as_deref() != Some(expected_token.as_str()) {
         return (StatusCode::UNAUTHORIZED, "missing bearer").into_response();
     }
     let Some(id) = message.get("id").cloned() else {
