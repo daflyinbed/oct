@@ -116,3 +116,54 @@ export function useMcpServers() {
     clearError,
   };
 }
+
+// ---------------------------------------------------------------------------
+// prompts 渲染 / resources 读取（斜杠菜单与 MCP 面板的两个瞬时调用，无
+// 本地状态，独立于上面的 CRUD 单例）
+// ---------------------------------------------------------------------------
+
+export type McpPromptRenderResult =
+  components["schemas"]["RenderPromptResponse"];
+export type McpResourceContent = components["schemas"]["ReadResourceResponse"];
+
+/**
+ * 渲染（prompts/get）一个 MCP prompt：`arguments` 为参数名到字符串值的
+ * 映射，无参 prompt 传空对象。成功返回 messages；失败（404/502 等）抛出
+ * 携带后端 error 文案的 Error。
+ */
+export async function renderMcpPrompt(
+  serverId: string,
+  name: string,
+  // 形参不能叫 arguments(ESM 严格模式保留字),请求体字段名保持 arguments。
+  argumentValues: Record<string, string>,
+): Promise<McpPromptRenderResult> {
+  const { data, error } = await client.POST(
+    "/api/mcp/servers/{id}/prompts/{name}",
+    {
+      params: { path: { id: serverId, name } },
+      body: { arguments: argumentValues },
+    },
+  );
+  if (error || !data) {
+    throw new Error(toErrorMessage(error, `渲染 prompt \`${name}\` 失败`));
+  }
+  return data;
+}
+
+/** 读取（resources/read）一个 MCP resource 的内容（文本或 base64 blob）。 */
+export async function readMcpResource(
+  serverId: string,
+  uri: string,
+): Promise<McpResourceContent> {
+  const { data, error } = await client.POST(
+    "/api/mcp/servers/{id}/resources/read",
+    {
+      params: { path: { id: serverId } },
+      body: { uri },
+    },
+  );
+  if (error || !data) {
+    throw new Error(toErrorMessage(error, `读取 resource \`${uri}\` 失败`));
+  }
+  return data;
+}

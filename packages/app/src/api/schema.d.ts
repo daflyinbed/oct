@@ -125,6 +125,48 @@ export interface paths {
         patch: operations["update_mcp_server"];
         trace?: never;
     };
+    "/api/mcp/servers/{id}/prompts/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Render (get) one prompt of a connected MCP server — the backend of the
+         *     chat input's slash menu. The row must exist (404), the manager must hold
+         *     a live connection for it and know the prompt (404), and the server must
+         *     render it without erroring (502 with the server's message otherwise).
+         */
+        post: operations["render_mcp_prompt"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/mcp/servers/{id}/resources/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Read one resource of a connected MCP server for the MCP panel's viewer.
+         *     Same 404/502 contract as the prompt render endpoint.
+         */
+        post: operations["read_mcp_resource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects": {
         parameters: {
             query?: never;
@@ -363,6 +405,13 @@ export interface components {
                 content: string;
                 /** @description UI-only structured metadata; never sent to the LLM. */
                 details: Record<string, never>;
+                /**
+                 * @description Images attached to the result (base64 + MIME type), passed
+                 *     through to the model as multimodal tool-result content. Absent
+                 *     when the result is text-only; the frontend does not render them
+                 *     yet.
+                 */
+                images?: components["schemas"]["ToolImage"][];
                 is_error: boolean;
             };
             /** @enum {string} */
@@ -525,6 +574,29 @@ export interface components {
         };
         /** @enum {string} */
         FileEntryKind: "dir" | "file";
+        /** @description One declared argument of a cached `prompts/list` entry. */
+        McpPromptArgumentSummary: {
+            description?: string | null;
+            name: string;
+            required: boolean;
+        };
+        /**
+         * @description One cached `prompts/list` entry, as surfaced to the UI (slash menu and
+         *     MCP panel). Rendering goes through
+         *     `POST /mcp/servers/{id}/prompts/{name}`.
+         */
+        McpPromptSummary: {
+            arguments: components["schemas"]["McpPromptArgumentSummary"][];
+            description?: string | null;
+            name: string;
+        };
+        /** @description One cached `resources/list` entry (read-only catalog data for the panel). */
+        McpResourceSummary: {
+            description?: string | null;
+            mime_type?: string | null;
+            name: string;
+            uri: string;
+        };
         /**
          * @description An MCP server row merged with the connection manager's live status.
          *
@@ -556,6 +628,14 @@ export interface components {
              *     the single project this server is visible to.
              */
             project_id?: string | null;
+            /**
+             * @description Cached `prompts/list` while connected; `null` otherwise. Empty (not
+             *     `null`) means the server offers no prompts, or its connect-time fetch
+             *     failed best-effort.
+             */
+            prompts?: components["schemas"]["McpPromptSummary"][] | null;
+            /** @description Cached `resources/list` while connected; `null` otherwise. */
+            resources?: components["schemas"]["McpResourceSummary"][] | null;
             /** @description `connected` | `failed` | `not_connected`. */
             status: string;
             /** @description Number of tools the server exposes while connected; `null` otherwise. */
@@ -649,6 +729,14 @@ export interface components {
             updated_at: string;
             working_dir: string;
         };
+        /**
+         * @description One rendered prompt message; `role` is `user` | `assistant`, `text` the
+         *     flattened content (non-text blocks arrive as placeholder notes).
+         */
+        PromptMessageResponse: {
+            role: string;
+            text: string;
+        };
         Provider: {
             adapter_type: string;
             base_url?: string | null;
@@ -674,6 +762,30 @@ export interface components {
             source: string;
             /** Format: date-time */
             updated_at: string;
+        };
+        /** @description Request body of `POST /mcp/servers/{id}/resources/read`. */
+        ReadResourceRequest: {
+            uri: string;
+        };
+        ReadResourceResponse: {
+            /** @description Base64 blob verbatim from the server; `null` for text reads. */
+            blob_base64?: string | null;
+            mime_type?: string | null;
+            /** @description Text contents joined with newlines; `null` for blob reads. */
+            text?: string | null;
+        };
+        /**
+         * @description Request body of `POST /mcp/servers/{id}/prompts/{name}`: the prompt
+         *     argument values (all strings, matching the MCP spec's prompt arguments).
+         *     Omitted/null = no arguments.
+         */
+        RenderPromptRequest: {
+            arguments?: {
+                [key: string]: string;
+            } | null;
+        };
+        RenderPromptResponse: {
+            messages: components["schemas"]["PromptMessageResponse"][];
         };
         /** @description Whether an agent run is currently active for a conversation. */
         RunningStatus: {
@@ -705,6 +817,16 @@ export interface components {
             /** Format: int64 */
             reasoning_tokens?: number | null;
             role: string;
+        };
+        /**
+         * @description One image attached to a tool result (e.g. an MCP server's image content
+         *     block), passed through to the model alongside the text content.
+         */
+        ToolImage: {
+            /** @description Base64-encoded image bytes. */
+            data: string;
+            /** @description MIME type of the image, e.g. `image/png`. */
+            mime_type: string;
         };
         UpdateConversationRequest: {
             title?: string | null;
@@ -1147,6 +1269,90 @@ export interface operations {
             };
             /** @description MCP server name already exists */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    render_mcp_prompt: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description MCP server ID */
+                id: string;
+                /** @description Prompt name (server-side original) */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RenderPromptRequest"];
+            };
+        };
+        responses: {
+            /** @description Rendered prompt messages, in server order */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RenderPromptResponse"];
+                };
+            };
+            /** @description Server row missing, server not connected, or unknown prompt */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The MCP server failed or timed out rendering the prompt */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    read_mcp_resource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description MCP server ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReadResourceRequest"];
+            };
+        };
+        responses: {
+            /** @description Resource content (text or base64 blob) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadResourceResponse"];
+                };
+            };
+            /** @description Server row missing, server not connected, or unknown resource URI */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The MCP server failed or timed out reading the resource */
+            502: {
                 headers: {
                     [name: string]: unknown;
                 };

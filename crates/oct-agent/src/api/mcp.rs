@@ -35,6 +35,33 @@ pub struct McpToolSummary {
     pub description: Option<String>,
 }
 
+/// One declared argument of a cached `prompts/list` entry.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct McpPromptArgumentSummary {
+    pub name: String,
+    pub description: Option<String>,
+    pub required: bool,
+}
+
+/// One cached `prompts/list` entry, as surfaced to the UI (slash menu and
+/// MCP panel). Rendering goes through
+/// `POST /mcp/servers/{id}/prompts/{name}`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct McpPromptSummary {
+    pub name: String,
+    pub description: Option<String>,
+    pub arguments: Vec<McpPromptArgumentSummary>,
+}
+
+/// One cached `resources/list` entry (read-only catalog data for the panel).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct McpResourceSummary {
+    pub uri: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub mime_type: Option<String>,
+}
+
 /// An MCP server row merged with the connection manager's live status.
 ///
 /// The storage fields mirror [`db::McpServer`] one-to-one (utoipa cannot
@@ -68,14 +95,22 @@ pub struct McpServerResponse {
     pub error: Option<String>,
     /// Cached `tools/list` while connected; `null` otherwise.
     pub tools: Option<Vec<McpToolSummary>>,
+    /// Cached `prompts/list` while connected; `null` otherwise. Empty (not
+    /// `null`) means the server offers no prompts, or its connect-time fetch
+    /// failed best-effort.
+    pub prompts: Option<Vec<McpPromptSummary>>,
+    /// Cached `resources/list` while connected; `null` otherwise.
+    pub resources: Option<Vec<McpResourceSummary>>,
 }
 
 fn to_mcp_server_response(
     server: &db::McpServer,
     status: Option<ServerStatus>,
     tools: Vec<oct_mcp::McpToolInfo>,
+    prompts: Vec<oct_mcp::McpPromptInfo>,
+    resources: Vec<oct_mcp::McpResourceInfo>,
 ) -> McpServerResponse {
-    let (status, tool_count, error, tools) = match status {
+    let (status, tool_count, error, tools, prompts, resources) = match status {
         Some(ServerStatus::Connected { tool_count }) => (
             "connected",
             Some(tool_count),
@@ -89,9 +124,38 @@ fn to_mcp_server_response(
                     })
                     .collect::<Vec<_>>(),
             ),
+            Some(
+                prompts
+                    .into_iter()
+                    .map(|prompt| McpPromptSummary {
+                        name: prompt.name,
+                        description: prompt.description,
+                        arguments: prompt
+                            .arguments
+                            .into_iter()
+                            .map(|arg| McpPromptArgumentSummary {
+                                name: arg.name,
+                                description: arg.description,
+                                required: arg.required,
+                            })
+                            .collect(),
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+            Some(
+                resources
+                    .into_iter()
+                    .map(|resource| McpResourceSummary {
+                        uri: resource.uri,
+                        name: resource.name,
+                        description: resource.description,
+                        mime_type: resource.mime_type,
+                    })
+                    .collect::<Vec<_>>(),
+            ),
         ),
-        Some(ServerStatus::Failed { error }) => ("failed", None, Some(error), None),
-        None => ("not_connected", None, None, None),
+        Some(ServerStatus::Failed { error }) => ("failed", None, Some(error), None, None, None),
+        None => ("not_connected", None, None, None, None, None),
     };
     McpServerResponse {
         id: server.id.clone(),
@@ -111,6 +175,8 @@ fn to_mcp_server_response(
         tool_count,
         error,
         tools,
+        prompts,
+        resources,
     }
 }
 
@@ -244,6 +310,8 @@ pub async fn list_mcp_servers(
                 server,
                 state.mcp.status_of(&server.id),
                 state.mcp.tools_of(&server.id),
+                state.mcp.prompts_of(&server.id),
+                state.mcp.resources_of(&server.id),
             )
         })
         .collect();
@@ -282,6 +350,8 @@ pub async fn ensure_project_mcp_servers(
                 server,
                 state.mcp.status_of(&server.id),
                 state.mcp.tools_of(&server.id),
+                state.mcp.prompts_of(&server.id),
+                state.mcp.resources_of(&server.id),
             )
         })
         .collect();
@@ -330,7 +400,13 @@ pub async fn create_mcp_server(
     }
 
     let server = db::create_mcp_server(&state.pool, &req).await?;
-    let response = to_mcp_server_response(&server, state.mcp.status_of(&server.id), Vec::new());
+    let response = to_mcp_server_response(
+        &server,
+        state.mcp.status_of(&server.id),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
     Ok((StatusCode::CREATED, Json(response)))
 }
 
@@ -355,6 +431,8 @@ pub async fn get_mcp_server(
         &server,
         state.mcp.status_of(&server.id),
         state.mcp.tools_of(&server.id),
+        state.mcp.prompts_of(&server.id),
+        state.mcp.resources_of(&server.id),
     )))
 }
 
@@ -437,5 +515,142 @@ pub async fn delete_mcp_server(
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(AppError::NotFound("MCP server not found".into()))
+    }
+}
+
+/// Request body of `POST /mcp/servers/{id}/prompts/{name}`: the prompt
+/// argument values (all strings, matching the MCP spec's prompt arguments).
+/// Omitted/null = no arguments.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct RenderPromptRequest {
+    pub arguments: Option<HashMap<String, String>>,
+}
+
+/// One rendered prompt message; `role` is `user` | `assistant`, `text` the
+/// flattened content (non-text blocks arrive as placeholder notes).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PromptMessageResponse {
+    pub role: String,
+    pub text: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RenderPromptResponse {
+    pub messages: Vec<PromptMessageResponse>,
+}
+
+/// Render (get) one prompt of a connected MCP server — the backend of the
+/// chat input's slash menu. The row must exist (404), the manager must hold
+/// a live connection for it and know the prompt (404), and the server must
+/// render it without erroring (502 with the server's message otherwise).
+#[utoipa::path(
+    post,
+    path = "/mcp/servers/{id}/prompts/{name}",
+    params(
+        ("id" = String, Path, description = "MCP server ID"),
+        ("name" = String, Path, description = "Prompt name (server-side original)"),
+    ),
+    request_body = RenderPromptRequest,
+    responses(
+        (status = 200, description = "Rendered prompt messages, in server order", body = RenderPromptResponse),
+        (status = 404, description = "Server row missing, server not connected, or unknown prompt"),
+        (status = 502, description = "The MCP server failed or timed out rendering the prompt")
+    ),
+    tag = "mcp"
+)]
+pub async fn render_mcp_prompt(
+    State(state): State<AppState>,
+    Path((id, name)): Path<(String, String)>,
+    body: Option<Json<RenderPromptRequest>>,
+) -> ApiResult<Json<RenderPromptResponse>> {
+    // Row presence first, mirroring the other id-addressed endpoints.
+    db::get_mcp_server(&state.pool, &id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("MCP server not found".into()))?;
+
+    // String map → JSON object of strings (verbatim pass-through).
+    let arguments = body
+        .and_then(|Json(req)| req.arguments)
+        .map(|map| {
+            serde_json::Value::Object(
+                map.into_iter()
+                    .map(|(k, v)| (k, serde_json::Value::String(v)))
+                    .collect(),
+            )
+        })
+        .unwrap_or(serde_json::Value::Null);
+
+    match state.mcp.render_prompt(&id, &name, &arguments).await {
+        crate::mcp::McpServerCall::Ok(result) => Ok(Json(RenderPromptResponse {
+            messages: result
+                .messages
+                .into_iter()
+                .map(|message| PromptMessageResponse {
+                    role: message.role,
+                    text: message.text,
+                })
+                .collect(),
+        })),
+        crate::mcp::McpServerCall::NotConnected => Err(AppError::NotFound(format!(
+            "MCP server not connected or prompt `{name}` not found"
+        ))),
+        crate::mcp::McpServerCall::Failed(error) => Err(AppError::BadGateway(format!(
+            "rendering prompt `{name}` failed: {error}"
+        ))),
+    }
+}
+
+/// Request body of `POST /mcp/servers/{id}/resources/read`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ReadResourceRequest {
+    pub uri: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ReadResourceResponse {
+    pub mime_type: Option<String>,
+    /// Text contents joined with newlines; `null` for blob reads.
+    pub text: Option<String>,
+    /// Base64 blob verbatim from the server; `null` for text reads.
+    pub blob_base64: Option<String>,
+}
+
+/// Read one resource of a connected MCP server for the MCP panel's viewer.
+/// Same 404/502 contract as the prompt render endpoint.
+#[utoipa::path(
+    post,
+    path = "/mcp/servers/{id}/resources/read",
+    params(("id" = String, Path, description = "MCP server ID")),
+    request_body = ReadResourceRequest,
+    responses(
+        (status = 200, description = "Resource content (text or base64 blob)", body = ReadResourceResponse),
+        (status = 404, description = "Server row missing, server not connected, or unknown resource URI"),
+        (status = 502, description = "The MCP server failed or timed out reading the resource")
+    ),
+    tag = "mcp"
+)]
+pub async fn read_mcp_resource(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ReadResourceRequest>,
+) -> ApiResult<Json<ReadResourceResponse>> {
+    db::get_mcp_server(&state.pool, &id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("MCP server not found".into()))?;
+
+    match state.mcp.read_resource(&id, &req.uri).await {
+        crate::mcp::McpServerCall::Ok(content) => Ok(Json(ReadResourceResponse {
+            mime_type: content.mime_type,
+            text: content.text,
+            blob_base64: content.blob_base64,
+        })),
+        crate::mcp::McpServerCall::NotConnected => Err(AppError::NotFound(format!(
+            "MCP server not connected or resource `{}` not found",
+            req.uri
+        ))),
+        crate::mcp::McpServerCall::Failed(error) => Err(AppError::BadGateway(format!(
+            "reading resource `{}` failed: {error}",
+            req.uri
+        ))),
     }
 }

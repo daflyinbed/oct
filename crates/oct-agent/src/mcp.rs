@@ -48,7 +48,8 @@ use tracing::{info, warn};
 use oct_mcp::ToolListChanged;
 use oct_mcp::ToolNameMap;
 use oct_mcp::{
-    HttpServerConfig, McpCallResult, McpConnection, McpToolInfo, StdioServerConfig, connect_http,
+    HttpServerConfig, McpCallResult, McpConnection, McpPromptInfo, McpPromptResult,
+    McpResourceContent, McpResourceInfo, McpToolInfo, StdioServerConfig, connect_http,
     connect_stdio,
 };
 
@@ -110,6 +111,30 @@ pub struct ServerStatusEntry {
     pub status: ServerStatus,
 }
 
+/// Outcome of a catalog-backed server call ([`McpManager::render_prompt`] /
+/// [`McpManager::read_resource`]).
+///
+/// `NotConnected` covers every "no live server to ask" shape (no entry,
+/// `Failed` entry, or the requested name/URI is absent from the cached
+/// catalog) and maps to 404 at the API layer. `Failed` carries the
+/// server-side error string (transport error, server refusal, timeout) and
+/// maps to 502 — the request really reached a live server and it errored.
+#[derive(Debug, Clone, PartialEq)]
+pub enum McpServerCall<T> {
+    Ok(T),
+    NotConnected,
+    Failed(String),
+}
+
+/// Cloned-out snapshot of one connected entry for the render/read call paths
+/// (no DashMap guard crosses an await).
+struct ConnectedEntry {
+    connection: Arc<dyn McpConnection>,
+    prompts: Vec<McpPromptInfo>,
+    resources: Vec<McpResourceInfo>,
+    tool_timeout: Duration,
+}
+
 /// What the manager tracks for one MCP server id.
 struct ManagedServer {
     /// User-facing name from the DB row (UNIQUE); drives the exposed
@@ -139,8 +164,25 @@ struct ManagedServer {
     /// Cached `tools/list` result (only meaningful while `Connected`),
     /// refreshed in place by the entry's `tools/list_changed` task.
     tools: Vec<McpToolInfo>,
+    /// Cached `prompts/list` result. Unlike `tools`, fetched ONCE at connect
+    /// time — no `prompts/list_changed` refresh task exists (the UI treats
+    /// the prompt catalog as connect-time metadata; a config edit reconnects
+    /// and re-fetches anyway).
+    prompts: Vec<McpPromptInfo>,
+    /// Cached `resources/list` result, same connect-time-once contract as
+    /// `prompts`.
+    resources: Vec<McpResourceInfo>,
     /// Per-call budget from the row's `tool_timeout_ms` (or the default).
     tool_timeout: Duration,
+}
+
+/// Connect-time capability catalogs of one server: the `tools/list` result
+/// plus the best-effort `prompts/list` / `resources/list` results.
+#[derive(Debug, Default)]
+struct ServerCatalog {
+    tools: Vec<McpToolInfo>,
+    prompts: Vec<McpPromptInfo>,
+    resources: Vec<McpResourceInfo>,
 }
 
 /// Owns the process-wide MCP connections. Shared through `AppState` as an
@@ -257,11 +299,13 @@ impl McpManager {
             .collect::<Vec<_>>();
         let results = futures_util::future::join_all(connects).await;
         for (row, outcome) in to_connect.iter().zip(results) {
-            let (status, connection, tools) = outcome;
+            let (status, connection, catalog) = outcome;
             match &status {
                 ServerStatus::Connected { tool_count } => info!(
                     server = %row.name,
                     tools = tool_count,
+                    prompts = catalog.prompts.len(),
+                    resources = catalog.resources.len(),
                     "MCP server connected"
                 ),
                 ServerStatus::Failed { error } => {
@@ -281,7 +325,9 @@ impl McpManager {
                     fingerprint: Some(fingerprint_of(row)),
                     scope: row.project_id.clone(),
                     connection,
-                    tools,
+                    tools: catalog.tools,
+                    prompts: catalog.prompts,
+                    resources: catalog.resources,
                     tool_timeout: tool_timeout_of(row),
                 },
             );
@@ -445,6 +491,100 @@ impl McpManager {
             .unwrap_or_default()
     }
 
+    /// Cached `prompts/list` of one server while `Connected`; same empty-on-
+    /// miss contract as [`Self::tools_of`]. Empty also covers a server that
+    /// offers no prompts capability (or whose connect-time fetch failed).
+    pub fn prompts_of(&self, server_id: &str) -> Vec<McpPromptInfo> {
+        self.servers
+            .get(server_id)
+            .map(|entry| entry.value().prompts.clone())
+            .unwrap_or_default()
+    }
+
+    /// Cached `resources/list` of one server while `Connected`; same
+    /// contract as [`Self::prompts_of`].
+    pub fn resources_of(&self, server_id: &str) -> Vec<McpResourceInfo> {
+        self.servers
+            .get(server_id)
+            .map(|entry| entry.value().resources.clone())
+            .unwrap_or_default()
+    }
+
+    /// Render one prompt of one server (`prompts/get`). `arguments` must be
+    /// a JSON object (or `null`). The call runs under the entry's per-call
+    /// timeout budget — the same one tool calls use. See
+    /// [`McpServerCall`] for the outcome mapping; `NotConnected` additionally
+    /// fires when the cached prompt catalog is non-empty but does not list
+    /// `name` (an empty catalog falls through to the wire, since it may be an
+    /// empty-by-fetch-failure rather than a genuine "no prompts").
+    pub async fn render_prompt(
+        &self,
+        server_id: &str,
+        name: &str,
+        arguments: &Value,
+    ) -> McpServerCall<McpPromptResult> {
+        let Some(entry) = self.connected_entry(server_id) else {
+            return McpServerCall::NotConnected;
+        };
+        if !entry.prompts.is_empty() && !entry.prompts.iter().any(|p| p.name == name) {
+            return McpServerCall::NotConnected;
+        }
+        match tokio::time::timeout(
+            entry.tool_timeout,
+            entry.connection.get_prompt(name, arguments),
+        )
+        .await
+        {
+            Ok(Ok(result)) => McpServerCall::Ok(result),
+            Ok(Err(e)) => McpServerCall::Failed(format!("{e:#}")),
+            Err(_) => McpServerCall::Failed(format!(
+                "prompts/get for `{name}` timed out after {:?}",
+                entry.tool_timeout
+            )),
+        }
+    }
+
+    /// Read one resource of one server by URI (`resources/read`); same
+    /// outcome mapping as [`Self::render_prompt`] (an unknown URI is
+    /// `NotConnected` when the cached resource catalog is non-empty).
+    pub async fn read_resource(
+        &self,
+        server_id: &str,
+        uri: &str,
+    ) -> McpServerCall<McpResourceContent> {
+        let Some(entry) = self.connected_entry(server_id) else {
+            return McpServerCall::NotConnected;
+        };
+        if !entry.resources.is_empty() && !entry.resources.iter().any(|r| r.uri == uri) {
+            return McpServerCall::NotConnected;
+        }
+        match tokio::time::timeout(entry.tool_timeout, entry.connection.read_resource(uri)).await {
+            Ok(Ok(content)) => McpServerCall::Ok(content),
+            Ok(Err(e)) => McpServerCall::Failed(format!("{e:#}")),
+            Err(_) => McpServerCall::Failed(format!(
+                "resources/read for `{uri}` timed out after {:?}",
+                entry.tool_timeout
+            )),
+        }
+    }
+
+    /// Connection + cached catalogs + per-call timeout of one CONNECTED
+    /// entry. Cloned out of the map so no DashMap guard is held across the
+    /// awaits of [`Self::render_prompt`] / [`Self::read_resource`].
+    fn connected_entry(&self, server_id: &str) -> Option<ConnectedEntry> {
+        let entry = self.servers.get(server_id)?;
+        let managed = entry.value();
+        if !matches!(managed.status, ServerStatus::Connected { .. }) {
+            return None;
+        }
+        Some(ConnectedEntry {
+            connection: managed.connection.clone()?,
+            prompts: managed.prompts.clone(),
+            resources: managed.resources.clone(),
+            tool_timeout: managed.tool_timeout,
+        })
+    }
+
     /// Test seam (integration tests live outside the crate, hence `pub`):
     /// register a pre-established `connection` under `server_id` as a
     /// `Connected` server advertising `tools`, scoped to `scope` (`None` =
@@ -452,9 +592,11 @@ impl McpManager {
     /// [`Self::ensure_connections`] treats it as externally owned: it is
     /// never reconnected, and it survives reconciles even if the matching
     /// row is missing or disabled. Tool-call timeout is the default; build
-    /// an [`McpTool`] directly to control it. A `tools/list_changed` refresh
-    /// task is spawned exactly like for production entries — fire the
-    /// connection's feed to drive it.
+    /// an [`McpTool`] directly to control it. Prompts/resources catalogs stay
+    /// empty (hand-build a `ManagedServer` literal to exercise them in-crate;
+    /// out-of-crate tests get them through the real connect path). A
+    /// `tools/list_changed` refresh task is spawned exactly like for
+    /// production entries — fire the connection's feed to drive it.
     #[doc(hidden)]
     pub fn insert_connection_for_test(
         &self,
@@ -476,6 +618,8 @@ impl McpManager {
                 scope: scope.map(str::to_string),
                 connection: Some(connection.clone()),
                 tools,
+                prompts: Vec::new(),
+                resources: Vec::new(),
                 tool_timeout: DEFAULT_TOOL_TIMEOUT,
             },
         );
@@ -635,11 +779,7 @@ fn tool_timeout_of(server: &McpServer) -> Duration {
 /// `Failed` status with the error string for the API surface.
 async fn connect_server(
     row: &McpServer,
-) -> (
-    ServerStatus,
-    Option<Arc<dyn McpConnection>>,
-    Vec<McpToolInfo>,
-) {
+) -> (ServerStatus, Option<Arc<dyn McpConnection>>, ServerCatalog) {
     // Resolve the transport-specific connection future; the handshake→list
     // pipeline below is shared. A row whose transport fields are incomplete
     // (the API validates this, but the DB can still be edited out-of-band)
@@ -688,25 +828,61 @@ async fn connect_server(
         Ok::<_, anyhow::Error>((Arc::from(connection), tools))
     };
     match attempt.await {
-        Ok((connection, tools)) => (
-            ServerStatus::Connected {
-                tool_count: tools.len(),
-            },
-            Some(connection),
-            tools,
-        ),
+        Ok((connection, tools)) => {
+            let connection: Arc<dyn McpConnection> = connection;
+            // Prompts/resources catalogs are read side-tracked: fetched on
+            // the SAME connection right after tools, best-effort — a server
+            // without the capability (or one that errors mid-fetch) connects
+            // fine, its catalog is just empty. No list_changed refresh loop
+            // exists for these; a reconnect re-fetches.
+            let prompts = fetch_catalog("prompts/list", connection.list_prompts()).await;
+            let resources = fetch_catalog("resources/list", connection.list_resources()).await;
+            (
+                ServerStatus::Connected {
+                    tool_count: tools.len(),
+                },
+                Some(connection),
+                ServerCatalog {
+                    tools,
+                    prompts,
+                    resources,
+                },
+            )
+        }
         Err(e) => failed(format!("{e:#}")),
     }
 }
 
-fn failed(
-    error: String,
-) -> (
-    ServerStatus,
-    Option<Arc<dyn McpConnection>>,
-    Vec<McpToolInfo>,
-) {
-    (ServerStatus::Failed { error }, None, Vec::new())
+/// Best-effort connect-time catalog fetch for prompts/resources: bounded by
+/// [`CONNECT_TIMEOUT`], and any failure (unsupported capability, transport
+/// error, timeout) is logged and turned into an EMPTY catalog — it must never
+/// fail the connection itself.
+async fn fetch_catalog<T>(
+    what: &'static str,
+    fetch: impl std::future::Future<Output = anyhow::Result<Vec<T>>>,
+) -> Vec<T> {
+    match tokio::time::timeout(CONNECT_TIMEOUT, fetch).await {
+        Ok(Ok(entries)) => entries,
+        Ok(Err(e)) => {
+            // Most common shape: the server declares no such capability and
+            // answers with a JSON-RPC error — debug, not warn, so logs stay
+            // quiet for the tools-only majority.
+            tracing::debug!("{what} failed at connect time (kept empty): {e:#}");
+            Vec::new()
+        }
+        Err(_) => {
+            warn!("{what} timed out after {CONNECT_TIMEOUT:?} (kept empty)");
+            Vec::new()
+        }
+    }
+}
+
+fn failed(error: String) -> (ServerStatus, Option<Arc<dyn McpConnection>>, ServerCatalog) {
+    (
+        ServerStatus::Failed { error },
+        None,
+        ServerCatalog::default(),
+    )
 }
 
 /// `[mcp:{server}] {description}` for the LLM, capped at
@@ -1005,6 +1181,8 @@ mod tests {
                 scope: None,
                 connection: None,
                 tools: vec![info("dead", None)],
+                prompts: Vec::new(),
+                resources: Vec::new(),
                 tool_timeout: DEFAULT_TOOL_TIMEOUT,
             },
         );
@@ -1577,6 +1755,8 @@ mod tests {
                 scope: None,
                 connection: Some(FakeConn::ok("x")),
                 tools: vec![info("old", None)],
+                prompts: Vec::new(),
+                resources: Vec::new(),
                 tool_timeout: DEFAULT_TOOL_TIMEOUT,
             },
         );
@@ -1609,6 +1789,8 @@ mod tests {
                 scope: row.project_id.clone(),
                 connection: Some(fake.clone()),
                 tools: vec![info("echo", None)],
+                prompts: Vec::new(),
+                resources: Vec::new(),
                 tool_timeout: tool_timeout_of(&row),
             },
         );
@@ -1654,6 +1836,8 @@ mod tests {
                 scope: Some(owner.id.clone()),
                 connection: Some(fake),
                 tools: vec![info("mine", None)],
+                prompts: Vec::new(),
+                resources: Vec::new(),
                 tool_timeout: tool_timeout_of(&row),
             },
         );
@@ -1696,6 +1880,8 @@ mod tests {
                 scope: Some(owner.id.clone()),
                 connection: Some(FakeConn::ok("x")),
                 tools: vec![info("mine", None)],
+                prompts: Vec::new(),
+                resources: Vec::new(),
                 tool_timeout: DEFAULT_TOOL_TIMEOUT,
             },
         );
@@ -1757,6 +1943,8 @@ mod tests {
                 scope: None,
                 connection: Some(FakeConn::ok("x")),
                 tools: vec![info("tool", None)],
+                prompts: Vec::new(),
+                resources: Vec::new(),
                 tool_timeout: tool_timeout_of(&row),
             },
         );
@@ -2016,6 +2204,309 @@ mod tests {
             manager.status_of("id-2"),
             Some(ServerStatus::Connected { tool_count: 1 })
         );
+    }
+
+    // ------------------------------------------------------------------
+    // prompts/resources: catalog accessors + render/read call paths
+    // ------------------------------------------------------------------
+
+    /// Canned prompt/resource scripted connection for the catalog paths.
+    struct CatalogFake {
+        prompts: Vec<McpPromptInfo>,
+        resources: Vec<McpResourceInfo>,
+        prompt_calls: Mutex<Vec<(String, Value)>>,
+        prompt_error: bool,
+        resource_calls: Mutex<Vec<String>>,
+        resource_hang: bool,
+    }
+
+    impl CatalogFake {
+        fn new(prompts: Vec<McpPromptInfo>, resources: Vec<McpResourceInfo>) -> Arc<Self> {
+            Arc::new(Self {
+                prompts,
+                resources,
+                prompt_calls: Mutex::new(Vec::new()),
+                prompt_error: false,
+                resource_calls: Mutex::new(Vec::new()),
+                resource_hang: false,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl McpConnection for CatalogFake {
+        async fn list_tools(&self) -> anyhow::Result<Vec<McpToolInfo>> {
+            Ok(Vec::new())
+        }
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _arguments: &Value,
+        ) -> anyhow::Result<McpCallResult> {
+            unreachable!("no tool calls in the catalog tests")
+        }
+        async fn shutdown(&self) {}
+
+        async fn list_prompts(&self) -> anyhow::Result<Vec<McpPromptInfo>> {
+            Ok(self.prompts.clone())
+        }
+        async fn get_prompt(
+            &self,
+            name: &str,
+            arguments: &Value,
+        ) -> anyhow::Result<oct_mcp::McpPromptResult> {
+            self.prompt_calls
+                .lock()
+                .unwrap()
+                .push((name.to_string(), arguments.clone()));
+            if self.prompt_error {
+                return Err(anyhow::anyhow!("server exploded"));
+            }
+            Ok(oct_mcp::McpPromptResult {
+                messages: vec![oct_mcp::McpPromptMessage {
+                    role: "user".to_string(),
+                    text: format!("{name}: {}", arguments["name"].as_str().unwrap_or("-")),
+                }],
+            })
+        }
+        async fn list_resources(&self) -> anyhow::Result<Vec<McpResourceInfo>> {
+            Ok(self.resources.clone())
+        }
+        async fn read_resource(&self, uri: &str) -> anyhow::Result<oct_mcp::McpResourceContent> {
+            self.resource_calls.lock().unwrap().push(uri.to_string());
+            if self.resource_hang {
+                futures_util::future::pending().await
+            }
+            match uri {
+                "memo://notes" => Ok(oct_mcp::McpResourceContent {
+                    mime_type: Some("text/markdown".to_string()),
+                    text: Some("# Notes".to_string()),
+                    blob_base64: None,
+                }),
+                _ => Ok(oct_mcp::McpResourceContent {
+                    mime_type: Some("image/png".to_string()),
+                    text: None,
+                    blob_base64: Some("aVBuZw==".to_string()),
+                }),
+            }
+        }
+    }
+
+    fn prompt_info(name: &str) -> McpPromptInfo {
+        McpPromptInfo {
+            name: name.to_string(),
+            description: Some(format!("{name} prompt")),
+            arguments: vec![oct_mcp::McpPromptArgument {
+                name: "name".to_string(),
+                description: None,
+                required: true,
+            }],
+        }
+    }
+
+    fn resource_info(uri: &str) -> McpResourceInfo {
+        McpResourceInfo {
+            uri: uri.to_string(),
+            name: uri.to_string(),
+            description: None,
+            mime_type: Some("text/markdown".to_string()),
+        }
+    }
+
+    /// Insert a hand-built Connected entry carrying catalogs (the test seam
+    /// keeps injected catalogs empty by design; these tests need them set).
+    fn insert_catalog_entry(
+        manager: &McpManager,
+        id: &str,
+        connection: Arc<dyn McpConnection>,
+        prompts: Vec<McpPromptInfo>,
+        resources: Vec<McpResourceInfo>,
+    ) {
+        manager.servers.insert(
+            id.to_string(),
+            ManagedServer {
+                name: "srv".to_string(),
+                status: ServerStatus::Connected { tool_count: 0 },
+                generation: 0,
+                fingerprint: None,
+                scope: None,
+                connection: Some(connection),
+                tools: Vec::new(),
+                prompts,
+                resources,
+                tool_timeout: Duration::from_secs(5),
+            },
+        );
+    }
+
+    #[tokio::test]
+    async fn catalog_accessors_return_cached_prompts_and_resources() {
+        let manager = McpManager::default();
+        let fake = CatalogFake::new(
+            vec![prompt_info("greet")],
+            vec![resource_info("memo://notes")],
+        );
+        insert_catalog_entry(
+            &manager,
+            "id-1",
+            fake,
+            vec![prompt_info("greet")],
+            vec![resource_info("memo://notes")],
+        );
+        assert_eq!(manager.prompts_of("id-1").len(), 1);
+        assert_eq!(manager.resources_of("id-1").len(), 1);
+        // Missing entries report empty catalogs.
+        assert!(manager.prompts_of("missing").is_empty());
+        assert!(manager.resources_of("missing").is_empty());
+    }
+
+    #[tokio::test]
+    async fn render_prompt_passes_arguments_and_maps_outcomes() {
+        let manager = McpManager::default();
+        let fake = CatalogFake::new(vec![prompt_info("greet")], Vec::new());
+        insert_catalog_entry(
+            &manager,
+            "id-1",
+            fake.clone(),
+            vec![prompt_info("greet")],
+            Vec::new(),
+        );
+
+        // Ok: arguments pass through verbatim.
+        let outcome = manager
+            .render_prompt("id-1", "greet", &json!({"name": "Ada"}))
+            .await;
+        match outcome {
+            McpServerCall::Ok(result) => {
+                assert_eq!(result.messages.len(), 1);
+                assert_eq!(result.messages[0].text, "greet: Ada");
+            }
+            other => panic!("expected Ok, got {other:?}"),
+        }
+        assert_eq!(
+            *fake.prompt_calls.lock().unwrap(),
+            vec![("greet".to_string(), json!({"name": "Ada"}))]
+        );
+
+        // Unknown prompt against a NON-empty cached catalog: 404 shape
+        // without hitting the wire.
+        let outcome = manager.render_prompt("id-1", "nope", &Value::Null).await;
+        assert_eq!(outcome, McpServerCall::NotConnected);
+        assert_eq!(
+            fake.prompt_calls.lock().unwrap().len(),
+            1,
+            "no extra wire call"
+        );
+
+        // Missing entry entirely.
+        assert_eq!(
+            manager
+                .render_prompt("missing", "greet", &Value::Null)
+                .await,
+            McpServerCall::NotConnected
+        );
+
+        // Server-side failure maps to the 502 shape.
+        let broken: Arc<dyn McpConnection> = Arc::new(CatalogFake {
+            prompts: vec![prompt_info("greet")],
+            resources: Vec::new(),
+            prompt_calls: Mutex::new(Vec::new()),
+            prompt_error: true,
+            resource_calls: Mutex::new(Vec::new()),
+            resource_hang: false,
+        });
+        insert_catalog_entry(
+            &manager,
+            "id-2",
+            broken,
+            vec![prompt_info("greet")],
+            Vec::new(),
+        );
+        match manager.render_prompt("id-2", "greet", &Value::Null).await {
+            McpServerCall::Failed(error) => assert!(error.contains("server exploded"), "{error}"),
+            other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn render_prompt_with_empty_catalog_falls_through_to_the_wire() {
+        // An empty catalog may be "fetch failed", so the wire decides.
+        let manager = McpManager::default();
+        let fake = CatalogFake::new(Vec::new(), Vec::new());
+        insert_catalog_entry(&manager, "id-1", fake.clone(), Vec::new(), Vec::new());
+        assert!(matches!(
+            manager.render_prompt("id-1", "greet", &Value::Null).await,
+            McpServerCall::Ok(_)
+        ));
+        assert_eq!(fake.prompt_calls.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn read_resource_maps_text_blob_and_not_found_shapes() {
+        let manager = McpManager::default();
+        let fake = CatalogFake::new(
+            Vec::new(),
+            vec![
+                resource_info("memo://notes"),
+                resource_info("file://logo.png"),
+            ],
+        );
+        insert_catalog_entry(
+            &manager,
+            "id-1",
+            fake,
+            Vec::new(),
+            vec![
+                resource_info("memo://notes"),
+                resource_info("file://logo.png"),
+            ],
+        );
+
+        let text = manager.read_resource("id-1", "memo://notes").await;
+        assert!(matches!(&text, McpServerCall::Ok(c) if c.text.as_deref() == Some("# Notes")));
+
+        let blob = manager.read_resource("id-1", "file://logo.png").await;
+        assert!(
+            matches!(&blob, McpServerCall::Ok(c) if c.blob_base64.as_deref() == Some("aVBuZw=="))
+        );
+
+        // Unknown URI against a non-empty catalog: no wire call.
+        assert_eq!(
+            manager.read_resource("id-1", "nope://x").await,
+            McpServerCall::NotConnected
+        );
+        assert_eq!(manager.resources_of("id-1").len(), 2);
+
+        // Timeout maps to Failed (a 20ms budget against a hanging read).
+        let hanging = CatalogFake {
+            prompts: Vec::new(),
+            resources: vec![resource_info("memo://notes")],
+            prompt_calls: Mutex::new(Vec::new()),
+            prompt_error: false,
+            resource_calls: Mutex::new(Vec::new()),
+            resource_hang: true,
+        };
+        manager.servers.insert(
+            "id-2".to_string(),
+            ManagedServer {
+                name: "slow".to_string(),
+                status: ServerStatus::Connected { tool_count: 0 },
+                generation: 0,
+                fingerprint: None,
+                scope: None,
+                connection: Some(Arc::new(hanging)),
+                tools: Vec::new(),
+                prompts: Vec::new(),
+                resources: vec![resource_info("memo://notes")],
+                tool_timeout: Duration::from_millis(20),
+            },
+        );
+        match manager.read_resource("id-2", "memo://notes").await {
+            McpServerCall::Failed(error) => {
+                assert!(error.contains("timed out"), "{error}")
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
     }
 
     #[test]

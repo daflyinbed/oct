@@ -4,8 +4,8 @@
 //! trait. rmcp types (`RunningService`, `Peer`, model structs) appear ONLY in
 //! private items — never in a public signature — so consumers of this crate
 //! can treat MCP as "start a server (spawn it, or point at a URL), list
-//! tools, call tools, watch for `tools/list_changed`, shut down" without a
-//! direct rmcp dependency.
+//! tools, call tools, watch for `tools/list_changed`, list/render prompts,
+//! list/read resources, shut down" without a direct rmcp dependency.
 //!
 //! Both transports enter through the same [`connect_transport`] seam, so the
 //! handshake, request encoding and notification wiring are identical; only
@@ -28,8 +28,16 @@ use rmcp::model::CallToolResult;
 use rmcp::model::ClientCapabilities;
 use rmcp::model::ClientConfig;
 use rmcp::model::ContentBlock;
+use rmcp::model::GetPromptRequestParams;
+use rmcp::model::GetPromptResult;
 use rmcp::model::Implementation;
 use rmcp::model::PaginatedRequestParams;
+use rmcp::model::Prompt;
+use rmcp::model::ReadResourceRequestParams;
+use rmcp::model::ReadResourceResult;
+use rmcp::model::Resource;
+use rmcp::model::ResourceContents;
+use rmcp::model::Role;
 use rmcp::model::Tool;
 use rmcp::service::MaybeSendFuture;
 use rmcp::service::NotificationContext;
@@ -111,6 +119,66 @@ pub struct McpCallResult {
     /// The server's `isError` flag (tool-level failure), defaulting to
     /// `false` when absent.
     pub is_error: bool,
+}
+
+/// One argument a prompt accepts, from the server's `prompts/list` catalog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpPromptArgument {
+    pub name: String,
+    pub description: Option<String>,
+    /// The server's `required` flag, defaulted to `false` when absent.
+    pub required: bool,
+}
+
+/// One prompt advertised by an MCP server (`prompts/list` entry).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpPromptInfo {
+    /// Server-side original prompt name (the name `get_prompt` expects).
+    pub name: String,
+    pub description: Option<String>,
+    /// Declared arguments in server order; empty for argument-less prompts.
+    pub arguments: Vec<McpPromptArgument>,
+}
+
+/// One rendered prompt message (`prompts/get` entry). MCP prompt content is
+/// flattened to text: non-text content blocks become placeholder notes (see
+/// [`McpConnection::get_prompt`] for the limitation).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpPromptMessage {
+    /// `"user"` or `"assistant"`, lowercased from the wire.
+    pub role: String,
+    /// Text content of the message (placeholder text for non-text blocks).
+    pub text: String,
+}
+
+/// The outcome of one `prompts/get` render.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpPromptResult {
+    /// Rendered messages in server order.
+    pub messages: Vec<McpPromptMessage>,
+}
+
+/// One resource advertised by an MCP server (`resources/list` entry). oct
+/// treats resources as read-only catalog data for the UI panel — they never
+/// enter the chat/model context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpResourceInfo {
+    pub uri: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub mime_type: Option<String>,
+}
+
+/// The content of one `resources/read`: the server returns text OR base64
+/// blob contents; per the narrow "view in panel" contract, all text contents
+/// are joined with `"\n"` and the first blob is taken verbatim (extras
+/// dropped — a multi-blob read is vanishingly rare and the panel only
+/// displays one view).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpResourceContent {
+    pub mime_type: Option<String>,
+    pub text: Option<String>,
+    pub blob_base64: Option<String>,
 }
 
 /// Live feed of one server's `notifications/tools/list_changed`, exposed by
@@ -203,7 +271,47 @@ pub trait McpConnection: Send + Sync {
     fn tool_list_changed(&self) -> Option<ToolListChanged> {
         None
     }
+
+    /// List every prompt the server exposes (`prompts/list`), following
+    /// cursor pagination to exhaustion. The default implementation reports
+    /// "unsupported" so test doubles only override what their scenario
+    /// needs; a server that offers no prompts capability answers the wire
+    /// request with a JSON-RPC error, which surfaces as `Err` here.
+    async fn list_prompts(&self) -> Result<Vec<McpPromptInfo>> {
+        Err(anyhow!(UNSUPPORTED_PROMPTS))
+    }
+
+    /// Render one prompt by its server-side original name (`prompts/get`).
+    /// `arguments` must be a JSON object of string values (or `null`); it is
+    /// passed through verbatim. Only text content blocks survive — image,
+    /// audio and resource blocks become placeholder notes, because oct
+    /// renders prompts into the chat input as plain text.
+    async fn get_prompt(&self, name: &str, arguments: &Value) -> Result<McpPromptResult> {
+        let _ = (name, arguments);
+        Err(anyhow!(UNSUPPORTED_PROMPTS))
+    }
+
+    /// List every resource the server exposes (`resources/list`), following
+    /// cursor pagination to exhaustion. Same default-unsupported contract as
+    /// [`McpConnection::list_prompts`].
+    async fn list_resources(&self) -> Result<Vec<McpResourceInfo>> {
+        Err(anyhow!(UNSUPPORTED_RESOURCES))
+    }
+
+    /// Read one resource by URI (`resources/read`). Text contents come back
+    /// joined in [`McpResourceContent::text`]; a blob read in
+    /// [`McpResourceContent::blob_base64`] verbatim base64.
+    async fn read_resource(&self, uri: &str) -> Result<McpResourceContent> {
+        let _ = uri;
+        Err(anyhow!(UNSUPPORTED_RESOURCES))
+    }
 }
+
+/// Error text for the prompts capability's default (unsupported) trait impls.
+const UNSUPPORTED_PROMPTS: &str = "this connection does not support MCP prompts";
+
+/// Error text for the resources capability's default (unsupported) trait impls.
+const UNSUPPORTED_RESOURCES: &str = "this connection does not support MCP resources";
 
 /// Spawn an MCP server as a child process and run the MCP initialize
 /// handshake over stdio.
@@ -324,11 +432,12 @@ impl ClientHandler for NotifyHandler {
 /// a child process or network.
 ///
 /// The client identifies itself as "oct" (version of this crate) and declares
-/// NO capabilities beyond the base protocol: oct only ever consumes tools.
-/// A server that nevertheless sends sampling/roots/elicitation requests gets
-/// them refused by rmcp's default no-op handler — except
-/// `tools/list_changed`, which [`NotifyHandler`] forwards to the
-/// [`ToolListChanged`] feed carried by the returned connection.
+/// NO capabilities beyond the base protocol: oct only ever consumes tools,
+/// prompts and resources (read side). A server that nevertheless sends
+/// sampling/roots/elicitation requests gets them refused by rmcp's default
+/// no-op handler — except `tools/list_changed`, which [`NotifyHandler`]
+/// forwards to the [`ToolListChanged`] feed carried by the returned
+/// connection.
 async fn connect_transport<T, E, A>(
     transport: T,
     timeout: Duration,
@@ -415,6 +524,88 @@ impl McpConnection for RmcpConnection {
         Ok(map_call_result(&result))
     }
 
+    async fn list_prompts(&self) -> Result<Vec<McpPromptInfo>> {
+        // Same cursor-following loop as list_tools; prompts catalogs are
+        // small but the protocol paginates them identically.
+        let mut prompts = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let page = self
+                .peer
+                .list_prompts(Some(PaginatedRequestParams::default().with_cursor(cursor)))
+                .await
+                .context("MCP prompts/list request failed")?;
+            prompts.extend(page.prompts.into_iter().map(map_prompt_info));
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        Ok(prompts)
+    }
+
+    async fn get_prompt(&self, name: &str, arguments: &Value) -> Result<McpPromptResult> {
+        // Build params like call_tool does (non_exhaustive + optional args).
+        let mut params = GetPromptRequestParams::new(name.to_string());
+        params.arguments = arguments_to_object(arguments)
+            .with_context(|| format!("invalid arguments for MCP prompt `{name}`"))?;
+        // The `_once` (non-MRTR) request: oct supports no elicitation, so a
+        // server asking for interactive input gets a refusal error instead of
+        // the client silently stalling on the MRTR round driver.
+        let response = self
+            .peer
+            .get_prompt_once(params)
+            .await
+            .with_context(|| format!("MCP prompts/get for `{name}` failed"))?;
+        match response {
+            rmcp::model::GetPromptResponse::Complete(result) => Ok(map_prompt_result(&result)),
+            rmcp::model::GetPromptResponse::InputRequired(_) => Err(anyhow!(
+                "MCP server requested interactive input while rendering prompt `{name}`; \
+                 elicitation is not supported"
+            )),
+            // non_exhaustive: future variants degrade to a refusal error.
+            _ => Err(anyhow!(UNSUPPORTED_PROMPTS)),
+        }
+    }
+
+    async fn list_resources(&self) -> Result<Vec<McpResourceInfo>> {
+        let mut resources = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let page = self
+                .peer
+                .list_resources(Some(PaginatedRequestParams::default().with_cursor(cursor)))
+                .await
+                .context("MCP resources/list request failed")?;
+            resources.extend(page.resources.into_iter().map(map_resource_info));
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        Ok(resources)
+    }
+
+    async fn read_resource(&self, uri: &str) -> Result<McpResourceContent> {
+        // `_once` for the same no-elicitation reason as get_prompt.
+        let response = self
+            .peer
+            .read_resource_once(ReadResourceRequestParams::new(uri.to_string()))
+            .await
+            .with_context(|| format!("MCP resources/read for `{uri}` failed"))?;
+        match response {
+            rmcp::model::ReadResourceResponse::Complete(result) => {
+                Ok(map_resource_content(&result))
+            }
+            rmcp::model::ReadResourceResponse::InputRequired(_) => Err(anyhow!(
+                "MCP server requested interactive input while reading resource `{uri}`; \
+                 elicitation is not supported"
+            )),
+            // non_exhaustive: future variants degrade to a refusal error.
+            _ => Err(anyhow!(UNSUPPORTED_RESOURCES)),
+        }
+    }
+
     async fn shutdown(&self) {
         if let Some(mut service) = self.service.lock().await.take() {
             // Cancels the service loop and closes the transport: a stdio
@@ -440,6 +631,127 @@ fn map_tool_info(tool: Tool) -> McpToolInfo {
         name: tool.name.into_owned(),
         description: tool.description.map(|d| d.into_owned()),
         input_schema: normalize_input_schema(&Value::Object((*tool.input_schema).clone())),
+    }
+}
+
+/// Map an rmcp `Prompt` to the public [`McpPromptInfo`]: absent arguments
+/// default to an empty list and an absent `required` flag to `false`.
+fn map_prompt_info(prompt: Prompt) -> McpPromptInfo {
+    McpPromptInfo {
+        name: prompt.name,
+        description: prompt.description,
+        arguments: prompt
+            .arguments
+            .unwrap_or_default()
+            .into_iter()
+            .map(|arg| McpPromptArgument {
+                name: arg.name,
+                description: arg.description,
+                required: arg.required.unwrap_or(false),
+            })
+            .collect(),
+    }
+}
+
+/// Map an rmcp `GetPromptResult` to the public [`McpPromptResult`]. Only the
+/// text of each message survives; non-text content blocks (image, audio,
+/// embedded resource, resource link) become bracketed placeholder notes so
+/// the rendered prompt stays honest about what was withheld.
+fn map_prompt_result(result: &GetPromptResult) -> McpPromptResult {
+    McpPromptResult {
+        messages: result
+            .messages
+            .iter()
+            .map(|message| McpPromptMessage {
+                role: match message.role {
+                    Role::User => "user".to_string(),
+                    Role::Assistant => "assistant".to_string(),
+                },
+                text: prompt_block_text(&message.content),
+            })
+            .collect(),
+    }
+}
+
+/// Text representation of one prompt content block: text verbatim, anything
+/// else a `[...]` placeholder note naming the kind (and MIME/URI when known).
+fn prompt_block_text(block: &ContentBlock) -> String {
+    match block {
+        ContentBlock::Text(text) => text.text.clone(),
+        ContentBlock::Image(image) => format!("[image: {}]", image.mime_type),
+        ContentBlock::Audio(audio) => format!("[audio: {}]", audio.mime_type),
+        ContentBlock::Resource(embedded) => match &embedded.resource {
+            ResourceContents::TextResourceContents { uri, .. } => {
+                format!("[embedded resource: {uri}]")
+            }
+            ResourceContents::BlobResourceContents { uri, .. } => {
+                format!("[embedded resource: {uri}]")
+            }
+            _ => "[embedded resource]".to_string(),
+        },
+        ContentBlock::ResourceLink(resource) => {
+            format!("[resource link: {}]", resource.uri)
+        }
+        // non_exhaustive: unknown future blocks get a generic placeholder.
+        _ => "[unsupported content block]".to_string(),
+    }
+}
+
+/// Map an rmcp `Resource` to the public [`McpResourceInfo`].
+fn map_resource_info(resource: Resource) -> McpResourceInfo {
+    McpResourceInfo {
+        uri: resource.uri,
+        name: resource.name,
+        description: resource.description,
+        mime_type: resource.mime_type,
+    }
+}
+
+/// Map an rmcp `ReadResourceResult` to the public [`McpResourceContent`]:
+/// every text content joins into `text` (`"\n"` separated); with no text,
+/// the first blob is taken verbatim into `blob_base64`; `mime_type` is the
+/// first non-`None` MIME among the contents.
+fn map_resource_content(result: &ReadResourceResult) -> McpResourceContent {
+    let mut texts: Vec<String> = Vec::new();
+    let mut blob: Option<String> = None;
+    let mut mime_type: Option<String> = None;
+    for content in &result.contents {
+        match content {
+            ResourceContents::TextResourceContents {
+                uri: _,
+                mime_type: mime,
+                text,
+                ..
+            } => {
+                if mime_type.is_none() {
+                    mime_type = mime.clone();
+                }
+                texts.push(text.clone());
+            }
+            ResourceContents::BlobResourceContents {
+                uri: _,
+                mime_type: mime,
+                blob: data,
+                ..
+            } => {
+                if mime_type.is_none() {
+                    mime_type = mime.clone();
+                }
+                if blob.is_none() {
+                    blob = Some(data.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    McpResourceContent {
+        mime_type,
+        text: if texts.is_empty() {
+            None
+        } else {
+            Some(texts.join("\n"))
+        },
+        blob_base64: blob,
     }
 }
 
@@ -673,6 +985,55 @@ mod tests {
         }
     }
 
+    /// One `prompts/get` reply, echoing the rendered arguments into the text
+    /// and mixing non-text content blocks (image, embedded resource) so the
+    /// placeholder mapping is exercised on the wire path.
+    fn prompt_get_reply(name: &str, arguments: Option<&Value>) -> Value {
+        let name_arg = arguments
+            .and_then(|args| args.get("name"))
+            .and_then(Value::as_str)
+            .unwrap_or("stranger");
+        match name {
+            "greet" => json!({
+                "description": "greet someone",
+                "messages": [
+                    {"role": "user", "content": {"type": "text", "text": format!("Greet {name_arg}")}},
+                    {"role": "assistant", "content": {"type": "image", "data": "aVBuZw==", "mimeType": "image/png"}},
+                ],
+            }),
+            "review" => json!({
+                "messages": [
+                    {"role": "user", "content": {"type": "text", "text": "Review the diff"}},
+                    {"role": "assistant", "content": {"type": "text", "text": "Here is my review"}},
+                ],
+            }),
+            other => json!({
+                "error": {"code": -32602, "message": format!("unknown prompt {other}")},
+            }),
+        }
+    }
+
+    /// One `resources/read` reply keyed by URI: text contents (two blocks, to
+    /// exercise the join) or a single blob.
+    fn resource_read_reply(uri: &str) -> Value {
+        match uri {
+            "memo://notes" => json!({
+                "contents": [
+                    {"uri": uri, "mimeType": "text/markdown", "text": "# Notes"},
+                    {"uri": uri, "mimeType": "text/markdown", "text": "second block"},
+                ],
+            }),
+            "file://logo.png" => json!({
+                "contents": [
+                    {"uri": uri, "mimeType": "image/png", "blob": "aVBuZw=="},
+                ],
+            }),
+            other => json!({
+                "error": {"code": -32602, "message": format!("unknown resource {other}")},
+            }),
+        }
+    }
+
     /// Run the scripted server until the client side closes the pipe (read
     /// returns an empty line at EOF). Every incoming message is recorded in
     /// `log`. When `announce_tools_changed` is set, the server pushes two
@@ -742,6 +1103,54 @@ mod tests {
                 "tools/call" => {
                     let name = message["params"]["name"].as_str().unwrap_or_default();
                     call_reply(name, message["params"].get("arguments"))
+                }
+                "prompts/list" => match message["params"]["cursor"].as_str() {
+                    None => json!({
+                        "prompts": [
+                            {
+                                "name": "greet",
+                                "description": "greet someone by name",
+                                "arguments": [
+                                    {
+                                        "name": "name",
+                                        "description": "who to greet",
+                                        "required": true,
+                                    },
+                                    // required omitted on purpose: must default to false.
+                                    {"name": "style"},
+                                ],
+                            },
+                        ],
+                        "nextCursor": "prompts2",
+                    }),
+                    Some("prompts2") => json!({
+                        "prompts": [{"name": "review", "description": "review the diff"}],
+                    }),
+                    Some(other) => {
+                        return Err(std::io::Error::other(format!(
+                            "unexpected prompts cursor {other}"
+                        )));
+                    }
+                },
+                "prompts/get" => {
+                    let name = message["params"]["name"].as_str().unwrap_or_default();
+                    prompt_get_reply(name, message["params"].get("arguments"))
+                }
+                "resources/list" => json!({
+                    "resources": [
+                        {
+                            "uri": "memo://notes",
+                            "name": "notes",
+                            "description": "meeting notes",
+                            "mimeType": "text/markdown",
+                        },
+                        // mimeType omitted on purpose: must map to None.
+                        {"uri": "file://logo.png", "name": "logo"},
+                    ],
+                }),
+                "resources/read" => {
+                    let uri = message["params"]["uri"].as_str().unwrap_or_default();
+                    resource_read_reply(uri)
                 }
                 other => {
                     json!({"error": {"code": -32601, "message": format!("no handler for {other}")}})
@@ -921,6 +1330,192 @@ mod tests {
         assert!(!shot.is_error);
 
         connection.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn prompts_list_paginates_and_get_renders_over_the_wire() {
+        let (connection, log) = connected_client().await;
+
+        // prompts/list follows pagination to exhaustion and maps arguments
+        // (absent `required` defaults to false, absent list to empty).
+        let prompts = connection.list_prompts().await.expect("list_prompts");
+        assert_eq!(
+            prompts,
+            vec![
+                McpPromptInfo {
+                    name: "greet".to_string(),
+                    description: Some("greet someone by name".to_string()),
+                    arguments: vec![
+                        McpPromptArgument {
+                            name: "name".to_string(),
+                            description: Some("who to greet".to_string()),
+                            required: true,
+                        },
+                        McpPromptArgument {
+                            name: "style".to_string(),
+                            description: None,
+                            required: false,
+                        },
+                    ],
+                },
+                McpPromptInfo {
+                    name: "review".to_string(),
+                    description: Some("review the diff".to_string()),
+                    arguments: Vec::new(),
+                },
+            ]
+        );
+        let lists = logged(&log, "prompts/list");
+        assert_eq!(lists.len(), 2, "both prompt pages must have been requested");
+        assert_eq!(lists[1]["cursor"], json!("prompts2"));
+
+        // prompts/get passes arguments verbatim and maps every message:
+        // text survives, an image block becomes a bracketed placeholder.
+        let rendered = connection
+            .get_prompt("greet", &json!({"name": "Ada"}))
+            .await
+            .expect("get_prompt greet");
+        assert_eq!(
+            rendered.messages,
+            vec![
+                McpPromptMessage {
+                    role: "user".to_string(),
+                    text: "Greet Ada".to_string(),
+                },
+                McpPromptMessage {
+                    role: "assistant".to_string(),
+                    text: "[image: image/png]".to_string(),
+                },
+            ]
+        );
+        let gets = logged(&log, "prompts/get");
+        assert_eq!(gets.len(), 1);
+        assert_eq!(gets[0]["name"], "greet");
+        assert_eq!(gets[0]["arguments"], json!({"name": "Ada"}));
+
+        // Null arguments are omitted from the wire message entirely.
+        let review = connection
+            .get_prompt("review", &Value::Null)
+            .await
+            .expect("get_prompt review");
+        assert_eq!(review.messages.len(), 2);
+        assert_eq!(review.messages[0].role, "user");
+        assert_eq!(review.messages[1].role, "assistant");
+        assert_eq!(
+            logged(&log, "prompts/get")[1].get("arguments"),
+            None,
+            "null arguments must be omitted"
+        );
+
+        // An unknown prompt is a transport-level JSON-RPC error (rmcp wraps
+        // the wire error; the context names the request).
+        let error = connection
+            .get_prompt("nope", &Value::Null)
+            .await
+            .expect_err("unknown prompt must fail");
+        assert!(
+            format!("{error:#}").contains("prompts/get"),
+            "error chain should name the request: {error:#}"
+        );
+
+        connection.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn resources_list_and_read_over_the_wire() {
+        let (connection, _log) = connected_client().await;
+
+        let resources = connection.list_resources().await.expect("list_resources");
+        assert_eq!(
+            resources,
+            vec![
+                McpResourceInfo {
+                    uri: "memo://notes".to_string(),
+                    name: "notes".to_string(),
+                    description: Some("meeting notes".to_string()),
+                    mime_type: Some("text/markdown".to_string()),
+                },
+                McpResourceInfo {
+                    uri: "file://logo.png".to_string(),
+                    name: "logo".to_string(),
+                    description: None,
+                    mime_type: None,
+                },
+            ]
+        );
+
+        // Text read: blocks join with newline, MIME carried through.
+        let text = connection
+            .read_resource("memo://notes")
+            .await
+            .expect("read text resource");
+        assert_eq!(
+            text,
+            McpResourceContent {
+                mime_type: Some("text/markdown".to_string()),
+                text: Some("# Notes\nsecond block".to_string()),
+                blob_base64: None,
+            }
+        );
+
+        // Blob read: base64 verbatim, no text field.
+        let blob = connection
+            .read_resource("file://logo.png")
+            .await
+            .expect("read blob resource");
+        assert_eq!(
+            blob,
+            McpResourceContent {
+                mime_type: Some("image/png".to_string()),
+                text: None,
+                blob_base64: Some("aVBuZw==".to_string()),
+            }
+        );
+
+        // Unknown URI is a transport-level error.
+        assert!(connection.read_resource("nope://x").await.is_err());
+
+        connection.shutdown().await;
+    }
+
+    /// A connection implementing only the required methods: the prompts and
+    /// resources defaults must report "unsupported" instead of panicking or
+    /// silently succeeding, so test doubles can opt in per capability.
+    struct BareConn;
+
+    #[async_trait]
+    impl McpConnection for BareConn {
+        async fn list_tools(&self) -> Result<Vec<McpToolInfo>> {
+            Ok(Vec::new())
+        }
+        async fn call_tool(&self, _name: &str, _arguments: &Value) -> Result<McpCallResult> {
+            Ok(McpCallResult {
+                text: String::new(),
+                images: Vec::new(),
+                structured_json: None,
+                is_error: false,
+            })
+        }
+        async fn shutdown(&self) {}
+    }
+
+    #[tokio::test]
+    async fn default_prompts_and_resources_impls_report_unsupported() {
+        let connection = BareConn;
+        for error in [
+            connection.list_prompts().await.expect_err("prompts"),
+            connection
+                .get_prompt("x", &Value::Null)
+                .await
+                .expect_err("get"),
+            connection.list_resources().await.expect_err("resources"),
+            connection.read_resource("x://y").await.expect_err("read"),
+        ] {
+            assert!(
+                format!("{error}").contains("does not support"),
+                "error should say unsupported: {error}"
+            );
+        }
     }
 
     /// Wait until the feed observed at least revision `target` (recv with

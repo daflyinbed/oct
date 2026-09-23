@@ -15,6 +15,11 @@ pub enum AppError {
     #[error("{0}")]
     Conflict(String),
 
+    /// The request itself was fine, but the upstream service it proxied to
+    /// (e.g. an MCP server) failed, errored or timed out.
+    #[error("{0}")]
+    BadGateway(String),
+
     #[error("{0}")]
     Internal(#[from] anyhow::Error),
 }
@@ -38,6 +43,7 @@ impl IntoResponse for AppError {
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             AppError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
+            AppError::BadGateway(msg) => (StatusCode::BAD_GATEWAY, msg.clone()),
             AppError::Internal(e) => {
                 tracing::error!(error = %e, "Internal server error");
                 (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())

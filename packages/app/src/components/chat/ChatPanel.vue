@@ -35,8 +35,16 @@
     <!-- 输入区：模型选择器内嵌在输入框内（Zed agent 面板的做法） -->
     <div class="flex-none px-7 pb-3.5 pt-2.5">
       <div
-        class="mx-auto max-w-[760px] border border-neutral-5 rounded-[10px] bg-surface transition-colors focus-within:border-accent-6"
+        class="relative mx-auto max-w-[760px] border border-neutral-5 rounded-[10px] bg-surface transition-colors focus-within:border-accent-6"
       >
+        <!-- 斜杠命令菜单：输入以 / 开头时浮于输入框上方（分组：内置命令
+             + 各 MCP server 的 prompts） -->
+        <SlashMenu
+          v-if="slashOpen"
+          :groups="slashGroups"
+          :active-key="slashActiveKey"
+          @select="chooseSlashItem"
+        />
         <textarea
           ref="inputEl"
           v-model="inputMessage"
@@ -48,8 +56,22 @@
           "
           :disabled="!conversationId || sending"
           class="block w-full resize-none border-none bg-transparent px-3.5 pb-1.5 pt-3 text-[13.5px] text-neutral-10 leading-[1.5] outline-none placeholder:text-faint"
-          @keydown.enter.prevent="handleSend"
+          @keydown="handleInputKeydown"
         />
+        <!-- 斜杠命令渲染状态/错误行 -->
+        <div
+          v-if="slashRendering || slashError"
+          class="flex items-center gap-1.5 px-3.5 pb-1 text-[11.5px]"
+          :class="slashError ? 'text-danger-10' : 'text-faint'"
+        >
+          <i-lucide-loader-circle
+            v-if="slashRendering"
+            class="h-3 w-3 animate-spin"
+          />
+          <span class="min-w-0 flex-1 truncate">{{
+            slashError ?? "正在渲染 prompt…"
+          }}</span>
+        </div>
         <div class="flex items-center gap-0.5 p-2">
           <span class="flex-1" />
 
@@ -95,6 +117,16 @@
         </div>
       </div>
     </div>
+
+    <!-- 带参 prompt 的参数表单（reka Dialog,模态） -->
+    <PromptArgsDialog
+      v-if="argsPrompt"
+      :server-name="argsPrompt.serverName"
+      :prompt="argsPrompt.prompt"
+      :submitting="slashRendering"
+      @submit="submitPromptArgs"
+      @cancel="closeArgsDialog"
+    />
   </main>
 </template>
 
@@ -108,12 +140,30 @@ import {
   watch,
 } from "vue";
 import AppSelect from "@/components/ui/AppSelect.vue";
+import { renderMcpPrompt } from "@/composables/useMcpServers";
+import { useMcpStatus } from "@/composables/useMcpStatus";
+import {
+  buildSlashMenuGroups,
+  builtinSlashCommands,
+  filterSlashMenuGroups,
+  flattenMenuItems,
+  formatPromptMessages,
+  replaceSlashCommand,
+  slashQueryOf,
+} from "@/composables/useSlashCommands";
 import ChatMessage from "./ChatMessage.vue";
+import PromptArgsDialog from "./PromptArgsDialog.vue";
+import SlashMenu from "./SlashMenu.vue";
 import type { components } from "@/api/schema";
 import type { DisplayMessage } from "@/composables/useChat";
+import type {
+  SlashMenuGroup,
+  SlashMenuItem,
+} from "@/composables/useSlashCommands";
 
 type ProviderResponse = components["schemas"]["ProviderResponse"];
 type ModelSummary = components["schemas"]["ModelSummary"];
+type McpPromptSummary = components["schemas"]["McpPromptSummary"];
 
 const props = defineProps<{
   messages: readonly DisplayMessage[];
@@ -163,6 +213,157 @@ function handleSend() {
     return;
   emit("send", inputMessage.value);
   inputMessage.value = "";
+}
+
+// ---------------------------------------------------------------------------
+// 通用斜杠命令菜单：`/` 开头触发，内置命令与 MCP prompts（按 server 分组）
+// 并列；选中 MCP prompt 经后端渲染后**填入输入框**（不自动发送，让用户
+// 确认/编辑后再回车）。带参 prompt 先弹参数表单。
+// ---------------------------------------------------------------------------
+
+const { servers: mcpServers } = useMcpStatus();
+
+/** `/` 后的首词,作为菜单查询词;输入不以 `/` 开头时为 null。 */
+const slashQuery = computed(() => slashQueryOf(inputMessage.value));
+
+const slashRendering = ref(false);
+const slashError = ref<string | null>(null);
+
+const slashGroups = computed<SlashMenuGroup[]>(() =>
+  filterSlashMenuGroups(
+    buildSlashMenuGroups(mcpServers.value, builtinSlashCommands),
+    slashQuery.value ?? "",
+  ),
+);
+const slashItems = computed<readonly SlashMenuItem[]>(() =>
+  flattenMenuItems(slashGroups.value),
+);
+
+// Escape 只关闭「本次激活」:输入重新以 / 起始(或从无到有再输入 /)时
+// 重新激活一次。epoch 随每次激活自增,dismissedEpoch 记录被关掉的激活。
+const slashEpoch = ref(0);
+const slashDismissedEpoch = ref(-1);
+watch(inputMessage, (value, old) => {
+  if (value.startsWith("/") && !old.startsWith("/")) slashEpoch.value += 1;
+  slashError.value = null;
+});
+
+const slashOpen = computed(
+  () =>
+    slashQuery.value !== null &&
+    slashItems.value.length > 0 &&
+    slashDismissedEpoch.value < slashEpoch.value,
+);
+
+const slashActiveIndex = ref(0);
+watch(slashItems, () => {
+  slashActiveIndex.value = 0;
+});
+const slashActiveKey = computed(
+  () => slashItems.value[slashActiveIndex.value]?.key ?? null,
+);
+
+/** 带参 prompt 的参数表单状态（非 null 即显示 Dialog）。 */
+const argsPrompt = ref<{
+  serverId: string;
+  serverName: string;
+  prompt: McpPromptSummary;
+} | null>(null);
+
+function handleInputKeydown(event: KeyboardEvent) {
+  if (slashOpen.value) {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      slashActiveIndex.value =
+        (slashActiveIndex.value + 1) % slashItems.value.length;
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      slashActiveIndex.value =
+        (slashActiveIndex.value - 1 + slashItems.value.length) %
+        slashItems.value.length;
+      return;
+    }
+    if (event.key === "Enter" || event.key === "Tab") {
+      event.preventDefault();
+      const item = slashItems.value[slashActiveIndex.value];
+      if (item) void chooseSlashItem(item);
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      slashDismissedEpoch.value = slashEpoch.value;
+      return;
+    }
+  }
+  if (event.key === "Enter") {
+    event.preventDefault();
+    handleSend();
+  }
+}
+
+async function chooseSlashItem(item: SlashMenuItem) {
+  if (item.kind === "builtin") {
+    // 内置命令自行接管（可能弹自己的 UI）;返回文本则同样只填入。
+    const text = await item.command.run();
+    if (text != null) applySlashResult(text);
+    return;
+  }
+  if (item.prompt.arguments.length === 0) {
+    await renderPromptIntoInput(item.serverId, item.prompt, {});
+    return;
+  }
+  argsPrompt.value = {
+    serverId: item.serverId,
+    serverName: item.serverName,
+    prompt: item.prompt,
+  };
+}
+
+async function submitPromptArgs(values: Record<string, string>) {
+  if (!argsPrompt.value) return;
+  const { serverId, prompt } = argsPrompt.value;
+  argsPrompt.value = null;
+  await renderPromptIntoInput(serverId, prompt, values);
+  inputEl.value?.focus();
+}
+
+function closeArgsDialog() {
+  argsPrompt.value = null;
+  inputEl.value?.focus();
+}
+
+async function renderPromptIntoInput(
+  serverId: string,
+  prompt: McpPromptSummary,
+  arguments_: Record<string, string>,
+) {
+  slashRendering.value = true;
+  slashError.value = null;
+  try {
+    const { messages } = await renderMcpPrompt(
+      serverId,
+      prompt.name,
+      arguments_,
+    );
+    applySlashResult(formatPromptMessages(messages));
+  } catch (error) {
+    slashError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    slashRendering.value = false;
+  }
+}
+
+/** 用渲染结果替换输入框里的命令首词（`/xxx` token），保留其后的文本。 */
+function applySlashResult(text: string) {
+  inputMessage.value = replaceSlashCommand(inputMessage.value, text);
+  nextTick(() => {
+    inputEl.value?.focus();
+    // 光标落在渲染文本末尾（其后可能还拼着旧文本）。
+    const end = text.length;
+    inputEl.value?.setSelectionRange(end, end);
+  });
 }
 
 function focusComposer() {

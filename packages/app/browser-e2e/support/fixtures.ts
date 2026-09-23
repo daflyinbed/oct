@@ -11,6 +11,8 @@ type StoredMessage = components["schemas"]["StoredMessage"];
 type AgentEvent = components["schemas"]["AgentEvent"];
 type OutputStream = components["schemas"]["OutputStream"];
 type McpServerResponse = components["schemas"]["McpServerResponse"];
+type McpPromptSummary = components["schemas"]["McpPromptSummary"];
+type McpResourceSummary = components["schemas"]["McpResourceSummary"];
 
 const T0 = "2026-09-20T00:00:00";
 
@@ -91,6 +93,47 @@ export function mcpServerFixture(
     tool_count: null,
     error: null,
     tools: null,
+    prompts: null,
+    resources: null,
+    ...overrides,
+  };
+}
+
+/** 一个带必需参数的 prompt 目录项(形状对齐 McpPromptSummary)。 */
+export function mcpPromptFixture(
+  name = "deploy",
+  overrides: Partial<McpPromptSummary> = {},
+): McpPromptSummary {
+  return {
+    name,
+    description: `prompt ${name}`,
+    arguments: [{ name: "env", description: null, required: true }],
+    ...overrides,
+  };
+}
+
+/** 一个无参 prompt 目录项。 */
+export function mcpNoArgPromptFixture(
+  name = "status",
+  overrides: Partial<McpPromptSummary> = {},
+): McpPromptSummary {
+  return {
+    name,
+    description: `prompt ${name}`,
+    arguments: [],
+    ...overrides,
+  };
+}
+
+export function mcpResourceFixture(
+  uri: string,
+  overrides: Partial<McpResourceSummary> = {},
+): McpResourceSummary {
+  return {
+    uri,
+    name: uri,
+    description: null,
+    mime_type: "text/markdown",
     ...overrides,
   };
 }

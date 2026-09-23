@@ -81,6 +81,28 @@ export interface Scenario {
   providers?: unknown[];
   /** MCP server 初始行(McpServerResponse[]);POST/PATCH/DELETE 就地增删改。 */
   mcpServers?: unknown[];
+  /**
+   * prompts 渲染剧本:serverId → prompt name → 结果。`status` 缺省 200,
+   * `messages` 即响应体;`status` 非 2xx 时连同 `error` 直接返回。
+   */
+  mcpPromptRenders?: Record<
+    string,
+    Record<string, { status?: number; messages?: unknown[]; error?: string }>
+  >;
+  /** resources 读取剧本:serverId → uri → 结果(status 缺省 200)。 */
+  mcpResourceReads?: Record<
+    string,
+    Record<
+      string,
+      {
+        status?: number;
+        mime_type?: string | null;
+        text?: string | null;
+        blob_base64?: string | null;
+        error?: string;
+      }
+    >
+  >;
   /** POST 建会话时按序发放的确定性 id(耗尽后回退 c-auto-N)。 */
   newConversationIds?: string[];
   /** 每个会话的 SSE 剧本,POST 消息时惰性取用。 */
@@ -112,6 +134,25 @@ interface McpRow {
   tool_count: number | null;
   error: string | null;
   tools: { name: string; description: string | null }[] | null;
+  prompts:
+    | {
+        name: string;
+        description: string | null;
+        arguments: {
+          name: string;
+          description: string | null;
+          required: boolean;
+        }[];
+      }[]
+    | null;
+  resources:
+    | {
+        uri: string;
+        name: string;
+        description: string | null;
+        mime_type: string | null;
+      }[]
+    | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -155,6 +196,8 @@ const RE_CONVERSATION_CANCEL = /^\/api\/conversations\/([^/]+)\/cancel$/;
 const RE_CONVERSATION_RUN = /^\/api\/conversations\/([^/]+)\/run$/;
 const RE_MCP_SERVER = /^\/api\/mcp\/servers\/([^/]+)$/;
 const RE_MCP_ENSURE = /^\/api\/projects\/([^/]+)\/mcp\/ensure$/;
+const RE_MCP_PROMPT_RENDER = /^\/api\/mcp\/servers\/([^/]+)\/prompts\/([^/]+)$/;
+const RE_MCP_RESOURCE_READ = /^\/api\/mcp\/servers\/([^/]+)\/resources\/read$/;
 const RE_GATE_OPEN = /^\/__mock\/gates\/([^/]+)\/open$/;
 
 function resetState() {
@@ -625,6 +668,8 @@ async function handleApi(
         tool_count: null,
         error: null,
         tools: null,
+        prompts: null,
+        resources: null,
       };
       (s.mcpServers ??= []).push(row);
       return sendJson(res, 201, row);
@@ -726,6 +771,68 @@ async function handleApi(
       }
     }
     return sendJson(res, 200, rows);
+  }
+
+  // POST /api/mcp/servers/:id/prompts/:name —— prompts/get 渲染。
+  // 行缺失/未连接/剧本没写该 prompt 都回 404(对齐真实后端三态)。
+  m = pathname.match(RE_MCP_PROMPT_RENDER);
+  if (m && req.method === "POST") {
+    const id = decodeURIComponent(m[1]);
+    const name = decodeURIComponent(m[2]);
+    const row = mcpRows().find((r) => r.id === id);
+    if (!row) {
+      return sendJson(res, 404, { error: "MCP server not found" });
+    }
+    if (row.status !== "connected") {
+      return sendJson(res, 404, {
+        error: `MCP server not connected or prompt \`${name}\` not found`,
+      });
+    }
+    const scripted = s.mcpPromptRenders?.[id]?.[name];
+    if (!scripted) {
+      return sendJson(res, 404, {
+        error: `MCP server not connected or prompt \`${name}\` not found`,
+      });
+    }
+    if (scripted.status && scripted.status !== 200) {
+      return sendJson(res, scripted.status, {
+        error: scripted.error ?? `scripted ${scripted.status}`,
+      });
+    }
+    return sendJson(res, 200, { messages: scripted.messages ?? [] });
+  }
+
+  // POST /api/mcp/servers/:id/resources/read —— resources/read。
+  m = pathname.match(RE_MCP_RESOURCE_READ);
+  if (m && req.method === "POST") {
+    const id = decodeURIComponent(m[1]);
+    const body = (await readBodyCached(req)) as { uri?: string };
+    const uri = typeof body?.uri === "string" ? body.uri : "";
+    const row = mcpRows().find((r) => r.id === id);
+    if (!row) {
+      return sendJson(res, 404, { error: "MCP server not found" });
+    }
+    if (row.status !== "connected") {
+      return sendJson(res, 404, {
+        error: `MCP server not connected or resource \`${uri}\` not found`,
+      });
+    }
+    const scripted = s.mcpResourceReads?.[id]?.[uri];
+    if (!scripted) {
+      return sendJson(res, 404, {
+        error: `MCP server not connected or resource \`${uri}\` not found`,
+      });
+    }
+    if (scripted.status && scripted.status !== 200) {
+      return sendJson(res, scripted.status, {
+        error: scripted.error ?? `scripted ${scripted.status}`,
+      });
+    }
+    return sendJson(res, 200, {
+      mime_type: scripted.mime_type ?? null,
+      text: scripted.text ?? null,
+      blob_base64: scripted.blob_base64 ?? null,
+    });
   }
 
   sendJson(res, 404, { error: `mock has no route: ${req.method} ${pathname}` });

@@ -1,6 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import client from "@/api/client";
-import { useMcpServers } from "@/composables/useMcpServers";
+import {
+  readMcpResource,
+  renderMcpPrompt,
+  useMcpServers,
+} from "@/composables/useMcpServers";
+
+// ---------------------------------------------------------------------------
+// renderMcpPrompt / readMcpResource（瞬时调用，无本地状态）
+// ---------------------------------------------------------------------------
 
 vi.mock("@/api/client", () => ({
   default: { GET: vi.fn(), POST: vi.fn(), PATCH: vi.fn(), DELETE: vi.fn() },
@@ -260,5 +268,61 @@ describe("clearError", () => {
     expect(error.value).toBeNull();
     // 只清错误，不动列表
     expect(servers.value).toHaveLength(1);
+  });
+});
+
+describe("renderMcpPrompt", () => {
+  it("pOST 渲染端点，路径参数与 body 原样传递，返回 messages", async () => {
+    POST.mockResolvedValue({
+      data: { messages: [{ role: "user", text: "Greet Ada" }] },
+      error: undefined,
+    } as never);
+
+    const result = await renderMcpPrompt("s1", "greet", { name: "Ada" });
+
+    expect(POST).toHaveBeenCalledWith("/api/mcp/servers/{id}/prompts/{name}", {
+      params: { path: { id: "s1", name: "greet" } },
+      body: { arguments: { name: "Ada" } },
+    });
+    expect(result.messages).toEqual([{ role: "user", text: "Greet Ada" }]);
+  });
+
+  it("失败时抛出携带后端 error 文案的 Error", async () => {
+    POST.mockResolvedValue({
+      data: undefined,
+      error: { error: "MCP server not connected or prompt `x` not found" },
+    } as never);
+
+    await expect(renderMcpPrompt("s1", "x", {})).rejects.toThrow(
+      "MCP server not connected or prompt `x` not found",
+    );
+  });
+});
+
+describe("readMcpResource", () => {
+  it("pOST 读取端点，返回文本内容", async () => {
+    POST.mockResolvedValue({
+      data: { mime_type: "text/markdown", text: "# Notes", blob_base64: null },
+      error: undefined,
+    } as never);
+
+    const content = await readMcpResource("s1", "memo://notes");
+
+    expect(POST).toHaveBeenCalledWith("/api/mcp/servers/{id}/resources/read", {
+      params: { path: { id: "s1" } },
+      body: { uri: "memo://notes" },
+    });
+    expect(content.text).toBe("# Notes");
+  });
+
+  it("失败时抛出携带后端 error 文案的 Error", async () => {
+    POST.mockResolvedValue({
+      data: undefined,
+      error: { error: "reading resource `nope://x` failed: boom" },
+    } as never);
+
+    await expect(readMcpResource("s1", "nope://x")).rejects.toThrow(
+      "reading resource `nope://x` failed: boom",
+    );
   });
 });

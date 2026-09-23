@@ -553,6 +553,176 @@ async fn mcp_http_server_connects_and_surfaces_tools_with_bearer_headers() {
     assert_eq!(fetched["status"], "connected");
 }
 
+/// prompts→斜杠命令 与 resources 读侧的全链路:ensure 并入目录、渲染端点往返、
+/// 资源读取(文本与 blob)、404 三态(行缺失/未连接/未知名字)。
+#[tokio::test]
+async fn mcp_http_prompts_and_resources_roundtrip() {
+    let app = TestApp::new().await;
+    let mock = support::mcp_http::McpHttpMock::spawn().await;
+    let project_id = app.create_project().await;
+
+    let resp = app
+        .post_json(
+            "/api/mcp/servers",
+            serde_json::json!({
+                "name": "remote-http",
+                "transport": "http",
+                "url": mock.url,
+                "headers": {"Authorization": support::mcp_http::TOKEN},
+            }),
+        )
+        .await;
+    assert_eq!(resp.status(), 201);
+    let server: Value = resp.json().await.unwrap();
+    let id = server["id"].as_str().unwrap().to_string();
+
+    // ensure 建连后,prompts/resources 目录随 tools 一并入响应。
+    let resp = app
+        .post_json(
+            &format!("/api/projects/{project_id}/mcp/ensure"),
+            serde_json::json!(null),
+        )
+        .await;
+    let effective: Vec<Value> = resp.json().await.unwrap();
+    assert_eq!(
+        effective[0]["prompts"],
+        serde_json::json!([
+            {"name": "status", "description": "report status", "arguments": []},
+            {
+                "name": "deploy",
+                "description": "deploy checklist",
+                "arguments": [{"name": "env", "description": null, "required": true}],
+            },
+        ]),
+        "prompt catalog with argument metadata"
+    );
+    assert_eq!(
+        effective[0]["resources"],
+        serde_json::json!([
+            {
+                "uri": "memo://notes",
+                "name": "notes",
+                "description": "meeting notes",
+                "mime_type": "text/markdown",
+            },
+            {
+                "uri": "file://logo.png",
+                "name": "logo",
+                "description": null,
+                "mime_type": "image/png",
+            },
+        ]),
+    );
+
+    // GET 详情同样并入目录。
+    let resp = app.get_json(&format!("/api/mcp/servers/{id}")).await;
+    let fetched: Value = resp.json().await.unwrap();
+    assert_eq!(fetched["prompts"].as_array().unwrap().len(), 2);
+    assert_eq!(fetched["resources"].as_array().unwrap().len(), 2);
+
+    // 无参 prompt:空对象 body(arguments 缺省),返回按序 messages。
+    let resp = app
+        .post_json(
+            &format!("/api/mcp/servers/{id}/prompts/status"),
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(resp.status(), 200);
+    let rendered: Value = resp.json().await.unwrap();
+    assert_eq!(
+        rendered["messages"],
+        serde_json::json!([{"role": "user", "text": "Report status"}]),
+    );
+
+    // 带参 prompt:arguments 原样抵达 server(mirror 成渲染文本)。
+    let resp = app
+        .post_json(
+            &format!("/api/mcp/servers/{id}/prompts/deploy"),
+            serde_json::json!({"arguments": {"env": "prod"}}),
+        )
+        .await;
+    assert_eq!(resp.status(), 200);
+    let rendered: Value = resp.json().await.unwrap();
+    assert_eq!(
+        rendered["messages"],
+        serde_json::json!([
+            {"role": "user", "text": "Deploy to prod"},
+            {"role": "assistant", "text": "Checklist ready"},
+        ]),
+    );
+    // 渲染请求也带上了 bearer(同一个 mock 记录流)。
+    assert!(
+        mock.requests().iter().any(|r| r.method == "prompts/get"),
+        "prompts/get must have hit the mock"
+    );
+
+    // 未知 prompt(目录非空,成员校验 404,不打 server)。
+    let resp = app
+        .post_json(
+            &format!("/api/mcp/servers/{id}/prompts/nope"),
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(resp.status(), 404);
+
+    // resources/read:文本与 blob 各一。
+    let resp = app
+        .post_json(
+            &format!("/api/mcp/servers/{id}/resources/read"),
+            serde_json::json!({"uri": "memo://notes"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 200);
+    let text: Value = resp.json().await.unwrap();
+    assert_eq!(text["mime_type"], "text/markdown");
+    assert_eq!(text["text"], "# Notes");
+    assert_eq!(text["blob_base64"], Value::Null);
+
+    let resp = app
+        .post_json(
+            &format!("/api/mcp/servers/{id}/resources/read"),
+            serde_json::json!({"uri": "file://logo.png"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 200);
+    let blob: Value = resp.json().await.unwrap();
+    assert_eq!(blob["blob_base64"], "aVBuZw==");
+    assert_eq!(blob["text"], Value::Null);
+
+    // 未知 URI(目录非空)→ 404。
+    let resp = app
+        .post_json(
+            &format!("/api/mcp/servers/{id}/resources/read"),
+            serde_json::json!({"uri": "nope://x"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 404);
+
+    // 行不存在 → 404。
+    let resp = app
+        .post_json(
+            "/api/mcp/servers/missing/prompts/status",
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(resp.status(), 404);
+
+    // 存在但从未建连的行(manager 无 entry)→ 404,且不触发 spawn。
+    let never_connected = create_mcp_row(&app, "never-connected").await;
+    let resp = app
+        .post_json(
+            &format!("/api/mcp/servers/{never_connected}/prompts/status"),
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(resp.status(), 404);
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body["error"].as_str().unwrap().contains("not connected"),
+        "error should say not connected: {body}"
+    );
+}
+
 #[tokio::test]
 async fn mcp_stdio_http_transport_switch_preserves_the_other_sides_fields() {
     let app = TestApp::new().await;

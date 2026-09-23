@@ -123,6 +123,86 @@ async fn mcp_post(
             "id": id,
             "result": {"content": [{"type": "text", "text": "remote result"}]},
         }),
+        // prompts: one argument-less prompt and one with a required argument.
+        "prompts/list" => json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {"prompts": [
+                {"name": "status", "description": "report status"},
+                {
+                    "name": "deploy",
+                    "description": "deploy checklist",
+                    "arguments": [{"name": "env", "required": true}],
+                },
+            ]},
+        }),
+        "prompts/get" => {
+            let name = message["params"]["name"].as_str().unwrap_or_default();
+            match name {
+                "status" => json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {"messages": [
+                        {"role": "user", "content": {"type": "text", "text": "Report status"}},
+                    ]},
+                }),
+                "deploy" => {
+                    let env = message["params"]["arguments"]["env"]
+                        .as_str()
+                        .unwrap_or("?");
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {"messages": [
+                            {"role": "user", "content": {"type": "text", "text": format!("Deploy to {env}")}},
+                            {"role": "assistant", "content": {"type": "text", "text": "Checklist ready"}},
+                        ]},
+                    })
+                }
+                other => json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {"code": -32602, "message": format!("unknown prompt {other}")},
+                }),
+            }
+        }
+        "resources/list" => json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {"resources": [
+                {
+                    "uri": "memo://notes",
+                    "name": "notes",
+                    "description": "meeting notes",
+                    "mimeType": "text/markdown",
+                },
+                {"uri": "file://logo.png", "name": "logo", "mimeType": "image/png"},
+            ]},
+        }),
+        "resources/read" => {
+            let uri = message["params"]["uri"].as_str().unwrap_or_default();
+            match uri {
+                "memo://notes" => json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {"contents": [
+                        {"uri": uri, "mimeType": "text/markdown", "text": "# Notes"},
+                    ]},
+                }),
+                "file://logo.png" => json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {"contents": [
+                        {"uri": uri, "mimeType": "image/png", "blob": "aVBuZw=="},
+                    ]},
+                }),
+                other => json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {"code": -32602, "message": format!("unknown resource {other}")},
+                }),
+            }
+        }
         other => json!({
             "jsonrpc": "2.0",
             "id": id,

@@ -16,9 +16,10 @@
 //!
 //! - [`connection`]: start an MCP server (spawn a child process over stdio,
 //!   or reach a remote endpoint over Streamable HTTP with custom headers),
-//!   run the initialize handshake, then list/call tools through the
-//!   [`McpConnection`] trait (and observe `tools/list_changed` notifications
-//!   via [`McpConnection::tool_list_changed`]).
+//!   run the initialize handshake, then list/call tools and list/render
+//!   prompts plus list/read resources through the [`McpConnection`] trait
+//!   (and observe `tools/list_changed` notifications via
+//!   [`McpConnection::tool_list_changed`]).
 //! - [`naming`]: pure helpers that translate between server-side tool names
 //!   and the flat `mcp__{server}__{tool}` names exposed to the LLM, plus
 //!   input-schema normalization.
@@ -32,6 +33,12 @@ pub use connection::HttpServerConfig;
 pub use connection::McpCallResult;
 pub use connection::McpConnection;
 pub use connection::McpImage;
+pub use connection::McpPromptArgument;
+pub use connection::McpPromptInfo;
+pub use connection::McpPromptMessage;
+pub use connection::McpPromptResult;
+pub use connection::McpResourceContent;
+pub use connection::McpResourceInfo;
 pub use connection::McpToolInfo;
 pub use connection::StdioServerConfig;
 pub use connection::ToolListChanged;
