@@ -130,21 +130,21 @@ it("slash menu: 无参与带参 prompt 渲染后填入输入框,不自动发送"
   const mounted = await boot();
   const composer = page.getByPlaceholder(COMPOSER);
 
-  // `/` 触发菜单:server 分组(echo)列出两个 prompt。
+  // `/` 触发菜单:首组「命令」含内置 /compact,server 分组(echo)列出两个 prompt。
   await composer.fill("/");
   await expect.element(page.getByRole("listbox")).toBeInTheDocument();
+  await expect.poll(listboxText).toContain("compact");
   await expect.poll(listboxText).toContain("echo");
   await expect.poll(listboxText).toContain("status");
   await expect.poll(listboxText).toContain("deploy");
 
   // 查询词过滤:只剩 deploy。
   await composer.fill("/dep");
+  await expect.poll(listboxText).not.toContain("compact");
   await expect.poll(listboxText).not.toContain("status");
   await expect.poll(listboxText).toContain("deploy");
 
-  // 键盘导航 + Enter 选中带参 prompt:弹参数表单(必填校验 + 提交)。
-  await composer.fill("/");
-  await userEvent.keyboard("{ArrowDown}"); // 第一项 status → 第二项 deploy
+  // 键盘 Enter 选中过滤后唯一的带参 prompt:弹参数表单(必填校验 + 提交)。
   await userEvent.keyboard("{Enter}");
   await expect.element(page.getByRole("dialog")).toBeInTheDocument();
   await expect

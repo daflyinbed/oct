@@ -1,6 +1,10 @@
 <template>
+  <!-- 压缩标记：全宽分隔条（非对话气泡），可展开摘要 -->
+  <div v-if="message.role === 'compaction'" class="py-1">
+    <CompactionDivider :part="compactionPart(message)" />
+  </div>
   <!-- 用户消息：IM 式右侧气泡；助手回合：扁平无头像（对齐 redesign demo） -->
-  <div v-if="message.role === 'user'" class="flex justify-end">
+  <div v-else-if="message.role === 'user'" class="flex justify-end">
     <div
       class="max-w-[75%] whitespace-pre-wrap break-words border border-line-soft rounded-xl bg-panel px-3.5 py-2 text-[13px] text-neutral-10 leading-[1.55]"
     >
@@ -28,6 +32,8 @@
         >
       </div>
       <ThinkingCard v-else-if="part.kind === 'reasoning'" :part="part" />
+      <!-- 流式压缩事件落在当前流式消息的 parts 里（通常位于最前部） -->
+      <CompactionDivider v-else-if="part.kind === 'compaction'" :part="part" />
       <ToolCallCard v-else :part="part" />
     </template>
     <!-- 尚无任何内容时的流式占位光标 -->
@@ -38,9 +44,14 @@
 </template>
 
 <script setup lang="ts">
+import CompactionDivider from "./CompactionDivider.vue";
 import ThinkingCard from "./ThinkingCard.vue";
 import ToolCallCard from "./ToolCallCard.vue";
-import type { DisplayMessage, DisplayPart } from "@/composables/useChat";
+import type {
+  CompactionPart,
+  DisplayMessage,
+  DisplayPart,
+} from "@/composables/useChat";
 
 defineProps<{
   message: DisplayMessage;
@@ -48,5 +59,10 @@ defineProps<{
 
 function partKey(part: DisplayPart, index: number): string {
   return part.kind === "tool_call" ? `c-${part.callId}` : `p-${index}`;
+}
+
+/** compaction 角色的消息固定只含一个压缩 part。 */
+function compactionPart(message: DisplayMessage): CompactionPart {
+  return message.parts[0] as CompactionPart;
 }
 </script>

@@ -56,8 +56,9 @@ pub fn gate() -> (watch::Sender<bool>, watch::Receiver<bool>) {
 }
 
 /// One scripted response for a NON-streaming call (the background title
-/// generation task's `generate()` request). Routed by request shape: the
-/// agent loop always streams (`stream: true`), the title call never does.
+/// generation or the compaction summary `generate()` request). Routed by
+/// request shape: the agent loop always streams (`stream: true`), those two
+/// never do — and between them by prompt signature.
 pub enum TitleTurn {
     /// 200 with this string as the assistant message content.
     Text(String),
@@ -65,11 +66,18 @@ pub enum TitleTurn {
     Fail(u16),
 }
 
+/// Substring of the compaction summary system prompt — the routing key that
+/// tells a summary `generate` call apart from a title call.
+const COMPACT_PROMPT_SIGNATURE: &str = "compacting the history of an AI coding-agent";
+
 struct LlmMockState {
     /// One turn popped per incoming STREAMING request.
     turns: Mutex<VecDeque<LlmTurn>>,
     /// One turn popped per incoming NON-streaming request.
     title_turns: Mutex<VecDeque<TitleTurn>>,
+    /// One turn popped per incoming NON-streaming request whose prompt is the
+    /// compaction summary prompt.
+    compact_turns: Mutex<VecDeque<TitleTurn>>,
     /// Captured request bodies, in arrival order.
     requests: Mutex<Vec<Value>>,
 }
@@ -90,6 +98,11 @@ impl LlmMock {
         self.state.title_turns.lock().unwrap().extend(turns);
     }
 
+    /// Same as [`Self::push_title_turns`] but for compaction summary calls.
+    pub fn push_compact_turns(&self, turns: impl IntoIterator<Item = TitleTurn>) {
+        self.state.compact_turns.lock().unwrap().extend(turns);
+    }
+
     /// Request bodies the agent sent, in arrival order.
     pub fn requests(&self) -> Vec<Value> {
         self.state.requests.lock().unwrap().clone()
@@ -100,6 +113,7 @@ pub async fn spawn_llm_mock(turns: Vec<LlmTurn>) -> LlmMock {
     let state = Arc::new(LlmMockState {
         turns: Mutex::new(turns.into()),
         title_turns: Mutex::new(VecDeque::new()),
+        compact_turns: Mutex::new(VecDeque::new()),
         requests: Mutex::new(Vec::new()),
     });
     let app = Router::new()
@@ -126,14 +140,23 @@ async fn chat_completions(
 ) -> Response {
     state.requests.lock().unwrap().push(body.clone());
 
-    // Non-streaming requests are the background title generation (the agent
-    // loop always streams). Serve them from the title queue as plain
+    // Non-streaming requests are the background title generation or the
+    // compaction summary call (the agent loop always streams). Route between
+    // them by prompt signature, then serve from the matching queue as plain
     // chat.completion JSON.
     if body.get("stream") != Some(&json!(true)) {
-        return match state.title_turns.lock().unwrap().pop_front() {
+        let is_compact = body["messages"][0]["content"]
+            .as_str()
+            .is_some_and(|c| c.contains(COMPACT_PROMPT_SIGNATURE));
+        let turn = if is_compact {
+            state.compact_turns.lock().unwrap().pop_front()
+        } else {
+            state.title_turns.lock().unwrap().pop_front()
+        };
+        return match turn {
             None => (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                "no scripted title turns",
+                "no scripted non-streaming turns",
             )
                 .into_response(),
             Some(TitleTurn::Fail(status)) => (

@@ -2466,3 +2466,269 @@ async fn title_failure_falls_back_to_first_message() {
     assert_eq!(chars.len(), 51);
     assert!(title.starts_with("这条用户消息故意写得超过五十个字符"));
 }
+
+// --- Context compaction -------------------------------------------------------
+
+use oct_agent::agent::compact;
+
+/// Seed alternating user/assistant rounds recording the provider, so the
+/// conversation has a resolvable provider_spec and enough history to compact.
+async fn seed_compactable_rounds(app: &TestApp, conv_id: &str, rounds: usize, pad_chars: usize) {
+    let pad = "x".repeat(pad_chars);
+    for i in 0..rounds {
+        for (role, label) in [(Role::User, "user"), (Role::Assistant, "assistant")] {
+            msg_db::insert_message(
+                &app.pool,
+                conv_id,
+                &Message::text(role, format!("seed-{label}-{i} {pad}")),
+                Some("mock-llm"),
+                Some("test-model"),
+                None,
+            )
+            .await
+            .expect("seed history row");
+        }
+    }
+}
+
+/// POST /api/providers/{id}/models with a context limit; auto compaction is
+/// driven by this number (custom providers carry no in-code limits).
+async fn create_model_row_with_window(app: &TestApp, limit_context: i64) {
+    let resp = app
+        .post_json(
+            "/api/providers/mock-llm/models",
+            serde_json::json!({
+                "model_id": "test-model",
+                "name": "Test Model",
+                "limit_context": limit_context,
+            }),
+        )
+        .await;
+    assert_eq!(resp.status(), 201, "model row creation should succeed");
+}
+
+#[tokio::test]
+async fn manual_compact_replaces_history_for_next_request() {
+    let llm = llm::spawn_llm_mock(vec![LlmTurn::Complete(vec![
+        text_chunk("hello"),
+        finish_chunk("stop"),
+    ])])
+    .await;
+    let app = TestApp::new().await;
+    app.register_llm_provider(&llm).await;
+    let project = app.create_project().await;
+    let conv = app.create_conversation(&project).await;
+    // No model row → unknown window → the default 16k tail budget applies.
+    // The huge second-to-last message pushes the budget cut back to a legal
+    // boundary with ≥6 rows in the compactable region.
+    seed_compactable_rounds(&app, &conv, 3, 200).await;
+    let huge = "y".repeat(70_000);
+    msg_db::insert_message(
+        &app.pool,
+        &conv,
+        &Message::text(Role::User, format!("seed-user-3 {huge}")),
+        Some("mock-llm"),
+        Some("test-model"),
+        None,
+    )
+    .await
+    .unwrap();
+    msg_db::insert_message(
+        &app.pool,
+        &conv,
+        &Message::text(Role::Assistant, "seed-assistant-3 small reply"),
+        Some("mock-llm"),
+        Some("test-model"),
+        None,
+    )
+    .await
+    .unwrap();
+
+    llm.push_compact_turns([llm::TitleTurn::Text(
+        "MANUAL-SUMMARY of the work".to_string(),
+    )]);
+
+    let resp = app.compact(&conv).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.expect("compact result json");
+    assert_eq!(body["summary"], "MANUAL-SUMMARY of the work");
+    assert_eq!(body["triggered_by"], serde_json::json!(null)); // not part of the REST body
+    assert!(
+        body["compacted_messages"].as_u64().unwrap() >= 6,
+        "most of the history is compacted: {body}"
+    );
+    assert!(
+        body["summary_message_id"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty())
+    );
+    assert!(
+        body["est_tokens_before"].as_u64().unwrap() > body["est_tokens_after"].as_u64().unwrap()
+    );
+
+    // The marker row is the new last row; the old rows remain (append-only).
+    let stored = stored_messages(&app, &conv).await;
+    let last = stored.last().unwrap();
+    assert_eq!(last["role"], "user");
+    let details: Value =
+        serde_json::from_str(last["details_json"].as_str().expect("details")).unwrap();
+    assert_eq!(details["kind"], "compaction");
+    assert_eq!(details["triggered_by"], "manual");
+    assert_eq!(stored.len(), 8 + 1, "seeded rows kept + marker");
+
+    // The next send's wire request must carry [system, marker, user] — the
+    // seeded history is gone from the model's view.
+    let resp = app.send_message(&conv, "next question").await;
+    let events = app.read_sse(resp).await;
+    assert!(event_types(&events).contains(&"finish"));
+
+    let stream_req = llm
+        .requests()
+        .into_iter()
+        .rev()
+        .find(|r| r.get("stream") == Some(&serde_json::json!(true)))
+        .expect("streaming request captured");
+    let serialized = serde_json::to_string(&stream_req["messages"]).unwrap();
+    assert!(serialized.contains("MANUAL-SUMMARY of the work"));
+    assert!(serialized.contains("[Context compaction]"));
+    assert!(!serialized.contains("seed-user-0"), "old history excluded");
+}
+
+#[tokio::test]
+async fn manual_compact_conflicts_with_active_run() {
+    let (gate_tx, gate_rx) = llm::gate();
+    let llm = llm::spawn_llm_mock(vec![LlmTurn::Gated {
+        pre: vec![text_chunk("par")],
+        gate: gate_rx,
+        post: vec![text_chunk("tial"), finish_chunk("stop")],
+    }])
+    .await;
+    let app = TestApp::new().await;
+    app.register_llm_provider(&llm).await;
+    let project = app.create_project().await;
+    let conv = app.create_conversation(&project).await;
+
+    let send = app.send_message(&conv, "hello").await;
+    let mut payloads = sse_payloads(send);
+    // Park mid-stream: the run holds the session entry.
+    while payloads.next().await.unwrap()["type"] != "text_delta" {}
+
+    let resp = app.compact(&conv).await;
+    assert_eq!(resp.status(), 409);
+
+    gate_tx.send(true).unwrap();
+    while let Some(p) = payloads.next().await {
+        if p["type"] == "finish" {
+            break;
+        }
+    }
+    // The session entry is released by the run; compact is possible again.
+    let resp = app.compact(&conv).await;
+    assert_eq!(
+        resp.status(),
+        400,
+        "run over → no 409; conversation too short to compact instead"
+    );
+}
+
+#[tokio::test]
+async fn auto_compaction_end_to_end_via_tiny_model_window() {
+    let llm = llm::spawn_llm_mock(vec![LlmTurn::Complete(vec![
+        text_chunk("done"),
+        finish_chunk("stop"),
+    ])])
+    .await;
+    let app = TestApp::new().await;
+    app.register_llm_provider(&llm).await;
+    create_model_row_with_window(&app, 500).await; // threshold 425
+    let project = app.create_project().await;
+    let conv = app.create_conversation(&project).await;
+    seed_compactable_rounds(&app, &conv, 4, 200).await;
+    llm.push_compact_turns([llm::TitleTurn::Text("AUTO-SUMMARY".to_string())]);
+
+    let resp = app.send_message(&conv, "keep going").await;
+    let events = app.read_sse(resp).await;
+    let types = event_types(&events);
+    let compacting = types
+        .iter()
+        .position(|t| *t == "compacting")
+        .expect("compacting event");
+    let compacted = types
+        .iter()
+        .position(|t| *t == "compacted")
+        .expect("compacted event");
+    let text = types.iter().position(|t| *t == "text_delta").unwrap();
+    assert!(compacting < compacted && compacted < text);
+    assert_eq!(types.last().unwrap(), &"finish");
+
+    let compacted_ev = &events[compacted];
+    assert_eq!(compacted_ev["data"]["triggered_by"], "auto");
+    assert_eq!(compacted_ev["data"]["summary"], "AUTO-SUMMARY");
+    assert_eq!(compacted_ev["data"]["context_window_tokens"], 500);
+    assert!(
+        compacted_ev["data"]["summary_message_id"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty())
+    );
+
+    // The streamed request was built from the compacted view.
+    let stream_req = llm
+        .requests()
+        .into_iter()
+        .rev()
+        .find(|r| r.get("stream") == Some(&serde_json::json!(true)))
+        .expect("streaming request captured");
+    let serialized = serde_json::to_string(&stream_req["messages"]).unwrap();
+    assert!(serialized.contains("AUTO-SUMMARY"));
+    assert!(!serialized.contains("seed-user-0"));
+}
+
+#[tokio::test]
+async fn dangling_tool_call_before_marker_is_not_repaired() {
+    let llm = llm::spawn_llm_mock(vec![LlmTurn::Complete(vec![
+        text_chunk("hi"),
+        finish_chunk("stop"),
+    ])])
+    .await;
+    let app = TestApp::new().await;
+    app.register_llm_provider(&llm).await;
+    let project = app.create_project().await;
+    let conv = app.create_conversation(&project).await;
+
+    // A crashed run left a dangling tool call, then a compaction marker moved
+    // the LLM view past it.
+    seed_dangling_tool_call(&app, &conv).await;
+    let marker = compact::build_marker_message("already summarized");
+    let details = compact::marker_details(oct_agent::agent::CompactionTrigger::Manual, 2, 100, 20);
+    msg_db::insert_message(&app.pool, &conv, &marker, None, None, Some(&details))
+        .await
+        .unwrap();
+
+    let resp = app.send_message(&conv, "continue").await;
+    let events = app.read_sse(resp).await;
+    assert_eq!(event_types(&events).last().unwrap(), &"finish");
+
+    // No repair placeholder was appended (it would land after the marker and
+    // become an orphan inside the view).
+    let stored = stored_messages(&app, &conv).await;
+    assert!(
+        !stored.iter().any(|m| serde_json::to_string(&m)
+            .unwrap()
+            .contains("工具执行被中断")),
+        "pre-marker dangling call left alone: {stored:?}"
+    );
+
+    // And the wire request carries neither the dangling call nor an orphan
+    // result for it.
+    let stream_req = llm
+        .requests()
+        .into_iter()
+        .rev()
+        .find(|r| r.get("stream") == Some(&serde_json::json!(true)))
+        .expect("streaming request captured");
+    let serialized = serde_json::to_string(&stream_req["messages"]).unwrap();
+    assert!(
+        !serialized.contains("call-1"),
+        "dangling call excluded: {serialized}"
+    );
+}

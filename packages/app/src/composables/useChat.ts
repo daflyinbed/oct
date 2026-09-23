@@ -1,5 +1,11 @@
 import { computed, readonly, ref } from "vue";
 import client from "@/api/client";
+import {
+  clearContextUsage,
+  recordUsageEvent,
+  seedContextUsage,
+  setCompacting,
+} from "@/composables/useContextUsage";
 import type { components } from "@/api/schema";
 
 type StoredMessage = components["schemas"]["StoredMessage"];
@@ -59,11 +65,29 @@ export interface ReasoningPart {
   ended: boolean;
 }
 
-export type DisplayPart = TextPart | ToolCallPart | ReasoningPart;
+/**
+ * 上下文压缩标记（compaction marker row）：一段可展开的摘要 + 元数据。
+ * stored 路径来自 details_json kind=compaction 的 user 行；live 路径来自
+ * compacted 事件（事件带全量 summary，无需回查）。
+ */
+export interface CompactionPart {
+  kind: "compaction";
+  summary: string;
+  triggeredBy: "auto" | "manual";
+  compactedMessages: number;
+  estTokensBefore: number | null;
+  estTokensAfter: number | null;
+}
+
+export type DisplayPart =
+  | TextPart
+  | ToolCallPart
+  | ReasoningPart
+  | CompactionPart;
 
 export interface DisplayMessage {
   id: string;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "compaction";
   parts: readonly DisplayPart[];
   isStreaming?: boolean;
 }
@@ -71,7 +95,7 @@ export interface DisplayMessage {
 /** Internal mutable shape used while building/merging messages. */
 interface BuildableMessage {
   id: string;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "compaction";
   parts: DisplayPart[];
   isStreaming?: boolean;
 }
@@ -221,6 +245,24 @@ function detailsFromJson(value: string | null): Record<string, unknown> | null {
   }
 }
 
+function asNumberOrNull(value: unknown): number | null {
+  return typeof value === "number" ? value : null;
+}
+
+/**
+ * 标记行的 LLM 可见文本带框架（前缀 + <summary>…</summary> + 后缀）；
+ * 分隔条只展示裸摘要。取首个 <summary> 与最后一个 </summary> 之间的
+ * 内容，框架缺失时退回全文。
+ */
+function summaryFromMarkerText(text: string): string {
+  const start = text.indexOf("<summary>");
+  const end = text.lastIndexOf("</summary>");
+  if (start !== -1 && end > start) {
+    return text.slice(start + "<summary>".length, end).trim();
+  }
+  return text.trim();
+}
+
 /**
  * Build display messages from stored history. Tool messages are not rendered
  * as bubbles: their ToolResult parts fill the matching tool card (which may
@@ -252,6 +294,35 @@ function storedToDisplayList(stored: StoredMessage[]): DisplayMessage[] {
 
   for (const m of stored) {
     if (m.role === "user") {
+      // 压缩标记行：details_json kind=compaction 的 user 行不渲染成气泡，
+      // 而是独立的全宽分隔条（可展开摘要）。
+      const details = detailsFromJson(m.details_json ?? null);
+      if (details?.kind === "compaction") {
+        let text = "";
+        for (const raw of parseStoredParts(m.parts_json)) {
+          if (typeof raw.Text === "string") text += raw.Text;
+        }
+        out.push({
+          id: m.id,
+          role: "compaction",
+          parts: [
+            {
+              kind: "compaction",
+              summary: summaryFromMarkerText(text),
+              triggeredBy:
+                details.triggered_by === "manual" ? "manual" : "auto",
+              compactedMessages:
+                typeof details.compacted_message_count === "number"
+                  ? details.compacted_message_count
+                  : 0,
+              estTokensBefore: asNumberOrNull(details.estimated_tokens_before),
+              estTokensAfter: asNumberOrNull(details.estimated_tokens_after),
+            },
+          ],
+        });
+        lastAssistant = null;
+        continue;
+      }
       const msg: BuildableMessage = { id: m.id, role: "user", parts: [] };
       for (const raw of parseStoredParts(m.parts_json)) {
         if (typeof raw.Text === "string") pushText(msg, raw.Text);
@@ -596,7 +667,33 @@ function applyStreamEvent(event: AgentEvent) {
       break;
     }
 
-    // usage: intentionally not displayed.
+    case "compacting": {
+      // 摘要生成中：状态栏指示器切换为「压缩中」，不进消息流。
+      setCompacting(true);
+      break;
+    }
+
+    case "compacted": {
+      // 事件带全量 summary：当场插入分隔条（此刻通常位于本轮流式消息的
+      // 最前部），run 收尾的 loadMessages 会用 stored 标记行接管同一展示。
+      setCompacting(false);
+      const d = event.data;
+      parts.push({
+        kind: "compaction",
+        summary: d.summary,
+        triggeredBy: d.triggered_by,
+        compactedMessages: d.compacted_messages,
+        estTokensBefore: d.est_tokens_before,
+        estTokensAfter: d.est_tokens_after,
+      });
+      break;
+    }
+
+    case "usage": {
+      // 上下文占用指示器数据源（provider 报告的真实请求体积 + 窗口大小）。
+      recordUsageEvent(event.data);
+      break;
+    }
   }
 }
 
@@ -667,6 +764,7 @@ export function useChat() {
     if (!error && data) {
       messages.value = storedToDisplayList(data);
       activeConversationId = conversationId;
+      seedContextUsage(data);
     }
   };
 
@@ -922,9 +1020,39 @@ export function useChat() {
     });
   };
 
+  /**
+   * 手动压缩（/compact）：同步请求，成功后重拉历史（stored 标记行接管
+   * 分隔条展示）。失败静默（console 记录）——无 toast 基建，v1 以「分隔
+   * 条未出现」为可见信号。
+   */
+  const compactConversation = async (conversationId: string) => {
+    if (sending.value) return;
+    sending.value = true;
+    setCompacting(true);
+    try {
+      const { data, error } = await client.POST(
+        "/api/conversations/{id}/compact",
+        { params: { path: { id: conversationId } } },
+      );
+      if (error || !data) {
+        console.error("compact failed", error ?? "no data");
+        return;
+      }
+      if (activeConversationId === conversationId) {
+        await loadMessages(conversationId);
+      }
+    } catch (error) {
+      console.error("compact failed", error);
+    } finally {
+      setCompacting(false);
+      sending.value = false;
+    }
+  };
+
   const clearMessages = () => {
     messages.value = [];
     activeConversationId = null;
+    clearContextUsage();
   };
 
   /** 存在被中断的轮次可恢复：悬空工具卡片，或最后一条消息是 user。 */
@@ -947,6 +1075,7 @@ export function useChat() {
     resumeTurn,
     attachRun,
     cancelConversation,
+    compactConversation,
     clearMessages,
   };
 }

@@ -2,6 +2,7 @@ pub mod chat;
 pub mod conversations;
 pub mod error;
 pub mod files;
+pub mod git;
 pub mod mcp;
 pub mod projects;
 pub mod providers;
@@ -68,6 +69,9 @@ pub struct AppState {
         mcp::ReadResourceResponse,
         chat::SendMessageRequest,
         chat::RunningStatus,
+        chat::CompactQuery,
+        chat::CompactResult,
+        crate::agent::CompactionTrigger,
         files::FileContent,
         files::FileEntry,
         files::FileEntryKind,
@@ -125,6 +129,12 @@ fn api_routes(state: AppState) -> OpenApiRouter<AppState> {
         // Project files (directory tree + content preview)
         .routes(utoipa_axum::routes!(files::list_project_files))
         .routes(utoipa_axum::routes!(files::read_project_file))
+        // Git Changes panel
+        .routes(utoipa_axum::routes!(git::get_status))
+        .routes(utoipa_axum::routes!(git::get_diff))
+        .routes(utoipa_axum::routes!(git::get_history))
+        .routes(utoipa_axum::routes!(git::get_stashes))
+        .routes(utoipa_axum::routes!(git::run_action))
         // Conversations
         .routes(utoipa_axum::routes!(conversations::list_conversations))
         .routes(utoipa_axum::routes!(conversations::create_conversation))
@@ -136,6 +146,7 @@ fn api_routes(state: AppState) -> OpenApiRouter<AppState> {
         .routes(utoipa_axum::routes!(chat::get_messages))
         .routes(utoipa_axum::routes!(chat::cancel_agent))
         .routes(utoipa_axum::routes!(chat::resume_turn))
+        .routes(utoipa_axum::routes!(chat::compact_conversation))
         // Run reconnection (frontend refresh while a run is in flight)
         .routes(utoipa_axum::routes!(chat::get_run_status))
         .routes(utoipa_axum::routes!(chat::stream_run_events))

@@ -75,6 +75,9 @@
         <div class="flex items-center gap-0.5 p-2">
           <span class="flex-1" />
 
+          <!-- 上下文占用圆环：hover 弹出容量详情 -->
+          <ContextRing class="mr-1" />
+
           <!-- Provider / 模型选择器 -->
           <AppSelect
             :model-value="selectedProviderId"
@@ -152,11 +155,13 @@ import {
   slashQueryOf,
 } from "@/composables/useSlashCommands";
 import ChatMessage from "./ChatMessage.vue";
+import ContextRing from "./ContextRing.vue";
 import PromptArgsDialog from "./PromptArgsDialog.vue";
 import SlashMenu from "./SlashMenu.vue";
 import type { components } from "@/api/schema";
 import type { DisplayMessage } from "@/composables/useChat";
 import type {
+  BuiltinSlashCommand,
   SlashMenuGroup,
   SlashMenuItem,
 } from "@/composables/useSlashCommands";
@@ -179,6 +184,8 @@ const emit = defineEmits<{
   send: [content: string];
   stop: [];
   resume: [];
+  /** /compact 命令：请求手动压缩当前会话。 */
+  compact: [];
   selectProvider: [providerId: string];
   selectModel: [modelId: string];
 }>();
@@ -211,6 +218,12 @@ const modelOptions = computed(() =>
 function handleSend() {
   if (!inputMessage.value.trim() || !props.conversationId || props.sending)
     return;
+  // 斜杠命令拦截（v1 精确匹配）：/compact 不作为消息发送。
+  if (inputMessage.value.trim() === "/compact") {
+    inputMessage.value = "";
+    emit("compact");
+    return;
+  }
   emit("send", inputMessage.value);
   inputMessage.value = "";
 }
@@ -229,9 +242,22 @@ const slashQuery = computed(() => slashQueryOf(inputMessage.value));
 const slashRendering = ref(false);
 const slashError = ref<string | null>(null);
 
+// /compact 在此注册而非全局注册表：需要会话上下文（emit 到页面层的
+// handleCompact）。选中即触发压缩（run 返回 null，不往输入框填文本）；
+// 手输 /compact 发送仍走 handleSend 的精确匹配拦截，两条路等价。
+const compactCommand: BuiltinSlashCommand = {
+  label: "compact",
+  description: "手动压缩当前会话的上下文",
+  run: async () => {
+    if (props.conversationId && !props.sending) emit("compact");
+    return null;
+  },
+};
+const slashBuiltins = [compactCommand, ...builtinSlashCommands];
+
 const slashGroups = computed<SlashMenuGroup[]>(() =>
   filterSlashMenuGroups(
-    buildSlashMenuGroups(mcpServers.value, builtinSlashCommands),
+    buildSlashMenuGroups(mcpServers.value, slashBuiltins),
     slashQuery.value ?? "",
   ),
 );
@@ -397,7 +423,9 @@ watch(
     if (!last) return 0;
     let size = 0;
     for (const part of last.parts) {
-      if (part.kind === "text" || part.kind === "reasoning") {
+      if (part.kind === "compaction") {
+        size += part.summary.length;
+      } else if (part.kind === "text" || part.kind === "reasoning") {
         size += part.text.length;
       } else {
         size += part.arguments.length + part.liveOutput.droppedChars;

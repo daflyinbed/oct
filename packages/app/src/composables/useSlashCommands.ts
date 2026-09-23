@@ -7,9 +7,9 @@ type McpPromptSummary = components["schemas"]["McpPromptSummary"];
  * 聊天输入框的通用斜杠命令机制：`/` 触发菜单，内置命令与 MCP prompts
  * （按 server 分组）并列展示。
  *
- * 内置命令在此注册（`builtinSlashCommands`）。当前分支尚无内置命令——
- * `/compact`（上下文压缩）等随其功能分支合并后加入这里，菜单机制无需
- * 再动。
+ * 内置命令在此注册（`builtinSlashCommands`）。需要会话上下文的命令
+ * （如 `/compact`，要 emit 到页面层）在 ChatPanel 就地注册拼进首组；
+ * 全局命令加进下面的注册表即可，菜单机制无需再动。
  */
 
 /** 内置斜杠命令（非 MCP 来源），选中后直接执行 `run`。 */
@@ -22,9 +22,8 @@ export interface BuiltinSlashCommand {
 }
 
 /**
- * 内置命令注册表（菜单首组「命令」）。当前为空——本分支尚无内置命令；
- * `/compact`（上下文压缩）等随其功能分支合并后追加于此，菜单机制无需
- * 再动。
+ * 内置命令注册表（菜单首组「命令」）。全局命令在此追加；`/compact` 因
+ * 需要会话上下文注册在 ChatPanel。
  */
 export const builtinSlashCommands: readonly BuiltinSlashCommand[] = [];
 

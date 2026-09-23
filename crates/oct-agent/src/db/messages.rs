@@ -125,12 +125,105 @@ pub async fn count_user_messages(pool: &SqlitePool, conversation_id: &str) -> Re
     Ok(count)
 }
 
+/// details_json `kind` value marking a compaction marker row (see
+/// `agent::compact`): a normal `user` message whose parts carry the summary
+/// and whose details carry compaction metadata. Rows before the LAST marker
+/// stay in the DB but never reach the LLM again.
+pub const COMPACTION_MARKER_KIND: &str = "compaction";
+
+/// Provider-truth anchor for context estimates: the `input + output` tokens
+/// of the request that produced the anchor message, plus that message's index
+/// in the LLM view. Everything appended after it has never been counted by a
+/// provider and must be estimated locally.
+#[derive(Debug, Clone)]
+pub struct UsageAnchor {
+    pub tokens: u64,
+    pub message_index: usize,
+}
+
+/// The model-visible view of a conversation plus the estimation anchor:
+/// `[last compaction marker (if any), everything after it]` with orphan tool
+/// results filtered out. System prompt is NOT included — the loop prepends it
+/// fresh on every run.
+#[derive(Debug, Clone)]
+pub struct LlmView {
+    pub messages: Vec<Message>,
+    pub anchor: Option<UsageAnchor>,
+}
+
+fn details_kind(m: &StoredMessage) -> Option<String> {
+    m.details_json
+        .as_ref()
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .and_then(|v| v.get("kind").and_then(Value::as_str).map(str::to_string))
+}
+
+fn is_compaction_marker(m: &StoredMessage) -> bool {
+    details_kind(m).as_deref() == Some(COMPACTION_MARKER_KIND)
+}
+
+/// Build the LLM view for a conversation (see [`LlmView`]).
+pub async fn load_llm_view(pool: &SqlitePool, conversation_id: &str) -> Result<LlmView> {
+    let stored = list_messages(pool, conversation_id).await?;
+    // The view starts AT the last marker (inclusive): the marker IS the
+    // summary message the model sees. Older markers are inside the excluded
+    // prefix and simply stop mattering.
+    let start = stored.iter().rposition(is_compaction_marker).unwrap_or(0);
+    let region = &stored[start..];
+
+    let parsed: Vec<Message> = region
+        .iter()
+        .map(|s| s.to_message())
+        .collect::<Result<_>>()?;
+
+    // Orphan tool results (call summarized away or repaired past the marker)
+    // are a protocol violation for providers — drop them defensively. Calls
+    // are only "seen" once their assistant message appears, so ordering is
+    // enforced too.
+    let mut messages: Vec<Message> = Vec::with_capacity(parsed.len());
+    let mut kept_region_idx: Vec<usize> = Vec::with_capacity(parsed.len());
+    let mut seen_calls: HashSet<String> = HashSet::new();
+    for (idx, msg) in parsed.into_iter().enumerate() {
+        if msg.role == Role::Tool {
+            let has_live_call = msg.parts.iter().all(|p| match p {
+                ContentPart::ToolResult(tr) => seen_calls.contains(&tr.call_id),
+                _ => true,
+            });
+            if !has_live_call {
+                continue;
+            }
+        } else {
+            for part in &msg.parts {
+                if let ContentPart::ToolCall(tc) = part {
+                    seen_calls.insert(tc.id.clone());
+                }
+            }
+        }
+        kept_region_idx.push(idx);
+        messages.push(msg);
+    }
+
+    // Anchor: the last kept assistant row that carries usage. Tool rows never
+    // carry usage, so dropped orphans cannot have been the anchor.
+    let mut anchor: Option<(usize, usize)> = None; // (message_index, region_index)
+    for (mi, &r) in kept_region_idx.iter().enumerate() {
+        if region[r].role == "assistant" && region[r].input_tokens.is_some_and(|v| v > 0) {
+            anchor = Some((mi, r));
+        }
+    }
+    let anchor = anchor.map(|(mi, r)| UsageAnchor {
+        tokens: (region[r].input_tokens.unwrap_or(0) + region[r].output_tokens.unwrap_or(0)) as u64,
+        message_index: mi,
+    });
+
+    Ok(LlmView { messages, anchor })
+}
+
 pub async fn load_messages_for_llm(
     pool: &SqlitePool,
     conversation_id: &str,
 ) -> Result<Vec<Message>> {
-    let stored = list_messages(pool, conversation_id).await?;
-    stored.iter().map(|s| s.to_message()).collect()
+    Ok(load_llm_view(pool, conversation_id).await?.messages)
 }
 
 pub async fn get_last_provider_spec(
@@ -156,14 +249,21 @@ pub async fn get_last_provider_spec(
 /// (e.g. backend crash). Sending that history to a provider as-is is a
 /// protocol violation (400), so callers repair it via
 /// [`repair_dangling_tool_calls`] before building an LLM request.
+///
+/// Marker-aware: only calls AFTER the last compaction marker are reported.
+/// Pre-marker calls are excluded from every future LLM request anyway, and
+/// repairing them would append placeholder rows at the END of the
+/// conversation — past the marker — where they turn into orphan tool results
+/// inside the view.
 pub async fn find_dangling_tool_calls(
     pool: &SqlitePool,
     conversation_id: &str,
 ) -> Result<Vec<String>> {
     let stored = list_messages(pool, conversation_id).await?;
+    let start = stored.iter().rposition(is_compaction_marker).unwrap_or(0);
     let mut call_ids: Vec<String> = Vec::new();
     let mut answered: HashSet<String> = HashSet::new();
-    for msg in &stored {
+    for msg in &stored[start..] {
         // Unparseable rows (corrupt parts_json) can neither contribute calls
         // nor answer them; skipping keeps repair additive instead of failing
         // the whole request.
@@ -227,12 +327,14 @@ pub async fn repair_dangling_tool_calls(
 }
 
 /// Whether the conversation's last message (by ordering) is a user message —
-/// i.e. a turn was sent but never got any reply.
+/// i.e. a turn was sent but never got any reply. Compaction markers don't
+/// count: a manual compact right after an interrupted turn must not mask the
+/// resumability signal.
 pub async fn last_message_is_user(pool: &SqlitePool, conversation_id: &str) -> Result<bool> {
     Ok(list_messages(pool, conversation_id)
         .await?
         .last()
-        .is_some_and(|m| m.role == "user"))
+        .is_some_and(|m| m.role == "user" && !is_compaction_marker(m)))
 }
 
 pub async fn update_message_usage(

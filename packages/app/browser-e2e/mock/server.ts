@@ -18,6 +18,7 @@
 
 import { Buffer } from "node:buffer";
 import http from "node:http";
+import type { components } from "../../src/api/schema";
 import type { AddressInfo, IncomingMessage, ServerResponse } from "node:http";
 
 // ---------------------------------------------------------------------------
@@ -71,6 +72,13 @@ export type ScriptStep =
   | StepHang;
 
 export interface Scenario {
+  git?: {
+    status: components["schemas"]["GitStatus"];
+    history?: components["schemas"]["GitEntry"][];
+    stashes?: components["schemas"]["GitEntry"][];
+    patch?: string;
+    actionError?: string;
+  };
   /** GET /api/projects 的返回体(形状见 schema.d.ts 的 Project)。 */
   projects?: unknown[];
   /** 全部会话(按 project_id 过滤返回)。 */
@@ -213,6 +221,7 @@ const RE_CONVERSATION_DELETE =
   /^\/api\/projects\/([^/]+)\/conversations\/([^/]+)$/;
 const RE_CONVERSATION_MESSAGES = /^\/api\/conversations\/([^/]+)\/messages$/;
 const RE_CONVERSATION_CANCEL = /^\/api\/conversations\/([^/]+)\/cancel$/;
+const RE_CONVERSATION_COMPACT = /^\/api\/conversations\/([^/]+)\/compact$/;
 const RE_CONVERSATION_RUN = /^\/api\/conversations\/([^/]+)\/run$/;
 const RE_MCP_SERVER = /^\/api\/mcp\/servers\/([^/]+)$/;
 const RE_MCP_ENSURE = /^\/api\/projects\/([^/]+)\/mcp\/ensure$/;
@@ -403,6 +412,48 @@ async function handleApi(
 ): Promise<void> {
   const s = state.scenario;
 
+  // Deterministic Git responses and index mutations for Changes UI tests.
+  if (pathname.includes("/git/")) {
+    const fixture = s.git;
+    if (pathname.endsWith("/actions")) {
+      const body = (await readBodyCached(
+        req,
+      )) as components["schemas"]["GitActionRequest"];
+      if (fixture?.actionError)
+        return sendJson(res, 409, { error: fixture.actionError });
+      if (fixture && (body.action === "stage" || body.action === "unstage")) {
+        for (const file of fixture.status.files) {
+          if (body.paths && !body.paths.includes(file.path)) continue;
+          const stage = body.action === "stage";
+          file.index = stage ? "M" : " ";
+          file.worktree = stage ? " " : "M";
+          file.untracked = false;
+        }
+      }
+      return sendJson(res, 200, { message: "Done" });
+    }
+    if (pathname.endsWith("/status"))
+      return sendJson(
+        res,
+        200,
+        fixture?.status ?? {
+          root: "/tmp/demo",
+          branch: "main",
+          upstream: null,
+          ahead: 0,
+          behind: 0,
+          remotes: [],
+          files: [],
+        },
+      );
+    if (pathname.endsWith("/history"))
+      return sendJson(res, 200, fixture?.history ?? []);
+    if (pathname.endsWith("/stashes"))
+      return sendJson(res, 200, fixture?.stashes ?? []);
+    if (pathname.endsWith("/diff"))
+      return sendJson(res, 200, { patch: fixture?.patch ?? "" });
+  }
+
   // GET /api/projects
   if (req.method === "GET" && pathname === "/api/projects") {
     return sendJson(res, 200, s.projects ?? []);
@@ -491,6 +542,49 @@ async function handleApi(
     res.writeHead(204);
     res.end();
     return;
+  }
+
+  // POST /api/conversations/:id/compact —— 手动压缩:向该会话的 messages
+  // 追加一条 compaction 标记行(details kind=compaction)并回 CompactResult,
+  // 前端随后的 GET messages 由此渲染出分隔条(与真实后端同一条链路)。
+  m = pathname.match(RE_CONVERSATION_COMPACT);
+  if (m && req.method === "POST") {
+    const id = decodeURIComponent(m[1]);
+    const rows = (s.messages ??= {})[id] ?? (s.messages[id] = []);
+    const compacted = rows.length;
+    const summary = "E2E 压缩摘要：完成了登录修复并跑通测试";
+    const marker = {
+      id: `m-compact-${++state.autoId}`,
+      conversation_id: id,
+      role: "user",
+      parts_json: JSON.stringify([
+        {
+          Text: `[Context compaction] The earlier conversation history was compacted.\n\n<summary>\n${summary}\n</summary>\n\nContinue the task based on the summary above.`,
+        },
+      ]),
+      details_json: JSON.stringify({
+        kind: "compaction",
+        triggered_by: "manual",
+        compacted_message_count: compacted,
+        estimated_tokens_before: 9000,
+        estimated_tokens_after: 800,
+      }),
+      ordering: compacted + 1,
+      provider_id: null,
+      model_id: null,
+      input_tokens: null,
+      output_tokens: null,
+      reasoning_tokens: null,
+      created_at: nowIso(),
+    };
+    rows.push(marker);
+    return sendJson(res, 200, {
+      summary_message_id: marker.id,
+      compacted_messages: compacted,
+      est_tokens_before: 9000,
+      est_tokens_after: 800,
+      summary,
+    });
   }
 
   // GET /api/conversations/:id/run —— 重连探测：会话存在未关闭的 SSE 流
