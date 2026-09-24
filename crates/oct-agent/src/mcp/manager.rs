@@ -1,5 +1,5 @@
-//! MCP integration layer: the connection manager plus the [`AgentTool`]
-//! adapter that exposes one MCP server's tools to the agent loop.
+//! The process-wide MCP connection manager: registry, reconcile, and the
+//! catalog-backed read paths (prompts/resources).
 //!
 //! [`McpManager`] owns the live connections (keyed by `mcp_servers.id`) and
 //! reconciles them against the enabled DB rows on every chat turn
@@ -16,22 +16,16 @@
 //! triggers a (re)connect, and which project's run receives the tools
 //! ([`McpManager::tools_for_run`] filters by the entry's scope).
 //!
-//! [`McpTool`] then adapts one cached `tools/list` entry into the agent
-//! loop's tool trait: the LLM sees the flat `mcp__{server}__{tool}` name
-//! (deduplicated across servers by `oct_mcp::ToolNameMap`), while calls are
-//! dispatched over the server's connection under the original tool name,
-//! wrapped in that server's `tool_timeout_ms` budget and aborted as soon as
-//! the run's cancellation token fires (the shared connection is never shut
-//! down by an individual call).
-//!
-//! The cached tool list does not go stale while a server keeps running:
-//! every connected entry spawns a refresh task listening on the connection's
-//! `tools/list_changed` feed (see
-//! [`McpManager`]'s `spawn_tool_list_refresh_task`), which re-lists after a
-//! short debounce and writes the new catalog into the entry. A refresh task
-//! belongs to exactly one entry generation — remove or replace the entry and
-//! the old task retires on its next write, so it can never corrupt a newer
-//! entry.
+//! Reconcile concurrency: the decision phase runs under a short
+//! [`decide_lock`](McpManager::decide_lock) with no network awaits, and
+//! every connect/disconnect takes only ITS server's gate — one project's
+//! slow server never queues another project's reconcile. Concurrent
+//! reconciles that decide the same server needs connecting converge on the
+//! gate: the first runs the handshake, the others re-check afterwards and
+//! find nothing left to do. OAuth invalidation bumps the server's
+//! [`epoch`](McpManager::epochs) instead of waiting out an in-flight
+//! handshake; a connect commits only while its captured epoch still
+//! matches, so a stale-credential result can never re-enter the map.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -39,69 +33,28 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use async_trait::async_trait;
-use chrono::Utc;
 use dashmap::DashMap;
-use serde_json::{Value, json};
+use serde_json::Value;
 use sqlx::SqlitePool;
 use tracing::{info, warn};
 
-use oct_mcp::ToolListChanged;
 use oct_mcp::ToolNameMap;
 use oct_mcp::{
-    HttpServerConfig, McpCallResult, McpConnection, McpPromptInfo, McpPromptResult,
-    McpResourceContent, McpResourceInfo, McpToolInfo, StdioServerConfig, connect_http,
-    connect_stdio,
+    McpConnection, McpPromptInfo, McpPromptResult, McpResourceContent, McpResourceInfo,
+    McpToolInfo,
 };
 
 use crate::db;
 use crate::db::mcp::McpServer;
-use crate::db::mcp_tokens::McpServerToken;
-use crate::oauth;
-use crate::tools::truncate::MAX_TOOL_OUTPUT_BYTES;
-use crate::tools::truncate::truncate_middle;
-use crate::tools::{AgentTool, ToolContext, ToolImage, ToolOutput};
+use crate::tools::AgentTool;
 
-/// Budget for spawning one MCP server and finishing the initialize
-/// handshake (and, separately, for the follow-up `tools/list`).
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
-
-/// Debounce window a `tools/list_changed` refresh task holds open before
-/// re-listing: a server often announces several changes in a burst (and
-/// restarts announce on reconnect), which must collapse into ONE
-/// `tools/list` round trip. Short on purpose — the catalog refresh is
-/// best-effort latency, never a correctness window.
-const TOOL_LIST_REFRESH_DEBOUNCE: Duration = Duration::from_millis(500);
+use super::catalog::spawn_tool_list_refresh_task;
+use super::connect::{ServerCatalog, connect_server};
+use super::tool::McpTool;
 
 /// Per-call timeout for MCP tool calls when the server row carries no
 /// `tool_timeout_ms`.
-const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// Cap (in chars) on the LLM-visible description of an MCP tool. The
-/// ellipsis is appended on top of the cap.
-const MAX_DESCRIPTION_CHARS: usize = 1024;
-
-/// Placeholder description when a server ships a tool without one.
-const NO_DESCRIPTION: &str = "MCP tool (the server provided no description)";
-
-/// Content fallback when a server returns neither text nor structured
-/// content: an empty tool result is technically legal but unhelpful to the
-/// model, so say so explicitly.
-const NO_CONTENT: &str = "(MCP tool returned no content)";
-
-/// Cap on images kept per MCP tool result; extras are dropped (count noted
-/// in details) so a server returning dozens of images cannot flood the LLM
-/// context.
-const MAX_RESULT_IMAGES: usize = 8;
-
-/// Cap on one image's base64 payload (chars, i.e. ~3/4 of the decoded
-/// bytes); larger images are dropped (count noted in details).
-const MAX_IMAGE_BASE64_CHARS: usize = 5 * 1024 * 1024;
-
-/// Lead time before `expires_at` at which a stored OAuth access token counts
-/// as stale and gets refreshed pre-connect. 30s covers clock skew between
-/// oct and the AS plus the MCP handshake that follows.
-const TOKEN_EXPIRY_LEAD: chrono::Duration = chrono::Duration::seconds(30);
+pub(crate) const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Live state of one managed server, also surfaced to the API layer through
 /// [`McpManager::status_snapshot`].
@@ -144,11 +97,11 @@ struct ConnectedEntry {
 }
 
 /// What the manager tracks for one MCP server id.
-struct ManagedServer {
+pub(crate) struct ManagedServer {
     /// User-facing name from the DB row (UNIQUE); drives the exposed
     /// `mcp__{name}__{tool}` tool names.
-    name: String,
-    status: ServerStatus,
+    pub(crate) name: String,
+    pub(crate) status: ServerStatus,
     /// Identity of this entry incarnation, allocated from the manager's
     /// monotonic counter on every insert. The `tools/list_changed` refresh
     /// task spawned with an entry may only write while the live entry's
@@ -156,58 +109,88 @@ struct ManagedServer {
     /// the old task on its next write instead of letting it corrupt a newer
     /// entry. `0` only ever appears in hand-built test literals, which no
     /// spawned task matches.
-    generation: u64,
+    pub(crate) generation: u64,
     /// Fingerprint of the config this entry was established under.
     /// `None` marks a test-injected entry (see
     /// [`McpManager::insert_connection_for_test`]): reconcile treats it as
     /// externally owned and never reconnects or removes it.
-    fingerprint: Option<String>,
+    pub(crate) fingerprint: Option<String>,
     /// Project scope this entry was established under (`None` = global,
     /// `Some(id)` = that project only). Copied from the row — and part of
     /// its fingerprint, so a scope edit refreshes it on the next reconcile —
     /// letting [`McpManager::tools_for_run`] filter without a DB read.
-    scope: Option<String>,
+    pub(crate) scope: Option<String>,
     /// The live connection; `None` exactly when status is `Failed`.
-    connection: Option<Arc<dyn McpConnection>>,
+    pub(crate) connection: Option<Arc<dyn McpConnection>>,
     /// Cached `tools/list` result (only meaningful while `Connected`),
     /// refreshed in place by the entry's `tools/list_changed` task.
-    tools: Vec<McpToolInfo>,
+    pub(crate) tools: Vec<McpToolInfo>,
     /// Cached `prompts/list` result. Unlike `tools`, fetched ONCE at connect
     /// time — no `prompts/list_changed` refresh task exists (the UI treats
     /// the prompt catalog as connect-time metadata; a config edit reconnects
     /// and re-fetches anyway).
-    prompts: Vec<McpPromptInfo>,
+    pub(crate) prompts: Vec<McpPromptInfo>,
     /// Cached `resources/list` result, same connect-time-once contract as
     /// `prompts`.
-    resources: Vec<McpResourceInfo>,
+    pub(crate) resources: Vec<McpResourceInfo>,
     /// Per-call budget from the row's `tool_timeout_ms` (or the default).
-    tool_timeout: Duration,
+    pub(crate) tool_timeout: Duration,
 }
 
-/// Connect-time capability catalogs of one server: the `tools/list` result
-/// plus the best-effort `prompts/list` / `resources/list` results.
-#[derive(Debug, Default)]
-struct ServerCatalog {
-    tools: Vec<McpToolInfo>,
-    prompts: Vec<McpPromptInfo>,
-    resources: Vec<McpResourceInfo>,
-}
+/// The connect pipeline's signature (owned args so the returned future is
+/// `'static` and boxable).
+pub(crate) type ConnectOutcome = (ServerStatus, Option<Arc<dyn McpConnection>>, ServerCatalog);
+type Connector = dyn Fn(
+        sqlx::SqlitePool,
+        McpServer,
+    ) -> futures_util::future::BoxFuture<'static, ConnectOutcome>
+    + Send
+    + Sync;
 
 /// Owns the process-wide MCP connections. Shared through `AppState` as an
 /// `Arc`; cheap to construct, so tests build their own per case.
-#[derive(Default)]
 pub struct McpManager {
     /// key = `mcp_servers.id`. `Arc` so the per-entry refresh tasks can hold
     /// the map without owning the whole manager.
     servers: Arc<DashMap<String, ManagedServer>>,
     /// Monotonic source of [`ManagedServer::generation`] values.
     generation: AtomicU64,
-    /// Serializes reconciles: two concurrent chat turns must never both
-    /// decide the same server needs connecting (the loser would overwrite —
-    /// and leak — the winner's connection). Callers queue here; by the time
-    /// the second one reconciles, the first one's entries are already
-    /// `Connected` and it has nothing to do.
-    reconcile_lock: tokio::sync::Mutex<()>,
+    /// Per-server connect gates. Serializes the connects/removals of ONE
+    /// server id only — never held across a network await by more than one
+    /// server, so independent servers (and independent projects' reconciles)
+    /// progress in parallel.
+    gates: DashMap<String, Arc<tokio::sync::Mutex<()>>>,
+    /// Invalidation epochs, bumped by [`McpManager::invalidate`] (the
+    /// non-blocking removal path). A connect captures the epoch when it
+    /// starts its handshake and commits only while the epoch still matches:
+    /// an OAuth invalidation that lands mid-handshake must not be overwritten
+    /// by the stale-credential result arriving late.
+    epochs: Arc<DashMap<String, u64>>,
+    /// Serializes the DECISION phase of reconciles only (map reads and plan
+    /// computation — no network awaits). Concurrent chat turns queue here
+    /// briefly, then act per-server in parallel.
+    decide_lock: tokio::sync::Mutex<()>,
+    /// The connect pipeline under test replacement (see
+    /// [`Self::set_connector_for_test`]); production runs
+    /// [`super::connect::connect_server`].
+    connector: std::sync::RwLock<Arc<Connector>>,
+}
+
+impl Default for McpManager {
+    fn default() -> Self {
+        Self {
+            servers: Arc::new(DashMap::new()),
+            generation: AtomicU64::new(0),
+            gates: DashMap::new(),
+            epochs: Arc::new(DashMap::new()),
+            decide_lock: tokio::sync::Mutex::new(()),
+            connector: std::sync::RwLock::new(Arc::new(
+                |pool: sqlx::SqlitePool, row: McpServer| {
+                    Box::pin(async move { connect_server(&pool, &row).await })
+                },
+            )),
+        }
+    }
 }
 
 impl McpManager {
@@ -236,8 +219,6 @@ impl McpManager {
     /// enabled set — deleted or disabled, in any project — are disconnected
     /// and removed.
     pub async fn ensure_connections(&self, pool: &SqlitePool, project_id: Option<&str>) {
-        let _guard = self.reconcile_lock.lock().await;
-
         let rows = match db::mcp::list_mcp_servers(pool).await {
             Ok(rows) => rows,
             Err(e) => {
@@ -246,111 +227,80 @@ impl McpManager {
             }
         };
 
-        // ALL enabled rows, across every project: entries are process-wide,
-        // so removal decisions must consider rows the current project cannot
-        // see (a disabled scoped server in another project still has to go).
-        let desired: HashMap<String, &McpServer> = rows
-            .iter()
-            .filter(|row| row.enabled)
-            .map(|row| (row.id.clone(), row))
-            .collect();
+        // Phase 1 — decide under the short lock: read the map, plan removals
+        // and connects. No network await happens here, so concurrent
+        // reconciles queue for microseconds, not for each other's slowest
+        // server handshake.
+        let (gone, out_of_scope_stale, to_connect) = {
+            let _decided = self.decide_lock.lock().await;
 
-        // Entries whose row disappeared (deleted/disabled). Ref guards live
-        // only inside the closure, so none is held across the awaits below.
-        let stale: Vec<String> = self
-            .servers
-            .iter()
-            .filter(|entry| {
-                entry.value().fingerprint.is_some() && !desired.contains_key(entry.key())
-            })
-            .map(|entry| entry.key().clone())
-            .collect();
-        for id in stale {
-            self.disconnect(&id).await;
-        }
+            // ALL enabled rows, across every project: entries are
+            // process-wide, so removal decisions must consider rows the
+            // current project cannot see (a disabled scoped server in
+            // another project still has to go).
+            let desired: HashMap<String, &McpServer> = rows
+                .iter()
+                .filter(|row| row.enabled)
+                .map(|row| (row.id.clone(), row))
+                .collect();
 
-        // Stale-fingerprint entries of OUT-of-scope rows: remove only, no
-        // reconnect (their project re-establishes them on its next turn).
-        let mut out_of_scope_stale: Vec<String> = Vec::new();
-        let to_connect: Vec<McpServer> = desired
-            .into_iter()
-            .filter(|(id, row)| {
-                if scope_hits(row.project_id.as_deref(), project_id) {
-                    if self.entry_needs_connect(id, row) {
-                        self.disconnect_blocking(id);
-                        true
+            // Entries whose row disappeared (deleted/disabled): remove
+            // unconditionally (fingerprint irrelevant — the row is gone).
+            let gone: Vec<String> = self
+                .servers
+                .iter()
+                .filter(|entry| {
+                    entry.value().fingerprint.is_some() && !desired.contains_key(entry.key())
+                })
+                .map(|entry| entry.key().clone())
+                .collect();
+
+            // Stale-fingerprint entries of OUT-of-scope rows: remove only
+            // when the entry still shows the old fingerprint (a concurrent
+            // in-scope reconnect may already have installed a fresh one),
+            // and never reconnect here.
+            let mut out_of_scope_stale: Vec<(String, String)> = Vec::new();
+            let to_connect: Vec<McpServer> = desired
+                .into_iter()
+                .filter(|(id, row)| {
+                    if scope_hits(row.project_id.as_deref(), project_id) {
+                        self.entry_needs_connect(id, row)
+                    } else if let Some(seen) = self.stale_fingerprint(id, row) {
+                        out_of_scope_stale.push((id.clone(), seen));
+                        false
                     } else {
                         false
                     }
-                } else {
-                    if self.entry_is_stale(id, row) {
-                        out_of_scope_stale.push(id.clone());
-                    }
-                    false
-                }
-            })
-            .map(|(_, row)| row.clone())
-            .collect();
-        for id in out_of_scope_stale {
-            self.disconnect(&id).await;
-        }
+                })
+                .map(|(_, row)| row.clone())
+                .collect();
+            (gone, out_of_scope_stale, to_connect)
+        };
 
-        if to_connect.is_empty() {
-            return;
+        // Phase 2 — act per server, outside the decide lock. Each action
+        // takes only its own server's gate; different servers (and different
+        // projects' reconciles) run in parallel.
+        let mut actions: Vec<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>> =
+            Vec::with_capacity(gone.len() + out_of_scope_stale.len() + to_connect.len());
+        for id in &gone {
+            actions.push(Box::pin(self.remove_entry(id, None)));
         }
+        for (id, seen) in &out_of_scope_stale {
+            actions.push(Box::pin(self.remove_entry(id, Some(seen.as_str()))));
+        }
+        for row in &to_connect {
+            actions.push(Box::pin(self.connect_one(pool, row)));
+        }
+        futures_util::future::join_all(actions).await;
+    }
 
-        // Connect all pending servers concurrently; each outcome lands in
-        // the map whatever it is (Failed is a state, not an error).
-        // connect_server owns the whole http-token path: fetch the stored
-        // credential row, refresh it when near expiry, merge the bearer
-        // header (token wins, see connect_server).
-        let connects = to_connect
-            .iter()
-            .map(|row| connect_server(pool, row))
-            .collect::<Vec<_>>();
-        let results = futures_util::future::join_all(connects).await;
-        for (row, outcome) in to_connect.iter().zip(results) {
-            let (status, connection, catalog) = outcome;
-            match &status {
-                ServerStatus::Connected { tool_count } => info!(
-                    server = %row.name,
-                    tools = tool_count,
-                    prompts = catalog.prompts.len(),
-                    resources = catalog.resources.len(),
-                    "MCP server connected"
-                ),
-                ServerStatus::Failed { error } => {
-                    warn!(server = %row.name, %error, "MCP server connection failed")
-                }
-            }
-            let generation = self.next_generation();
-            // The refresh task needs the connection Arc too; clone before it
-            // moves into the entry.
-            let refresh_connection = connection.clone();
-            self.servers.insert(
-                row.id.clone(),
-                ManagedServer {
-                    name: row.name.clone(),
-                    status,
-                    generation,
-                    fingerprint: Some(fingerprint_of(row)),
-                    scope: row.project_id.clone(),
-                    connection,
-                    tools: catalog.tools,
-                    prompts: catalog.prompts,
-                    resources: catalog.resources,
-                    tool_timeout: tool_timeout_of(row),
-                },
-            );
-            if let Some(connection) = refresh_connection {
-                spawn_tool_list_refresh_task(
-                    self.servers.clone(),
-                    row.id.clone(),
-                    generation,
-                    connection,
-                );
-            }
-        }
+    /// The server's gate, creating it on first use.
+    fn gate_for(&self, id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.gates
+            .entry(id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .value()
+            .clone()
     }
 
     /// Next value for the entry generation counter (starts at 1; 0 stays
@@ -378,21 +328,34 @@ impl McpManager {
         }
     }
 
-    /// Whether the entry for `id` was established under a config that no
-    /// longer matches the row (fingerprint mismatch) and therefore must not
-    /// be kept as-is. Test-injected entries never count as stale.
-    fn entry_is_stale(&self, id: &str, row: &McpServer) -> bool {
-        let Some(entry) = self.servers.get(id) else {
-            return false;
-        };
-        matches!(
-            entry.value().fingerprint.as_deref(),
-            Some(seen) if seen != fingerprint_of(row)
-        )
+    /// When the entry for `id` was established under a config that no longer
+    /// matches the row, the OLD fingerprint (the removal condition for
+    /// out-of-scope rows); `None` when the entry is current (or absent, or
+    /// test-injected — those never count as stale).
+    fn stale_fingerprint(&self, id: &str, row: &McpServer) -> Option<String> {
+        let entry = self.servers.get(id)?;
+        match entry.value().fingerprint.as_deref() {
+            Some(seen) if seen != fingerprint_of(row) => Some(seen.to_string()),
+            _ => None,
+        }
     }
 
-    /// Remove the entry for `id` and shut its connection down (if any).
-    async fn disconnect(&self, id: &str) {
+    /// Remove the entry under the server's gate (so it serializes with
+    /// connects) and shut its connection down. `only_if_fingerprint`
+    /// restricts the removal to entries still showing that (stale)
+    /// fingerprint — while we waited for the gate, a concurrent reconnect
+    /// may legitimately have installed a fresh entry that must survive.
+    async fn remove_entry(&self, id: &str, only_if_fingerprint: Option<&str>) {
+        let gate = self.gate_for(id);
+        let _guard = gate.lock().await;
+        if let Some(seen) = only_if_fingerprint
+            && !self
+                .servers
+                .get(id)
+                .is_some_and(|e| e.value().fingerprint.as_deref() == Some(seen))
+        {
+            return;
+        }
         if let Some((_, mut managed)) = self.servers.remove(id) {
             if let Some(connection) = managed.connection.take() {
                 connection.shutdown().await;
@@ -409,24 +372,116 @@ impl McpManager {
     /// more direct than folding token state into the fingerprint: the token
     /// row changes exactly at those two API calls, and both of them already
     /// know the server id.
+    ///
+    /// Does NOT wait out an in-flight handshake (the API call must not hang
+    /// behind a 15s connect): instead it bumps the server's invalidation
+    /// epoch, and the in-flight connect drops its result when the epochs no
+    /// longer match (see [`Self::connect_one`]). A connect that starts
+    /// AFTER the bump is unaffected — it reads the fresh credential anyway.
     pub async fn invalidate(&self, server_id: &str) {
-        self.disconnect(server_id).await;
+        if let Some(mut epoch) = self.epochs.get_mut(server_id) {
+            *epoch.value_mut() += 1;
+        } else {
+            self.epochs.insert(server_id.to_string(), 1);
+        }
+        if let Some((_, mut managed)) = self.servers.remove(server_id) {
+            if let Some(connection) = managed.connection.take() {
+                connection.shutdown().await;
+            }
+        }
     }
 
-    /// `disconnect` for callers already inside sync code: shutdown is only
-    /// awaited on the stale-removal path, while reconnect candidates had a
-    /// `Failed` status (no connection) in just about every real case — but
-    /// a fingerprint edit of a *connected* server lands here too, so the
-    /// entry is removed first and its connection shut down detached, keeping
-    /// the ordering (drop old, then connect new) without holding DashMap
-    /// guards across an await.
-    fn disconnect_blocking(&self, id: &str) {
-        if let Some((_, managed)) = self.servers.remove(id) {
+    /// Connect one server under its gate. Concurrent reconciles converge
+    /// here: the first taker runs the handshake; later takers wait for the
+    /// gate, re-check, and find nothing left to do (ONE handshake per
+    /// server, shared outcome). The epoch captured after the re-check is
+    /// the commit ticket — an OAuth invalidation that bumped it
+    /// mid-handshake makes the (stale-credential) result be dropped instead
+    /// of committed.
+    async fn connect_one(&self, pool: &SqlitePool, row: &McpServer) {
+        let gate = self.gate_for(&row.id);
+        let _guard = gate.lock().await;
+        // Another reconcile committed a fresh entry while we waited: done.
+        if !self.entry_needs_connect(&row.id, row) {
+            return;
+        }
+        let epoch = self
+            .epochs
+            .get(&row.id)
+            .map(|e| *e.value())
+            .unwrap_or_default();
+        // Drop the entry being replaced (Failed, or fingerprint edit) without
+        // waiting for its shutdown — the handshake below is the slow part
+        // and must start now; the old connection dies in the background.
+        if let Some((_, managed)) = self.servers.remove(&row.id) {
             if let Some(connection) = managed.connection {
                 tokio::spawn(async move {
                     connection.shutdown().await;
                 });
             }
+        }
+
+        // connect_server owns the whole http-token path: fetch the stored
+        // credential row, refresh it when near expiry, merge the bearer
+        // header (token wins).
+        let connector = self
+            .connector
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let (status, connection, catalog) = connector(pool.clone(), row.clone()).await;
+        match &status {
+            ServerStatus::Connected { tool_count } => info!(
+                server = %row.name,
+                tools = tool_count,
+                prompts = catalog.prompts.len(),
+                resources = catalog.resources.len(),
+                "MCP server connected"
+            ),
+            ServerStatus::Failed { error } => {
+                warn!(server = %row.name, %error, "MCP server connection failed")
+            }
+        }
+        // Commit ticket: an invalidation bumped the epoch while the
+        // handshake ran — drop the result (shut the connection down) instead
+        // of letting a stale entry re-enter the map.
+        let still_valid = self
+            .epochs
+            .get(&row.id)
+            .map(|e| *e.value() == epoch)
+            .unwrap_or(true);
+        if !still_valid {
+            if let Some(connection) = connection {
+                connection.shutdown().await;
+            }
+            return;
+        }
+        let generation = self.next_generation();
+        // The refresh task needs the connection Arc too; clone before it
+        // moves into the entry.
+        let refresh_connection = connection.clone();
+        self.servers.insert(
+            row.id.clone(),
+            ManagedServer {
+                name: row.name.clone(),
+                status,
+                generation,
+                fingerprint: Some(fingerprint_of(row)),
+                scope: row.project_id.clone(),
+                connection,
+                tools: catalog.tools,
+                prompts: catalog.prompts,
+                resources: catalog.resources,
+                tool_timeout: tool_timeout_of(row),
+            },
+        );
+        if let Some(connection) = refresh_connection {
+            spawn_tool_list_refresh_task(
+                self.servers.clone(),
+                row.id.clone(),
+                generation,
+                connection,
+            );
         }
     }
 
@@ -621,6 +676,33 @@ impl McpManager {
     /// out-of-crate tests get them through the real connect path). A
     /// `tools/list_changed` refresh task is spawned exactly like for
     /// production entries — fire the connection's feed to drive it.
+    /// Test seam for the reconcile-concurrency tests: replace the connect
+    /// pipeline with a scripted one (gates, counters, canned outcomes).
+    #[doc(hidden)]
+    pub fn set_connector_for_test(
+        &self,
+        connector: impl Fn(
+                sqlx::SqlitePool,
+                McpServer,
+            ) -> futures_util::future::BoxFuture<'static, ConnectOutcome>
+            + Send
+            + Sync
+            + 'static,
+    ) {
+        *self
+            .connector
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Arc::new(connector);
+    }
+
+    /// Test seam for the refresh-task retirement tests: the reconcile
+    /// removal path (entry gone + connection shut down), callable from
+    /// outside the module.
+    #[doc(hidden)]
+    pub async fn remove_entry_for_test(&self, server_id: &str) {
+        self.remove_entry(server_id, None).await;
+    }
+
     #[doc(hidden)]
     pub fn insert_connection_for_test(
         &self,
@@ -656,113 +738,13 @@ impl McpManager {
     }
 }
 
-/// Spawn the `tools/list_changed` refresh task for one freshly inserted
-/// entry incarnation. Connections without a notification feed (default
-/// trait impl, e.g. minimal test doubles) spawn nothing. The task shares the
-/// map instead of the manager so it can be spawned from `&self` methods; it
-/// terminates when the feed closes (production connections close it on
-/// shutdown), or at the first write that finds its entry removed or replaced
-/// (generation guard). See [`tool_list_refresh_loop`].
-fn spawn_tool_list_refresh_task(
-    servers: Arc<DashMap<String, ManagedServer>>,
-    id: String,
-    generation: u64,
-    connection: Arc<dyn McpConnection>,
-) {
-    let Some(watcher) = connection.tool_list_changed() else {
-        return;
-    };
-    tokio::spawn(tool_list_refresh_loop(
-        watcher, servers, id, generation, connection,
-    ));
-}
-
-/// Debounce + refresh loop behind every connected entry: on each
-/// `tools/list_changed` notification, hold [`TOOL_LIST_REFRESH_DEBOUNCE`]
-/// open (notifications landing inside collapse into this cycle), then
-/// re-list under the connect-time budget and write the new catalog into the
-/// entry — guarded by the generation the task was spawned with.
-///
-/// Failure policy: a failed or timed-out refresh is logged and the entry is
-/// left exactly as it was (the server may be mid-restart; reconcile remains
-/// the authority on reconnects). The loop never removes an entry.
-async fn tool_list_refresh_loop(
-    mut watcher: ToolListChanged,
-    servers: Arc<DashMap<String, ManagedServer>>,
-    id: String,
-    generation: u64,
-    connection: Arc<dyn McpConnection>,
-) {
-    loop {
-        // Park until the server announces a catalog change (or the feed
-        // closes for good — a production connection's feed closes once its
-        // entry is disconnected and the service dropped).
-        if !watcher.changed().await {
-            return;
-        }
-        // Debounce: a FIXED window from the first notification; every
-        // notification landing inside it is absorbed here (its `changed()`
-        // resolution marks the revision seen) and served by the single
-        // re-list below. A notification after the window naturally starts a
-        // fresh cycle. `changed()` is cancel-safe in select.
-        let deadline = tokio::time::Instant::now() + TOOL_LIST_REFRESH_DEBOUNCE;
-        loop {
-            tokio::select! {
-                _ = tokio::time::sleep_until(deadline) => break,
-                alive = watcher.changed() => {
-                    if !alive {
-                        return;
-                    }
-                }
-            }
-        }
-
-        // Same budget the connect-time listing uses, so a server that lists
-        // forever cannot pin the task.
-        let refreshed = tokio::time::timeout(CONNECT_TIMEOUT, connection.list_tools()).await;
-        match refreshed {
-            Ok(Ok(tools)) => {
-                // Generation check and write happen under one DashMap shard
-                // lock (the RefMut guard), so a concurrent remove/replace of
-                // the entry cannot interleave between them.
-                let Some(mut entry) = servers.get_mut(&id) else {
-                    // Entry removed (disconnect/reconcile): retire.
-                    return;
-                };
-                if entry.generation != generation {
-                    // Entry replaced by a reconnect: retire, never write
-                    // into the new incarnation.
-                    return;
-                }
-                let tool_count = tools.len();
-                entry.tools = tools;
-                entry.status = ServerStatus::Connected { tool_count };
-                info!(
-                    server = %entry.name,
-                    tools = tool_count,
-                    "MCP tool catalog refreshed after tools/list_changed"
-                );
-            }
-            Ok(Err(e)) => {
-                warn!(server = %id, "MCP tools/list refresh failed: {e:#}");
-            }
-            Err(_) => {
-                warn!(
-                    server = %id,
-                    "MCP tools/list refresh timed out after {CONNECT_TIMEOUT:?}"
-                );
-            }
-        }
-    }
-}
-
 /// Fingerprint of every launch- and scope-relevant field of a row. Any edit
 /// that changes how the server is started or addressed must produce a
 /// different value, forcing a reconnect on the next reconcile;
 /// `project_id` is included so a scope edit refreshes the entry's scope view
 /// too. `updated_at` would be simpler but loses precision on rapid edits and
 /// fires on irrelevant schema changes; the semantic fields are exact.
-fn fingerprint_of(server: &McpServer) -> String {
+pub(crate) fn fingerprint_of(server: &McpServer) -> String {
     format!(
         "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
         server.name,
@@ -782,14 +764,14 @@ fn fingerprint_of(server: &McpServer) -> String {
 /// and serves everyone; `Some(id)` serves only that project — and a
 /// scope-less query (`project_id` `None`, no project context) sees only
 /// global entries.
-fn scope_hits(scope: Option<&str>, project_id: Option<&str>) -> bool {
+pub(crate) fn scope_hits(scope: Option<&str>, project_id: Option<&str>) -> bool {
     match scope {
         None => true,
         Some(scope) => Some(scope) == project_id,
     }
 }
 
-fn tool_timeout_of(server: &McpServer) -> Duration {
+pub(crate) fn tool_timeout_of(server: &McpServer) -> Duration {
     server
         .tool_timeout_ms
         .filter(|ms| *ms > 0)
@@ -797,443 +779,6 @@ fn tool_timeout_of(server: &McpServer) -> Duration {
         .unwrap_or(DEFAULT_TOOL_TIMEOUT)
 }
 
-/// Connect one server row: start the transport (stdio child process or
-/// Streamable HTTP) + handshake, then `tools/list`, each bounded by
-/// [`CONNECT_TIMEOUT`]. Never returns an error — failures come back as a
-/// `Failed` status with the error string for the API surface.
-///
-/// The http branch additionally owns the OAuth credential path: load the
-/// stored token row, refresh it when near expiry (one best-effort attempt,
-/// the stored row survives a failing refresh — the AS may be briefly down),
-/// and set `Authorization: Bearer <token>` on the connection. PRIORITY: the
-/// stored OAuth token WINS over a static `Authorization` in the row's
-/// `headers_json` (an explicit OAuth login is the more specific intent);
-/// without a token row, `headers_json` passes through verbatim — the
-/// Phase-2-static-bearer behavior is unchanged.
-async fn connect_server(
-    pool: &SqlitePool,
-    row: &McpServer,
-) -> (ServerStatus, Option<Arc<dyn McpConnection>>, ServerCatalog) {
-    // Resolve the transport-specific connection future; the handshake→list
-    // pipeline below is shared. A row whose transport fields are incomplete
-    // (the API validates this, but the DB can still be edited out-of-band)
-    // fails fast with a clear error instead of a confusing spawn/connect one.
-    let connect = match row.transport.as_str() {
-        "stdio" => {
-            let Some(command) = row.command.as_deref() else {
-                return failed("stdio transport requires a command".to_string());
-            };
-            let cfg = StdioServerConfig {
-                command: command.to_string(),
-                args: row.args.as_deref().cloned().unwrap_or_default(),
-                env: row.env.as_deref().cloned().unwrap_or_default(),
-            };
-            futures_util::future::Either::Left(async move {
-                let connection = connect_stdio(&cfg, CONNECT_TIMEOUT).await?;
-                Ok::<_, anyhow::Error>((connection, ()))
-            })
-        }
-        "http" => {
-            let Some(url) = row.url.as_deref().map(str::trim).filter(|u| !u.is_empty()) else {
-                return failed("http transport requires a url".to_string());
-            };
-            let token = match db::mcp_tokens::get_mcp_server_token(pool, &row.id).await {
-                Ok(token) => token,
-                Err(error) => {
-                    warn!(
-                        server = %row.name,
-                        "cannot read the stored OAuth token, connecting without it: {error:#}"
-                    );
-                    None
-                }
-            };
-            // Refresh first (may write the DB row), then merge the header.
-            let token = match token {
-                Some(token) => Some(refresh_token_if_needed(pool, url, token).await),
-                None => None,
-            };
-            let had_token = token.is_some();
-            let mut headers = row.headers.as_deref().cloned().unwrap_or_default();
-            if let Some(token) = &token {
-                let token_type = if token.token_type.trim().is_empty() {
-                    "Bearer"
-                } else {
-                    token.token_type.trim()
-                };
-                headers.insert(
-                    "Authorization".to_string(),
-                    format!("{token_type} {}", token.access_token),
-                );
-            }
-            let cfg = HttpServerConfig {
-                url: url.to_string(),
-                headers,
-            };
-            futures_util::future::Either::Right(async move {
-                let connection = match connect_http(&cfg, CONNECT_TIMEOUT).await {
-                    Ok(connection) => connection,
-                    Err(error) => {
-                        // Tailor the failure when an OAuth token was in play
-                        // and the rejection looks like an auth one: rmcp
-                        // surfaces HTTP 401s in its error chains (status
-                        // codes / WWW-Authenticate text), so a substring
-                        // probe is the honest best-effort.
-                        if had_token && looks_like_auth_rejection(&format!("{error:#}")) {
-                            return Err(error.context(
-                                "the stored OAuth token was rejected (401); it may be expired \
-                                 or revoked — re-run OAuth login for this server",
-                            ));
-                        }
-                        return Err(error);
-                    }
-                };
-                Ok::<_, anyhow::Error>((connection, ()))
-            })
-        }
-        other => {
-            return failed(format!(
-                "unsupported transport '{other}'; 'stdio' and 'http' are available"
-            ));
-        }
-    };
-    let attempt = async {
-        let (connection, ()) = connect.await?;
-        // connect_* bound only the handshake; bound tools/list too so a
-        // server that lists forever cannot stall the chat turn.
-        let tools = tokio::time::timeout(CONNECT_TIMEOUT, connection.list_tools())
-            .await
-            .map_err(|_| {
-                anyhow::anyhow!("tools/list did not finish within {CONNECT_TIMEOUT:?}")
-            })??;
-        Ok::<_, anyhow::Error>((Arc::from(connection), tools))
-    };
-    match attempt.await {
-        Ok((connection, tools)) => {
-            let connection: Arc<dyn McpConnection> = connection;
-            // Prompts/resources catalogs are read side-tracked: fetched on
-            // the SAME connection right after tools, best-effort — a server
-            // without the capability (or one that errors mid-fetch) connects
-            // fine, its catalog is just empty. No list_changed refresh loop
-            // exists for these; a reconnect re-fetches.
-            let prompts = fetch_catalog("prompts/list", connection.list_prompts()).await;
-            let resources = fetch_catalog("resources/list", connection.list_resources()).await;
-            (
-                ServerStatus::Connected {
-                    tool_count: tools.len(),
-                },
-                Some(connection),
-                ServerCatalog {
-                    tools,
-                    prompts,
-                    resources,
-                },
-            )
-        }
-        Err(e) => failed(format!("{e:#}")),
-    }
-}
-
-/// Whether a connect failure looks like an authorization rejection (an
-/// OAuth token was in play and the transport surfaced a 401-shaped error).
-/// rmcp's error chains render the HTTP status (`HTTP 401`) or the
-/// WWW-Authenticate challenge text; match those spellings, case-blind.
-fn looks_like_auth_rejection(message: &str) -> bool {
-    let message = message.to_ascii_lowercase();
-    message.contains("http 401")
-        || message.contains("401 unauthorized")
-        || message.contains("unauthorized")
-        || message.contains("authorization required")
-        || message.contains("invalid_token")
-}
-
-/// Refresh the stored access token when it is near expiry (or already past).
-/// One attempt: on failure the ORIGINAL row is returned unchanged (the AS
-/// may be temporarily down; the next connect retries) and the connect then
-/// proceeds with the old access token — if the server still accepts it, all
-/// is well, otherwise the connect fails with the re-login hint. The token
-/// endpoint is re-discovered per refresh (the row schema deliberately stores
-/// no endpoint URLs; discovery is one cached-able GET).
-async fn refresh_token_if_needed(
-    pool: &SqlitePool,
-    server_url: &str,
-    token: McpServerToken,
-) -> McpServerToken {
-    let Some(refresh_token) = token.refresh_token.as_deref() else {
-        return token; // No refresh token: nothing to do, try as-is.
-    };
-    let stale = token
-        .expires_at
-        .is_some_and(|expires_at| Utc::now().naive_utc() + TOKEN_EXPIRY_LEAD >= expires_at);
-    if !stale {
-        return token;
-    }
-    info!("stored OAuth access token is near expiry, refreshing");
-    let refreshed = async {
-        let client = oauth::oauth_http_client()?;
-        let metadata = oauth::discover_authorization_server(&client, server_url).await?;
-        oauth::refresh_access_token(
-            &client,
-            &metadata.token_endpoint,
-            &token.client_id,
-            token.client_secret.as_deref(),
-            refresh_token,
-        )
-        .await
-    }
-    .await;
-    match refreshed {
-        Ok(response) => {
-            let now = Utc::now().naive_utc();
-            let expires_at = response
-                .expires_in
-                .filter(|seconds| *seconds > 0)
-                .map(|seconds| now + chrono::Duration::seconds(seconds));
-            // RFC 6749 §6: an absent refresh_token in the response means the
-            // old one stays valid — keep it instead of NULLing the column.
-            let refresh_token = response
-                .refresh_token
-                .or_else(|| token.refresh_token.clone());
-            let updated = McpServerToken {
-                server_id: token.server_id.clone(),
-                client_id: token.client_id.clone(),
-                client_secret: token.client_secret.clone(),
-                access_token: response.access_token,
-                refresh_token,
-                token_type: if response.token_type.trim().is_empty() {
-                    "Bearer".to_string()
-                } else {
-                    response.token_type
-                },
-                scope: response.scope,
-                expires_at,
-                obtained_at: now,
-                created_at: token.created_at,
-                updated_at: token.updated_at,
-            };
-            // Persist best-effort: a failed write only costs re-refreshing on
-            // the next connect (the in-memory value below is already fresh).
-            if let Err(error) = db::mcp_tokens::save_mcp_server_token(
-                pool,
-                &db::mcp_tokens::SaveTokenRequest {
-                    server_id: updated.server_id.clone(),
-                    client_id: updated.client_id.clone(),
-                    client_secret: updated.client_secret.clone(),
-                    access_token: updated.access_token.clone(),
-                    refresh_token: updated.refresh_token.clone(),
-                    token_type: updated.token_type.clone(),
-                    scope: updated.scope.clone(),
-                    expires_at: updated.expires_at,
-                },
-            )
-            .await
-            {
-                warn!("persisting the refreshed OAuth token failed: {error:#}");
-            }
-            updated
-        }
-        Err(error) => {
-            // Keep the stored row (refresh may be a transient failure) and
-            // let the connect decide with the old access token.
-            warn!("OAuth token refresh failed, connecting with the stored token: {error:#}");
-            token
-        }
-    }
-}
-
-/// Best-effort connect-time catalog fetch for prompts/resources: bounded by
-/// [`CONNECT_TIMEOUT`], and any failure (unsupported capability, transport
-/// error, timeout) is logged and turned into an EMPTY catalog — it must never
-/// fail the connection itself.
-async fn fetch_catalog<T>(
-    what: &'static str,
-    fetch: impl std::future::Future<Output = anyhow::Result<Vec<T>>>,
-) -> Vec<T> {
-    match tokio::time::timeout(CONNECT_TIMEOUT, fetch).await {
-        Ok(Ok(entries)) => entries,
-        Ok(Err(e)) => {
-            // Most common shape: the server declares no such capability and
-            // answers with a JSON-RPC error — debug, not warn, so logs stay
-            // quiet for the tools-only majority.
-            tracing::debug!("{what} failed at connect time (kept empty): {e:#}");
-            Vec::new()
-        }
-        Err(_) => {
-            warn!("{what} timed out after {CONNECT_TIMEOUT:?} (kept empty)");
-            Vec::new()
-        }
-    }
-}
-
-fn failed(error: String) -> (ServerStatus, Option<Arc<dyn McpConnection>>, ServerCatalog) {
-    (
-        ServerStatus::Failed { error },
-        None,
-        ServerCatalog::default(),
-    )
-}
-
-/// `[mcp:{server}] {description}` for the LLM, capped at
-/// [`MAX_DESCRIPTION_CHARS`] chars plus an ellipsis. A missing (or blank)
-/// description gets a placeholder so the tool never advertises nothing.
-fn tool_description(server: &str, description: Option<&str>) -> String {
-    let body = description
-        .filter(|d| !d.trim().is_empty())
-        .unwrap_or(NO_DESCRIPTION);
-    let full = format!("[mcp:{server}] {body}");
-    if full.chars().count() <= MAX_DESCRIPTION_CHARS {
-        full
-    } else {
-        let cut: String = full.chars().take(MAX_DESCRIPTION_CHARS).collect();
-        format!("{cut}…")
-    }
-}
-
-/// Model-visible content of one call result: the joined text blocks, or —
-/// when the server sent no text — `structuredContent` rendered as pretty
-/// JSON.
-fn result_content(result: &McpCallResult) -> String {
-    if !result.text.is_empty() {
-        result.text.clone()
-    } else if let Some(structured) = &result.structured_json {
-        serde_json::to_string_pretty(structured).unwrap_or_else(|_| structured.to_string())
-    } else {
-        NO_CONTENT.to_string()
-    }
-}
-
-/// One MCP tool behind the [`AgentTool`] trait. The LLM addresses it by the
-/// deduplicated exposed name; `execute` dispatches over `connection` under
-/// the original server-side name, bounded by `timeout`.
-pub struct McpTool {
-    exposed_name: String,
-    original_name: String,
-    server_name: String,
-    connection: Arc<dyn McpConnection>,
-    timeout: Duration,
-    description: String,
-    input_schema: Value,
-}
-
-impl McpTool {
-    pub fn new(
-        exposed_name: String,
-        info: McpToolInfo,
-        server_name: String,
-        connection: Arc<dyn McpConnection>,
-        timeout: Duration,
-    ) -> Self {
-        let description = tool_description(&server_name, info.description.as_deref());
-        Self {
-            exposed_name,
-            original_name: info.name,
-            server_name,
-            connection,
-            timeout,
-            description,
-            input_schema: info.input_schema,
-        }
-    }
-}
-
-#[async_trait]
-impl AgentTool for McpTool {
-    fn name(&self) -> &str {
-        &self.exposed_name
-    }
-
-    fn description(&self) -> &str {
-        &self.description
-    }
-
-    fn input_schema(&self) -> serde_json::Value {
-        self.input_schema.clone()
-    }
-
-    fn title(&self, _args: &serde_json::Value) -> String {
-        format!("{} / {}", self.server_name, self.original_name)
-    }
-
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: &ToolContext,
-    ) -> anyhow::Result<ToolOutput> {
-        // Never `Err`: a dead or slow server becomes an error ToolOutput so
-        // the agent loop keeps running and the model can react to the text.
-        // Timeout, cancellation and transport errors name the server and the
-        // tool so the user (and the model) can locate the misbehaving party.
-        let result = tokio::select! {
-            result = self.connection.call_tool(&self.original_name, &args) => result,
-            _ = tokio::time::sleep(self.timeout) => {
-                return Ok(ToolOutput::error(format!(
-                    "MCP tool error: tool `{}` on MCP server `{}` timed out after {:?}",
-                    self.original_name, self.server_name, self.timeout
-                )));
-            }
-            // The run was cancelled: bail out now instead of letting the call
-            // run to its timeout. The shared connection is NOT shut down — it
-            // is keyed by server id and outlives this run — and dropping the
-            // request future simply makes rmcp discard the eventual response.
-            // Sending a JSON-RPC cancelled notification is deliberately out
-            // of scope here.
-            _ = ctx.cancel_token().cancelled() => {
-                return Ok(ToolOutput::error(format!(
-                    "MCP tool error: tool `{}` on MCP server `{}` was cancelled by the user",
-                    self.original_name, self.server_name
-                )));
-            }
-        };
-        let result = match result {
-            Ok(result) => result,
-            Err(e) => {
-                return Ok(ToolOutput::error(format!(
-                    "MCP tool error: calling `{}` on MCP server `{}` failed: {e:#}",
-                    self.original_name, self.server_name
-                )));
-            }
-        };
-
-        // Reuse the shared output budget (head+tail truncation) so a server
-        // dumping megabytes cannot flood the LLM context. Images bypass the
-        // text budget but are capped separately (count + per-image size);
-        // dropped ones are counted in details so the UI (and the log) can
-        // tell something was withheld.
-        let content = truncate_middle(&result_content(&result), MAX_TOOL_OUTPUT_BYTES);
-        let mut images = Vec::new();
-        let mut dropped_images = 0usize;
-        for image in &result.images {
-            if images.len() >= MAX_RESULT_IMAGES || image.data.len() > MAX_IMAGE_BASE64_CHARS {
-                dropped_images += 1;
-                continue;
-            }
-            images.push(ToolImage {
-                mime_type: image.mime_type.clone(),
-                data: image.data.clone(),
-            });
-        }
-        if dropped_images > 0 {
-            warn!(
-                server = %self.server_name,
-                tool = %self.original_name,
-                dropped = dropped_images,
-                "dropped MCP result images over the count/size budget"
-            );
-        }
-        let mut details = json!({
-            "server": self.server_name,
-            "tool": self.original_name,
-            "structured": result.structured_json,
-        });
-        if dropped_images > 0 {
-            details["images_dropped"] = json!(dropped_images);
-        }
-        if result.is_error {
-            Ok(ToolOutput::error_with_details(content, details).with_images(images))
-        } else {
-            Ok(ToolOutput::success_with_details(content, details).with_images(images))
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -1241,8 +786,21 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::AtomicUsize;
 
+    use async_trait::async_trait;
+    use oct_mcp::{McpCallResult, ToolListChanged};
     use serde_json::json;
     use tokio_util::sync::CancellationToken;
+
+    use crate::mcp::catalog::TOOL_LIST_REFRESH_DEBOUNCE;
+    use crate::mcp::tool::MAX_DESCRIPTION_CHARS;
+    use crate::mcp::tool::MAX_IMAGE_BASE64_CHARS;
+    use crate::mcp::tool::MAX_RESULT_IMAGES;
+    use crate::mcp::tool::NO_CONTENT;
+    use crate::mcp::tool::tool_description;
+    use crate::mcp::tool::NO_DESCRIPTION;
+    use crate::mcp::tool::McpTool;
+    use crate::tools::truncate::MAX_TOOL_OUTPUT_BYTES;
+    use crate::tools::{ToolContext, ToolImage, ToolOutput};
 
     /// Minimal scripted connection for unit tests (the richer
     /// tests/support version is not visible from inside the crate).
@@ -2156,6 +1714,172 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
+    // Reconcile concurrency: per-server gates + invalidation epochs
+    // ------------------------------------------------------------------
+
+    fn connected_outcome(tools: Vec<McpToolInfo>) -> ConnectOutcome {
+        let tool_count = tools.len();
+        (
+            ServerStatus::Connected { tool_count },
+            Some(FakeConn::ok("x")),
+            ServerCatalog {
+                tools,
+                prompts: Vec::new(),
+                resources: Vec::new(),
+            },
+        )
+    }
+
+    /// Regression (P2「MCP reconcile 按-server 合并」): with the old global
+    /// reconcile lock, project B's ensure queued behind project A's slowest
+    /// server's handshake. Now a blocked connect of one server only pins its
+    /// own gate — an ensure touching other servers completes.
+    #[tokio::test]
+    async fn slow_server_does_not_queue_another_projects_ensure() {
+        let pool = test_pool().await;
+        let p1 = create_project_row(&pool, "p1-project").await;
+        // slow: scoped to p1; fast: global (in scope for both projects).
+        let slow = create_scoped_row(&pool, "slow", "cmd", Some(&p1.id)).await;
+        let fast = create_row(&pool, "fast", "cmd").await;
+
+        let manager = Arc::new(McpManager::default());
+        let release = Arc::new(tokio::sync::Notify::new());
+        {
+            let release = release.clone();
+            manager.set_connector_for_test(move |_pool, row| {
+                let release = release.clone();
+                Box::pin(async move {
+                    if row.name == "slow" {
+                        release.notified().await;
+                    }
+                    connected_outcome(Vec::new())
+                })
+            });
+        }
+
+        let slow_manager = manager.clone();
+        let slow_pool = pool.clone();
+        let blocked = tokio::spawn(async move {
+            slow_manager.ensure_connections(&slow_pool, Some(&p1.id)).await
+        });
+        // Let p1's ensure enter the slow handshake (and connect `fast`).
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(matches!(
+            manager.status_of(&fast.id),
+            Some(ServerStatus::Connected { .. })
+        ));
+
+        // p2's ensure touches only `fast` (already connected, no work) and
+        // must return promptly — it does NOT queue behind `slow`.
+        let p2 = create_project_row(&pool, "p2-project").await;
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            manager.ensure_connections(&pool, Some(&p2.id)),
+        )
+        .await
+        .expect("p2's ensure completes while p1's slow server is blocked");
+
+        release.notify_waiters();
+        blocked.await.expect("blocked ensure finishes");
+        assert!(matches!(
+            manager.status_of(&slow.id),
+            Some(ServerStatus::Connected { .. })
+        ));
+    }
+
+    /// Two concurrent reconciles that decide the same server needs
+    /// connecting share ONE handshake: the second waits on the server's
+    /// gate, re-checks, and finds the first's entry already in place.
+    #[tokio::test]
+    async fn concurrent_ensures_share_one_handshake_per_server() {
+        let pool = test_pool().await;
+        let row = create_row(&pool, "once", "cmd").await;
+
+        let manager = Arc::new(McpManager::default());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let handshakes = Arc::new(AtomicUsize::new(0));
+        {
+            let release = release.clone();
+            let handshakes = handshakes.clone();
+            manager.set_connector_for_test(move |_pool, _row| {
+                let release = release.clone();
+                let handshakes = handshakes.clone();
+                Box::pin(async move {
+                    handshakes.fetch_add(1, Ordering::SeqCst);
+                    release.notified().await;
+                    connected_outcome(Vec::new())
+                })
+            });
+        }
+
+        let first = tokio::spawn({
+            let manager = manager.clone();
+            let pool = pool.clone();
+            async move { manager.ensure_connections(&pool, None).await }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let second = tokio::spawn({
+            let manager = manager.clone();
+            let pool = pool.clone();
+            async move { manager.ensure_connections(&pool, None).await }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Still exactly one in-flight handshake; the second ensure is parked
+        // on the server's gate, not on a second connect.
+        assert_eq!(handshakes.load(Ordering::SeqCst), 1);
+
+        release.notify_waiters();
+        first.await.expect("first ensure");
+        second.await.expect("second ensure");
+        assert_eq!(handshakes.load(Ordering::SeqCst), 1, "one handshake total");
+        assert!(matches!(
+            manager.status_of(&row.id),
+            Some(ServerStatus::Connected { .. })
+        ));
+    }
+
+    /// An OAuth invalidation that lands while a handshake is in flight must
+    /// not be overwritten by the (stale-credential) result arriving late:
+    /// the connect's epoch ticket no longer matches, so the entry never
+    /// re-enters the map.
+    #[tokio::test]
+    async fn invalidate_during_inflight_connect_drops_the_late_result() {
+        let pool = test_pool().await;
+        let row = create_row(&pool, "stale-token", "cmd").await;
+
+        let manager = Arc::new(McpManager::default());
+        let release = Arc::new(tokio::sync::Notify::new());
+        {
+            let release = release.clone();
+            manager.set_connector_for_test(move |_pool, _row| {
+                let release = release.clone();
+                Box::pin(async move {
+                    release.notified().await;
+                    connected_outcome(vec![info("a", None)])
+                })
+            });
+        }
+
+        let connecting = tokio::spawn({
+            let manager = manager.clone();
+            let pool = pool.clone();
+            async move { manager.ensure_connections(&pool, None).await }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        // The (hypothetical) login/logout lands mid-handshake: bumps the
+        // epoch and removes whatever entry exists — none yet — then returns
+        // without waiting out the handshake.
+        manager.invalidate(&row.id).await;
+        release.notify_waiters();
+        connecting.await.expect("ensure finishes");
+
+        assert!(
+            manager.status_of(&row.id).is_none(),
+            "late connect result must not re-enter the map after invalidation"
+        );
+    }
+
+    // ------------------------------------------------------------------
     // tools/list_changed refresh loop (debounce, generation guard)
     // ------------------------------------------------------------------
 
@@ -2315,7 +2039,7 @@ mod tests {
         // The entry is disconnected (reconcile's removal path) and the same
         // id re-established under a fresh generation with a DIFFERENT
         // connection — the shape of a fingerprint-change reconnect.
-        manager.disconnect("id-1").await;
+        manager.remove_entry_for_test("id-1").await;
         let fresh = NotifyFake::new(vec![info("fresh", None)]);
         manager.insert_connection_for_test(
             "id-1",

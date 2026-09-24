@@ -1,5 +1,6 @@
 pub mod chat;
 pub mod conversations;
+pub mod dto;
 pub mod error;
 pub mod files;
 pub mod git;
@@ -71,10 +72,16 @@ pub struct AppState {
         chat::RunningStatus,
         chat::CompactQuery,
         chat::CompactResult,
+        error::ErrorBody,
+        dto::MessageDto,
+        dto::MessagePart,
+        dto::MessageDetails,
+        dto::KnownDetailsKind,
+        dto::CompactionMetadata,
+        dto::ToolResultImage,
         crate::agent::CompactionTrigger,
         crate::agent::MicrocompactTrigger,
         crate::agent::MicrocompactReplacement,
-        crate::db::messages::MessageContent,
         files::FileContent,
         files::FileEntry,
         files::FileEntryKind,

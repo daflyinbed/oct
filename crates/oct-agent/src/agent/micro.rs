@@ -39,6 +39,7 @@ use oct_llm_provider::core::{ContentPart, Message, ToolResult, ToolSpec};
 
 use super::compact;
 use super::{AgentEvent, EventHub, MicrocompactReplacement, MicrocompactTrigger};
+use crate::context::ContextState;
 use crate::db::messages::{self as msg_db, CowSwap};
 
 /// Waterline: estimated context at or above this fraction of the window
@@ -74,7 +75,8 @@ pub const CLEARED_DETAILS_KIND: &str = "microcompact_cleared";
 
 /// One selected target of a clear batch.
 pub struct MicroTarget {
-    /// Index into the loop's `full_messages` (system message included).
+    /// Index into the conversation entries (system prompt NOT included —
+    /// the coordinates [`ContextState::conversation`] uses).
     pub index: usize,
     pub call_id: String,
     /// estimate(original) − estimate(placeholder copy).
@@ -82,20 +84,17 @@ pub struct MicroTarget {
 }
 
 /// Pick the clearable tool results (see the module doc for the protection
-/// rules). `messages` is the loop's `full_messages` — index 0 is the system
-/// prompt and is ignored. Tool rows carry a single ToolResult part in
-/// practice; a multi-part row is only cleared when EVERY result part is a
-/// non-error non-placeholder (the savings then come from the whole row).
+/// rules). `messages` is the conversation WITHOUT the system prompt; the
+/// returned indices address the same slice. Tool rows carry a single
+/// ToolResult part in practice; a multi-part row is only cleared when EVERY
+/// result part is a non-error non-placeholder (the savings then come from
+/// the whole row).
 pub fn select_targets(messages: &[Message]) -> Vec<MicroTarget> {
-    if messages.len() < 2 {
-        return Vec::new();
-    }
-    let conversation = &messages[1..];
     // The trailing round (results the model just consumed) is untouchable.
-    let round_start = compact::last_round_start(conversation);
+    let round_start = compact::last_round_start(messages);
 
     let mut candidates: Vec<usize> = Vec::new();
-    for (i, msg) in conversation.iter().enumerate() {
+    for (i, msg) in messages.iter().enumerate() {
         if i >= round_start {
             continue;
         }
@@ -119,12 +118,11 @@ pub fn select_targets(messages: &[Message]) -> Vec<MicroTarget> {
     let targets: Vec<MicroTarget> = selected
         .iter()
         .filter_map(|&i| {
-            let msg = &conversation[i];
+            let msg = &messages[i];
             let call_id = first_call_id(msg)?;
             let copy = cleared_copy(msg);
             Some(MicroTarget {
-                // +1: back to full_messages coordinates.
-                index: i + 1,
+                index: i,
                 call_id,
                 savings: compact::estimate_message(msg)
                     .saturating_sub(compact::estimate_message(&copy)),
@@ -198,19 +196,24 @@ pub enum MicroAttempt {
     Failed,
 }
 
-/// Run one microcompaction: select, persist the COW batch, rewrite
-/// `full_messages` in place, adjust the in-memory anchor, publish the event.
-#[allow(clippy::too_many_arguments)]
+/// Run one microcompaction: select, persist the COW batch, apply the clears
+/// to the in-run context state, publish the event.
 pub async fn run_microcompaction(
     pool: &SqlitePool,
     conv_id: &str,
     hub: &EventHub,
     trigger: MicrocompactTrigger,
-    full_messages: &mut [Message],
-    usage_anchor: &mut Option<(u64, usize)>,
+    context: &mut ContextState,
     tool_specs: &[ToolSpec],
 ) -> MicroAttempt {
-    let targets = select_targets(full_messages);
+    // Selection works on plain messages (conversation coordinates — no
+    // system prompt, same indices as the context entries).
+    let conversation: Vec<Message> = context
+        .conversation()
+        .iter()
+        .map(|e| e.message.clone())
+        .collect();
+    let targets = select_targets(&conversation);
     if targets.is_empty() {
         return MicroAttempt::Nothing;
     }
@@ -219,7 +222,7 @@ pub async fn run_microcompaction(
         .iter()
         .map(|t| CowSwap {
             call_id: t.call_id.clone(),
-            copy: cleared_copy(&full_messages[t.index]),
+            copy: cleared_copy(&conversation[t.index]),
             details: Some(serde_json::json!({ "kind": CLEARED_DETAILS_KIND })),
         })
         .collect();
@@ -243,34 +246,19 @@ pub async fn run_microcompaction(
     // or the model would see content the DB never swapped.
     let applied_ids: std::collections::HashSet<&str> =
         applied.iter().map(|a| a.call_id.as_str()).collect();
-    let landed: Vec<&MicroTarget> = targets
+    let landed: Vec<(usize, u64)> = targets
         .iter()
         .filter(|t| applied_ids.contains(t.call_id.as_str()))
+        .map(|t| (t.index, t.savings))
         .collect();
 
-    // Anchor adjustment: cleared results that sat BEFORE the anchor were
-    // counted inside its provider tokens — subtract their savings. Results
-    // after the anchor only shrink the local increment, which the rewrite
-    // below handles by itself.
-    if let Some((tokens, anchor_idx)) = usage_anchor.as_mut() {
-        for t in &landed {
-            if t.index < *anchor_idx {
-                *tokens = tokens.saturating_sub(t.savings);
-            }
-        }
-    }
+    // Anchor deduction (pre-anchor clears) and the placeholder rewrite are
+    // the context state's job — same rule `load_llm_view` recomputes from
+    // persisted state on every load.
+    context.apply_clears(&landed, PLACEHOLDER_CONTENT);
 
-    for t in &landed {
-        for part in &mut full_messages[t.index].parts {
-            if let ContentPart::ToolResult(tr) = part {
-                tr.content = Value::String(PLACEHOLDER_CONTENT.into());
-                tr.images.clear();
-            }
-        }
-    }
-
-    let est_tokens_saved: u64 = landed.iter().map(|t| t.savings).sum();
-    let est_after = compact::estimate_context(full_messages, tool_specs, *usage_anchor);
+    let est_tokens_saved: u64 = landed.iter().map(|(_, s)| s).sum();
+    let est_after = context.estimate(tool_specs);
 
     hub.publish(AgentEvent::Microcompacted {
         triggered_by: trigger,
@@ -315,11 +303,11 @@ mod tests {
         }
     }
 
-    /// [system, user, (assistant, tool) × n, user] — every tool result is a
+    /// [user, (assistant, tool) × n, user] — every tool result is a
     /// candidate except the trailing round's and the newest few before it.
+    /// Conversation coordinates: no system prompt.
     fn history_with_results(n: usize, text: &str) -> Vec<Message> {
-        let mut msgs = vec![Message::text(Role::System, "sys")];
-        msgs.push(Message::text(Role::User, "go"));
+        let mut msgs = vec![Message::text(Role::User, "go")];
         for i in 0..n {
             msgs.push(assistant_with_call(&format!("c{i}")));
             msgs.push(tool_result_msg(&format!("c{i}"), text));
@@ -359,7 +347,7 @@ mod tests {
 
     #[test]
     fn selection_skips_errors_placeholders_and_tiny_batches() {
-        let mut msgs = vec![Message::text(Role::System, "sys")];
+        let mut msgs = Vec::new();
         for i in 0..8 {
             msgs.push(assistant_with_call(&format!("e{i}")));
             let mut m = tool_result_msg(&format!("e{i}"), &"x".repeat(4_000));

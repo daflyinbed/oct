@@ -1,5 +1,6 @@
 import { readonly, ref, watch } from "vue";
 import client from "@/api/client";
+import { apiErrorMessage } from "@/api/errors";
 import type { components } from "@/api/schema";
 
 type FileEntry = components["schemas"]["FileEntry"];
@@ -53,10 +54,7 @@ async function fetchEntries(
     },
   );
   if (err || !data) {
-    throw new Error(
-      (err as unknown as { error?: string } | undefined)?.error ??
-        "Failed to load directory",
-    );
+    throw new Error(apiErrorMessage(err, "Failed to load directory"));
   }
   return entriesToNodes(data);
 }

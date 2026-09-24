@@ -296,22 +296,15 @@ async function loadOriginal(): Promise<void> {
       originalFailed.value = true;
       return;
     }
-    // parts_json 是 serde 外标签形式：[{"ToolResult": { content: ... }}]
+    // 类型化 parts（与历史端点同一 DTO）；非 tool_result 的部分跳过。
     const chunks: string[] = [];
-    try {
-      const parts = JSON.parse(data.parts_json) as unknown[];
-      for (const raw of parts) {
-        const part = raw as Record<string, unknown>;
-        const result = part.ToolResult as Record<string, unknown> | undefined;
-        const content = result?.content;
-        chunks.push(
-          typeof content === "string"
-            ? content
-            : JSON.stringify(content ?? "", null, 2),
-        );
-      }
-    } catch {
-      chunks.push(data.parts_json);
+    for (const part of data.parts) {
+      if (part.type !== "tool_result") continue;
+      chunks.push(
+        typeof part.content === "string"
+          ? part.content
+          : JSON.stringify(part.content ?? "", null, 2),
+      );
     }
     originalText.value = chunks.join("\n");
   } catch {

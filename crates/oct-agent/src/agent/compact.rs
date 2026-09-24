@@ -1,10 +1,12 @@
 //! Context compaction: summarize old conversation history into a single
 //! marker message when the context window runs low.
 //!
-//! Trigger policy lives with the agent loop (a turn-top check before every
-//! LLM request); this module owns the pure pieces — token estimation,
-//! threshold/tail budgets, cut-point selection, summary-input serialization,
-//! the one-shot summary model call, and marker-message construction. The
+//! Trigger policy lives with the callers — the agent loop's turn-top check
+//! (before every LLM request) and the manual API endpoint; this module owns
+//! the pure pieces (token estimation, threshold/tail budgets, cut-point
+//! selection, summary-input serialization, the one-shot summary model call,
+//! marker-message construction) plus [`run_compaction`], the ONE shared
+//! transaction (generate → persist → rebuild) both entry points run. The
 //! shape follows the industry-standard design:
 //!
 //! * the estimate anchors on the provider's real reported usage and only
@@ -30,7 +32,16 @@ use oct_llm_provider::core::{ContentPart, GenerateOptions, Message, Role, ToolSp
 use oct_llm_provider::model::{ChatModel, ChatRequest};
 
 use super::{AgentEvent, CompactionTrigger, EventHub};
+use crate::context::ContextEntry;
 use crate::db::messages as msg_db;
+
+// Estimation lives in the neutral `context` module (the DB layer's COW anchor
+// deduction needs it too — db → agent::compact was a reverse dependency).
+// Re-exported here so existing call sites keep their paths.
+pub use crate::context::{
+    TOOL_IMAGE_ESTIMATE_TOKENS, estimate_context, estimate_message, estimate_messages,
+    estimate_str, estimate_tool_specs, tool_result_text,
+};
 
 /// Auto-compact when the estimated context reaches this fraction of the
 /// window. 85% leaves room for the summary call itself plus the response.
@@ -55,106 +66,6 @@ pub fn trigger_threshold(window: u32) -> u64 {
 /// A conversation whose compactable region is shorter than this isn't worth a
 /// summary call — guard for both auto and manual paths.
 pub const MIN_MESSAGES_BEFORE_CUT: usize = 6;
-
-// ======================================================================
-// Token estimation
-// ======================================================================
-
-/// Rough token estimate for a string: ASCII chars ÷ 4, non-ASCII chars × 1.
-/// Over-estimates CJK slightly (one char is often < 1 token), which errs on
-/// the safe side for a trigger that wants to fire early.
-pub fn estimate_str(s: &str) -> u64 {
-    let mut ascii = 0u64;
-    let mut non_ascii = 0u64;
-    for c in s.chars() {
-        if c.is_ascii() {
-            ascii += 1;
-        } else {
-            non_ascii += 1;
-        }
-    }
-    ascii / 4 + non_ascii
-}
-
-/// Per-message fixed overhead (role/framing tokens every provider charges).
-const PER_MESSAGE_OVERHEAD_TOKENS: u64 = 4;
-/// Per tool-call/result pairing overhead.
-const PER_TOOL_PART_OVERHEAD_TOKENS: u64 = 8;
-
-/// Flat per-image estimate for tool results carrying images (base64 MCP
-/// attachments). Base64 length ÷ 4 would wildly over-count (a 1 MB image is
-/// ~343k "tokens" by chars); the real cost of an image to a provider scales
-/// with its pixels, so a flat value in the oh-my-pi / ZCode ballpark is the
-/// honest heuristic.
-pub const TOOL_IMAGE_ESTIMATE_TOKENS: u64 = 1_200;
-
-pub fn estimate_message(msg: &Message) -> u64 {
-    PER_MESSAGE_OVERHEAD_TOKENS + msg.parts.iter().map(estimate_part).sum::<u64>()
-}
-
-fn estimate_part(part: &ContentPart) -> u64 {
-    match part {
-        ContentPart::Text(s) | ContentPart::Reasoning(s) => estimate_str(s),
-        // The loop never produces images; URL length is a harmless proxy.
-        ContentPart::ImageUrl { url } => 64 + estimate_str(url),
-        ContentPart::ToolCall(tc) => {
-            PER_TOOL_PART_OVERHEAD_TOKENS + estimate_str(&tc.name) + estimate_str(&tc.arguments)
-        }
-        ContentPart::ToolResult(tr) => {
-            PER_TOOL_PART_OVERHEAD_TOKENS
-                + estimate_str(&tool_result_text(&tr.content))
-                + tr.images.len() as u64 * TOOL_IMAGE_ESTIMATE_TOKENS
-        }
-    }
-}
-
-pub fn estimate_messages(messages: &[Message]) -> u64 {
-    messages.iter().map(estimate_message).sum()
-}
-
-/// Tool schemas ride along on every request but are invisible to
-/// message-level estimation — needed only on the no-anchor path (see
-/// [`estimate_context`]).
-pub fn estimate_tool_specs(specs: &[ToolSpec]) -> u64 {
-    specs
-        .iter()
-        .map(|s| {
-            16 + estimate_str(&s.name)
-                + s.description.as_deref().map(estimate_str).unwrap_or(0)
-                + estimate_str(&s.input_schema.to_string())
-        })
-        .sum()
-}
-
-/// Estimated context size of the NEXT request.
-///
-/// * With an anchor — the provider-reported `input + output` of the request
-///   that produced the anchor message — the estimate is anchor tokens plus a
-///   local estimate of everything appended after that message. The system
-///   prompt and tool schemas were already counted by the provider inside the
-///   anchor's input tokens and must NOT be added again.
-/// * Without an anchor (nothing in the view has usage yet, e.g. right after a
-///   compaction) the full local estimate must explicitly include the system
-///   prompt and tool schemas, or it would systematically under-count.
-pub fn estimate_context(
-    messages: &[Message],
-    tool_specs: &[ToolSpec],
-    anchor: Option<(u64, usize)>,
-) -> u64 {
-    match anchor {
-        Some((tokens, idx)) if idx < messages.len() => {
-            tokens + estimate_messages(&messages[idx + 1..])
-        }
-        _ => estimate_messages(messages) + estimate_tool_specs(tool_specs),
-    }
-}
-
-pub(crate) fn tool_result_text(content: &Value) -> String {
-    match content {
-        Value::String(s) => s.clone(),
-        other => other.to_string(),
-    }
-}
 
 // ======================================================================
 // Cut-point selection
@@ -420,6 +331,178 @@ pub fn marker_details(
 }
 
 // ======================================================================
+// Compaction service (the shared transaction)
+// ======================================================================
+
+/// Inputs to one compaction transaction, shared by the manual API endpoint
+/// and the agent loop's auto trigger. `entries` is the conversation WITHOUT
+/// the system prompt, each message at its timeline ordering (the loop's
+/// [`crate::context::ContextState`] conversation, or the LlmView zipped the
+/// same way on the manual path); `est_before` is the caller's estimate of the
+/// current context — the same figure its trigger compared against the
+/// threshold.
+///
+/// Estimation口径, explicitly stated: `est_after` is always the
+/// REBUILT-context estimate on the basis the next request will be estimated
+/// with — `[system?, marker, tail]` plus tool specs, no anchor (no provider
+/// has ever seen the rebuilt history). The manual path passes neither system
+/// prompt nor tool specs (it runs outside a run and has neither at hand), so
+/// its figure covers messages only and is correspondingly lower — display
+/// figures, not accounting.
+pub struct CompactRequest<'a> {
+    pub entries: &'a [ContextEntry],
+    pub est_before: u64,
+    /// Present on the in-run path; included in the rebuilt estimate.
+    pub system_prompt: Option<&'a str>,
+    /// Present on the in-run path; included in the rebuilt estimate.
+    pub tool_specs: &'a [ToolSpec],
+    /// Context window, when known. Drives the tail budget; `None` (manual
+    /// with an unresolvable window) falls back to
+    /// [`DEFAULT_TAIL_KEEP_TOKENS`].
+    pub window: Option<u32>,
+    pub trigger: CompactionTrigger,
+    /// Event hub; when present the transaction publishes `Compacting`
+    /// (after the cut is found, before the summary call) and `Compacted`
+    /// (after the marker row landed). The manual endpoint passes `None`.
+    pub hub: Option<&'a EventHub>,
+    /// Cancellation; the summary call is selected against it. The manual
+    /// endpoint passes `None`.
+    pub cancel: Option<&'a CancellationToken>,
+}
+
+/// Typed result of one compaction transaction.
+pub struct CompactOutcome {
+    pub summary_message_id: String,
+    /// Cut index into the input `entries` (region is `..cut`, tail `cut..`).
+    pub cut: usize,
+    /// The rebuilt conversation entries — marker at the cut slot, tail rows
+    /// shifted +1 — ready for
+    /// [`crate::context::ContextState::apply_compaction`].
+    pub rebuilt: Vec<ContextEntry>,
+    pub est_before: u64,
+    pub est_after: u64,
+    pub summary: String,
+}
+
+pub enum CompactFailure {
+    /// No legal cut for the tail budget — too short, nothing worth
+    /// compacting.
+    Nothing,
+    /// The summary model call failed.
+    Summary(String),
+    /// Cancellation arrived mid-compaction.
+    Cancelled,
+    /// The marker row failed to persist (nothing half-written: the summary
+    /// is never stored outside the marker row's own insert).
+    Persist(String),
+}
+
+/// Run the one shared compaction transaction: pick the cut, summarize the
+/// region, persist the marker row INTO the timeline at the cut (between the
+/// summarized region and the tail — appending it at the end would place the
+/// tail before the marker and drop it from every future `load_llm_view`),
+/// and rebuild the entries to `[marker, tail+1]`. Callers own trigger
+/// policy, error mapping and re-entry guards.
+pub async fn run_compaction(
+    model: &dyn ChatModel,
+    pool: &sqlx::SqlitePool,
+    conv_id: &str,
+    req: CompactRequest<'_>,
+) -> Result<CompactOutcome, CompactFailure> {
+    let tail_keep = req
+        .window
+        .map(tail_keep_tokens)
+        .unwrap_or(DEFAULT_TAIL_KEEP_TOKENS);
+    // Selection works on plain messages; compaction is rare enough that the
+    // one-shot materialization beats threading entries through every pure
+    // helper.
+    let messages: Vec<Message> = req.entries.iter().map(|e| e.message.clone()).collect();
+    let Some(cut) = find_cut_point(&messages, tail_keep) else {
+        return Err(CompactFailure::Nothing);
+    };
+    let region = messages[..cut].to_vec();
+    // The DB ordering of the first tail message: the marker takes over this
+    // slot and the tail shifts up by one.
+    let cut_ordering = req.entries[cut].ordering;
+
+    if let Some(hub) = req.hub {
+        hub.publish(AgentEvent::Compacting {
+            triggered_by: req.trigger,
+        });
+    }
+
+    let summary = match req.cancel {
+        Some(cancel) => tokio::select! {
+            r = generate_summary(model, &region, req.window) => match r {
+                Ok(s) => s,
+                Err(e) => return Err(CompactFailure::Summary(e.to_string())),
+            },
+            _ = cancel.cancelled() => return Err(CompactFailure::Cancelled),
+        },
+        None => generate_summary(model, &region, req.window)
+            .await
+            .map_err(|e| CompactFailure::Summary(e.to_string()))?,
+    };
+    if req.cancel.is_some_and(|c| c.is_cancelled()) {
+        return Err(CompactFailure::Cancelled);
+    }
+
+    let marker = build_marker_message(&summary);
+    let rebuilt: Vec<ContextEntry> = std::iter::once(ContextEntry {
+        message: marker.clone(),
+        ordering: cut_ordering,
+    })
+    .chain(req.entries[cut..].iter().map(|e| ContextEntry {
+        message: e.message.clone(),
+        ordering: e.ordering + 1,
+    }))
+    .collect();
+    let est_after = crate::context::estimate_view(
+        &rebuilt,
+        req.system_prompt,
+        req.tool_specs,
+        None,
+    );
+
+    let details = marker_details(req.trigger, cut, req.est_before, est_after);
+    let stored = match msg_db::insert_message_at_ordering(
+        pool,
+        conv_id,
+        &marker,
+        None,
+        None,
+        Some(&details),
+        cut_ordering,
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(e) => return Err(CompactFailure::Persist(e.to_string())),
+    };
+
+    if let Some(hub) = req.hub {
+        hub.publish(AgentEvent::Compacted {
+            summary_message_id: stored.id.clone(),
+            triggered_by: req.trigger,
+            compacted_messages: cut as u32,
+            est_tokens_before: req.est_before,
+            est_tokens_after: est_after,
+            summary: summary.clone(),
+            context_window_tokens: req.window,
+        });
+    }
+
+    Ok(CompactOutcome {
+        summary_message_id: stored.id,
+        cut,
+        rebuilt,
+        est_before: req.est_before,
+        est_after,
+        summary,
+    })
+}
+
+// ======================================================================
 // In-run compaction (auto trigger)
 // ======================================================================
 
@@ -438,102 +521,55 @@ pub enum CompactAttempt {
     Cancelled,
 }
 
-/// Run one auto-compaction at a turn boundary: summarize `cut` messages,
-/// persist the marker row INTO the timeline at the cut (between the
-/// summarized region and the tail — appending it at the end would place the
-/// tail before the marker and drop it from every future `load_llm_view`), and
-/// rebuild `full_messages` to `[system, marker, tail]`. On success the usage
-/// anchor resets to `None` — no provider has ever seen the rebuilt history,
-/// so estimates fall back to the (schema-aware) local path until the next
-/// real usage arrives. `message_orderings` is the loop's ordering vector
-/// parallel to `full_messages`; it is rebuilt alongside it.
-#[allow(clippy::too_many_arguments)]
+/// Auto trigger wrapper around [`run_compaction`]: same window always, the
+/// run's system prompt and tool specs in the rebuilt estimate, the run's hub
+/// and cancellation token wired through. Loop-owned state lives on the
+/// [`ContextState`] the wrapper mutates (marker splice + anchor reset).
 pub async fn run_auto_compaction(
     model: &dyn ChatModel,
     pool: &sqlx::SqlitePool,
     conv_id: &str,
-    system_prompt: &str,
     hub: &EventHub,
     cancel: &CancellationToken,
     context_window: u32,
     tool_specs: &[ToolSpec],
-    full_messages: &mut Vec<Message>,
-    message_orderings: &mut Vec<i64>,
-    usage_anchor: &mut Option<(u64, usize)>,
+    context: &mut crate::context::ContextState,
     est_before: u64,
 ) -> CompactAttempt {
-    // full_messages[0] is the system prompt; compaction works on the rest.
-    let Some(cut) = find_cut_point(&full_messages[1..], tail_keep_tokens(context_window)) else {
-        return CompactAttempt::Nothing;
-    };
-    let region = full_messages[1..1 + cut].to_vec();
-    let tail = full_messages[1 + cut..].to_vec();
-    // The DB ordering of the first tail message: the marker takes over this
-    // slot and the tail shifts up by one.
-    let cut_ordering = message_orderings[1 + cut];
-
-    hub.publish(AgentEvent::Compacting {
-        triggered_by: CompactionTrigger::Auto,
-    });
-
-    let summary = tokio::select! {
-        r = generate_summary(model, &region, Some(context_window)) => match r {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!("auto compaction summary failed: {e}");
-                return CompactAttempt::Failed;
-            }
-        },
-        _ = cancel.cancelled() => return CompactAttempt::Cancelled,
-    };
-    if cancel.is_cancelled() {
-        return CompactAttempt::Cancelled;
-    }
-
-    let marker = build_marker_message(&summary);
-    let rebuilt: Vec<Message> = std::iter::once(Message::text(Role::System, system_prompt))
-        .chain(std::iter::once(marker.clone()))
-        .chain(tail)
-        .collect();
-    let est_after = estimate_context(&rebuilt, tool_specs, None);
-
-    let details = marker_details(CompactionTrigger::Auto, cut, est_before, est_after);
-    let stored = match msg_db::insert_message_at_ordering(
+    let outcome = match run_compaction(
+        model,
         pool,
         conv_id,
-        &marker,
-        None,
-        None,
-        Some(&details),
-        cut_ordering,
+        CompactRequest {
+            entries: context.conversation(),
+            est_before,
+            system_prompt: Some(context.system_prompt()),
+            tool_specs,
+            window: Some(context_window),
+            trigger: CompactionTrigger::Auto,
+            hub: Some(hub),
+            cancel: Some(cancel),
+        },
     )
     .await
     {
-        Ok(s) => s,
-        Err(e) => {
+        Ok(outcome) => outcome,
+        Err(CompactFailure::Nothing) => return CompactAttempt::Nothing,
+        Err(CompactFailure::Cancelled) => return CompactAttempt::Cancelled,
+        Err(CompactFailure::Summary(e)) => {
+            tracing::warn!("auto compaction summary failed: {e}");
+            return CompactAttempt::Failed;
+        }
+        Err(CompactFailure::Persist(e)) => {
             tracing::warn!("auto compaction failed to persist marker row: {e}");
             return CompactAttempt::Failed;
         }
     };
 
-    *full_messages = rebuilt;
-    // The tail rows were shifted +1 in the DB; mirror that in the parallel
-    // ordering vector and splice the marker's ordering in after the sentinel.
-    let tail_orderings: Vec<i64> = message_orderings[1 + cut..].iter().map(|o| o + 1).collect();
-    message_orderings.truncate(1);
-    message_orderings.push(stored.ordering);
-    message_orderings.extend(tail_orderings);
-    *usage_anchor = None;
-    hub.publish(AgentEvent::Compacted {
-        summary_message_id: stored.id,
-        triggered_by: CompactionTrigger::Auto,
-        compacted_messages: cut as u32,
-        est_tokens_before: est_before,
-        est_tokens_after: est_after,
-        summary,
-        context_window_tokens: Some(context_window),
-    });
-    CompactAttempt::Done(est_after)
+    // Marker at the cut slot, tail shifted +1, anchor reset — the same
+    // mutations the DB transaction performed, applied to the in-run view.
+    context.apply_compaction(outcome.rebuilt);
+    CompactAttempt::Done(outcome.est_after)
 }
 
 #[cfg(test)]
@@ -588,7 +624,7 @@ mod tests {
         let msgs = [user("abcdabcd"), assistant_with_call("c1")];
         let est = estimate_messages(&msgs);
         // 2 messages → 2× overhead; text 8 ASCII → 2; tool call ~ name+args+8.
-        assert!(est >= 2 * PER_MESSAGE_OVERHEAD_TOKENS + 2);
+        assert!(est >= 2 * crate::context::PER_MESSAGE_OVERHEAD_TOKENS + 2);
     }
 
     #[test]

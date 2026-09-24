@@ -206,6 +206,35 @@ async fn openai_generate_maps_json_response_and_captures_request_shape() {
 
 // --- Anthropic -------------------------------------------------------------
 
+/// CRLF-framed events (plus one mixed `\r\n\n` separator) and a final event
+/// that never receives its blank line before EOF — the shared framing must
+/// deliver it as the EOF tail frame.
+#[tokio::test]
+async fn openai_stream_accepts_crlf_framing_and_eof_tail_frame() {
+    let raw = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"he\"}}]}\r\n\r\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"llo\"}}]}\r\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\r\n",
+    );
+    // One cut after the "data:" prefix of the second event.
+    let cut = raw.find("llo").unwrap() - 2;
+    let server = spawn_server(vec![MockResponse::sse_split(raw, &[cut])]).await;
+    let model = OpenAiCompatibleChatModel::new_with_api_key(
+        openai_config(server.url(), "OCT_TEST_OPENAI_KEY_UNUSED"),
+        "test-key".to_string(),
+        reqwest::Client::new(),
+    );
+
+    let events = collect(model.stream(chat_request()).await.unwrap()).await;
+
+    assert_eq!(text_of(&events), "hello");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Ok(StreamEvent::Finish(FinishReason::Stop))))
+    );
+}
+
 fn anthropic_model(
     base_url: String,
     api_key_env: &'static str,
@@ -318,6 +347,35 @@ async fn anthropic_stream_parses_tool_use_across_hostile_chunk_boundaries() {
     let body = captured[0].body_json();
     assert_eq!(body["model"], "claude-test");
     assert_eq!(body["stream"], true);
+}
+
+#[tokio::test]
+async fn anthropic_stream_accepts_crlf_framing_and_eof_tail_frame() {
+    let raw = concat!(
+        "event: content_block_delta\r\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"he\"}}\r\n\r\n",
+        "event: content_block_delta\r\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"llo\"}}\r\n\n",
+        "event: message_stop\r\n",
+        "data: {\"type\":\"message_stop\"}\r\n",
+    );
+    // One cut between the "event:" and "data:" lines of the second event.
+    let cut = raw.find("event: message_stop").unwrap() - 1;
+    let server = spawn_server(vec![MockResponse::sse_split(raw, &[cut])]).await;
+    let model = anthropic_model(
+        server.url(),
+        "OCT_TEST_ANTHROPIC_KEY_CRLF",
+        "sk-test-crlf",
+    );
+
+    let events = collect(model.stream(chat_request()).await.unwrap()).await;
+
+    assert_eq!(text_of(&events), "hello");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Ok(StreamEvent::Finish(FinishReason::Stop))))
+    );
 }
 
 #[tokio::test]

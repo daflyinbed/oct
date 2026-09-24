@@ -1,5 +1,6 @@
 import { readonly, ref, shallowReadonly } from "vue";
 import client from "@/api/client";
+import { apiErrorMessage } from "@/api/errors";
 import type { components } from "@/api/schema";
 
 type McpServerResponse = components["schemas"]["McpServerResponse"];
@@ -10,22 +11,28 @@ const servers = ref<McpServerResponse[]>([]);
 const loading = ref(false);
 const error = ref<string | null>(null);
 
-/** 后端错误体是 `{ error: string }`（AppError）；schema 未声明其形状，运行时取出。 */
+/** 集中归一化（api/errors.ts）：文案取后端 ErrorBody，分支走 code。 */
 function toErrorMessage(err: unknown, fallback: string): string {
-  const message = (err as { error?: unknown } | null | undefined)?.error;
-  return typeof message === "string" && message ? message : fallback;
+  return apiErrorMessage(err, fallback);
 }
 
 export function useMcpServers() {
   const fetchServers = async (projectId?: string) => {
     loading.value = true;
-    const { data } = await client.GET("/api/mcp/servers", {
-      params: projectId ? { query: { project_id: projectId } } : undefined,
-    });
-    if (data) {
-      servers.value = data;
+    try {
+      const { data } = await client.GET("/api/mcp/servers", {
+        params: projectId ? { query: { project_id: projectId } } : undefined,
+      });
+      if (data) {
+        servers.value = data;
+      }
+    } catch (error_) {
+      // 网络异常也走统一文案（openapi-fetch 网络失败会 reject 而非返回
+      // error 对象）；列表保持原样。
+      error.value = toErrorMessage(error_, "加载 MCP servers 失败");
+    } finally {
+      loading.value = false;
     }
-    loading.value = false;
   };
 
   /** 创建成功后把返回的行（status 为 not_connected）追加进本地列表。 */

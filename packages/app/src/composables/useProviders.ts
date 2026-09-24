@@ -13,21 +13,26 @@ const selectedModelId = ref<string | null>(null);
 export function useProviders() {
   const fetchProviders = async () => {
     loading.value = true;
-    const { data, error } = await client.GET("/api/providers");
-    if (!error && data) {
-      providers.value = data;
-      if (data.length > 0 && !selectedProviderId.value) {
-        const withKey = data.find((p) => p.api_key_set);
-        if (withKey) {
-          selectedProviderId.value = withKey.id;
-          const enabled = withKey.models.filter((m) => m.is_enabled);
-          if (enabled.length > 0) {
-            selectedModelId.value = enabled[0].model_id;
+    try {
+      const { data, error } = await client.GET("/api/providers");
+      if (!error && data) {
+        providers.value = data;
+        if (data.length > 0 && !selectedProviderId.value) {
+          const withKey = data.find((p) => p.api_key_set);
+          if (withKey) {
+            selectedProviderId.value = withKey.id;
+            const enabled = withKey.models.filter((m) => m.is_enabled);
+            if (enabled.length > 0) {
+              selectedModelId.value = enabled[0].model_id;
+            }
           }
         }
       }
+    } catch {
+      // 网络异常：保持既有列表（无独立的错误视图），loading 必须复位。
+    } finally {
+      loading.value = false;
     }
-    loading.value = false;
   };
 
   const updateApiKey = async (providerId: string, apiKey: string) => {

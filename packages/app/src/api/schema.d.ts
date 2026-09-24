@@ -90,7 +90,7 @@ export interface paths {
          *     the copy's membership slot in THIS conversation (the original itself no
          *     longer belongs to any timeline after the swap), so the endpoint neither
          *     leaks cross-conversation rows nor 404s on the original's missing
-         *     membership.
+         *     membership. Same typed contract as the history endpoint.
          */
         get: operations["get_original_message"];
         put?: never;
@@ -674,7 +674,7 @@ export interface components {
                 /**
                  * Format: int64
                  * @description Estimated context size of the NEXT request after the clear
-                 *     (schema-aware local path).
+                 *     (anchor-aware; same口径 as the compaction trigger's estimate).
                  */
                 est_context_tokens: number;
                 /**
@@ -747,6 +747,19 @@ export interface components {
             est_tokens_before: number;
             summary: string;
             summary_message_id: string;
+        };
+        /**
+         * @description Compaction marker metadata (mirrors what the `compacted` SSE event
+         *     carries, minus the summary text itself which lives in the parts).
+         */
+        CompactionMetadata: {
+            /** Format: int32 */
+            compacted_message_count: number;
+            /** Format: int64 */
+            estimated_tokens_after: number;
+            /** Format: int64 */
+            estimated_tokens_before: number;
+            triggered_by: components["schemas"]["CompactionTrigger"];
         };
         /**
          * @description What started a compaction.
@@ -835,6 +848,16 @@ export interface components {
             id: string;
             name: string;
         };
+        /**
+         * @description The error body of EVERY non-2xx API response. `code` is the stable
+         *     machine-readable cause ("not_found", "bad_request", "conflict",
+         *     "already_running", "nothing_to_resume", "bad_gateway", "internal") —
+         *     clients branch on it and show `error` verbatim.
+         */
+        ErrorBody: {
+            code: string;
+            error: string;
+        };
         FileContent: {
             /** @description UTF-8 text content, truncated to the preview size limit */
             content: string;
@@ -915,6 +938,11 @@ export interface components {
             root: string;
             upstream?: string | null;
         };
+        /**
+         * @description Metadata kinds the API understands structurally.
+         * @enum {string}
+         */
+        KnownDetailsKind: "compaction" | "microcompact_cleared" | "reasoning_duration";
         /** @description One declared argument of a cached `prompts/list` entry. */
         McpPromptArgumentSummary: {
             description?: string | null;
@@ -1017,16 +1045,92 @@ export interface components {
             name: string;
         };
         /**
-         * @description A pure content row (no membership fields) — the response shape of the
-         *     "view original" endpoint.
+         * @description The metadata of a message row as the API serves it: one object with a
+         *     discriminating `kind` for the kinds known structurally, and everything
+         *     the API does not model passed through verbatim in `extra` (tool-specific
+         *     UI hints such as titles or truncation flags — the same free-form object
+         *     the live `tool_result` event's `details` carries).
          */
-        MessageContent: {
+        MessageDetails: {
+            compaction?: null | components["schemas"]["CompactionMetadata"];
+            /** @description Unrecognized fields, verbatim. */
+            extra?: {
+                [key: string]: unknown;
+            };
+            kind?: null | components["schemas"]["KnownDetailsKind"];
+            /**
+             * Format: int64
+             * @description Present when `kind = "reasoning_duration"` (assistant rows).
+             */
+            reasoning_duration_ms?: number | null;
+        };
+        /**
+         * @description One message row of the messages API: the stored content parsed into
+         *     typed parts plus the row's identity, usage and membership-relevant
+         *     fields. `parts_json`/`details_json` never leave the backend.
+         */
+        MessageDto: {
             /** Format: date-time */
             created_at: string;
-            details_json?: string | null;
+            details?: null | components["schemas"]["MessageDetails"];
             id: string;
-            parts_json: string;
+            /** Format: int64 */
+            input_tokens?: number | null;
+            model_id?: string | null;
+            /**
+             * Format: int64
+             * @description Timeline slot within the conversation. `None` on original-content
+             *     responses (a superseded row no longer has a membership slot).
+             */
+            ordering?: number | null;
+            /** Format: int64 */
+            output_tokens?: number | null;
+            parts: components["schemas"]["MessagePart"][];
+            provider_id?: string | null;
+            /** Format: int64 */
+            reasoning_tokens?: number | null;
             role: string;
+            /**
+             * @description Copy-on-write back-pointer: names the original content row this
+             *     cleared copy superseded (exactly one hop).
+             */
+            supersedes_message_id?: string | null;
+        };
+        /** @description One message part of the messages API, tagged by `type`. */
+        MessagePart: {
+            text: string;
+            /** @enum {string} */
+            type: "text";
+        } | {
+            text: string;
+            /** @enum {string} */
+            type: "reasoning";
+        } | {
+            /** @enum {string} */
+            type: "image_url";
+            url: string;
+        } | {
+            /** @description JSON object text, exactly as the model produced it. */
+            arguments: string;
+            id: string;
+            name: string;
+            /** @enum {string} */
+            type: "tool_call";
+        } | {
+            call_id: string;
+            /**
+             * @description Model-visible payload: usually a string, JSON for non-string
+             *     contents.
+             */
+            content: unknown;
+            /**
+             * @description Base64 attachments passed through to the model as multimodal
+             *     tool-result content.
+             */
+            images?: components["schemas"]["ToolResultImage"][];
+            is_error: boolean;
+            /** @enum {string} */
+            type: "tool_result";
         };
         /**
          * @description One copy-on-write replacement from a microcompact batch: the tool result
@@ -1247,6 +1351,11 @@ export interface components {
             /** @description MIME type of the image, e.g. `image/png`. */
             mime_type: string;
         };
+        /** @description One base64 image attached to a tool result. */
+        ToolResultImage: {
+            data: string;
+            mime_type: string;
+        };
         UpdateConversationRequest: {
             title?: string | null;
         };
@@ -1438,13 +1547,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description List of messages */
+            /** @description List of messages (typed parts/details; raw parts_json/details_json never leave the backend) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["StoredMessage"][];
+                    "application/json": components["schemas"]["MessageDto"][];
                 };
             };
             /** @description Conversation not found */
@@ -1515,7 +1624,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MessageContent"];
+                    "application/json": components["schemas"]["MessageDto"];
                 };
             };
             /** @description Conversation not found, or the copy does not belong to it / supersedes nothing */

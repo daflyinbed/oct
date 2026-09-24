@@ -21,6 +21,8 @@ import http from "node:http";
 import type { components } from "../../src/api/schema";
 import type { AddressInfo, IncomingMessage, ServerResponse } from "node:http";
 
+type MessageDto = components["schemas"]["MessageDto"];
+
 // ---------------------------------------------------------------------------
 // 剧本类型(浏览器侧测试仅 type-import 本文件,不会引入 node:http)
 // ---------------------------------------------------------------------------
@@ -83,7 +85,7 @@ export interface Scenario {
   projects?: unknown[];
   /** 全部会话(按 project_id 过滤返回)。 */
   conversations?: unknown[];
-  /** GET /api/conversations/:id/messages 的返回体(StoredMessage[])。 */
+  /** GET /api/conversations/:id/messages 的返回体(MessageDto[])。 */
   messages?: Record<string, unknown[]>;
   /** GET /api/providers 的返回体(ProviderResponse[])。 */
   providers?: unknown[];
@@ -553,28 +555,25 @@ async function handleApi(
     const rows = (s.messages ??= {})[id] ?? (s.messages[id] = []);
     const compacted = rows.length;
     const summary = "E2E 压缩摘要：完成了登录修复并跑通测试";
-    const marker = {
+    const marker: MessageDto = {
       id: `m-compact-${++state.autoId}`,
-      conversation_id: id,
       role: "user",
-      parts_json: JSON.stringify([
+      parts: [
         {
-          Text: `[Context compaction] The earlier conversation history was compacted.\n\n<summary>\n${summary}\n</summary>\n\nContinue the task based on the summary above.`,
+          type: "text",
+          text: `[Context compaction] The earlier conversation history was compacted.\n\n<summary>\n${summary}\n</summary>\n\nContinue the task based on the summary above.`,
         },
-      ]),
-      details_json: JSON.stringify({
+      ],
+      details: {
         kind: "compaction",
-        triggered_by: "manual",
-        compacted_message_count: compacted,
-        estimated_tokens_before: 9000,
-        estimated_tokens_after: 800,
-      }),
+        compaction: {
+          triggered_by: "manual",
+          compacted_message_count: compacted,
+          estimated_tokens_before: 9000,
+          estimated_tokens_after: 800,
+        },
+      },
       ordering: compacted + 1,
-      provider_id: null,
-      model_id: null,
-      input_tokens: null,
-      output_tokens: null,
-      reasoning_tokens: null,
       created_at: nowIso(),
     };
     rows.push(marker);

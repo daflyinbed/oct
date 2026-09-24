@@ -8,7 +8,9 @@ import {
 } from "@/composables/useContextUsage";
 import type { components } from "@/api/schema";
 
-type StoredMessage = components["schemas"]["StoredMessage"];
+type ApiMessage = components["schemas"]["MessageDto"];
+type ApiMessagePart = components["schemas"]["MessagePart"];
+type ApiMessageDetails = components["schemas"]["MessageDetails"];
 type AgentEvent = components["schemas"]["AgentEvent"];
 type OutputStream = components["schemas"]["OutputStream"];
 
@@ -46,7 +48,7 @@ export interface ToolCallPart {
   liveOutput: { segments: readonly LiveOutputSegment[]; droppedChars: number };
   /** Final model-visible content (post-truncation), set by tool_result. */
   content: string | null;
-  /** Structured per-tool metadata, set by tool_result / history details_json. */
+  /** Structured per-tool metadata, set by tool_result / history details.extra. */
   details: Record<string, unknown> | null;
   isError: boolean;
   /**
@@ -74,7 +76,7 @@ export interface ReasoningPart {
 
 /**
  * 上下文压缩标记（compaction marker row）：一段可展开的摘要 + 元数据。
- * stored 路径来自 details_json kind=compaction 的 user 行；live 路径来自
+ * stored 路径来自 details kind=compaction 的 user 行；live 路径来自
  * compacted 事件（事件带全量 summary，无需回查）。
  */
 export interface CompactionPart {
@@ -149,29 +151,6 @@ const LIVE_OUTPUT_MAX_CHARS = 32_768;
 // History replay
 // ---------------------------------------------------------------------------
 
-interface StoredToolCallShape {
-  id: string;
-  name: string;
-  arguments: string;
-}
-
-interface StoredToolResultShape {
-  call_id: string;
-  content: unknown;
-  is_error: boolean;
-}
-
-/** parts_json uses serde's externally tagged representation: {"Text": "..."} etc. */
-function parseStoredParts(partsJson: string): Record<string, unknown>[] {
-  try {
-    const parts = JSON.parse(partsJson);
-    if (Array.isArray(parts)) return parts;
-  } catch {
-    // Legacy/invalid payload: surfaced as a single text part below.
-  }
-  return [{ Text: partsJson }];
-}
-
 /** Microcompact 占位符文案，与后端 `micro::PLACEHOLDER_CONTENT` 对齐。 */
 export const MICROCOMPACT_PLACEHOLDER = "[Old tool result content cleared]";
 
@@ -245,20 +224,15 @@ function pushText(msg: BuildableMessage, text: string) {
   }
 }
 
-function detailsFromJson(value: string | null): Record<string, unknown> | null {
-  if (!value) return null;
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function asNumberOrNull(value: unknown): number | null {
-  return typeof value === "number" ? value : null;
+/**
+ * 工具行的透传 metadata（DTO `details.extra`）：已知 kind 之外的键值——
+ * 与实时 tool_result 事件的 details 同一形状（标题、截断标记等）。
+ */
+function toolExtra(
+  details: ApiMessageDetails | null | undefined,
+): Record<string, unknown> | null {
+  const extra = details?.extra;
+  return extra && typeof extra === "object" ? extra : null;
 }
 
 /**
@@ -276,21 +250,22 @@ function summaryFromMarkerText(text: string): string {
 }
 
 /**
- * Build display messages from stored history. Tool messages are not rendered
- * as bubbles: their ToolResult parts fill the matching tool card (which may
- * live in an earlier assistant message), re-applying details_json so cards
- * re-render identically to the live stream. Orphan results (old data without
- * a matching card) become a minimal done card named "unknown".
+ * Build display messages from the typed history DTO. Tool messages are not
+ * rendered as bubbles: their tool_result parts fill the matching tool card
+ * (which may live in an earlier assistant message), re-applying the row's
+ * passthrough metadata so cards re-render identically to the live stream.
+ * Orphan results (old data without a matching card) become a minimal done
+ * card named "unknown".
  */
-function storedToDisplayList(stored: StoredMessage[]): DisplayMessage[] {
+function storedToDisplayList(stored: ApiMessage[]): DisplayMessage[] {
   const out: BuildableMessage[] = [];
   const cardsByCallId = new Map<string, ToolCallPart>();
   let lastAssistant: BuildableMessage | null = null;
 
   const fillCard = (
     card: ToolCallPart,
-    result: StoredToolResultShape,
-    details: Record<string, unknown> | null,
+    result: Extract<ApiMessagePart, { type: "tool_result" }>,
+    details: ApiMessageDetails | null | undefined,
     rowId: string,
   ) => {
     card.status = "done";
@@ -299,10 +274,11 @@ function storedToDisplayList(stored: StoredMessage[]): DisplayMessage[] {
         ? result.content
         : JSON.stringify(result.content, null, 2);
     card.isError = result.is_error;
-    if (!card.title && typeof details?.title === "string") {
-      card.title = details.title;
+    const extra = toolExtra(details);
+    if (!card.title && typeof extra?.title === "string") {
+      card.title = extra.title;
     }
-    card.details = details;
+    card.details = extra;
     // Microcompact 副本行（details kind 标记）：卡片折叠为已清除态；行 id
     // 即副本 id，供「查看原文」回查。
     if (details?.kind === "microcompact_cleared") {
@@ -313,14 +289,14 @@ function storedToDisplayList(stored: StoredMessage[]): DisplayMessage[] {
 
   for (const m of stored) {
     if (m.role === "user") {
-      // 压缩标记行：details_json kind=compaction 的 user 行不渲染成气泡，
-      // 而是独立的全宽分隔条（可展开摘要）。
-      const details = detailsFromJson(m.details_json ?? null);
-      if (details?.kind === "compaction") {
+      // 压缩标记行（details kind=compaction）不渲染成气泡，而是独立的
+      // 全宽分隔条（可展开摘要）。
+      if (m.details?.kind === "compaction") {
         let text = "";
-        for (const raw of parseStoredParts(m.parts_json)) {
-          if (typeof raw.Text === "string") text += raw.Text;
+        for (const part of m.parts) {
+          if (part.type === "text") text += part.text;
         }
+        const compaction = m.details.compaction;
         out.push({
           id: m.id,
           role: "compaction",
@@ -329,13 +305,10 @@ function storedToDisplayList(stored: StoredMessage[]): DisplayMessage[] {
               kind: "compaction",
               summary: summaryFromMarkerText(text),
               triggeredBy:
-                details.triggered_by === "manual" ? "manual" : "auto",
-              compactedMessages:
-                typeof details.compacted_message_count === "number"
-                  ? details.compacted_message_count
-                  : 0,
-              estTokensBefore: asNumberOrNull(details.estimated_tokens_before),
-              estTokensAfter: asNumberOrNull(details.estimated_tokens_after),
+                compaction?.triggered_by === "manual" ? "manual" : "auto",
+              compactedMessages: compaction?.compacted_message_count ?? 0,
+              estTokensBefore: compaction?.estimated_tokens_before ?? null,
+              estTokensAfter: compaction?.estimated_tokens_after ?? null,
             },
           ],
         });
@@ -343,8 +316,8 @@ function storedToDisplayList(stored: StoredMessage[]): DisplayMessage[] {
         continue;
       }
       const msg: BuildableMessage = { id: m.id, role: "user", parts: [] };
-      for (const raw of parseStoredParts(m.parts_json)) {
-        if (typeof raw.Text === "string") pushText(msg, raw.Text);
+      for (const part of m.parts) {
+        if (part.type === "text") pushText(msg, part.text);
       }
       out.push(msg);
       lastAssistant = null;
@@ -353,35 +326,29 @@ function storedToDisplayList(stored: StoredMessage[]): DisplayMessage[] {
 
     if (m.role === "assistant") {
       const msg: BuildableMessage = { id: m.id, role: "assistant", parts: [] };
-      // Thinking duration is UI metadata persisted alongside the message
-      // (details_json), not a message part.
-      const details = detailsFromJson(m.details_json ?? null);
-      const storedDurationMs =
-        typeof details?.reasoning_duration_ms === "number"
-          ? details.reasoning_duration_ms
-          : null;
-      for (const raw of parseStoredParts(m.parts_json)) {
-        if (typeof raw.Text === "string") {
-          pushText(msg, raw.Text);
-        } else if (typeof raw.Reasoning === "string") {
+      // Thinking duration is UI metadata (DTO details), not a message part.
+      const storedDurationMs = m.details?.reasoning_duration_ms ?? null;
+      for (const part of m.parts) {
+        if (part.type === "text") {
+          pushText(msg, part.text);
+        } else if (part.type === "reasoning") {
           msg.parts.push({
             kind: "reasoning",
-            text: raw.Reasoning,
+            text: part.text,
             startedAt: null,
             durationMs: storedDurationMs,
             ended: true,
           });
-        } else if (raw.ToolCall && typeof raw.ToolCall === "object") {
-          const call = raw.ToolCall as StoredToolCallShape;
-          const card = newToolCard(call.id, call.name);
-          card.arguments = call.arguments ?? "";
+        } else if (part.type === "tool_call") {
+          const card = newToolCard(part.id, part.name);
+          card.arguments = part.arguments ?? "";
           // Stored calls have finished executing; the matching tool message
           // (if any) fills in content/details below.
           card.status = "done";
           msg.parts.push(card);
           cardsByCallId.set(card.callId, card);
         }
-        // ImageUrl parts are not displayed (no UI for them).
+        // image_url parts are not displayed (no UI for them).
       }
       out.push(msg);
       lastAssistant = msg;
@@ -389,13 +356,11 @@ function storedToDisplayList(stored: StoredMessage[]): DisplayMessage[] {
     }
 
     if (m.role === "tool") {
-      const details = detailsFromJson(m.details_json ?? null);
-      for (const raw of parseStoredParts(m.parts_json)) {
-        if (!raw.ToolResult || typeof raw.ToolResult !== "object") continue;
-        const result = raw.ToolResult as StoredToolResultShape;
-        const card = cardsByCallId.get(result.call_id);
+      for (const part of m.parts) {
+        if (part.type !== "tool_result") continue;
+        const card = cardsByCallId.get(part.call_id);
         if (card) {
-          fillCard(card, result, details, m.id);
+          fillCard(card, part, m.details, m.id);
         } else {
           // Orphan result (e.g. data from before cards were stored): host a
           // minimal done card on the most recent assistant message.
@@ -403,10 +368,10 @@ function storedToDisplayList(stored: StoredMessage[]): DisplayMessage[] {
             lastAssistant = { id: m.id, role: "assistant", parts: [] };
             out.push(lastAssistant);
           }
-          const orphan = newToolCard(result.call_id, "unknown");
+          const orphan = newToolCard(part.call_id, "unknown");
           orphan.status = "done";
           lastAssistant.parts.push(orphan);
-          fillCard(orphan, result, details, m.id);
+          fillCard(orphan, part, m.details, m.id);
         }
       }
     }

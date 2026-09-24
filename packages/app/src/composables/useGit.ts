@@ -1,5 +1,6 @@
 import { onScopeDispose, ref, watch } from "vue";
 import client from "@/api/client";
+import { apiErrorMessage } from "@/api/errors";
 import type { components } from "@/api/schema";
 import type { Ref } from "vue";
 
@@ -123,8 +124,8 @@ export function useGit(projectId: Readonly<Ref<string | null>>) {
 }
 
 export function gitError(cause: unknown): string {
-  if (cause instanceof Error) return cause.message;
-  if (cause && typeof cause === "object" && "error" in cause)
-    return String(cause.error);
-  return "Git request failed";
+  // Error 实例是本模块内部「已提取过业务文案」的再包装（refresh/run 的
+  // throw 路径），透传其 message；其余形态走集中归一化。
+  if (cause instanceof Error && cause.message) return cause.message;
+  return apiErrorMessage(cause, "Git request failed");
 }

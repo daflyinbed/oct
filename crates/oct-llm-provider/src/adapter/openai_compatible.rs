@@ -11,6 +11,7 @@ use crate::core::{
 };
 use crate::model::{ChatModel, ChatRequest, ChatResponse, ChatStream};
 use crate::provider::ModelInfo;
+use crate::transport::{SseDecoder, check_response_status};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OpenAiCompatibleConfig {
@@ -481,24 +482,7 @@ impl ChatModel for OpenAiCompatibleChatModel {
             .send()
             .await
             .map_err(|err| ModelError::transport(format!("request failed: {err}")))?;
-
-        let status = response.status();
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(ModelError::Authentication);
-        }
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            return Err(ModelError::RateLimited);
-        }
-        if !status.is_success() {
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "<failed to read error body>".to_string());
-            return Err(ModelError::provider(format!(
-                "{} returned {}: {}",
-                self.config.provider_name, status, body
-            )));
-        }
+        let response = check_response_status(response, &self.config.provider_name).await?;
 
         let payload: ChatCompletionResponse = response
             .json()
@@ -518,50 +502,26 @@ impl ChatModel for OpenAiCompatibleChatModel {
             .send()
             .await
             .map_err(|err| ModelError::transport(format!("request failed: {err}")))?;
-
-        let status = response.status();
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(ModelError::Authentication);
-        }
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            return Err(ModelError::RateLimited);
-        }
-        if !status.is_success() {
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "<failed to read error body>".to_string());
-            return Err(ModelError::provider(format!(
-                "{} returned {}: {}",
-                self.config.provider_name, status, body
-            )));
-        }
+        let response = check_response_status(response, &self.config.provider_name).await?;
 
         let byte_stream = response.bytes_stream();
         let stream = try_stream! {
-            // Byte-level buffer: a network chunk may end mid multibyte UTF-8
-            // character, so decoding whole chunks directly can fail; instead
-            // only complete events (bounded by the blank line) are decoded.
-            let mut buffer: Vec<u8> = Vec::new();
+            let mut decoder = SseDecoder::new();
             let mut tool_state = HashMap::new();
             futures_util::pin_mut!(byte_stream);
 
             while let Some(chunk) = byte_stream.next().await {
                 let chunk = chunk
                     .map_err(|err| ModelError::transport(format!("stream read failed: {err}")))?;
-                buffer.extend_from_slice(&chunk);
-
-                while let Some(event) = take_sse_event(&mut buffer) {
-                    let event = decode_sse_event(event)?;
+                for event in decoder.push(&chunk)? {
                     for normalized in parse_openai_sse_event_with_state(&event, &mut tool_state)? {
                         yield normalized;
                     }
                 }
             }
 
-            for remainder in flush_sse_buffer(&mut buffer) {
-                let remainder = decode_sse_event(remainder)?;
-                for normalized in parse_openai_sse_event_with_state(&remainder, &mut tool_state)? {
+            for event in decoder.finish()? {
+                for normalized in parse_openai_sse_event_with_state(&event, &mut tool_state)? {
                     yield normalized;
                 }
             }
@@ -902,62 +862,23 @@ pub fn aggregate_stream_events(events: &[StreamEvent]) -> Option<Usage> {
     })
 }
 
-/// Find `needle` in `haystack` at the byte level.
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|w| w == needle)
-}
-
-/// Extract the next complete SSE event from `buffer`, byte level. Only whole
-/// events are ever decoded (in the stream loop below): a multibyte UTF-8
-/// character split across network chunks can never be cut inside an event
-/// here because UTF-8 continuation bytes never collide with \n / \r.
-fn take_sse_event(buffer: &mut Vec<u8>) -> Option<Vec<u8>> {
-    if let Some(index) = find_subslice(buffer, b"\n\n") {
-        let event = buffer[..index].to_vec();
-        buffer.drain(..index + 2);
-        Some(event)
-    } else if let Some(index) = find_subslice(buffer, b"\r\n\r\n") {
-        let event = buffer[..index].to_vec();
-        buffer.drain(..index + 4);
-        Some(event)
-    } else {
-        None
-    }
-}
-
-fn flush_sse_buffer(buffer: &mut Vec<u8>) -> Vec<Vec<u8>> {
-    if buffer.iter().all(|b| b.is_ascii_whitespace()) {
-        Vec::new()
-    } else {
-        vec![std::mem::take(buffer)]
-    }
-}
-
-fn decode_sse_event(bytes: Vec<u8>) -> Result<String, ModelError> {
-    String::from_utf8(bytes)
-        .map_err(|err| ModelError::transport(format!("stream event was not valid utf-8: {err}")))
-}
-
 pub fn parse_openai_sse_event(event: &str) -> Result<Vec<StreamEvent>, ModelError> {
     parse_openai_sse_event_with_state(event, &mut HashMap::new())
 }
 
 pub fn parse_openai_sse_transcript(transcript: &str) -> Result<Vec<StreamEvent>, ModelError> {
-    let mut buffer = transcript.as_bytes().to_vec();
+    let mut decoder = SseDecoder::new();
     let mut tool_state = HashMap::new();
     let mut events = Vec::new();
 
-    while let Some(event) = take_sse_event(&mut buffer) {
-        // The transcript comes from a &str, so events are valid UTF-8 by
-        // construction and the lossy fallback never triggers.
-        let event = String::from_utf8_lossy(&event).into_owned();
+    // The transcript comes from a &str, so events are valid UTF-8 by
+    // construction and decoding cannot fail.
+    for event in decoder.push(transcript.as_bytes())? {
         events.extend(parse_openai_sse_event_with_state(&event, &mut tool_state)?);
     }
-
-    for remainder in flush_sse_buffer(&mut buffer) {
-        let remainder = String::from_utf8_lossy(&remainder).into_owned();
+    for event in decoder.finish()? {
         events.extend(parse_openai_sse_event_with_state(
-            &remainder,
+            &event,
             &mut tool_state,
         )?);
     }
@@ -1150,23 +1071,24 @@ mod sse_tests {
         );
 
         for size in 1..transcript.len() {
-            let mut buffer = Vec::new();
+            let mut decoder = SseDecoder::new();
             let mut tool_state = HashMap::new();
             let mut got = Vec::new();
             for chunk in transcript.as_bytes().chunks(size) {
-                buffer.extend_from_slice(chunk);
-                while let Some(event) = take_sse_event(&mut buffer) {
-                    let event = decode_sse_event(event)
-                        .unwrap_or_else(|err| panic!("chunk size {size}: {err}"));
+                for event in decoder
+                    .push(chunk)
+                    .unwrap_or_else(|err| panic!("chunk size {size}: {err}"))
+                {
                     got.extend(
                         parse_openai_sse_event_with_state(&event, &mut tool_state)
                             .unwrap_or_else(|err| panic!("chunk size {size}: {err}")),
                     );
                 }
             }
-            for remainder in flush_sse_buffer(&mut buffer) {
-                let event = decode_sse_event(remainder)
-                    .unwrap_or_else(|err| panic!("chunk size {size}: {err}"));
+            for event in decoder
+                .finish()
+                .unwrap_or_else(|err| panic!("chunk size {size}: {err}"))
+            {
                 got.extend(
                     parse_openai_sse_event_with_state(&event, &mut tool_state)
                         .unwrap_or_else(|err| panic!("chunk size {size}: {err}")),

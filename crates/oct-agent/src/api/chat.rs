@@ -15,12 +15,14 @@ use oct_llm_provider::core::{Message, Role};
 use tracing::debug;
 
 use super::AppState;
+use super::dto;
 use super::error::{ApiResult, AppError};
 use crate::agent::compact;
 use crate::agent::loop_runner::run_agent_loop;
 use crate::agent::prompt::system_prompt;
 use crate::agent::title;
 use crate::agent::{AgentContext, AgentEvent, CompactionTrigger, EventHub, RunHandle};
+use crate::context::{self, LlmView};
 use crate::db::{
     conversations as conv_db, messages as msg_db, models as model_db, projects as project_db,
     providers as provider_db,
@@ -125,7 +127,7 @@ fn start_agent_run(
     id: &str,
     project: &project_db::Project,
     chat_model: Box<dyn oct_llm_provider::model::ChatModel>,
-    view: msg_db::LlmView,
+    view: LlmView,
     context_window: Option<u32>,
     idle: Option<std::time::Duration>,
 ) -> ApiResult<Response> {
@@ -199,7 +201,7 @@ fn sse_event(e: &AgentEvent) -> Event {
 /// same hub this run will publish to, so no handle swap is ever needed.
 fn insert_session_entry(state: &AppState, id: &str) -> Result<(), AppError> {
     match state.sessions.entry(id.to_string()) {
-        dashmap::mapref::entry::Entry::Occupied(_) => Err(AppError::Conflict(
+        dashmap::mapref::entry::Entry::Occupied(_) => Err(AppError::SessionBusy(
             "Agent is already running for this conversation".into(),
         )),
         dashmap::mapref::entry::Entry::Vacant(entry) => {
@@ -430,7 +432,7 @@ pub async fn resume_turn(
     };
     if dangling.is_empty() && !last_is_user {
         state.sessions.remove(&id);
-        return Err(AppError::Conflict("Nothing to resume".into()));
+        return Err(AppError::NothingToResume("Nothing to resume".into()));
     }
 
     // The resumed turn reuses the provider/model the conversation last ran
@@ -573,58 +575,72 @@ async fn run_manual_compact(
     };
     let (chat_model, provider_id, model_id) = resolve_model(state, &spec).await?;
     let window = resolve_context_window(state, chat_model.as_ref(), &provider_id, &model_id).await;
-    let tail_keep = window
-        .map(compact::tail_keep_tokens)
-        .unwrap_or(compact::DEFAULT_TAIL_KEEP_TOKENS);
 
     let view = msg_db::load_llm_view(&state.pool, id).await?;
-    let Some(cut) = compact::find_cut_point(&view.messages, tail_keep) else {
-        return Err(AppError::BadRequest(
-            "Conversation is too short to compact".into(),
-        ));
-    };
+    let LlmView {
+        messages,
+        orderings,
+        anchor,
+    } = view;
+    let entries: Vec<context::ContextEntry> = messages
+        .into_iter()
+        .zip(orderings)
+        .map(|(message, ordering)| context::ContextEntry { message, ordering })
+        .collect();
 
     // Display-only figures: the anchor is used when present so the "before"
     // number matches what the provider actually charged, falling back to a
-    // message-only estimate (no tool schemas at hand outside a run).
-    let anchor = view.anchor.map(|a| (a.tokens, a.message_index));
-    let est_before = compact::estimate_context(&view.messages, &[], anchor);
+    // message-only estimate (no tool schemas at hand outside a run — the
+    // est_after 口径 is documented on `compact::CompactRequest`).
+    let est_before = context::estimate_view(&entries, None, &[], anchor.as_ref());
 
-    let region = view.messages[..cut].to_vec();
-    let summary = compact::generate_summary(chat_model.as_ref(), &region, window)
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("Compaction summary failed: {e}")))?;
-
-    let marker = compact::build_marker_message(&summary);
-    // est_after on the SAME anchor-based 口径 as est_before: the region's
-    // estimate leaves, the marker's estimate enters. est_before already
-    // counts the system prompt and tool schemas through the anchor (or the
-    // full local estimate without one); a message-only estimate would
-    // understate the "after" figure against that baseline.
-    let est_after = est_before.saturating_sub(compact::estimate_messages(&region))
-        + compact::estimate_message(&marker);
-    let details = compact::marker_details(CompactionTrigger::Manual, cut, est_before, est_after);
-    // The marker goes INTO the timeline at the cut — between the summarized
-    // region and the tail — so the tail stays after it and survives the next
-    // `load_llm_view` (appending at the end would hide the tail forever).
-    let cut_ordering = view.orderings[cut];
-    let stored = msg_db::insert_message_at_ordering(
+    // The shared compaction transaction (same cut/tail/summary/persist rules
+    // as the in-run auto trigger); no hub (no SSE stream here) and no
+    // cancellation token — a synchronous request.
+    let outcome = match compact::run_compaction(
+        chat_model.as_ref(),
         &state.pool,
         id,
-        &marker,
-        None,
-        None,
-        Some(&details),
-        cut_ordering,
+        compact::CompactRequest {
+            entries: &entries,
+            est_before,
+            system_prompt: None,
+            tool_specs: &[],
+            window,
+            trigger: CompactionTrigger::Manual,
+            hub: None,
+            cancel: None,
+        },
     )
-    .await?;
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(compact::CompactFailure::Nothing) => {
+            return Err(AppError::BadRequest(
+                "Conversation is too short to compact".into(),
+            ));
+        }
+        Err(compact::CompactFailure::Summary(e)) => {
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "Compaction summary failed: {e}"
+            )));
+        }
+        Err(compact::CompactFailure::Persist(e)) => {
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "Compaction failed to persist the marker row: {e}"
+            )));
+        }
+        Err(compact::CompactFailure::Cancelled) => {
+            unreachable!("manual compaction passes no cancellation token")
+        }
+    };
 
     Ok(Json(CompactResult {
-        summary_message_id: stored.id,
-        compacted_messages: cut as u32,
-        est_tokens_before: est_before,
-        est_tokens_after: est_after,
-        summary,
+        summary_message_id: outcome.summary_message_id,
+        compacted_messages: outcome.cut as u32,
+        est_tokens_before: outcome.est_before,
+        est_tokens_after: outcome.est_after,
+        summary: outcome.summary,
     }))
 }
 
@@ -721,7 +737,7 @@ pub async fn stream_run_events(
     path = "/conversations/{id}/messages",
     params(("id" = String, Path, description = "Conversation ID")),
     responses(
-        (status = 200, description = "List of messages", body = Vec<msg_db::StoredMessage>),
+        (status = 200, description = "List of messages (typed parts/details; raw parts_json/details_json never leave the backend)", body = Vec<dto::MessageDto>),
         (status = 404, description = "Conversation not found")
     ),
     tag = "chat"
@@ -729,21 +745,21 @@ pub async fn stream_run_events(
 pub async fn get_messages(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> ApiResult<Json<Vec<msg_db::StoredMessage>>> {
+) -> ApiResult<Json<Vec<dto::MessageDto>>> {
     conv_db::get_conversation(&state.pool, &id)
         .await?
         .ok_or_else(|| AppError::NotFound("Conversation not found".into()))?;
 
     let messages = msg_db::list_messages(&state.pool, &id).await?;
 
-    Ok(Json(messages))
+    Ok(Json(messages.iter().map(dto::MessageDto::from_stored).collect()))
 }
 
 /// The original content a microcompact copy replaced. Scope-checked through
 /// the copy's membership slot in THIS conversation (the original itself no
 /// longer belongs to any timeline after the swap), so the endpoint neither
 /// leaks cross-conversation rows nor 404s on the original's missing
-/// membership.
+/// membership. Same typed contract as the history endpoint.
 #[utoipa::path(
     get,
     path = "/conversations/{id}/messages/{copy_id}/original",
@@ -752,7 +768,7 @@ pub async fn get_messages(
         ("copy_id" = String, Path, description = "Id of the cleared copy message (a stored-history row)"),
     ),
     responses(
-        (status = 200, description = "The original content row the copy supersedes", body = msg_db::MessageContent),
+        (status = 200, description = "The original content row the copy supersedes", body = dto::MessageDto),
         (status = 404, description = "Conversation not found, or the copy does not belong to it / supersedes nothing")
     ),
     tag = "chat"
@@ -760,7 +776,7 @@ pub async fn get_messages(
 pub async fn get_original_message(
     State(state): State<AppState>,
     Path((id, copy_id)): Path<(String, String)>,
-) -> ApiResult<Json<msg_db::MessageContent>> {
+) -> ApiResult<Json<dto::MessageDto>> {
     conv_db::get_conversation(&state.pool, &id)
         .await?
         .ok_or_else(|| AppError::NotFound("Conversation not found".into()))?;
@@ -771,5 +787,5 @@ pub async fn get_original_message(
             AppError::NotFound("Message is not a cleared copy of this conversation".into())
         })?;
 
-    Ok(Json(original))
+    Ok(Json(dto::MessageDto::from_content(&original)))
 }

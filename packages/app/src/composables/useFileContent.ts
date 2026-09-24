@@ -1,5 +1,6 @@
 import { readonly, ref } from "vue";
 import client from "@/api/client";
+import { apiErrorMessage } from "@/api/errors";
 import type { components } from "@/api/schema";
 
 export type FileContent = components["schemas"]["FileContent"];
@@ -13,18 +14,22 @@ export function useFileContent(projectId: string | null, path: string) {
   async function load(id: string) {
     loading.value = true;
     error.value = null;
-    const { data: result, error: err } = await client.GET(
-      "/api/projects/{projectId}/files/content",
-      { params: { path: { projectId: id }, query: { path } } },
-    );
-    if (err || !result) {
-      error.value =
-        (err as unknown as { error?: string } | undefined)?.error ??
-        "Failed to load file";
-    } else {
-      data.value = result;
+    try {
+      const { data: result, error: err } = await client.GET(
+        "/api/projects/{projectId}/files/content",
+        { params: { path: { projectId: id }, query: { path } } },
+      );
+      if (err || !result) {
+        error.value = apiErrorMessage(err, "Failed to load file");
+      } else {
+        data.value = result;
+      }
+    } catch (error_) {
+      // 网络异常：归一化文案，loading 由 finally 清理。
+      error.value = apiErrorMessage(error_, "Failed to load file");
+    } finally {
+      loading.value = false;
     }
-    loading.value = false;
   }
 
   if (projectId) {

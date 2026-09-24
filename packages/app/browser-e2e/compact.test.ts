@@ -59,8 +59,8 @@ it("compacted event renders an expandable divider and drives the context indicat
 it("/compact command posts to the compact endpoint and renders the marker row", async () => {
   const mounted = await bootConversation([], {
     stored: [
-      storedMessage("user", '[{"Text":"旧问题"}]'),
-      storedMessage("assistant", '[{"Text":"旧回答"}]'),
+      storedMessage("user", [{ type: "text", text: "旧问题" }]),
+      storedMessage("assistant", [{ type: "text", text: "旧回答" }]),
     ],
   });
 

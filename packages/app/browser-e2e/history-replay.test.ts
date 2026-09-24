@@ -62,41 +62,37 @@ it("history replay renders identically to the finished live stream", async () =>
     providers: [providerFixture()],
     messages: {
       c1: [
-        storedMessage("user", JSON.stringify([{ Text: "hi" }])),
+        storedMessage("user", [{ type: "text", text: "hi" }]),
         storedMessage(
           "assistant",
-          JSON.stringify([
-            { Reasoning: "让我想想" },
-            { Text: "Done." },
+          [
+            { type: "reasoning", text: "让我想想" },
+            { type: "text", text: "Done." },
             {
-              ToolCall: {
-                id: "call_1",
-                name: "read_file",
-                arguments: '{"path":"a.txt"}',
-              },
+              type: "tool_call",
+              id: "call_1",
+              name: "read_file",
+              arguments: '{"path":"a.txt"}',
             },
-          ]),
+          ],
           // 与 live 结束态渲染一致:live 时长是几毫秒 →「几秒」,
           // 这里存 5000ms 同样落在模糊文案区间。
-          { details_json: JSON.stringify({ reasoning_duration_ms: 5000 }) },
+          { details: { reasoning_duration_ms: 5000 } },
         ),
         storedMessage(
           "tool",
-          JSON.stringify([
+          [
             {
-              ToolResult: {
-                call_id: "call_1",
-                content: "file body",
-                is_error: false,
-              },
+              type: "tool_result",
+              call_id: "call_1",
+              content: "file body",
+              is_error: false,
             },
-          ]),
+          ],
           {
-            details_json: JSON.stringify({
-              title: "a.txt",
-              shown_lines: 10,
-              total_lines: 10,
-            }),
+            details: {
+              extra: { title: "a.txt", shown_lines: 10, total_lines: 10 },
+            },
           },
         ),
       ],

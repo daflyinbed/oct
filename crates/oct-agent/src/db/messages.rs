@@ -10,6 +10,11 @@ use uuid::Uuid;
 
 use oct_llm_provider::core::{ContentPart, Message, Role, ToolResult};
 
+// The LLM view snapshot and its anchor type live in the neutral `context`
+// module (shared with the agent loop); re-exported here for existing paths.
+pub use crate::context::{COMPACTION_MARKER_KIND, LlmView, UsageAnchor};
+use crate::context::{details_kind, estimate_message};
+
 /// One stored message as seen from a conversation: the pure content row
 /// (`messages`) joined with its timeline slot (`conversation_messages`).
 /// Content rows are insert-only (usage backfill aside) and shared across
@@ -159,6 +164,20 @@ async fn append_row(
         swapped_at_revision: None,
         created_at: f.now,
     })
+}
+
+/// The ordering `insert_message` would assign to the next append — MAX+1.
+/// The degraded-append fallback for runs whose persist failed: keeps the
+/// in-run context entries parallel with the DB instead of a blind last+1,
+/// which could desync a later compaction marker's slot.
+pub async fn next_ordering(pool: &SqlitePool, conversation_id: &str) -> Result<i64> {
+    let ordering = sqlx::query_scalar!(
+        "SELECT COALESCE(MAX(ordering), 0) + 1 FROM conversation_messages WHERE conversation_id = $1",
+        conversation_id,
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(ordering)
 }
 
 pub async fn insert_message(
@@ -410,43 +429,10 @@ pub async fn count_user_messages(pool: &SqlitePool, conversation_id: &str) -> Re
     Ok(count)
 }
 
-/// details_json `kind` value marking a compaction marker row (see
-/// `agent::compact`): a normal `user` message whose parts carry the summary
-/// and whose details carry compaction metadata. Rows before the LAST marker
-/// stay in the DB but never reach the LLM again.
-pub const COMPACTION_MARKER_KIND: &str = "compaction";
-
-/// Provider-truth anchor for context estimates: the `input + output` tokens
-/// of the request that produced the anchor message, plus that message's index
-/// in the LLM view. Everything appended after it has never been counted by a
-/// provider and must be estimated locally.
-#[derive(Debug, Clone, PartialEq)]
-pub struct UsageAnchor {
-    pub tokens: u64,
-    pub message_index: usize,
-}
-
-/// The model-visible view of a conversation plus the estimation anchor:
-/// `[last compaction marker (if any), everything after it]` with orphan tool
-/// results filtered out. System prompt is NOT included — the loop prepends it
-/// fresh on every run. `orderings` is parallel to `messages` and carries each
-/// message's timeline ordering (compaction consumes it to place its marker).
-#[derive(Debug, Clone)]
-pub struct LlmView {
-    pub messages: Vec<Message>,
-    pub orderings: Vec<i64>,
-    pub anchor: Option<UsageAnchor>,
-}
-
-fn details_kind(m: &StoredMessage) -> Option<String> {
-    m.details_json
-        .as_ref()
-        .and_then(|s| serde_json::from_str::<Value>(s).ok())
-        .and_then(|v| v.get("kind").and_then(Value::as_str).map(str::to_string))
-}
-
+/// Whether the row is a compaction marker, by its details_json `kind`
+/// (recognition rule shared with the agent side via [`crate::context`]).
 fn is_compaction_marker(m: &StoredMessage) -> bool {
-    details_kind(m).as_deref() == Some(COMPACTION_MARKER_KIND)
+    details_kind(m.details_json.as_deref()).as_deref() == Some(COMPACTION_MARKER_KIND)
 }
 
 /// Build the LLM view for a conversation (see [`LlmView`]).
@@ -586,8 +572,7 @@ async fn cow_adjusted_anchor_tokens(
         else {
             continue;
         };
-        savings += crate::agent::compact::estimate_message(&original)
-            .saturating_sub(crate::agent::compact::estimate_message(current));
+        savings += estimate_message(&original).saturating_sub(estimate_message(current));
     }
     Ok(tokens.saturating_sub(savings))
 }

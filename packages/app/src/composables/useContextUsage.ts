@@ -1,7 +1,7 @@
 import { readonly, ref } from "vue";
 import type { components } from "@/api/schema";
 
-type StoredMessage = components["schemas"]["StoredMessage"];
+type ApiMessage = components["schemas"]["MessageDto"];
 
 /**
  * 上下文占用状态（模块级单例，useMcpStatus 同款模式）：数据源两条——
@@ -28,7 +28,7 @@ export function recordUsageEvent(data: {
  * input_tokens 就是最近一次请求的真实上下文体积）。切换会话时
  * inputTokens 先清空，避免上一个会话的占用串显。
  */
-export function seedContextUsage(stored: readonly StoredMessage[]): void {
+export function seedContextUsage(stored: readonly ApiMessage[]): void {
   inputTokens.value = null;
   for (let i = stored.length - 1; i >= 0; i--) {
     const m = stored[i];

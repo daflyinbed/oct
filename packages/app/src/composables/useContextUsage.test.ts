@@ -11,28 +11,23 @@ import {
 } from "@/composables/useContextUsage";
 import type { components } from "@/api/schema";
 
-type StoredMessage = components["schemas"]["StoredMessage"];
+type ApiMessage = components["schemas"]["MessageDto"];
 
-/** 后端 StoredMessage 的最小形状（仅用到本 composable 读的字段）。 */
+/** 后端 MessageDto 的最小形状（仅用到本 composable 读的字段）。 */
 function storedMessage(
   role: string,
-  extra: Partial<StoredMessage> = {},
-): StoredMessage {
+  extra: Partial<ApiMessage> = {},
+): ApiMessage {
   return {
     id: `msg-${Math.random().toString(36).slice(2)}`,
-    conversation_id: "conv",
     role,
-    parts_json: "[]",
-    details_json: null,
+    parts: [],
+    details: null,
     ordering: 0,
-    provider_id: null,
-    model_id: null,
     input_tokens: null,
     output_tokens: null,
     reasoning_tokens: null,
     supersedes_message_id: null,
-    appended_at_revision: 0,
-    swapped_at_revision: null,
     created_at: "2026-09-20T00:00:00",
     ...extra,
   };

@@ -31,6 +31,13 @@ const colorVariants = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, "contrast"] as const;
 const colorProperties = ["bg", "text", "border", "fill", "stroke"] as const;
 
 export default defineConfig({
+  // 开启文件系统提取：dev 模式下 uno.css 只聚合「先于它加载的模块」的
+  // transform 提取，深层/懒加载导入链会输掉这个竞态（无 HMR 的场景如
+  // vitest browser 模式下永不补齐——无文本内容的元素因此零尺寸不可
+  // 见）。按磁盘内容提取让首个 uno.css 就是完整的。
+  content: {
+    filesystem: ["src/**/*.{vue,ts}", "index.html"],
+  },
   presets: [
     presetWind3(),
     presetAttributify(),

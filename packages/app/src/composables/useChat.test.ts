@@ -5,7 +5,7 @@ import {
   clearContextUsage,
   useContextUsage,
 } from "@/composables/useContextUsage";
-
+import type { components } from "@/api/schema";
 import type {
   CompactionPart,
   ReasoningPart,
@@ -36,27 +36,54 @@ const {
 // 测试数据构造
 // ---------------------------------------------------------------------------
 
-/** 后端 StoredMessage 的最小形状（仅用到本 composable 读的字段）。 */
+/** 后端 MessageDto 的最小形状（仅用到本 composable 读的字段）。 */
 function storedMessage(
   role: string,
-  partsJson: string,
-  extra: Record<string, unknown> = {},
-) {
+  parts: string | components["schemas"]["MessagePart"][],
+  extra: Partial<components["schemas"]["MessageDto"]> = {},
+): components["schemas"]["MessageDto"] {
   return {
     id: `msg-${Math.random().toString(36).slice(2)}`,
-    conversation_id: "conv",
     role,
-    parts_json: partsJson,
-    details_json: null,
+    parts: typeof parts === "string" ? legacyParts(parts) : parts,
+    details: null,
     ordering: 0,
-    provider_id: null,
-    model_id: null,
-    input_tokens: null,
-    output_tokens: null,
-    reasoning_tokens: null,
     created_at: "2026-09-20T00:00:00",
     ...extra,
   };
+}
+
+/**
+ * 测试简写：externally-tagged serde JSON 字符串（旧 parts_json 线格式）
+ * → 类型化 parts。损坏负载按后端 DTO 规则降级为单一 text part。
+ */
+function legacyParts(
+  partsJson: string,
+): components["schemas"]["MessagePart"][] {
+  type Raw = Record<string, any>;
+  try {
+    const parsed = JSON.parse(partsJson);
+    if (Array.isArray(parsed)) {
+      return (parsed as Raw[]).map((raw) => {
+        if (typeof raw.Text === "string") {
+          return { type: "text", text: raw.Text };
+        }
+        if (typeof raw.Reasoning === "string") {
+          return { type: "reasoning", text: raw.Reasoning };
+        }
+        if (raw.ToolCall && typeof raw.ToolCall === "object") {
+          return { type: "tool_call", ...raw.ToolCall };
+        }
+        if (raw.ToolResult && typeof raw.ToolResult === "object") {
+          return { type: "tool_result", ...raw.ToolResult };
+        }
+        throw new Error("unknown part shape");
+      });
+    }
+  } catch {
+    // fall through to the degraded single-text form
+  }
+  return [{ type: "text", text: partsJson }];
 }
 
 /** 用 SSE body 生成 Response（可按任意字符串切块，模拟网络分片）。 */
@@ -199,7 +226,7 @@ describe("fetchMessages 历史回放", () => {
         storedMessage(
           "tool",
           '[{"ToolResult":{"call_id":"c1","content":"1. hi","is_error":false}}]',
-          { details_json: '{"title":"a.txt","total_lines":1}' },
+          { details: { extra: { title: "a.txt", total_lines: 1 } } },
         ),
       ],
     } as never);
@@ -217,12 +244,12 @@ describe("fetchMessages 历史回放", () => {
     expect(card.details).toEqual({ title: "a.txt", total_lines: 1 });
   });
 
-  it("历史里的 Reasoning part 渲染为思考卡片，时长来自 details_json", async () => {
+  it("历史里的 Reasoning part 渲染为思考卡片，时长来自 details", async () => {
     GET.mockResolvedValue({
       data: [
         storedMessage("user", '[{"Text":"问"}]'),
         storedMessage("assistant", '[{"Reasoning":"历史思考"},{"Text":"答"}]', {
-          details_json: '{"reasoning_duration_ms":4200}',
+          details: { reasoning_duration_ms: 4200 },
         }),
         // 无 details 的旧数据：卡片仍在，只是不显示时长
         storedMessage("assistant", '[{"Reasoning":"旧思考"}]'),
@@ -1219,7 +1246,7 @@ describe("微压缩 microcompact", () => {
           ]),
           {
             id: "copy-row-1",
-            details_json: JSON.stringify({ kind: "microcompact_cleared" }),
+            details: { kind: "microcompact_cleared" },
           },
         ),
       ],
@@ -1263,13 +1290,15 @@ describe("上下文压缩", () => {
             },
           ]),
           {
-            details_json: JSON.stringify({
+            details: {
               kind: "compaction",
-              triggered_by: "auto",
-              compacted_message_count: 2,
-              estimated_tokens_before: 1000,
-              estimated_tokens_after: 200,
-            }),
+              compaction: {
+                triggered_by: "auto",
+                compacted_message_count: 2,
+                estimated_tokens_before: 1000,
+                estimated_tokens_after: 200,
+              },
+            },
           },
         ),
         storedMessage("user", '[{"Text":"新问题"}]'),
@@ -1369,13 +1398,15 @@ describe("上下文压缩", () => {
             { Text: "[Context compaction]\n<summary>\n手动摘要\n</summary>" },
           ]),
           {
-            details_json: JSON.stringify({
+            details: {
               kind: "compaction",
-              triggered_by: "manual",
-              compacted_message_count: 3,
-              estimated_tokens_before: 900,
-              estimated_tokens_after: 100,
-            }),
+              compaction: {
+                triggered_by: "manual",
+                compacted_message_count: 3,
+                estimated_tokens_before: 900,
+                estimated_tokens_after: 100,
+              },
+            },
           },
         ),
       ],

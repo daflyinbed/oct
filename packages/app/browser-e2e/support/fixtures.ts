@@ -7,7 +7,9 @@ type Project = components["schemas"]["Project"];
 type Conversation = components["schemas"]["Conversation"];
 type ProviderResponse = components["schemas"]["ProviderResponse"];
 type ModelSummary = components["schemas"]["ModelSummary"];
-type StoredMessage = components["schemas"]["StoredMessage"];
+type StoredMessage = components["schemas"]["MessageDto"];
+type MessageDto = StoredMessage;
+type MessagePart = components["schemas"]["MessagePart"];
 type AgentEvent = components["schemas"]["AgentEvent"];
 type OutputStream = components["schemas"]["OutputStream"];
 type McpServerResponse = components["schemas"]["McpServerResponse"];
@@ -154,21 +156,15 @@ export function mcpResourceFixture(
 
 export function storedMessage(
   role: string,
-  partsJson: string,
-  extra: Partial<StoredMessage> = {},
-): StoredMessage {
+  parts: MessagePart[],
+  extra: Partial<MessageDto> = {},
+): MessageDto {
   return {
     id: `msg-${role}-${Math.random().toString(36).slice(2, 8)}`,
-    conversation_id: "c1",
     role,
-    parts_json: partsJson,
-    details_json: null,
+    parts,
+    details: null,
     ordering: 0,
-    provider_id: null,
-    model_id: null,
-    input_tokens: null,
-    output_tokens: null,
-    reasoning_tokens: null,
     created_at: T0,
     ...extra,
   };

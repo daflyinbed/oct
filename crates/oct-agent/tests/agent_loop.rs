@@ -2387,6 +2387,108 @@ async fn microcompact_waterline_clears_old_results_and_keeps_recent() {
     );
 }
 
+/// A failed summary call disables AUTO compaction only — the waterline
+/// microcompact must stay armed on later tool-round turn tops (regression:
+/// the waterline check used to sit inside the `!auto_compact_disabled`
+/// guard, so one summary failure silently took micro down with it).
+#[tokio::test]
+async fn waterline_micro_still_fires_after_summary_failure() {
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+    // 8 seeded rounds × ~2k-token results: over the 85% summary threshold
+    // of a 10k window even after the turn-1 micro clear.
+    seed_tool_history(&env.pool, &conv_id, 8, 8_000).await;
+    // Six files the first turn reads in parallel: their results give the
+    // turn-3 top enough clearable candidates past the protected window.
+    for i in 0..6 {
+        tokio::fs::write(
+            env.dir.path().join(format!("big{i}.txt")),
+            std::iter::repeat_n('y', 10_000).collect::<String>(),
+        )
+        .await
+        .unwrap();
+    }
+
+    let model = ScriptedModel::new(vec![
+        Turn::Stream(vec![
+            tool_call("call-a", "read_file", json!({"path": "big0.txt"})),
+            tool_call("call-b", "read_file", json!({"path": "big1.txt"})),
+            tool_call("call-c", "read_file", json!({"path": "big2.txt"})),
+            tool_call("call-d", "read_file", json!({"path": "big3.txt"})),
+            tool_call("call-e", "read_file", json!({"path": "big4.txt"})),
+            tool_call("call-f", "read_file", json!({"path": "big5.txt"})),
+            finish(FinishReason::ToolCalls),
+        ]),
+        Turn::Stream(vec![
+            tool_call("call-x", "read_file", json!({"path": "big0.txt"})),
+            finish(FinishReason::ToolCalls),
+        ]),
+        Turn::Stream(vec![text("done"), finish(FinishReason::Stop)]),
+    ]);
+    // The turn-1-top summary compaction fails.
+    model.push_generation(Err(ModelError::provider("summary exploded")));
+    let observer = model.observer();
+
+    let view = msg_db::load_llm_view(&env.pool, &conv_id).await.unwrap();
+    let (_handle, mut rx) = support::spawn_agent_full(
+        model,
+        tools::default_tools(tools::workspace::WorkspaceRoots::new(
+            env.dir.path().to_path_buf(),
+            vec![],
+        )),
+        env.pool.clone(),
+        &conv_id,
+        view,
+        Some(10_000),
+        None,
+    )
+    .await;
+    let events = collect_events(&mut rx, is_terminal).await;
+
+    // The run survived the failed compaction and finished normally.
+    assert!(text_of(&events).contains("done"));
+    assert_eq!(*events.last().unwrap(), AgentEvent::Finish);
+
+    // The summary was attempted exactly once (turn 1 top) and never landed;
+    // auto compaction is disabled for the rest of the run.
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Compacting { .. })),
+        "compacting announced"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Compacted { .. })),
+        "no compacted event on failure"
+    );
+    assert_eq!(observer.generate_requests().len(), 1);
+
+    // TWO waterline microcompacts: turn 1 top (before the failed summary)
+    // AND turn 3 top (after it) — micro is independent of the auto switch.
+    let micro_events: Vec<&AgentEvent> = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::Microcompacted { .. }))
+        .collect();
+    assert_eq!(micro_events.len(), 2, "events: {events:?}");
+    for event in &micro_events {
+        let AgentEvent::Microcompacted { triggered_by, .. } = event else {
+            unreachable!()
+        };
+        assert_eq!(*triggered_by, oct_agent::agent::MicrocompactTrigger::Waterline);
+    }
+    // The turn-3 clear includes results that only exist because the run kept
+    // going after the summary failure.
+    let AgentEvent::Microcompacted { replacements, .. } = micro_events[1] else {
+        unreachable!()
+    };
+    assert!(
+        replacements.iter().any(|r| r.call_id == "call-a"),
+        "turn-3 micro cleared a run-produced result: {replacements:?}"
+    );
+}
+
 #[tokio::test]
 async fn microcompact_idle_entry_fires_without_a_window() {
     let env = TestEnv::new().await;

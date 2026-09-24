@@ -1059,16 +1059,12 @@ async fn mcp_tools_join_the_chat_loop_and_status_reports_live_state() {
     assert_eq!(tool_message["tool_call_id"], "call-1");
     assert_eq!(tool_message["content"], "hello from mcp");
 
-    // Persistence: the tool message's parts_json carries the ToolResult.
+    // Persistence: the tool message's typed parts carry the ToolResult.
     let stored = stored_messages(&app, &conv_id).await;
     let roles: Vec<&str> = stored.iter().map(|m| m["role"].as_str().unwrap()).collect();
     assert_eq!(roles, vec!["user", "assistant", "tool", "assistant"]);
-    assert!(
-        stored[2]["parts_json"]
-            .as_str()
-            .unwrap()
-            .contains("hello from mcp")
-    );
+    assert_eq!(stored[2]["parts"][0]["type"], "tool_result");
+    assert_eq!(stored[2]["parts"][0]["content"], "hello from mcp");
 
     // Live status in the list endpoint: injected row connected, the
     // never-connected row reports its failed reconcile attempt.
@@ -1494,8 +1490,9 @@ async fn chat_streams_text_and_persists_over_http() {
     assert_eq!(stored.len(), 2);
     assert_eq!(stored[0]["role"], "user");
     assert_eq!(stored[1]["role"], "assistant");
+    assert_eq!(stored[1]["parts"][0]["type"], "text");
     assert!(
-        stored[1]["parts_json"]
+        stored[1]["parts"][0]["text"]
             .as_str()
             .unwrap()
             .contains("你好，世界")
@@ -1817,9 +1814,12 @@ async fn chat_conflict_cancel_then_session_frees() {
     let first = app.send_message(&conv_id, "slow one").await;
     assert_eq!(first.status(), 200);
 
-    // A second run for the same conversation is rejected while one is live.
+    // A second run for the same conversation is rejected while one is live;
+    // the stable code distinguishes it from "nothing to resume".
     let conflict = app.send_message(&conv_id, "again").await;
     assert_eq!(conflict.status(), 409);
+    let body: Value = conflict.json().await.unwrap();
+    assert_eq!(body["code"], "already_running");
 
     // Cancel, then drain the first stream: it must end with `cancelled`
     // (the stream EOFs because the session entry is dropped after the loop
@@ -1927,16 +1927,17 @@ async fn resume_repairs_dangling_tool_call_and_streams_the_turn() {
     let roles: Vec<&str> = stored.iter().map(|m| m["role"].as_str().unwrap()).collect();
     assert_eq!(roles, vec!["user", "assistant", "tool", "assistant"]);
     let tool_row = &stored[2];
-    let parts = tool_row["parts_json"].as_str().unwrap();
-    assert!(parts.contains("call-1"));
-    assert!(parts.contains("is_error\":true"));
+    assert_eq!(tool_row["parts"][0]["type"], "tool_result");
+    assert_eq!(tool_row["parts"][0]["call_id"], "call-1");
+    assert_eq!(tool_row["parts"][0]["is_error"], true);
+    assert_eq!(tool_row["details"]["extra"]["title"], "执行被中断");
+    assert_eq!(stored[3]["parts"][0]["type"], "text");
     assert!(
-        tool_row["details_json"]
+        stored[3]["parts"][0]["text"]
             .as_str()
             .unwrap()
-            .contains("执行被中断")
+            .contains("已恢复")
     );
-    assert!(stored[3]["parts_json"].as_str().unwrap().contains("已恢复"));
 
     // The LLM request carried a legal conversation: the tool call is paired
     // with a tool result, and no new user message was appended for a resume.
@@ -1998,6 +1999,8 @@ async fn resume_conflicts_when_nothing_to_resume() {
     // Empty conversation: nothing to resume.
     let resp = app.resume(&conv_id).await;
     assert_eq!(resp.status(), 409);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["code"], "nothing_to_resume");
 
     // A fully answered conversation is not resumable either.
     let resp = app.send_message(&conv_id, "hi").await;
@@ -2008,6 +2011,8 @@ async fn resume_conflicts_when_nothing_to_resume() {
     );
     let resp = app.resume(&conv_id).await;
     assert_eq!(resp.status(), 409);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["code"], "nothing_to_resume");
 
     // The rejected resumes did not leave the session stuck.
     let resp = app.send_message(&conv_id, "again").await;
@@ -2036,6 +2041,8 @@ async fn resume_conflicts_while_a_run_is_in_progress() {
     assert_eq!(first.status(), 200);
     let resp = app.resume(&conv_id).await;
     assert_eq!(resp.status(), 409);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["code"], "already_running");
 
     // The live run is unaffected: cancel still ends it and frees the session.
     let cancel = app.cancel(&conv_id).await;
@@ -2171,8 +2178,9 @@ async fn reconnect_replays_from_run_start_and_continues_live() {
     let stored = stored_messages(&app, &conv_id).await;
     let roles: Vec<&str> = stored.iter().map(|m| m["role"].as_str().unwrap()).collect();
     assert_eq!(roles, vec!["user", "assistant"]);
+    assert_eq!(stored[1]["parts"][0]["type"], "text");
     assert!(
-        stored[1]["parts_json"]
+        stored[1]["parts"][0]["text"]
             .as_str()
             .unwrap()
             .contains("你好，世界")
@@ -2575,16 +2583,9 @@ async fn manual_compact_replaces_history_for_next_request() {
     assert_eq!(stored.len(), 8 + 1, "seeded rows kept + marker");
     let marker = stored
         .iter()
-        .find(|m| {
-            m["details_json"]
-                .as_str()
-                .and_then(|d| serde_json::from_str::<Value>(d).ok())
-                .is_some_and(|d| d["kind"] == "compaction")
-        })
+        .find(|m| m["details"]["kind"] == "compaction")
         .expect("marker row");
-    let details: Value =
-        serde_json::from_str(marker["details_json"].as_str().expect("details")).unwrap();
-    assert_eq!(details["triggered_by"], "manual");
+    assert_eq!(marker["details"]["compaction"]["triggered_by"], "manual");
     assert_eq!(
         marker["ordering"].as_i64(),
         Some(8),
@@ -2851,13 +2852,14 @@ async fn microcompact_original_endpoint_serves_superseded_content() {
         .await;
     assert_eq!(resp.status(), 200);
     let original: Value = resp.json().await.expect("original json");
+    assert_eq!(original["role"], "tool");
+    assert_eq!(original["parts"][0]["type"], "tool_result");
     assert!(
-        original["parts_json"]
+        original["parts"][0]["content"]
             .as_str()
-            .expect("parts")
+            .expect("string content")
             .contains("p0 ")
     );
-    assert_eq!(original["role"], "tool");
 
     // Scope checks: a non-copy row (plain user message) and an unknown id
     // both 404 — the join through supersedes/membership rejects them.
