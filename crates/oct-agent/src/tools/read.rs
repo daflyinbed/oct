@@ -5,19 +5,21 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::sync::Arc;
 
-use super::shared::{ToolSharedState, file_mtime};
+use super::shared::{AgentReadState, file_mtime};
 use super::truncate::{MAX_LINE_CHARS, MAX_TOOL_OUTPUT_BYTES, truncate_line, truncate_middle};
 use super::workspace::WorkspaceRoots;
 use super::{AgentTool, ToolContext, ToolOutput};
 
 pub struct ReadFileTool {
     roots: WorkspaceRoots,
-    shared: Arc<ToolSharedState>,
+    /// This agent's own read records (shared with its write/edit tools only
+    /// — never with another agent; ADR 0002 §5.3).
+    reads: Arc<AgentReadState>,
 }
 
 impl ReadFileTool {
-    pub fn new(roots: WorkspaceRoots, shared: Arc<ToolSharedState>) -> Self {
-        Self { roots, shared }
+    pub fn new(roots: WorkspaceRoots, reads: Arc<AgentReadState>) -> Self {
+        Self { roots, reads }
     }
 }
 
@@ -87,7 +89,7 @@ impl AgentTool for ReadFileTool {
         // Record the read (mtime at read time) so edit_file can enforce its
         // read-before-edit rule. Partial range reads count as reads too.
         if let Some(mtime) = file_mtime(&resolved) {
-            self.shared.record_read(&resolved, mtime);
+            self.reads.record_read(&resolved, mtime);
         }
 
         let lines: Vec<&str> = content.lines().collect();

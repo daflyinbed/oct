@@ -1,14 +1,18 @@
-//! State shared between the file-manipulating tools within a single agent run.
+//! State shared between the file-manipulating tools — split by ownership
+//! scope (ADR 0002 §5.3):
 //!
-//! Two concerns are covered:
-//! - **Read records**: the mtime of each file at the moment our tools last read
-//!   or wrote it. `edit_file` uses this to enforce its read-before-edit rule and
-//!   to detect that the file changed on disk since our last read.
-//! - **Per-file async mutexes**: serialize read-modify-write cycles on the same
-//!   file when the agent loop executes tool calls concurrently.
+//! - [`WorkspaceFileLocks`]: per-file async mutexes serializing
+//!   read-modify-write cycles on the same path. Shared across EVERY agent of
+//!   a project's task tree (root + subagents): a run service hands the same
+//!   `Arc` to parent and children, so cross-agent writes to one file cannot
+//!   interleave.
+//! - [`AgentReadState`]: the mtime of each file at the moment THIS agent last
+//!   read or wrote it. One per agent: A having read a file never authorizes
+//!   B's edit, and A's write never refreshes B's record — `edit_file` uses it
+//!   for the read-before-edit rule and the stale-on-external-change check.
 //!
-//! All interior mutability uses `std::sync::Mutex` with very short critical
-//! sections; a guard is never held across an `.await`.
+//! Both use `std::sync::Mutex` with very short critical sections; a guard is
+//! never held across an `.await`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -18,7 +22,7 @@ use std::time::SystemTime;
 /// Outcome of checking a file against our last read/write record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadCheck {
-    /// No tool in this run has read or written the file yet.
+    /// No tool of this agent has read or written the file yet.
     NotRead,
     /// The file's current mtime differs from the one recorded at our last
     /// read/write, so our view of it is out of date.
@@ -27,18 +31,19 @@ pub enum ReadCheck {
     Fresh,
 }
 
-pub struct ToolSharedState {
-    /// File mtime recorded when a tool last read or wrote the file.
+/// Per-agent read/write records (ADR 0002 §5.3): one instance per agent —
+/// the parent and every subagent keep their own, so an edit by one never
+/// counts as a read by another.
+pub struct AgentReadState {
+    /// File mtime recorded when one of this agent's tools last read or wrote
+    /// the file.
     read_records: Mutex<HashMap<PathBuf, SystemTime>>,
-    /// Lazily created per-file async mutexes.
-    file_locks: Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>,
 }
 
-impl ToolSharedState {
+impl AgentReadState {
     pub fn new() -> Self {
         Self {
             read_records: Mutex::new(HashMap::new()),
-            file_locks: Mutex::new(HashMap::new()),
         }
     }
 
@@ -81,6 +86,29 @@ impl ToolSharedState {
             _ => ReadCheck::Fresh,
         }
     }
+}
+
+impl Default for AgentReadState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Per-path async mutexes shared across the whole task tree (root run plus
+/// its subagents): serialize read-modify-write cycles on the same file when
+/// tool calls execute concurrently — including calls issued by different
+/// agents of the same project.
+pub struct WorkspaceFileLocks {
+    /// Lazily created per-file async mutexes.
+    file_locks: Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>,
+}
+
+impl WorkspaceFileLocks {
+    pub fn new() -> Self {
+        Self {
+            file_locks: Mutex::new(HashMap::new()),
+        }
+    }
 
     /// Get (creating and caching on first use) the async mutex for `path`,
     /// used to serialize read-modify-write cycles on the same file.
@@ -94,7 +122,7 @@ impl ToolSharedState {
     }
 }
 
-impl Default for ToolSharedState {
+impl Default for WorkspaceFileLocks {
     fn default() -> Self {
         Self::new()
     }
@@ -111,7 +139,7 @@ mod tests {
 
     #[test]
     fn check_read_reports_not_read_stale_fresh() {
-        let state = ToolSharedState::new();
+        let state = AgentReadState::new();
         let dir = std::env::temp_dir().join(format!(
             "oct-shared-test-{}-{}",
             std::process::id(),
@@ -146,16 +174,52 @@ mod tests {
     }
 
     #[test]
+    fn read_state_is_per_agent() {
+        // A's records must not authorize or refresh B's view: two separate
+        // AgentReadState instances never see each other's reads (the split
+        // ToolSharedState guarantees in ADR 0002 §5.3). A REAL file is needed:
+        // a stat failure degrades to Fresh by design, so a path that never
+        // exists cannot exercise the Stale branch.
+        let dir = std::env::temp_dir().join(format!(
+            "oct-shared-split-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("f.txt");
+        std::fs::write(&file, "hello").unwrap();
+
+        let a = AgentReadState::new();
+        let b = AgentReadState::new();
+        let mtime = file_mtime(&file).unwrap();
+
+        a.record_read(&file, mtime);
+        assert_eq!(a.check_read(&file), ReadCheck::Fresh);
+        assert_eq!(b.check_read(&file), ReadCheck::NotRead);
+
+        // A's write refreshes only A's record; B still has no record of its
+        // own (B must re-read before editing).
+        a.record_write(&file, mtime + std::time::Duration::from_secs(1));
+        assert_eq!(a.check_read(&file), ReadCheck::Stale);
+        assert_eq!(b.check_read(&file), ReadCheck::NotRead);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn lock_for_returns_the_same_lock_per_path() {
-        let state = ToolSharedState::new();
+        let locks = WorkspaceFileLocks::new();
         let a = Path::new("/tmp/a.txt");
         let b = Path::new("/tmp/b.txt");
 
-        let lock1 = state.lock_for(a);
-        let lock2 = state.lock_for(a);
+        let lock1 = locks.lock_for(a);
+        let lock2 = locks.lock_for(a);
         assert!(Arc::ptr_eq(&lock1, &lock2));
 
-        let lock_b = state.lock_for(b);
+        let lock_b = locks.lock_for(b);
         assert!(!Arc::ptr_eq(&lock1, &lock_b));
     }
 }

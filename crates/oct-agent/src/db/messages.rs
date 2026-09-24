@@ -188,16 +188,63 @@ pub async fn insert_message(
     model_id: Option<&str>,
     details: Option<&Value>,
 ) -> Result<StoredMessage> {
-    let mut tx = pool.begin().await?;
+    // The transaction reads (SELECT MAX) before writing, so a concurrent
+    // writer committing in between surfaces as an immediate BUSY (plain or
+    // the 517 snapshot-upgrade variant) that busy_timeout will not retry.
+    // Root and subagent loops append to one database concurrently now;
+    // retrying a fresh transaction is the standard resolution, and the
+    // second attempt sees the committed ordering.
+    const BUSY_ATTEMPTS: usize = 8;
+    for attempt in 1..=BUSY_ATTEMPTS {
+        let mut tx = pool.begin().await?;
+        match insert_message_in_tx(
+            &mut tx,
+            conversation_id,
+            message,
+            provider_id,
+            model_id,
+            details,
+        )
+        .await
+        {
+            Ok(stored) => {
+                tx.commit().await?;
+                return Ok(stored);
+            }
+            Err(e)
+                if e.downcast_ref::<sqlx::Error>()
+                    .is_some_and(crate::db::is_busy)
+                    && attempt < BUSY_ATTEMPTS =>
+            {
+                tx.rollback().await.ok();
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("the loop returns on its final attempt")
+}
+
+/// [`insert_message`] inside a caller-owned transaction (the subagent
+/// registration creates the child conversation, delegation message and run
+/// row atomically).
+pub async fn insert_message_in_tx(
+    tx: &mut SqliteConnection,
+    conversation_id: &str,
+    message: &Message,
+    provider_id: Option<&str>,
+    model_id: Option<&str>,
+    details: Option<&Value>,
+) -> Result<StoredMessage> {
     let ordering = sqlx::query_scalar!(
         "SELECT COALESCE(MAX(ordering), 0) + 1 FROM conversation_messages WHERE conversation_id = $1",
         conversation_id,
     )
     .fetch_one(&mut *tx)
     .await?;
-    let revision = bump_revision(&mut tx, conversation_id).await?;
+    let revision = bump_revision(tx, conversation_id).await?;
     let stored = append_row(
-        &mut tx,
+        tx,
         conversation_id,
         message,
         provider_id,
@@ -208,7 +255,6 @@ pub async fn insert_message(
         None,
     )
     .await?;
-    tx.commit().await?;
     Ok(stored)
 }
 
@@ -658,7 +704,24 @@ pub async fn repair_dangling_tool_calls(
     pool: &SqlitePool,
     conversation_id: &str,
 ) -> Result<Vec<String>> {
-    let dangling = find_dangling_tool_calls(pool, conversation_id).await?;
+    repair_dangling_tool_calls_except(pool, conversation_id, &[]).await
+}
+
+/// [`repair_dangling_tool_calls`] with an exclusion set: call ids in
+/// `exclude` are NEVER repaired. The recovery coordinator passes the managed
+/// `task` delegations here — those calls are waiting on their child runs and
+/// must not be turned into error placeholders (ADR 0002 §6.4: 父级未结算的
+/// task 不走普通“补中断错误”修复).
+pub async fn repair_dangling_tool_calls_except(
+    pool: &SqlitePool,
+    conversation_id: &str,
+    exclude: &[String],
+) -> Result<Vec<String>> {
+    let dangling = find_dangling_tool_calls(pool, conversation_id)
+        .await?
+        .into_iter()
+        .filter(|id| !exclude.contains(id))
+        .collect::<Vec<_>>();
     for call_id in &dangling {
         let placeholder = Message {
             role: Role::Tool,
@@ -684,6 +747,47 @@ pub async fn repair_dangling_tool_calls(
     Ok(dangling)
 }
 
+/// The "结果只落一次" primitive (ADR 0002 §6.4): persist a ToolResult
+/// answering `call_id` in `conversation_id` — but only when no tool row
+/// already answers it (same scan family as [`find_dangling_tool_calls`]).
+/// Returns whether THIS call inserted the row; the envelope is the caller's
+/// single source of truth, so a `false` just means the result already landed
+/// (e.g. the previous recovery attempt crashed right after persisting).
+pub async fn answer_tool_call_if_absent(
+    pool: &SqlitePool,
+    conversation_id: &str,
+    call_id: &str,
+    content: &str,
+    is_error: bool,
+    details: Option<Value>,
+) -> Result<bool> {
+    // Absent exactly when the call is still dangling in this conversation
+    // (same marker-aware scan as the repair path).
+    let dangling = find_dangling_tool_calls(pool, conversation_id).await?;
+    if !dangling.iter().any(|id| id == call_id) {
+        return Ok(false);
+    }
+    let tool_msg = Message {
+        role: Role::Tool,
+        parts: vec![ContentPart::ToolResult(ToolResult {
+            call_id: call_id.to_string(),
+            content: Value::String(content.to_string()),
+            is_error,
+            images: Vec::new(),
+        })],
+    };
+    insert_message(
+        pool,
+        conversation_id,
+        &tool_msg,
+        None,
+        None,
+        details.as_ref(),
+    )
+    .await?;
+    Ok(true)
+}
+
 /// Whether the conversation's last message (by ordering) is a user message —
 /// i.e. a turn was sent but never got any reply. Compaction markers don't
 /// count: a manual compact right after an interrupted turn must not mask the
@@ -693,6 +797,21 @@ pub async fn last_message_is_user(pool: &SqlitePool, conversation_id: &str) -> R
         .await?
         .last()
         .is_some_and(|m| m.role == "user" && !is_compaction_marker(m)))
+}
+
+/// The role of the conversation's last message (by ordering), or `None` for
+/// an empty conversation. The extended resume-eligibility probe needs the
+/// raw role: a `lost` run may have crashed after every tool result landed
+/// but before the next model request, leaving `tool` as the last row (ADR
+/// 0002 §6.4 恢复资格看 run 状态).
+pub async fn last_message_role(
+    pool: &SqlitePool,
+    conversation_id: &str,
+) -> Result<Option<String>> {
+    Ok(list_messages(pool, conversation_id)
+        .await?
+        .last()
+        .map(|m| m.role.clone()))
 }
 
 /// The conversation's most recent message timestamp. The idle trigger for
@@ -720,6 +839,38 @@ pub struct MessageContent {
     pub parts_json: String,
     pub details_json: Option<String>,
     pub created_at: NaiveDateTime,
+}
+
+/// Fetch one content row by id (no membership/scope check — callers must
+/// already hold a scoped reference, e.g. a run row's `final_message_id`).
+pub async fn get_message_content(
+    pool: &SqlitePool,
+    id: &str,
+) -> Result<Option<MessageContent>> {
+    let row = sqlx::query_as!(
+        MessageContent,
+        "SELECT id, role, parts_json, details_json, created_at FROM messages WHERE id = $1",
+        id,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
+/// The id of a conversation's FIRST user message — the delegation prompt of
+/// a subagent conversation (its run boundary), by construction its first
+/// row.
+pub async fn first_user_message_id(
+    pool: &SqlitePool,
+    conversation_id: &str,
+) -> Result<Option<String>> {
+    let id = sqlx::query_scalar!(
+        "SELECT m.id FROM conversation_messages cm JOIN messages m ON m.id = cm.message_id WHERE cm.conversation_id = $1 AND m.role = 'user' ORDER BY cm.ordering ASC LIMIT 1",
+        conversation_id,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(id)
 }
 
 /// Fetch the original content row that the COW copy `copy_id` supersedes,

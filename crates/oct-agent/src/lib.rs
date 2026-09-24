@@ -6,4 +6,5 @@ pub mod mcp;
 pub mod oauth;
 pub mod runtime;
 pub mod seed;
+pub mod subagent;
 pub mod tools;

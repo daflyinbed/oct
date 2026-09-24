@@ -28,3 +28,16 @@ pub async fn init_pool(database_url: &str) -> Result<SqlitePool> {
 
     Ok(pool)
 }
+
+/// Whether a database error is SQLite BUSY (code 5). A deferred transaction
+/// that reads and then writes (e.g. `SELECT MAX(ordering)` followed by an
+/// UPDATE) can hit BUSY as an immediate snapshot-upgrade conflict when
+/// another writer committed since the read began — a case `busy_timeout`
+/// does NOT retry. Root and subagent loops now write to one database
+/// concurrently, so callers with that read-then-write shape retry on it
+/// (see `messages::insert_message`).
+pub fn is_busy(e: &sqlx::Error) -> bool {
+    e.as_database_error()
+        .and_then(|db| db.code())
+        .is_some_and(|code| matches!(code.as_ref(), "5" | "517"))
+}

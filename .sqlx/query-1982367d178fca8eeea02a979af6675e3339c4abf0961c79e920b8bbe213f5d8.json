@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE agent_runs SET status = $1, finished_at = $2, final_message_id = $3, error = $4, input_tokens = $5, output_tokens = $6 WHERE id = $7 AND status IN ('running', 'lost') AND ($8 IS NULL OR execution_epoch = $8)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "1982367d178fca8eeea02a979af6675e3339c4abf0961c79e920b8bbe213f5d8"
+}

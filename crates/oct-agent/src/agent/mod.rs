@@ -143,11 +143,64 @@ pub enum AgentEvent {
     /// truncate its DB-loaded history exactly at the run boundary.
     #[serde(rename = "run_meta")]
     RunMeta { start_message_id: String },
+
+    /// A subagent task of this run changed state (started / settled /
+    /// recovered). Published on the PARENT run's hub only — small by design
+    /// (ADR 0002 §7.3): the child's own text/reasoning/tool events stay on
+    /// the child hub and are subscribed to separately. Never carries the
+    /// child's `finish`/`usage`: forwarding those would wrongly end the
+    /// parent stream or corrupt the parent's context ring.
+    #[serde(rename = "subagent_updated")]
+    SubagentUpdated {
+        run_id: String,
+        /// The child's conversation id (== agent id in v1).
+        agent_id: String,
+        /// The parent tool call this task answers.
+        parent_call_id: String,
+        status: SubagentRunStatus,
+        /// Which execution instance produced the event: recovery bumps the
+        /// epoch, letting consumers discard stale-instance events.
+        execution_epoch: u64,
+        description: String,
+        /// Best-effort activity summary at publish time (e.g. the tool the
+        /// child is currently running); `None` when unknown.
+        activity: Option<String>,
+    },
+}
+
+/// Lifecycle status of a subagent task (the `subagent_updated` event's
+/// `status` and the subagent list API's status field). Mirrors the persisted
+/// `agent_runs.status` vocabulary, with `running` while live and `lost`
+/// meaning the executing instance died before settling.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentRunStatus {
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+    Lost,
+}
+
+impl SubagentRunStatus {
+    /// Parse the persisted `agent_runs.status` string.
+    pub fn from_run_status(status: &str) -> Self {
+        match status {
+            "completed" => SubagentRunStatus::Completed,
+            "failed" => SubagentRunStatus::Failed,
+            "cancelled" => SubagentRunStatus::Cancelled,
+            "lost" => SubagentRunStatus::Lost,
+            _ => SubagentRunStatus::Running,
+        }
+    }
 }
 
 pub struct AgentContext {
     pub model: Arc<dyn ChatModel>,
-    pub tools: Arc<Vec<Box<dyn AgentTool>>>,
+    /// The run's toolset as `Arc` clones: cheap per-call clones, and the
+    /// `task` tool can hand the very same instances to its subagents (minus
+    /// itself) instead of rebuilding stateful tools.
+    pub tools: Arc<Vec<Arc<dyn AgentTool>>>,
     pub pool: SqlitePool,
     pub system_prompt: String,
     /// Context window (max input tokens) of the resolved model: built-in

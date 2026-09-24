@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO conversations (id, project_id, title, title_source, kind, parent_conversation_id, root_conversation_id, agent_type, created_at, updated_at) VALUES ($1, $2, $3, $4, 'chat', NULL, NULL, NULL, $5, $6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "10bc0dac13b2afb924be90d228eb24af0d1d18ea58c05b1780c92a29975c462c"
+}

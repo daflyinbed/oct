@@ -295,7 +295,12 @@ pub async fn spawn_agent_full(
 
     let ctx = AgentContext {
         model: Arc::new(model),
-        tools: Arc::new(tools),
+        tools: Arc::new(
+            tools
+                .into_iter()
+                .map(std::sync::Arc::from)
+                .collect::<Vec<std::sync::Arc<dyn oct_agent::tools::AgentTool>>>(),
+        ),
         pool,
         system_prompt: "test system prompt".to_string(),
         context_window,
@@ -382,13 +387,20 @@ impl TestApp {
         let mcp = Arc::new(oct_agent::mcp::McpManager::default());
         let sessions: Arc<dashmap::DashMap<String, oct_agent::agent::RunHandle>> =
             Arc::new(dashmap::DashMap::new());
+        // Same two-phase wire as run_server (RunService owns the manager; the
+        // manager reaches back through a OnceLock).
+        let subagents = Arc::new(oct_agent::subagent::SubagentManager::default());
+        let runs = Arc::new(oct_agent::runtime::RunService {
+            pool: pool.clone(),
+            registry: Arc::new(default_registry()),
+            mcp: mcp.clone(),
+            sessions: sessions.clone(),
+            file_locks: dashmap::DashMap::new(),
+            subagents: subagents.clone(),
+        });
+        subagents.set_service(runs.clone());
         let state = oct_agent::api::AppState {
-            runs: Arc::new(oct_agent::runtime::RunService {
-                pool: pool.clone(),
-                registry: Arc::new(default_registry()),
-                mcp: mcp.clone(),
-                sessions: sessions.clone(),
-            }),
+            runs,
             pool: pool.clone(),
             registry: Arc::new(default_registry()),
             sessions,

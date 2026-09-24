@@ -7,6 +7,7 @@ pub mod git;
 pub mod mcp;
 pub mod projects;
 pub mod providers;
+pub mod subagents;
 
 use axum::Router;
 use dashmap::DashMap;
@@ -78,6 +79,7 @@ pub struct AppState {
         chat::RunningStatus,
         chat::CompactQuery,
         chat::CompactResult,
+        subagents::SubagentTaskDto,
         error::ErrorBody,
         dto::MessageDto,
         dto::MessagePart,
@@ -88,6 +90,7 @@ pub struct AppState {
         crate::agent::CompactionTrigger,
         crate::agent::MicrocompactTrigger,
         crate::agent::MicrocompactReplacement,
+        crate::agent::SubagentRunStatus,
         files::FileContent,
         files::FileEntry,
         files::FileEntryKind,
@@ -167,5 +170,10 @@ fn api_routes(state: AppState) -> OpenApiRouter<AppState> {
         // Run reconnection (frontend refresh while a run is in flight)
         .routes(utoipa_axum::routes!(chat::get_run_status))
         .routes(utoipa_axum::routes!(chat::stream_run_events))
+        // Subagents (task list / child history / child events / child cancel)
+        .routes(utoipa_axum::routes!(subagents::list_subagents))
+        .routes(utoipa_axum::routes!(subagents::get_subagent_messages))
+        .routes(utoipa_axum::routes!(subagents::stream_subagent_events))
+        .routes(utoipa_axum::routes!(subagents::cancel_subagent))
         .with_state(state)
 }
