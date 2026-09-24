@@ -118,22 +118,51 @@ export function useProjects() {
   };
 
   /**
-   * 本地更新某个会话的标题（title_updated 事件到达时）。后端保证手动命名
-   * 永不被自动标题覆盖，所以这里无条件覆盖即可。不命中任何列表则忽略——
-   * 该会话尚未在侧栏加载，下次 fetchConversations 自然带上新标题。
+   * 本地更新某个会话的标题（title_updated 事件 / 手动改名落地时）。后端保证
+   * 手动命名永不被自动标题覆盖，所以这里无条件覆盖即可。不命中任何列表则
+   * 忽略——该会话尚未在侧栏加载，下次 fetchConversations 自然带上新标题。
    */
-  const updateConversationTitle = (conversationId: string, title: string) => {
+  const updateConversationTitle = (
+    conversationId: string,
+    title: string,
+    source: Conversation["title_source"] = "ai",
+  ) => {
     for (const [projectId, list] of conversations.value) {
       const index = list.findIndex((c) => c.id === conversationId);
       if (index !== -1) {
         const next = [...list];
         // title_source 一并补上：来源字段的价值在数据里，不留"default 配 AI
         // 标题"的矛盾状态（当前无读取方，但保持与后端落库结果一致）。
-        next[index] = { ...next[index]!, title, title_source: "ai" };
+        next[index] = { ...next[index]!, title, title_source: source };
         conversations.value = new Map(conversations.value).set(projectId, next);
         return;
       }
     }
+  };
+
+  /**
+   * 手动重命名会话（侧栏行内改名）。后端 PATCH 成功即写 title_source='user'，
+   * 此后自动标题永不覆盖；响应无正文，成功后直接以请求值落地本地列表
+   * （title_source 同步标 user，与落库结果一致）。空白标题不发请求直接
+   * 返回 false——调用方按钮已按空值禁用，这里是双保险。
+   */
+  const renameConversation = async (
+    projectId: string,
+    conversationId: string,
+    title: string,
+  ) => {
+    const trimmed = title.trim();
+    if (!trimmed) return false;
+    const { error } = await client.PATCH(
+      "/api/projects/{projectId}/conversations/{id}",
+      {
+        params: { path: { projectId, id: conversationId } },
+        body: { title: trimmed },
+      },
+    );
+    if (error) return false;
+    updateConversationTitle(conversationId, trimmed, "user");
+    return true;
   };
 
   return {
@@ -150,5 +179,6 @@ export function useProjects() {
     createConversation,
     deleteConversation,
     updateConversationTitle,
+    renameConversation,
   };
 }

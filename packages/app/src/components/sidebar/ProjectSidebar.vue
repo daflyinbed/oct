@@ -48,29 +48,48 @@
         </button>
 
         <div v-if="expandedProjects.has(project.id)" class="space-y-px">
-          <button
+          <!-- ContextMenuRoot 不渲染 DOM，行结构与样式保持不变；右键触发，不拦截左键点击 -->
+          <ContextMenuRoot
             v-for="conv in conversations.get(project.id) ?? []"
-            v-show="
-              !filter.trim() ||
-              (conv.title || 'New Chat')
-                .toLowerCase()
-                .includes(filter.trim().toLowerCase())
-            "
             :key="conv.id"
-            class="relative w-full flex items-center rounded-md py-[5px] pl-[26px] pr-2 text-left text-[12.5px] control-focus transition-colors"
-            :class="
-              selectedConversationId === conv.id
-                ? 'bg-accent-3 text-neutral-10'
-                : 'text-dim hover:bg-neutral-1 hover:text-neutral-10'
-            "
-            @click="$emit('selectConversation', conv.id, project.id)"
           >
-            <span
-              v-if="selectedConversationId === conv.id"
-              class="absolute left-2 top-1/2 h-3.5 w-[3px] rounded-full bg-accent-7 -translate-y-1/2"
-            />
-            <span class="truncate">{{ conv.title || "New Chat" }}</span>
-          </button>
+            <ContextMenuTrigger as-child>
+              <button
+                v-show="
+                  !filter.trim() ||
+                  (conv.title || 'New Chat')
+                    .toLowerCase()
+                    .includes(filter.trim().toLowerCase())
+                "
+                class="relative w-full flex items-center rounded-md py-[5px] pl-[26px] pr-2 text-left text-[12.5px] control-focus transition-colors"
+                :class="
+                  selectedConversationId === conv.id
+                    ? 'bg-accent-3 text-neutral-10'
+                    : 'text-dim hover:bg-neutral-1 hover:text-neutral-10'
+                "
+                @click="$emit('selectConversation', conv.id, project.id)"
+              >
+                <span
+                  v-if="selectedConversationId === conv.id"
+                  class="absolute left-2 top-1/2 h-3.5 w-[3px] rounded-full bg-accent-7 -translate-y-1/2"
+                />
+                <span class="truncate">{{ conv.title || "New Chat" }}</span>
+              </button>
+            </ContextMenuTrigger>
+            <ContextMenuPortal>
+              <ContextMenuContent
+                class="z-50 min-w-[150px] border border-neutral-5 rounded-lg bg-surface p-1 shadow-[var(--oct-shadow)]"
+              >
+                <ContextMenuItem
+                  class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-[12.5px] text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
+                  @select="renaming = conv"
+                >
+                  <i-lucide-pencil class="h-3.5 w-3.5 text-dim" />
+                  重命名
+                </ContextMenuItem>
+              </ContextMenuContent>
+            </ContextMenuPortal>
+          </ContextMenuRoot>
 
           <button
             class="w-full flex items-center gap-1.5 rounded-md py-[5px] pl-[26px] pr-2 text-left text-[12.5px] text-faint control-focus transition-colors hover:bg-neutral-1 hover:text-accent-10"
@@ -82,11 +101,26 @@
         </div>
       </div>
     </div>
+
+    <!-- 行内改名：右键菜单选中「重命名」后弹出，DialogPortal 挂到 body -->
+    <ConversationRenameDialog
+      :visible="renaming !== null"
+      :conversation="renaming"
+      @close="renaming = null"
+    />
   </aside>
 </template>
 
 <script setup lang="ts">
+import {
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuPortal,
+  ContextMenuRoot,
+  ContextMenuTrigger,
+} from "reka-ui";
 import { computed, ref, watch } from "vue";
+import ConversationRenameDialog from "@/components/sidebar/ConversationRenameDialog.vue";
 import type { components } from "@/api/schema";
 
 type Project = components["schemas"]["Project"];
@@ -105,6 +139,9 @@ defineEmits<{
 
 const expandedProjects = ref<Set<string>>(new Set());
 const filter = ref("");
+
+// 正在改名的会话；非 null 即弹窗打开，置 null 即关闭（取消/Esc/成功统一走这里）
+const renaming = ref<Conversation | null>(null);
 
 // 搜索时隐藏没有匹配对话的项目分组
 const visibleProjects = computed(() => {

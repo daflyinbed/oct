@@ -17,6 +17,7 @@ const {
   createProject,
   updateProject,
   updateConversationTitle,
+  renameConversation,
 } = useProjects();
 
 function conversation(id: string, title: string) {
@@ -169,5 +170,53 @@ describe("updateConversationTitle（title_updated 事件落地）", () => {
 
     updateConversationTitle("not-loaded", "不存在");
     expect(conversations.value.get("p1")).toHaveLength(1);
+  });
+});
+
+describe("renameConversation（侧栏行内改名）", () => {
+  it("trim 后以正确 body 调 PATCH，成功后本地标题与 title_source 一起更新为 user", async () => {
+    stubList([conversation("c1", "New conversation")]);
+    await fetchConversations("p1");
+
+    PATCH.mockResolvedValue({ data: undefined, error: undefined } as never);
+
+    const ok = await renameConversation("p1", "c1", "  手动命名  ");
+
+    expect(ok).toBe(true);
+    expect(PATCH).toHaveBeenCalledWith(
+      "/api/projects/{projectId}/conversations/{id}",
+      {
+        params: { path: { projectId: "p1", id: "c1" } },
+        body: { title: "手动命名" },
+      },
+    );
+    const renamed = conversations.value.get("p1")?.[0];
+    expect(renamed?.title).toBe("手动命名");
+    expect(renamed?.title_source).toBe("user");
+  });
+
+  it("空白标题直接返回 false，不发请求、本地不变", async () => {
+    stubList([conversation("c1", "New conversation")]);
+    await fetchConversations("p1");
+
+    const ok = await renameConversation("p1", "c1", "   ");
+
+    expect(ok).toBe(false);
+    expect(PATCH).not.toHaveBeenCalled();
+    expect(conversations.value.get("p1")?.[0]?.title).toBe("New conversation");
+    expect(conversations.value.get("p1")?.[0]?.title_source).toBe("default");
+  });
+
+  it("renameConversation PATCH 失败返回 false，本地标题保持不变", async () => {
+    stubList([conversation("c1", "old")]);
+    await fetchConversations("p1");
+
+    PATCH.mockResolvedValue({ data: undefined, error: {} } as never);
+
+    const ok = await renameConversation("p1", "c1", "new");
+
+    expect(ok).toBe(false);
+    expect(conversations.value.get("p1")?.[0]?.title).toBe("old");
+    expect(conversations.value.get("p1")?.[0]?.title_source).toBe("default");
   });
 });
