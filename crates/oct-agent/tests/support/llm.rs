@@ -277,3 +277,20 @@ pub fn finish_chunk(reason: &str) -> Value {
         "choices": [{"index": 0, "delta": {}, "finish_reason": reason}],
     })
 }
+
+/// A usage-only chunk (OpenAI's `stream_options.include_usage` final event
+/// shape): no choices, just the token accounting. The adapter maps it to a
+/// Usage stream event, which the agent loop aggregates into the run's
+/// persisted `agent_runs.input_tokens/output_tokens`.
+pub fn usage_chunk(prompt_tokens: u32, completion_tokens: u32) -> Value {
+    json!({
+        "id": "chatcmpl-mock",
+        "object": "chat.completion.chunk",
+        "choices": [],
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        },
+    })
+}

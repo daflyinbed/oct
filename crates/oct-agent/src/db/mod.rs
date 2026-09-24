@@ -5,6 +5,7 @@ pub mod messages;
 pub mod models;
 pub mod projects;
 pub mod providers;
+pub mod runs;
 
 use anyhow::Result;
 use sqlx::SqlitePool;

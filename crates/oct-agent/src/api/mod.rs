@@ -19,6 +19,7 @@ use utoipa_scalar::{Scalar, Servable};
 use crate::agent::RunHandle;
 use crate::mcp::McpManager;
 use crate::oauth::OAuthFlowStore;
+use crate::runtime::RunService;
 use oct_llm_provider::provider::ProviderRegistry;
 
 #[derive(Clone)]
@@ -26,6 +27,11 @@ pub struct AppState {
     pub pool: SqlitePool,
     pub registry: Arc<ProviderRegistry>,
     pub sessions: Arc<DashMap<String, RunHandle>>,
+    /// Application-layer run lifecycle (ADR 0002 §6.1): conversation
+    /// occupancy, agent_runs persistence and loop supervision. Holds clones
+    /// of the `Arc`s above — `sessions` in particular is the SAME instance,
+    /// so the reconnect/status endpoints keep observing the same occupancy.
+    pub runs: Arc<RunService>,
     /// Process-wide MCP connection manager: reconciled against the enabled
     /// `mcp_servers` rows on every chat turn, and read by the MCP list/get
     /// endpoints for live connection status.

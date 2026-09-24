@@ -14,12 +14,56 @@ use oct_llm_provider::model::ChatRequest;
 
 use crate::agent::compact::{self, CompactAttempt};
 use crate::agent::micro::{self, MicroAttempt};
-use crate::agent::{AgentContext, AgentEvent, MicrocompactTrigger, RunHandle};
+use crate::agent::{
+    AgentContext, AgentEvent, MicrocompactTrigger, RunHandle, RunOutcome, RunStatus, RunUsage,
+};
 use crate::context::{ContextState, LlmView};
 use crate::db::messages as msg_db;
 use crate::tools;
 
-pub async fn run_agent_loop(ctx: AgentContext, conv_id: String, view: LlmView, handle: RunHandle) {
+/// Final-message fields from the run's assistant-row bookkeeping `(id, text)`:
+/// the row id always (when one exists), the text only when non-empty.
+fn final_fields(last_assistant: Option<(String, String)>) -> (Option<String>, Option<String>) {
+    match last_assistant {
+        Some((id, text)) => (Some(id), (!text.is_empty()).then_some(text)),
+        None => (None, None),
+    }
+}
+
+/// The usage aggregate iff at least one Usage event arrived during the run.
+fn usage_opt(seen: bool, total: &RunUsage) -> Option<RunUsage> {
+    seen.then(|| total.clone())
+}
+
+/// Envelope for every non-Finish termination (cancel or failure): final
+/// fields come from the last persisted assistant row. `partial` marks
+/// persisted output and follows the caller's rule — for a cancel ANY
+/// assistant row counts; for a failure only one carrying text (a
+/// reasoning-only/tool-only tail is not a user-visible partial answer).
+fn interrupted_outcome(
+    status: RunStatus,
+    partial: bool,
+    error: Option<String>,
+    last_assistant: Option<(String, String)>,
+    usage: Option<RunUsage>,
+) -> RunOutcome {
+    let (final_message_id, final_text) = final_fields(last_assistant);
+    RunOutcome {
+        status,
+        final_message_id,
+        final_text,
+        partial,
+        usage,
+        error,
+    }
+}
+
+pub async fn run_agent_loop(
+    ctx: AgentContext,
+    conv_id: String,
+    view: LlmView,
+    handle: RunHandle,
+) -> RunOutcome {
     // The run's mutable view of the conversation: system prompt + ordered
     // entries + usage anchor, kept in lockstep with the DB by construction
     // (see the `context` module doc).
@@ -37,6 +81,14 @@ pub async fn run_agent_loop(ctx: AgentContext, conv_id: String, view: LlmView, h
     let mut idle_micro_due = ctx.idle.is_some_and(|d| d >= micro::IDLE_TRIGGER);
     let mut micro_disabled = false;
 
+    // RunOutcome bookkeeping (ADR 0002 §6.1): the most recent successfully
+    // persisted assistant row `(id, text)` — text may be empty when the row
+    // carried only reasoning/tool parts — and the usage aggregate over every
+    // Usage event seen during the run (absent ⇒ unknown, not zero).
+    let mut last_assistant: Option<(String, String)> = None;
+    let mut usage_total = RunUsage::default();
+    let mut usage_seen = false;
+
     let tool_specs: Vec<_> = ctx
         .tools
         .iter()
@@ -46,7 +98,14 @@ pub async fn run_agent_loop(ctx: AgentContext, conv_id: String, view: LlmView, h
     loop {
         if handle.cancel.is_cancelled() {
             handle.hub.publish(AgentEvent::Cancelled);
-            return;
+            let partial = last_assistant.is_some();
+            return interrupted_outcome(
+                RunStatus::Cancelled,
+                partial,
+                None,
+                last_assistant,
+                usage_opt(usage_seen, &usage_total),
+            );
         }
 
         // Turn-top maintenance — BEFORE the request, so both the first turn
@@ -122,7 +181,14 @@ pub async fn run_agent_loop(ctx: AgentContext, conv_id: String, view: LlmView, h
                     CompactAttempt::Failed => auto_compact_disabled = true,
                     CompactAttempt::Cancelled => {
                         handle.hub.publish(AgentEvent::Cancelled);
-                        return;
+                        let partial = last_assistant.is_some();
+                        return interrupted_outcome(
+                            RunStatus::Cancelled,
+                            partial,
+                            None,
+                            last_assistant,
+                            usage_opt(usage_seen, &usage_total),
+                        );
                     }
                 }
             }
@@ -134,15 +200,40 @@ pub async fn run_agent_loop(ctx: AgentContext, conv_id: String, view: LlmView, h
             options: GenerateOptions::default(),
         };
 
-        let stream_result = ctx.model.stream(request).await;
+        // The request-establishment await must respond to cancellation too
+        // (ADR 0002 §6.1): a cancelled run must not hang inside connection
+        // setup waiting for a stream that may never open.
+        let stream_result = tokio::select! {
+            result = ctx.model.stream(request) => result,
+            _ = handle.cancel.cancelled() => {
+                info!("Agent loop cancelled while establishing the LLM stream");
+                handle.hub.publish(AgentEvent::Cancelled);
+                let partial = last_assistant.is_some();
+                return interrupted_outcome(
+                    RunStatus::Cancelled,
+                    partial,
+                    None,
+                    last_assistant,
+                    usage_opt(usage_seen, &usage_total),
+                );
+            }
+        };
         let mut event_stream = match stream_result {
             Ok(s) => s,
             Err(e) => {
+                let message = format!("LLM error: {e}");
                 error!("Failed to start stream: {e}");
-                handle
-                    .hub
-                    .publish(AgentEvent::Error(format!("LLM error: {e}")));
-                return;
+                handle.hub.publish(AgentEvent::Error(message.clone()));
+                let partial = last_assistant
+                    .as_ref()
+                    .is_some_and(|(_, text)| !text.is_empty());
+                return interrupted_outcome(
+                    RunStatus::Failed,
+                    partial,
+                    Some(message),
+                    last_assistant,
+                    usage_opt(usage_seen, &usage_total),
+                );
             }
         };
 
@@ -156,6 +247,11 @@ pub async fn run_agent_loop(ctx: AgentContext, conv_id: String, view: LlmView, h
         // input+output of the request currently streaming; committed as the
         // usage anchor once the assistant message lands in full_messages.
         let mut pending_anchor: Option<u64> = None;
+        // This round's persisted assistant row (id, text): the Finish
+        // envelope reads it directly below (by construction the final
+        // message), while a copy feeds the run-wide `last_assistant` for the
+        // interrupted paths.
+        let mut round_assistant: Option<(String, String)> = None;
 
         loop {
             tokio::select! {
@@ -197,6 +293,13 @@ pub async fn run_agent_loop(ctx: AgentContext, conv_id: String, view: LlmView, h
                             pending_tool_calls.push(tc);
                         }
                         Ok(StreamEvent::Usage(usage)) => {
+                            // Run aggregate for the RunOutcome (alongside the
+                            // per-request anchor bookkeeping below).
+                            usage_seen = true;
+                            usage_total.input_tokens +=
+                                u64::from(usage.input_tokens.unwrap_or(0));
+                            usage_total.output_tokens +=
+                                u64::from(usage.output_tokens.unwrap_or(0));
                             last_usage = Some((
                                 usage.input_tokens,
                                 usage.output_tokens,
@@ -223,18 +326,33 @@ pub async fn run_agent_loop(ctx: AgentContext, conv_id: String, view: LlmView, h
                         }
                         Ok(StreamEvent::ToolResult(_)) => {}
                         Err(e) => {
+                            let message = format!("Stream error: {e}");
                             error!("Stream error: {e}");
-                            handle.hub.publish(AgentEvent::Error(format!(
-                                "Stream error: {e}"
-                            )));
-                            return;
+                            handle.hub.publish(AgentEvent::Error(message.clone()));
+                            let partial = last_assistant
+                                .as_ref()
+                                .is_some_and(|(_, text)| !text.is_empty());
+                            return interrupted_outcome(
+                                RunStatus::Failed,
+                                partial,
+                                Some(message),
+                                last_assistant,
+                                usage_opt(usage_seen, &usage_total),
+                            );
                         }
                     }
                 }
                 _ = handle.cancel.cancelled() => {
                     info!("Agent loop cancelled during LLM streaming");
                     handle.hub.publish(AgentEvent::Cancelled);
-                    return;
+                    let partial = last_assistant.is_some();
+                    return interrupted_outcome(
+                        RunStatus::Cancelled,
+                        partial,
+                        None,
+                        last_assistant,
+                        usage_opt(usage_seen, &usage_total),
+                    );
                 }
             }
         }
@@ -255,7 +373,9 @@ pub async fn run_agent_loop(ctx: AgentContext, conv_id: String, view: LlmView, h
             assistant_parts.push(ContentPart::Reasoning(reasoning_text));
         }
         if !current_text.is_empty() {
-            assistant_parts.push(ContentPart::Text(current_text));
+            // Cloned (not moved): the run-outcome bookkeeping below still
+            // needs this round's text for the final-message record.
+            assistant_parts.push(ContentPart::Text(current_text.clone()));
         }
         for tc in &pending_tool_calls {
             assistant_parts.push(ContentPart::ToolCall(tc.clone()));
@@ -293,6 +413,9 @@ pub async fn run_agent_loop(ctx: AgentContext, conv_id: String, view: LlmView, h
                     {
                         error!("Failed to persist usage for message {}: {e}", stored.id);
                     }
+                    let entry = (stored.id.clone(), current_text.clone());
+                    round_assistant = Some(entry.clone());
+                    last_assistant = Some(entry);
                     stored.ordering
                 }
                 Err(e) => {
@@ -314,7 +437,18 @@ pub async fn run_agent_loop(ctx: AgentContext, conv_id: String, view: LlmView, h
         if !has_tool_calls {
             info!("Agent loop finished with reason: {:?}", finish_reason);
             handle.hub.publish(AgentEvent::Finish);
-            return;
+            // Completed envelope from THIS round's stored assistant row (it
+            // is by construction the run's final message); a round that
+            // persisted nothing (empty stream) leaves both fields None.
+            let (final_message_id, final_text) = final_fields(round_assistant);
+            return RunOutcome {
+                status: RunStatus::Completed,
+                final_message_id,
+                final_text,
+                partial: false,
+                usage: usage_opt(usage_seen, &usage_total),
+                error: None,
+            };
         }
 
         let indexed_calls: Vec<(usize, ToolCall)> =
@@ -467,7 +601,14 @@ pub async fn run_agent_loop(ctx: AgentContext, conv_id: String, view: LlmView, h
                 }
             }
             handle.hub.publish(AgentEvent::Cancelled);
-            return;
+            let partial = last_assistant.is_some();
+            return interrupted_outcome(
+                RunStatus::Cancelled,
+                partial,
+                None,
+                last_assistant,
+                usage_opt(usage_seen, &usage_total),
+            );
         }
     }
 }

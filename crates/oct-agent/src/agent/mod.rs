@@ -212,4 +212,44 @@ impl RunHandle {
     }
 }
 
+/// Terminal status of an agent run (ADR 0002 §6.1): the in-memory mirror of
+/// the persisted `agent_runs.status` terminal values. `lost` is
+/// process-crash only and never produced by a live loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunStatus {
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+/// Token usage aggregated over a run's Usage stream events. `None` (unknown)
+/// is deliberately distinct from zero: a run that never reported usage must
+/// not be mistaken for a free one (ADR 0002 §6.3).
+#[derive(Debug, Clone, Default)]
+pub struct RunUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+/// The agent loop's result envelope (ADR 0002 §6.1): events keep serving the
+/// UI, but the run's outcome is a value the supervisor can persist — never
+/// something a listener must reassemble from SSE text.
+#[derive(Debug, Clone)]
+pub struct RunOutcome {
+    pub status: RunStatus,
+    /// The persisted final assistant message row. Set when at least one
+    /// assistant message landed in the DB during the run.
+    pub final_message_id: Option<String>,
+    /// Its text; `None` when the row exists but its text is empty.
+    pub final_text: Option<String>,
+    /// Interrupted (failed/cancelled) but some assistant output was
+    /// persisted — the persisted tail must not be presented as a settled
+    /// success.
+    pub partial: bool,
+    /// Aggregated usage; `None` = no Usage event ever arrived (unknown).
+    pub usage: Option<RunUsage>,
+    /// Failure detail for [`RunStatus::Failed`].
+    pub error: Option<String>,
+}
+
 pub type ConversationId = Uuid;

@@ -363,14 +363,35 @@ pub struct TestApp {
 impl TestApp {
     pub async fn new() -> Self {
         let dir = tempfile::tempdir().expect("create temp dir");
+        Self::new_with_dir(dir).await
+    }
+
+    /// [`TestApp::new`] on an EXISTING temp directory: the server boots
+    /// against whatever `test.db` state the directory already carries
+    /// (migrations re-run harmlessly on a fresh file). Lets a test simulate
+    /// a process restart against the same persisted database — the new
+    /// server's `runtime::bootstrap` sweep is part of what is under test.
+    pub async fn new_with_dir(dir: tempfile::TempDir) -> Self {
         let db_url = format!("sqlite://{}", dir.path().join("test.db").display());
         let pool = db::init_pool(&db_url).await.expect("init test database");
 
+        // Same startup sequence as run_server: sweep interrupted runs
+        // before the server accepts traffic.
+        oct_agent::runtime::bootstrap(&pool).await;
+
         let mcp = Arc::new(oct_agent::mcp::McpManager::default());
+        let sessions: Arc<dashmap::DashMap<String, oct_agent::agent::RunHandle>> =
+            Arc::new(dashmap::DashMap::new());
         let state = oct_agent::api::AppState {
+            runs: Arc::new(oct_agent::runtime::RunService {
+                pool: pool.clone(),
+                registry: Arc::new(default_registry()),
+                mcp: mcp.clone(),
+                sessions: sessions.clone(),
+            }),
             pool: pool.clone(),
             registry: Arc::new(default_registry()),
-            sessions: Arc::new(dashmap::DashMap::new()),
+            sessions,
             mcp: mcp.clone(),
             oauth_flows: Arc::new(oct_agent::oauth::OAuthFlowStore::default()),
         };
