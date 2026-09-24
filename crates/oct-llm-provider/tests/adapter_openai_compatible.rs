@@ -46,7 +46,7 @@ fn maps_chat_request_to_openai_wire_request() {
     let model = OpenAiCompatibleChatModel::new(OpenAiCompatibleConfig {
         provider_name: "openai".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
-        api_key_env: "OPENAI_API_KEY".to_string(),
+        api_key: None,
         default_headers: Default::default(),
         model_info: ModelInfo::new("openai", "gpt-4.1")
             .with_capabilities(ModelCapabilities {
@@ -498,7 +498,7 @@ fn maps_reasoning_to_reasoning_content_in_request() {
     let model = OpenAiCompatibleChatModel::new(OpenAiCompatibleConfig {
         provider_name: "moonshot".to_string(),
         base_url: "https://api.moonshot.ai/v1".to_string(),
-        api_key_env: "MOONSHOT_API_KEY".to_string(),
+        api_key: None,
         default_headers: Default::default(),
         model_info: ModelInfo::new("moonshot", "kimi-k2.5")
             .with_capabilities(ModelCapabilities {
@@ -555,7 +555,7 @@ fn wire_model() -> OpenAiCompatibleChatModel {
     OpenAiCompatibleChatModel::new(OpenAiCompatibleConfig {
         provider_name: "openai".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
-        api_key_env: "OPENAI_API_KEY".to_string(),
+        api_key: None,
         default_headers: Default::default(),
         model_info: ModelInfo::new("openai", "gpt-4.1"),
         use_responses_api: false,

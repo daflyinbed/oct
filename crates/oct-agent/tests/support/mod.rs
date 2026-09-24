@@ -13,6 +13,7 @@
 #![allow(dead_code)]
 
 pub mod llm;
+pub mod anthropic_llm;
 pub mod mcp;
 pub mod mcp_http;
 pub mod oauth_as;
@@ -452,6 +453,16 @@ impl TestApp {
             .expect("request should not fail at transport level")
     }
 
+    /// PUT variant of [`Self::patch_json`] (the provider update route).
+    pub async fn put_json(&self, path: &str, body: impl serde::Serialize) -> reqwest::Response {
+        self.http
+            .put(format!("{}{path}", self.base_url))
+            .json(&body)
+            .send()
+            .await
+            .expect("request should not fail at transport level")
+    }
+
     pub async fn http_delete(&self, path: &str) -> reqwest::Response {
         self.http
             .delete(format!("{}{path}", self.base_url))
@@ -520,11 +531,23 @@ impl TestApp {
     /// the SSE body NOT yet read (send() completes once headers arrive, so
     /// the caller decides when to drain the stream).
     pub async fn send_message(&self, conv_id: &str, content: &str) -> reqwest::Response {
+        self.send_message_with(conv_id, content, "mock-llm:test-model")
+            .await
+    }
+
+    /// [`Self::send_message`] with an explicit provider_spec (tests that
+    /// drive other adapter families, e.g. an 'anthropic' row).
+    pub async fn send_message_with(
+        &self,
+        conv_id: &str,
+        content: &str,
+        provider_spec: &str,
+    ) -> reqwest::Response {
         self.post_json(
             &format!("/api/conversations/{conv_id}/messages"),
             serde_json::json!({
                 "content": content,
-                "provider_spec": "mock-llm:test-model",
+                "provider_spec": provider_spec,
             }),
         )
         .await

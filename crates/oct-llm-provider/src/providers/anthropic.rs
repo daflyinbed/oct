@@ -10,7 +10,9 @@ use crate::core::{
     ContentPart, FinishReason, Message, ModelError, Role, StreamEvent, ToolResult, Usage,
 };
 use crate::model::{ChatModel, ChatRequest, ChatResponse, ChatStream};
-use crate::provider::{ModelCapabilities, ModelInfo, ModelLimits, Provider};
+use crate::provider::{
+    ConnectionConfig, ModelCapabilities, ModelInfo, ModelLimits, Provider,
+};
 use crate::transport::{SseDecoder, check_response_status};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -32,7 +34,7 @@ pub enum AnthropicContentBlockDelta {
 #[derive(Debug, Clone)]
 pub struct AnthropicConfig {
     pub base_url: String,
-    pub api_key_env: &'static str,
+    pub api_key: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -42,19 +44,64 @@ pub struct AnthropicChatModel {
     client: reqwest::Client,
 }
 
+/// Built-in endpoint used when neither the DB provider row nor the
+/// environment names another one.
+pub const ANTHROPIC_DEFAULT_BASE_URL: &str = "https://api.anthropic.com/v1";
+
+/// The only environment variable the Anthropic family reads — once, at
+/// provider construction (see [`AnthropicProvider::from_env`]).
+pub const ANTHROPIC_API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
+
 #[derive(Debug, Clone)]
 pub struct AnthropicProvider {
+    /// Default connection: the built-in base URL plus the API key
+    /// materialized from [`ANTHROPIC_API_KEY_ENV`] when the provider was
+    /// constructed. DB rows override it per model via
+    /// [`Provider::chat_model_with_connection`].
     pub config: AnthropicConfig,
+    /// Shared HTTP client handed to every model this provider builds (a
+    /// reqwest client clones cheaply and shares its connection pool, so
+    /// per-run model construction no longer pays a fresh pool).
+    client: reqwest::Client,
 }
 
 impl AnthropicProvider {
-    pub fn new(base_url: impl Into<String>, api_key_env: &'static str) -> Self {
+    /// Provider with explicit default connection settings.
+    pub fn new(base_url: impl Into<String>, api_key: Option<String>) -> Self {
+        Self::with_client(base_url, api_key, reqwest::Client::new())
+    }
+
+    /// [`AnthropicProvider::new`] over a caller-supplied (shared) HTTP
+    /// client.
+    pub fn with_client(
+        base_url: impl Into<String>,
+        api_key: Option<String>,
+        client: reqwest::Client,
+    ) -> Self {
         Self {
             config: AnthropicConfig {
                 base_url: base_url.into(),
-                api_key_env,
+                api_key: api_key.filter(|key| !key.trim().is_empty()),
             },
+            client,
         }
+    }
+
+    /// The Anthropic family's single environment entry point: reads
+    /// [`ANTHROPIC_API_KEY_ENV`] once and materializes it into the default
+    /// connection. Adapters built from this provider never read the env.
+    pub fn from_env() -> Self {
+        Self::from_env_with_client(reqwest::Client::new())
+    }
+
+    /// [`AnthropicProvider::from_env`] over a shared HTTP client (what
+    /// `register_defaults` uses so every default provider shares one pool).
+    pub fn from_env_with_client(client: reqwest::Client) -> Self {
+        Self::with_client(
+            ANTHROPIC_DEFAULT_BASE_URL,
+            crate::provider::connection::env_api_key(ANTHROPIC_API_KEY_ENV),
+            client,
+        )
     }
 
     fn model_info(&self, model: &str) -> ModelInfo {
@@ -77,7 +124,7 @@ impl AnthropicProvider {
 
 impl Default for AnthropicProvider {
     fn default() -> Self {
-        Self::new("https://api.anthropic.com/v1", "ANTHROPIC_API_KEY")
+        Self::from_env()
     }
 }
 
@@ -392,11 +439,11 @@ struct AnthropicToolAccumulator {
 }
 
 impl AnthropicChatModel {
-    fn new(info: ModelInfo, config: AnthropicConfig) -> Self {
+    fn new(info: ModelInfo, config: AnthropicConfig, client: reqwest::Client) -> Self {
         Self {
             info,
             config,
-            client: reqwest::Client::new(),
+            client,
         }
     }
 
@@ -405,8 +452,15 @@ impl AnthropicChatModel {
     }
 
     fn build_headers(&self) -> Result<HeaderMap, ModelError> {
-        let api_key =
-            std::env::var(self.config.api_key_env).map_err(|_| ModelError::Authentication)?;
+        // The key was materialized at construction (DB row or the startup
+        // env snapshot) — the adapter never reads the process environment.
+        // Missing/blank means nobody configured one: fail before traffic.
+        let api_key = self
+            .config
+            .api_key
+            .as_deref()
+            .filter(|key| !key.is_empty())
+            .ok_or(ModelError::Authentication)?;
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         headers.insert(
@@ -556,10 +610,37 @@ impl Provider for AnthropicProvider {
     }
 
     fn chat_model(&self, model: &str) -> Result<Box<dyn ChatModel>, ModelError> {
+        self.chat_model_with_connection(model, &ConnectionConfig::new())
+    }
+
+    /// DB-driven construction: every `Some` field of `connection` (from a
+    /// provider row) wins outright; `None` falls back to the family's own
+    /// default — the built-in base URL and the `ANTHROPIC_API_KEY`
+    /// materialized when this provider was constructed.
+    fn chat_model_with_connection(
+        &self,
+        model: &str,
+        connection: &ConnectionConfig,
+    ) -> Result<Box<dyn ChatModel>, ModelError> {
+        let config = AnthropicConfig {
+            base_url: connection
+                .base_url
+                .clone()
+                .unwrap_or_else(|| self.config.base_url.clone()),
+            api_key: connection.api_key.clone().or(self.config.api_key.clone()),
+        };
         Ok(Box::new(AnthropicChatModel::new(
             self.model_info(model),
-            self.config.clone(),
+            config,
+            self.client.clone(),
         )))
+    }
+
+    fn default_connection(&self) -> ConnectionConfig {
+        ConnectionConfig {
+            base_url: Some(self.config.base_url.clone()),
+            api_key: self.config.api_key.clone(),
+        }
     }
 }
 

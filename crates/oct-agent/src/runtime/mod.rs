@@ -31,6 +31,9 @@
 //! (epoch-guarded `finish_run` + `subagent_updated` on the parent hub +
 //! done-watch + memory cleanup) before dropping the guard.
 
+/// DB-driven model resolution (the single ChatModel construction path).
+mod resolve;
+
 use std::convert::Infallible;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -216,6 +219,11 @@ impl RunService {
     /// Resolve `provider_id:model_id` into a live `ChatModel` (moved here
     /// from the API layer so subagents and the recovery orchestrator resolve
     /// exactly like a chat turn does). Errors map 404/400 as before.
+    ///
+    /// Every call re-reads the provider row, so the DB configuration drives
+    /// each request afresh — a settings change takes effect on the next
+    /// run. Construction rules (adapter dispatch, DB-over-env fallback
+    /// order) live in [`resolve`].
     pub async fn resolve_model(
         &self,
         provider_spec: &str,
@@ -234,31 +242,7 @@ impl RunService {
                 AppError::NotFound(format!("Provider '{}' not found", provider_id))
             })?;
 
-        if provider.api_key.is_empty() {
-            return Err(AppError::BadRequest(format!(
-                "Provider '{}' has no API key configured",
-                provider_id
-            )));
-        }
-
-        let model = match provider.adapter_type.as_str() {
-            "anthropic" => self.registry.resolve_chat_model(provider_spec)?,
-            "openai_compatible" => {
-                let base_url = provider.base_url.as_deref().unwrap_or("");
-                self.registry.resolve_custom_openai_model(
-                    provider_id,
-                    model_id,
-                    base_url,
-                    &provider.api_key,
-                )?
-            }
-            other => {
-                return Err(AppError::BadRequest(format!(
-                    "Unknown adapter_type: '{}'",
-                    other
-                )));
-            }
-        };
+        let model = resolve::resolve_chat_model(&self.registry, &provider, provider_id, model_id)?;
 
         Ok((model, provider_id.to_string(), model_id.to_string()))
     }

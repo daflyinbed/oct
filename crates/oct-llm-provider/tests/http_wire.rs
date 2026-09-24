@@ -46,11 +46,11 @@ fn text_of(events: &[Result<StreamEvent, ModelError>]) -> String {
 
 // --- OpenAI-compatible ----------------------------------------------------
 
-fn openai_config(base_url: String, api_key_env: &str) -> OpenAiCompatibleConfig {
+fn openai_config(base_url: String, api_key: Option<&str>) -> OpenAiCompatibleConfig {
     OpenAiCompatibleConfig {
         provider_name: "mock-openai".to_string(),
         base_url,
-        api_key_env: api_key_env.to_string(),
+        api_key: api_key.map(str::to_string),
         default_headers: Default::default(),
         model_info: ModelInfo::new("mock-openai", "test-model"),
         use_responses_api: false,
@@ -77,9 +77,8 @@ async fn openai_stream_reassembles_events_split_at_hostile_chunk_boundaries() {
         &[emoji_mid, separator_mid, after_data_prefix],
     )])
     .await;
-    let model = OpenAiCompatibleChatModel::new_with_api_key(
-        openai_config(server.url(), "OCT_TEST_OPENAI_KEY_UNUSED"),
-        "test-key".to_string(),
+    let model = OpenAiCompatibleChatModel::new_with_client(
+        openai_config(server.url(), Some("test-key")),
         reqwest::Client::new(),
     );
 
@@ -124,9 +123,8 @@ async fn openai_maps_http_error_statuses_to_model_errors() {
         MockResponse::json(500, "{\"error\":\"kaboom\"}"),
     ])
     .await;
-    let model = OpenAiCompatibleChatModel::new_with_api_key(
-        openai_config(server.url(), "OCT_TEST_OPENAI_KEY_UNUSED"),
-        "test-key".to_string(),
+    let model = OpenAiCompatibleChatModel::new_with_client(
+        openai_config(server.url(), Some("test-key")),
         reqwest::Client::new(),
     );
 
@@ -150,11 +148,10 @@ async fn openai_maps_http_error_statuses_to_model_errors() {
 
 #[tokio::test]
 async fn openai_fails_with_authentication_error_when_no_api_key_available() {
-    // No explicit key and an env var nothing ever sets: must fail before
-    // any HTTP traffic.
+    // No materialized key anywhere: must fail before any HTTP traffic.
     let model = OpenAiCompatibleChatModel::new(openai_config(
         "http://127.0.0.1:1".to_string(),
-        "OCT_TEST_OPENAI_KEY_NEVER_SET",
+        None,
     ));
     assert!(matches!(
         model.stream(chat_request()).await.err().unwrap(),
@@ -178,9 +175,8 @@ async fn openai_generate_maps_json_response_and_captures_request_shape() {
     })
     .to_string();
     let server = spawn_server(vec![MockResponse::json(200, body)]).await;
-    let model = OpenAiCompatibleChatModel::new_with_api_key(
-        openai_config(server.url(), "OCT_TEST_OPENAI_KEY_UNUSED"),
-        "test-key".to_string(),
+    let model = OpenAiCompatibleChatModel::new_with_client(
+        openai_config(server.url(), Some("test-key")),
         reqwest::Client::new(),
     );
 
@@ -219,9 +215,8 @@ async fn openai_stream_accepts_crlf_framing_and_eof_tail_frame() {
     // One cut after the "data:" prefix of the second event.
     let cut = raw.find("llo").unwrap() - 2;
     let server = spawn_server(vec![MockResponse::sse_split(raw, &[cut])]).await;
-    let model = OpenAiCompatibleChatModel::new_with_api_key(
-        openai_config(server.url(), "OCT_TEST_OPENAI_KEY_UNUSED"),
-        "test-key".to_string(),
+    let model = OpenAiCompatibleChatModel::new_with_client(
+        openai_config(server.url(), Some("test-key")),
         reqwest::Client::new(),
     );
 
@@ -235,17 +230,95 @@ async fn openai_stream_accepts_crlf_framing_and_eof_tail_frame() {
     );
 }
 
-fn anthropic_model(
-    base_url: String,
-    api_key_env: &'static str,
-    key_value: &str,
-) -> Box<dyn oct_llm_provider::model::ChatModel> {
-    // SAFETY: each test uses an env var name unique to that test (and never
-    // read anywhere else), so parallel tests cannot race on the value.
-    unsafe { std::env::set_var(api_key_env, key_value) };
-    AnthropicProvider::new(base_url, api_key_env)
+fn anthropic_model(base_url: String, key_value: &str) -> Box<dyn oct_llm_provider::model::ChatModel> {
+    // The key is explicit connection config — no environment involved, so
+    // parallel tests cannot race on it.
+    AnthropicProvider::new(base_url, Some(key_value.to_string()))
         .chat_model("claude-test")
         .unwrap()
+}
+
+/// The DB-driven resolution path: a `ConnectionConfig` built from provider
+/// row fields must override the family's own defaults outright — requests
+/// land at the row's base URL carrying the row's key, never at the default
+/// endpoint with the default key.
+#[tokio::test]
+async fn anthropic_connection_overrides_win_over_family_defaults() {
+    let body = serde_json::json!({
+        "id": "msg_override",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-test",
+        "content": [{"type": "text", "text": "override ok"}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 4, "output_tokens": 1}
+    })
+    .to_string();
+    let server = spawn_server(vec![MockResponse::json(200, body)]).await;
+
+    let mut registry = oct_llm_provider::provider::ProviderRegistry::new();
+    registry.register(Box::new(AnthropicProvider::new(
+        // Defaults nobody wants used: an unreachable endpoint and a decoy key.
+        "http://127.0.0.1:1",
+        Some("sk-default-key".to_string()),
+    )));
+
+    let model = registry
+        .resolve_chat_model_with_connection(
+            "anthropic",
+            "claude-test",
+            &oct_llm_provider::provider::ConnectionConfig::from_row_fields(
+                Some(server.url().as_str()),
+                "sk-row-key",
+            ),
+        )
+        .unwrap();
+    let response = model.generate(chat_request()).await.unwrap();
+    assert_eq!(
+        response.message.parts,
+        vec![ContentPart::Text("override ok".to_string())]
+    );
+
+    let captured = server.captured();
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].path, "/messages");
+    assert_eq!(captured[0].header("x-api-key"), Some("sk-row-key"));
+}
+
+/// Blank row fields mean "fall back": the family's own (env-materialized or
+/// built-in) defaults carry the request instead.
+#[tokio::test]
+async fn anthropic_blank_connection_fields_fall_back_to_family_defaults() {
+    let body = serde_json::json!({
+        "id": "msg_fallback",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-test",
+        "content": [{"type": "text", "text": "fallback ok"}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 4, "output_tokens": 1}
+    })
+    .to_string();
+    let server = spawn_server(vec![MockResponse::json(200, body)]).await;
+
+    let mut registry = oct_llm_provider::provider::ProviderRegistry::new();
+    registry.register(Box::new(AnthropicProvider::new(
+        server.url(),
+        Some("sk-default-key".to_string()),
+    )));
+
+    let model = registry
+        .resolve_chat_model_with_connection(
+            "anthropic",
+            "claude-test",
+            &oct_llm_provider::provider::ConnectionConfig::from_row_fields(None, ""),
+        )
+        .unwrap();
+    model.generate(chat_request()).await.unwrap();
+
+    let captured = server.captured();
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].header("x-api-key"), Some("sk-default-key"));
 }
 
 #[tokio::test]
@@ -283,11 +356,7 @@ async fn anthropic_stream_parses_tool_use_across_hostile_chunk_boundaries() {
         &[emoji_mid, inside_partial_json, between_lines],
     )])
     .await;
-    let model = anthropic_model(
-        server.url(),
-        "OCT_TEST_ANTHROPIC_KEY_STREAM",
-        "sk-test-stream",
-    );
+    let model = anthropic_model(server.url(), "sk-test-stream");
 
     let events = collect(model.stream(chat_request()).await.unwrap()).await;
 
@@ -362,11 +431,7 @@ async fn anthropic_stream_accepts_crlf_framing_and_eof_tail_frame() {
     // One cut between the "event:" and "data:" lines of the second event.
     let cut = raw.find("event: message_stop").unwrap() - 1;
     let server = spawn_server(vec![MockResponse::sse_split(raw, &[cut])]).await;
-    let model = anthropic_model(
-        server.url(),
-        "OCT_TEST_ANTHROPIC_KEY_CRLF",
-        "sk-test-crlf",
-    );
+    let model = anthropic_model(server.url(), "sk-test-crlf");
 
     let events = collect(model.stream(chat_request()).await.unwrap()).await;
 
@@ -386,11 +451,7 @@ async fn anthropic_maps_http_error_statuses_to_model_errors() {
         MockResponse::json(500, "{\"error\":\"kaboom\"}"),
     ])
     .await;
-    let model = anthropic_model(
-        server.url(),
-        "OCT_TEST_ANTHROPIC_KEY_ERRORS",
-        "sk-test-errors",
-    );
+    let model = anthropic_model(server.url(), "sk-test-errors");
 
     assert!(matches!(
         model.stream(chat_request()).await.err().unwrap(),
@@ -423,11 +484,7 @@ async fn anthropic_generate_extracts_system_prompt_and_maps_response() {
     })
     .to_string();
     let server = spawn_server(vec![MockResponse::json(200, body)]).await;
-    let model = anthropic_model(
-        server.url(),
-        "OCT_TEST_ANTHROPIC_KEY_GENERATE",
-        "sk-test-generate",
-    );
+    let model = anthropic_model(server.url(), "sk-test-generate");
 
     let request = ChatRequest {
         messages: vec![
@@ -470,11 +527,7 @@ async fn anthropic_tool_result_images_ride_the_wire_as_base64_blocks() {
     })
     .to_string();
     let server = spawn_server(vec![MockResponse::json(200, body)]).await;
-    let model = anthropic_model(
-        server.url(),
-        "OCT_TEST_ANTHROPIC_KEY_IMAGES",
-        "sk-test-images",
-    );
+    let model = anthropic_model(server.url(), "sk-test-images");
 
     let image = |mime: &str, data: &str| oct_llm_provider::core::ToolResultImage {
         mime_type: mime.to_string(),

@@ -17,6 +17,7 @@ use oct_agent::db::messages as msg_db;
 use oct_llm_provider::core::{ContentPart, Message, Role, ToolCall};
 use oct_mcp::McpCallResult;
 use support::TestApp;
+use support::anthropic_llm;
 use support::llm::{self, LlmTurn, finish_chunk, text_chunk, tool_call_chunk};
 use support::mcp::{FakeMcpConnection, fake_tool};
 use support::sse_payloads;
@@ -1506,6 +1507,114 @@ async fn chat_streams_text_and_persists_over_http() {
     assert_eq!(messages[0]["role"], "system");
     assert_eq!(messages[1]["role"], "user");
     assert_eq!(messages[1]["content"], "hi");
+}
+
+// --- DB-driven model resolution (unified construction entry point) -----------
+
+/// Insert a provider row with an arbitrary adapter_type. The POST endpoint
+/// only creates `openai_compatible` rows, so the Anthropic acceptance path
+/// writes its row straight into the database (runtime query — no sqlx
+/// offline entry needed).
+async fn insert_provider_row(
+    app: &TestApp,
+    id: &str,
+    adapter_type: &str,
+    base_url: &str,
+    api_key: &str,
+) {
+    sqlx::query(
+        "INSERT INTO providers (id, name, adapter_type, base_url, api_key, doc_url, source, created_at, updated_at) \
+         VALUES ($1, $1, $2, $3, $4, NULL, 'custom', datetime('now'), datetime('now'))",
+    )
+    .bind(id)
+    .bind(adapter_type)
+    .bind(base_url)
+    .bind(api_key)
+    .execute(&app.pool)
+    .await
+    .expect("insert provider row");
+}
+
+/// Acceptance (backlog: 统一模型构造入口): an `anthropic` adapter row whose
+/// base_url/api_key live ONLY in the database must drive the real adapter —
+/// the request hits the row's endpoint with the row's key, with no
+/// ANTHROPIC_API_KEY environment variable and no built-in URL involved.
+/// Editing the row (new key AND new endpoint) then takes effect on the very
+/// next request: resolution re-reads the DB per run.
+#[tokio::test]
+async fn anthropic_provider_row_drives_endpoint_and_key_from_db() {
+    let app = TestApp::new().await;
+
+    let first = anthropic_llm::AnthropicMock::spawn(vec![anthropic_llm::AnthropicTurn::Text(
+        "hello from the first endpoint".to_string(),
+    )])
+    .await;
+    insert_provider_row(&app, "anthropic", "anthropic", &first.url, "sk-db-first").await;
+
+    let project_id = app.create_project().await;
+    // Explicit title ⇒ title_source 'user' ⇒ no background title call to
+    // script around; this test is purely about model resolution.
+    let conv_id = app.create_conversation(&project_id).await;
+
+    let resp = app
+        .send_message_with(&conv_id, "hi", "anthropic:claude-test")
+        .await;
+    assert_eq!(resp.status(), 200);
+    let events = app.read_sse(resp).await;
+    assert_eq!(text_of(&events), "hello from the first endpoint");
+    assert_eq!(*event_types(&events).last().unwrap(), "finish");
+
+    // The whole production chain resolved from the DB row: the row's URL
+    // (path `/messages` appended by the adapter), the row's key in the
+    // Anthropic header, the version header, and the wire shape.
+    let captured = first.requests();
+    assert_eq!(captured.len(), 1, "exactly one request to the first endpoint");
+    assert_eq!(captured[0].path, "/messages");
+    assert_eq!(captured[0].api_key.as_deref(), Some("sk-db-first"));
+    assert_eq!(captured[0].anthropic_version.as_deref(), Some("2023-06-01"));
+    assert_eq!(captured[0].body["model"], "claude-test");
+    assert_eq!(captured[0].body["stream"], true);
+    assert_eq!(captured[0].body["messages"][0]["role"], "user");
+
+    // The history records the row's provider/model for later turns.
+    let stored = stored_messages(&app, &conv_id).await;
+    assert_eq!(stored[0]["role"], "user");
+    assert_eq!(stored[0]["provider_id"], "anthropic");
+    assert_eq!(stored[0]["model_id"], "claude-test");
+
+    // Settings change on the very row: a new key AND a new endpoint. The
+    // next request must re-resolve from the database — the second mock
+    // answers with the new key, and the first mock never hears from us
+    // again.
+    let second = anthropic_llm::AnthropicMock::spawn(vec![anthropic_llm::AnthropicTurn::Text(
+        "hello from the second endpoint".to_string(),
+    )])
+    .await;
+    let resp = app
+        .put_json(
+            "/api/providers/anthropic",
+            serde_json::json!({"api_key": "sk-db-second", "base_url": second.url}),
+        )
+        .await;
+    assert_eq!(resp.status(), 200, "provider update should succeed");
+
+    let resp = app
+        .send_message_with(&conv_id, "again", "anthropic:claude-test")
+        .await;
+    assert_eq!(resp.status(), 200);
+    let events = app.read_sse(resp).await;
+    assert_eq!(text_of(&events), "hello from the second endpoint");
+    assert_eq!(*event_types(&events).last().unwrap(), "finish");
+
+    assert_eq!(
+        first.requests().len(),
+        1,
+        "the old endpoint must not be hit again"
+    );
+    let captured = second.requests();
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].path, "/messages");
+    assert_eq!(captured[0].api_key.as_deref(), Some("sk-db-second"));
 }
 
 #[tokio::test]

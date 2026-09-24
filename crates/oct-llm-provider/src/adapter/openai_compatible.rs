@@ -17,7 +17,12 @@ use crate::transport::{SseDecoder, check_response_status};
 pub struct OpenAiCompatibleConfig {
     pub provider_name: String,
     pub base_url: String,
-    pub api_key_env: String,
+    /// Materialized API key (a DB provider row, or the provider family's
+    /// env-materialized default) — never read from the environment at
+    /// request time. `None`/blank fails with `ModelError::Authentication`
+    /// before any traffic.
+    #[serde(default)]
+    pub api_key: Option<String>,
     pub default_headers: Map<String, Value>,
     pub model_info: ModelInfo,
     pub use_responses_api: bool,
@@ -27,7 +32,6 @@ pub struct OpenAiCompatibleConfig {
 pub struct OpenAiCompatibleChatModel {
     pub config: OpenAiCompatibleConfig,
     client: reqwest::Client,
-    api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -359,23 +363,14 @@ pub struct ChatCompletionRequest {
 
 impl OpenAiCompatibleChatModel {
     pub fn new(config: OpenAiCompatibleConfig) -> Self {
-        Self {
-            config,
-            client: reqwest::Client::new(),
-            api_key: None,
-        }
+        Self::new_with_client(config, reqwest::Client::new())
     }
 
-    pub fn new_with_api_key(
-        config: OpenAiCompatibleConfig,
-        api_key: String,
-        client: reqwest::Client,
-    ) -> Self {
-        Self {
-            config,
-            client,
-            api_key: Some(api_key),
-        }
+    /// Construct over a caller-supplied (shared) HTTP client: reqwest
+    /// clients clone cheaply and share their connection pool, so per-run
+    /// model construction no longer pays a fresh pool.
+    pub fn new_with_client(config: OpenAiCompatibleConfig, client: reqwest::Client) -> Self {
+        Self { config, client }
     }
 
     fn endpoint(&self) -> String {
@@ -388,12 +383,15 @@ impl OpenAiCompatibleChatModel {
     }
 
     fn auth_header_value(&self) -> Result<HeaderValue, ModelError> {
-        let api_key = match &self.api_key {
-            Some(key) => key.clone(),
-            None => {
-                std::env::var(&self.config.api_key_env).map_err(|_| ModelError::Authentication)?
-            }
-        };
+        // The key was materialized at construction (DB row or the provider
+        // family's env snapshot) — the adapter never reads the process
+        // environment. Missing/blank means nobody configured one.
+        let api_key = self
+            .config
+            .api_key
+            .as_deref()
+            .filter(|key| !key.is_empty())
+            .ok_or(ModelError::Authentication)?;
         HeaderValue::from_str(&format!("Bearer {api_key}"))
             .map_err(|err| ModelError::transport(format!("invalid auth header: {err}")))
     }

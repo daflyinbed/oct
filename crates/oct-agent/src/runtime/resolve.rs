@@ -1,0 +1,97 @@
+//! DB-driven model resolution — the single construction path for every
+//! `ChatModel` the server builds. The API layer (send / resume / manual
+//! compact / background title generation), the `task` tool and the crash
+//! recovery orchestrator all resolve through
+//! [`RunService::resolve_model`](super::RunService::resolve_model), which
+//! funnels into [`resolve_chat_model`] here; nothing else constructs
+//! models.
+//!
+//! Resolution is per-run: every call re-reads the provider row, so a
+//! settings change (base URL / API key) takes effect on the NEXT request —
+//! no caching, no restart, no process-env re-read.
+//!
+//! Configuration sources, in priority order (per field):
+//!
+//! 1. the DB provider row (the settings page is the source of truth);
+//! 2. the provider family's startup defaults — the built-in base URL plus
+//!    the API key materialized from the environment when the registry was
+//!    built (`ANTHROPIC_API_KEY` for the Anthropic family; custom
+//!    OpenAI-compatible rows have NO env fallback).
+//!
+//! Blank DB values mean "not configured" and fall back, never "override
+//! with empty" (see [`ConnectionConfig::from_row_fields`]).
+
+use oct_llm_provider::model::ChatModel;
+use oct_llm_provider::provider::{ConnectionConfig, ProviderRegistry};
+
+use crate::api::error::AppError;
+use crate::db::providers as provider_db;
+
+/// Registry key of the built-in Anthropic family: provider rows with
+/// `adapter_type = 'anthropic'` resolve through it, the row's own
+/// base_url/api_key overriding the family defaults.
+const ANTHROPIC_FAMILY: &str = "anthropic";
+
+/// Build the [`ChatModel`] for one provider row (pure: no DB access, so
+/// the caller controls when the row snapshot is taken — per run).
+pub(super) fn resolve_chat_model(
+    registry: &ProviderRegistry,
+    provider: &provider_db::Provider,
+    provider_id: &str,
+    model_id: &str,
+) -> Result<Box<dyn ChatModel>, AppError> {
+    let connection =
+        ConnectionConfig::from_row_fields(provider.base_url.as_deref(), &provider.api_key);
+
+    match provider.adapter_type.as_str() {
+        // Built-in Anthropic family: the row's explicit base_url/api_key
+        // drive the endpoint (a local mock, a proxy, a mirror — anything);
+        // each unset field falls back to the family default the registry
+        // materialized at startup. The row's own key wins even when the
+        // environment also carries one, so the settings page stays the
+        // single source of truth at runtime.
+        "anthropic" => {
+            let defaults = registry.provider_default_connection(ANTHROPIC_FAMILY).ok_or(
+                AppError::Internal(anyhow::anyhow!(
+                    "the '{ANTHROPIC_FAMILY}' provider family is not registered"
+                )),
+            )?;
+            // Same fallback chain the adapter applies when building: keep
+            // the resolution-time 400 (instead of a mid-run auth failure)
+            // when NEITHER the row nor the env default supplies a key.
+            connection
+                .api_key
+                .clone()
+                .or(defaults.api_key)
+                .ok_or_else(|| {
+                    AppError::BadRequest(format!(
+                        "Provider '{provider_id}' has no API key configured \
+                         (set it on the provider or export ANTHROPIC_API_KEY)"
+                    ))
+                })?;
+            registry
+                .resolve_chat_model_with_connection(ANTHROPIC_FAMILY, model_id, &connection)
+                .map_err(AppError::from)
+        }
+        // Custom OpenAI-compatible providers have no built-in defaults: the
+        // row itself must carry both the endpoint and the key.
+        "openai_compatible" => {
+            let base_url = connection.base_url.clone().ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "Provider '{provider_id}' has no base_url configured"
+                ))
+            })?;
+            let api_key = connection.api_key.clone().ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "Provider '{provider_id}' has no API key configured"
+                ))
+            })?;
+            registry
+                .resolve_custom_openai_model(provider_id, model_id, &base_url, &api_key)
+                .map_err(AppError::from)
+        }
+        other => Err(AppError::BadRequest(format!(
+            "Unknown adapter_type: '{other}'"
+        ))),
+    }
+}

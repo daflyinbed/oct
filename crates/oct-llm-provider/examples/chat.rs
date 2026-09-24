@@ -87,13 +87,14 @@ fn read_tool_result(call: &ToolCall, interactive: bool) -> ToolResult {
 async fn main() {
     let args = Args::parse();
 
-    if let Some(key) = &args.api_key {
-        unsafe {
-            std::env::set_var("KIMI_API_KEY", key);
-        }
-    }
-
-    let provider = MoonshotAIProvider::new("https://api.moonshot.cn/v1", "KIMI_API_KEY");
+    // Explicit connection config: the key comes from the CLI arg or the
+    // KIMI_API_KEY env default, materialized HERE — never inside the adapter.
+    let api_key = args
+        .api_key
+        .clone()
+        .or_else(|| std::env::var("KIMI_API_KEY").ok())
+        .filter(|key| !key.is_empty());
+    let provider = MoonshotAIProvider::new("https://api.moonshot.cn/v1", api_key);
     let chat_model = provider
         .chat_model(&args.model)
         .expect("Failed to create chat model");
