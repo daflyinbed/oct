@@ -205,19 +205,21 @@ pub async fn cancel_subagent(
     if let Some(run) = run_db::latest_run_for_conversation(&state.pool, &agent_id).await?
         && run.status == "lost"
     {
-        run_db::finish_run(
+        // Lost-only guard: if a concurrent resume already bumped the row back
+        // to `running` with a fresh instance, that instance's own settlement
+        // owns the row — this cancel no-ops and the caller sees 404 (retry
+        // against the now-active run hits the live branch above).
+        let cancelled = run_db::cancel_lost_run(
             &state.pool,
             &run.id,
-            run_db::RunFinalStatus::Cancelled,
             run.final_message_id.as_deref(),
-            None,
             run.input_tokens,
             run.output_tokens,
-            // Any epoch: the row is `lost`, so no live instance can race us.
-            None,
         )
         .await?;
-        return Ok(StatusCode::OK);
+        if cancelled {
+            return Ok(StatusCode::OK);
+        }
     }
 
     Err(AppError::NotFound(

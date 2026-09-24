@@ -172,6 +172,32 @@ pub async fn finish_run(
     Ok(result.rows_affected() > 0)
 }
 
+/// Persist a `lost` run as cancelled WITHOUT taking any epoch — used by the
+/// subagent cancel endpoint. Deliberately guarded on `status = 'lost'` only:
+/// a concurrent recovery may have just bumped the row back to `running` with
+/// a fresh execution instance, and this cancel must NOT settle that live
+/// instance's row (its own epoch-guarded settlement owns it from here).
+pub async fn cancel_lost_run(
+    pool: &SqlitePool,
+    run_id: &str,
+    final_message_id: Option<&str>,
+    input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+) -> Result<bool> {
+    let now = chrono::Utc::now().naive_utc();
+    let result = sqlx::query!(
+        "UPDATE agent_runs SET status = 'cancelled', finished_at = $1, final_message_id = $2, input_tokens = $3, output_tokens = $4 WHERE id = $5 AND status = 'lost'",
+        now,
+        final_message_id,
+        input_tokens,
+        output_tokens,
+        run_id,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 /// Pick a not-yet-settled run (`running` or `lost`) up by a NEW execution
 /// instance: bump `execution_epoch`, flip the row back to `running` and
 /// clear `finished_at`. Returns the new epoch, or `None` when the row is
