@@ -34,6 +34,12 @@
       <ThinkingCard v-else-if="part.kind === 'reasoning'" :part="part" />
       <!-- 流式压缩事件落在当前流式消息的 parts 里（通常位于最前部） -->
       <CompactionDivider v-else-if="part.kind === 'compaction'" :part="part" />
+      <!-- task 工具（子代理委派）有专属任务卡片，不走通用工具卡片 -->
+      <TaskCard
+        v-else-if="part.name === 'task'"
+        :part="part"
+        :conversation-id="conversationId"
+      />
       <ToolCallCard v-else :part="part" :conversation-id="conversationId" />
     </template>
     <!-- 尚无任何内容时的流式占位光标 -->
@@ -45,6 +51,7 @@
 
 <script setup lang="ts">
 import CompactionDivider from "./CompactionDivider.vue";
+import TaskCard from "./TaskCard.vue";
 import ThinkingCard from "./ThinkingCard.vue";
 import ToolCallCard from "./ToolCallCard.vue";
 import type {

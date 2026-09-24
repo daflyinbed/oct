@@ -6,13 +6,18 @@ import {
   seedContextUsage,
   setCompacting,
 } from "@/composables/useContextUsage";
+import { applySubagentEvent } from "@/composables/useSubagents";
 import type { components } from "@/api/schema";
+import type { SubagentUpdatedEventData } from "@/composables/useSubagents";
 
 type ApiMessage = components["schemas"]["MessageDto"];
 type ApiMessagePart = components["schemas"]["MessagePart"];
 type ApiMessageDetails = components["schemas"]["MessageDetails"];
 type AgentEvent = components["schemas"]["AgentEvent"];
 type OutputStream = components["schemas"]["OutputStream"];
+
+/** The SSE event union, straight from the generated OpenAPI schema. */
+export type ChatStreamEvent = AgentEvent;
 
 /** One continuous run of a single stream inside the live output pane. */
 export interface LiveOutputSegment {
@@ -109,9 +114,6 @@ interface BuildableMessage {
   isStreaming?: boolean;
 }
 
-const messages = ref<DisplayMessage[]>([]);
-const sending = ref(false);
-
 /**
  * title_updated 事件监听器。标题是会话元数据而非消息内容：在 SSE 消费层
  * 拦截后直接派发给宿主（App.vue 接线到 useProjects 的会话列表），不进
@@ -129,20 +131,6 @@ export function onTitleUpdated(
   titleListeners.add(listener);
   return () => titleListeners.delete(listener);
 }
-
-/**
- * Dedupe guard: the route watch in [id].vue and the tab-return refresh in
- * App.vue can fire for the same conversation within one tick (sidebar
- * switch while a non-chat tab is active); collapse repeats into one request.
- */
-let lastFetch: { id: string; at: number } | null = null;
-
-/**
- * `messages` 当前展示的会话 id（null = 空态）。流式收尾的静默刷新以它
- * 判断视图是否仍在该会话上：resume/send 进行中用户可能已切走，无条件
- * 刷新会用旧会话的历史覆盖当前视图。
- */
-let activeConversationId: string | null = null;
 
 /** Tail cap per tool call for live output kept in the DOM. */
 const LIVE_OUTPUT_MAX_CHARS = 32_768;
@@ -386,23 +374,79 @@ function storedToDisplayList(stored: ApiMessage[]): DisplayMessage[] {
   return out;
 }
 
+/** 历史里最近一次带 usage 的 assistant 行的 input_tokens（无则 null）。 */
+function lastAssistantInputTokens(
+  stored: readonly ApiMessage[],
+): number | null {
+  for (let i = stored.length - 1; i >= 0; i--) {
+    const m = stored[i];
+    if (m.role === "assistant" && m.input_tokens != null) {
+      return m.input_tokens;
+    }
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
-// Live streaming (non-reactive buffers flushed into `messages` on a timer)
+// 发送失败文案（sendMessage 的 !res.ok 分支）
 // ---------------------------------------------------------------------------
+
+/** pending_recovery 引导文案（后端 409 code=pending_recovery）。 */
+const PENDING_RECOVERY_HINT =
+  "存在未完成的子代理任务，请使用「恢复此轮」继续或停止旧任务";
+
+/**
+ * 归一化 send 失败的可展示文本：错误体带 code=pending_recovery 时附引导
+ * 文案（根会话有未结算的 crashed 子任务）；其余失败沿用既有提示（历史
+ * 测试与 UI 均断言 "Failed to send message."）。非 JSON 错误体静默降级。
+ */
+export async function sendFailureText(res: Response): Promise<string> {
+  try {
+    const body = (await res.json()) as {
+      code?: unknown;
+      error?: unknown;
+    };
+    if (body && typeof body === "object" && body.code === "pending_recovery") {
+      const message =
+        typeof body.error === "string" && body.error
+          ? body.error
+          : `HTTP ${res.status}`;
+      return `Failed to send message.\n\n${message}\n${PENDING_RECOVERY_HINT}`;
+    }
+  } catch {
+    // 非 JSON 错误体（如裸文本）：走通用文案
+  }
+  return "Failed to send message.";
+}
+
+// ---------------------------------------------------------------------------
+// 可实例化的聊天会话（createChatSession）
+// ---------------------------------------------------------------------------
+
+export interface CreateChatSessionOptions {
+  /**
+   * 是否把 usage / 压缩状态写进全局 useContextUsage 单例（主面板输入框
+   * 圆环的数据源）。子代理面板必须传 false——子 Finish/Usage 事件不得
+   * 结束父流或覆盖父上下文环（ADR §7.3）；实例自身的 usage 快照（返回值
+   * 的 usage 字段）始终记录，供面板本地的用量环消费。默认 true。
+   */
+  contextUsage?: boolean;
+  /**
+   * `subagent_updated` 事件派发（SSE 消费层拦截，携带流所属会话 id 与
+   * 负载）。仅主面板单例接线到 useSubagents 任务 store；子代理面板的
+   * 实例不接线（子 hub 不发该事件，隔离由构造保证）。
+   */
+  onSubagentEvent?: (
+    conversationId: string,
+    data: SubagentUpdatedEventData,
+  ) => void;
+}
 
 interface StreamState {
   messageId: string;
   parts: DisplayPart[];
   isStreaming: boolean;
 }
-
-/** Plain (non-reactive) mirror of the streaming message; flushed every tick. */
-let streamState: StreamState | null = null;
-let flushTimer: ReturnType<typeof setInterval> | null = null;
-/** Set by applyStreamEvent; avoids re-rendering unchanged state every tick. */
-let streamDirty = false;
-
-const FLUSH_INTERVAL_MS = 50;
 
 function clonePart(part: DisplayPart): DisplayPart {
   if (part.kind === "tool_call") {
@@ -417,356 +461,427 @@ function clonePart(part: DisplayPart): DisplayPart {
   return { ...part };
 }
 
-/** Write the buffered stream state into the reactive messages array. */
-function flushStream() {
-  if (!streamState || !streamDirty) return;
-  streamDirty = false;
-  const idx = messages.value.findIndex((m) => m.id === streamState?.messageId);
-  if (idx === -1) return;
-  messages.value[idx] = {
-    ...messages.value[idx],
-    parts: streamState.parts.map(clonePart),
-    isStreaming: streamState.isStreaming,
-  };
-}
-
-function startFlushing() {
-  stopFlushing();
-  flushTimer = setInterval(flushStream, FLUSH_INTERVAL_MS);
-}
-
-function stopFlushing() {
-  if (flushTimer !== null) {
-    clearInterval(flushTimer);
-    flushTimer = null;
-  }
-}
-
-function findGeneratingCard(callId: string): ToolCallPart | null {
-  if (!streamState) return null;
-  for (let i = streamState.parts.length - 1; i >= 0; i--) {
-    const part = streamState.parts[i] as ToolCallPart;
-    if (
-      part.kind === "tool_call" &&
-      part.status === "generating" &&
-      part.callId === callId
-    ) {
-      return part;
-    }
-  }
-  return null;
-}
-
-function findCard(callId: string): ToolCallPart | null {
-  if (!streamState) return null;
-  for (let i = streamState.parts.length - 1; i >= 0; i--) {
-    const part = streamState.parts[i] as ToolCallPart;
-    if (part.kind === "tool_call" && part.callId === callId) {
-      return part;
-    }
-  }
-  return null;
-}
+const FLUSH_INTERVAL_MS = 50;
 
 /**
- * Close any still-open reasoning block, stamping its duration. Only the last
- * part can be open, but scanning all parts keeps this idempotent.
+ * 创建一个独立的聊天会话实例：消息/流式/usage 状态都在实例闭包内，
+ * 父（useChat 单例）与子代理 panel 各持一份，互不污染。SSE 解析与
+ * reducer 共用同一套实现（闭包内函数），历史转换等纯函数保持模块级。
  */
-function closeOpenReasoning(parts: DisplayPart[]): void {
-  for (const part of parts) {
-    if (part.kind === "reasoning" && !part.ended) {
-      part.ended = true;
-      if (part.startedAt !== null) {
-        part.durationMs = Date.now() - part.startedAt;
-      }
+export function createChatSession(options: CreateChatSessionOptions = {}) {
+  const trackContextUsage = options.contextUsage !== false;
+
+  const messages = ref<DisplayMessage[]>([]);
+  const sending = ref(false);
+
+  /**
+   * Dedupe guard: the route watch in [id].vue and the tab-return refresh in
+   * App.vue can fire for the same conversation within one tick (sidebar
+   * switch while a non-chat tab is active); collapse repeats into one request.
+   */
+  let lastFetch: { id: string; at: number } | null = null;
+
+  /**
+   * `messages` 当前展示的会话 id（null = 空态）。流式收尾的静默刷新以它
+   * 判断视图是否仍在该会话上：resume/send 进行中用户可能已切走，无条件
+   * 刷新会用旧会话的历史覆盖当前视图。子代理面板里它是 agent id
+   * （子会话 id），作用域语义一致。
+   */
+  let activeConversationId: string | null = null;
+
+  /** 实例本地的上下文占用快照（usage 事件 + 历史播种）。 */
+  const usageInputTokens = ref<number | null>(null);
+  const usageWindowTokens = ref<number | null>(null);
+  const usageCompacting = ref(false);
+
+  /** Plain (non-reactive) mirror of the streaming message; flushed every tick. */
+  let streamState: StreamState | null = null;
+  let flushTimer: ReturnType<typeof setInterval> | null = null;
+  /** Set by applyStreamEvent; avoids re-rendering unchanged state every tick. */
+  let streamDirty = false;
+
+  /** 子代理 events 订阅的中止器（dispose 时中断在飞订阅）。 */
+  let attachAbort: AbortController | null = null;
+  /** dispose 后不再消费/落位任何事件（abort 传播到 read 拒绝前的缓冲事件兜底）。 */
+  let disposed = false;
+
+  // -------------------------------------------------------------------------
+  // Live streaming (non-reactive buffers flushed into `messages` on a timer)
+  // -------------------------------------------------------------------------
+
+  /** Write the buffered stream state into the reactive messages array. */
+  function flushStream() {
+    if (!streamState || !streamDirty) return;
+    streamDirty = false;
+    const idx = messages.value.findIndex(
+      (m) => m.id === streamState?.messageId,
+    );
+    if (idx === -1) return;
+    messages.value[idx] = {
+      ...messages.value[idx],
+      parts: streamState.parts.map(clonePart),
+      isStreaming: streamState.isStreaming,
+    };
+  }
+
+  function startFlushing() {
+    stopFlushing();
+    flushTimer = setInterval(flushStream, FLUSH_INTERVAL_MS);
+  }
+
+  function stopFlushing() {
+    if (flushTimer !== null) {
+      clearInterval(flushTimer);
+      flushTimer = null;
     }
   }
-}
 
-/**
- * Terminal events may leave cards that never reached tool_result: drop
- * still-generating cards (never dispatched and not persisted — dropping keeps
- * the live view identical to history replay) and settle running ones as
- * errored so no spinner pulses forever. An open thinking block is closed with
- * its duration so the card stops showing its streaming state. Idempotent;
- * also called from the sendMessage finally block to cover streams that die
- * without a terminal event (e.g. connection reset). Cancellation is covered
- * here too: the backend persists a ToolResult for cancelled calls but does
- * not stream one.
- */
-function finalizeUnconvergedCards() {
-  if (!streamState) return;
-  closeOpenReasoning(streamState.parts);
-  streamState.parts = streamState.parts.filter(
-    (part) => !(part.kind === "tool_call" && part.status === "generating"),
-  );
-  for (const part of streamState.parts) {
-    if (part.kind === "tool_call" && part.status === "running") {
-      part.status = "done";
-      part.isError = true;
+  function findGeneratingCard(callId: string): ToolCallPart | null {
+    if (!streamState) return null;
+    for (let i = streamState.parts.length - 1; i >= 0; i--) {
+      const part = streamState.parts[i] as ToolCallPart;
+      if (
+        part.kind === "tool_call" &&
+        part.status === "generating" &&
+        part.callId === callId
+      ) {
+        return part;
+      }
     }
-  }
-}
-
-function applyStreamEvent(event: AgentEvent) {
-  if (!streamState) return;
-  // Mark dirty even for ignored events (usage): one extra 50ms flush at
-  // most, and far simpler than tracking per-branch mutations.
-  streamDirty = true;
-  const parts = streamState.parts;
-
-  // Any non-reasoning event ends the open thinking block (text/tool calls/
-  // terminal state all mean the model stopped reasoning).
-  if (event.type !== "reasoning_delta") {
-    closeOpenReasoning(parts);
+    return null;
   }
 
-  switch (event.type) {
-    case "reasoning_delta": {
-      const last = parts.at(-1);
-      if (last?.kind === "reasoning" && !last.ended) {
-        last.text += event.data;
-      } else {
-        // A new agent-loop round opens a fresh thinking block.
-        parts.push({
-          kind: "reasoning",
-          text: event.data,
-          startedAt: Date.now(),
-          durationMs: null,
-          ended: false,
-        });
+  function findCard(callId: string): ToolCallPart | null {
+    if (!streamState) return null;
+    for (let i = streamState.parts.length - 1; i >= 0; i--) {
+      const part = streamState.parts[i] as ToolCallPart;
+      if (part.kind === "tool_call" && part.callId === callId) {
+        return part;
       }
-      break;
     }
+    return null;
+  }
 
-    case "text_delta": {
-      const last = parts.at(-1);
-      if (last?.kind === "text") {
-        last.text += event.data;
-      } else {
-        parts.push({ kind: "text", text: event.data });
-      }
-      break;
-    }
-
-    case "tool_call_delta": {
-      const { call_id, name, arguments_delta } = event.data;
-      let card = findGeneratingCard(call_id);
-      if (!card) {
-        card = newToolCard(call_id, name ?? null);
-        parts.push(card);
-      } else if (name && !card.name) {
-        card.name = name;
-      }
-      card.arguments += arguments_delta;
-      break;
-    }
-
-    case "tool_call_start": {
-      const { id, name, title } = event.data;
-      // Match any existing card for this id first (a repeated start
-      // re-syncs it instead of spawning a duplicate); only then fall back
-      // to adopting an unmatched generating card.
-      let card = findCard(id);
-      if (!card) {
-        // The delta-phase call_id may differ from the dispatch id (e.g.
-        // Anthropic synthetic ids): adopt an unmatched generating card with
-        // the same tool name, in order; a still-unnamed card is the next
-        // best candidate.
-        for (const part of parts) {
-          if (
-            part.kind === "tool_call" &&
-            part.status === "generating" &&
-            part.name === name
-          ) {
-            card = part;
-            break;
-          }
+  /**
+   * Close any still-open reasoning block, stamping its duration. Only the last
+   * part can be open, but scanning all parts keeps this idempotent.
+   */
+  function closeOpenReasoning(parts: DisplayPart[]): void {
+    for (const part of parts) {
+      if (part.kind === "reasoning" && !part.ended) {
+        part.ended = true;
+        if (part.startedAt !== null) {
+          part.durationMs = Date.now() - part.startedAt;
         }
+      }
+    }
+  }
+
+  /**
+   * Terminal events may leave cards that never reached tool_result: drop
+   * still-generating cards (never dispatched and not persisted — dropping keeps
+   * the live view identical to history replay) and settle running ones as
+   * errored so no spinner pulses forever. An open thinking block is closed with
+   * its duration so the card stops showing its streaming state. Idempotent;
+   * also called from the sendMessage finally block to cover streams that die
+   * without a terminal event (e.g. connection reset). Cancellation is covered
+   * here too: the backend persists a ToolResult for cancelled calls but does
+   * not stream one.
+   */
+  function finalizeUnconvergedCards() {
+    if (!streamState) return;
+    closeOpenReasoning(streamState.parts);
+    streamState.parts = streamState.parts.filter(
+      (part) => !(part.kind === "tool_call" && part.status === "generating"),
+    );
+    for (const part of streamState.parts) {
+      if (part.kind === "tool_call" && part.status === "running") {
+        part.status = "done";
+        part.isError = true;
+      }
+    }
+  }
+
+  function recordUsage(data: {
+    input_tokens?: number | null;
+    context_window_tokens?: number | null;
+  }) {
+    if (data.input_tokens != null) usageInputTokens.value = data.input_tokens;
+    if (data.context_window_tokens != null) {
+      usageWindowTokens.value = data.context_window_tokens;
+    }
+    if (trackContextUsage) recordUsageEvent(data);
+  }
+
+  function applyStreamEvent(event: ChatStreamEvent) {
+    if (event.type === "subagent_updated") {
+      // 正常路径在 consumeSseStream 拦截派发（携带流所属会话 id）；该事件
+      // 属会话级任务状态而非消息内容，不进消息 reducer。
+      return;
+    }
+    if (!streamState) return;
+    // Mark dirty even for ignored events (usage): one extra 50ms flush at
+    // most, and far simpler than tracking per-branch mutations.
+    streamDirty = true;
+    const parts = streamState.parts;
+
+    // Any non-reasoning event ends the open thinking block (text/tool calls/
+    // terminal state all mean the model stopped reasoning).
+    if (event.type !== "reasoning_delta") {
+      closeOpenReasoning(parts);
+    }
+
+    switch (event.type) {
+      case "reasoning_delta": {
+        const last = parts.at(-1);
+        if (last?.kind === "reasoning" && !last.ended) {
+          last.text += event.data;
+        } else {
+          // A new agent-loop round opens a fresh thinking block.
+          parts.push({
+            kind: "reasoning",
+            text: event.data,
+            startedAt: Date.now(),
+            durationMs: null,
+            ended: false,
+          });
+        }
+        break;
+      }
+
+      case "text_delta": {
+        const last = parts.at(-1);
+        if (last?.kind === "text") {
+          last.text += event.data;
+        } else {
+          parts.push({ kind: "text", text: event.data });
+        }
+        break;
+      }
+
+      case "tool_call_delta": {
+        const { call_id, name, arguments_delta } = event.data;
+        let card = findGeneratingCard(call_id);
         if (!card) {
+          card = newToolCard(call_id, name ?? null);
+          parts.push(card);
+        } else if (name && !card.name) {
+          card.name = name;
+        }
+        card.arguments += arguments_delta;
+        break;
+      }
+
+      case "tool_call_start": {
+        const { id, name, title } = event.data;
+        // Match any existing card for this id first (a repeated start
+        // re-syncs it instead of spawning a duplicate); only then fall back
+        // to adopting an unmatched generating card.
+        let card = findCard(id);
+        if (!card) {
+          // The delta-phase call_id may differ from the dispatch id (e.g.
+          // Anthropic synthetic ids): adopt an unmatched generating card with
+          // the same tool name, in order; a still-unnamed card is the next
+          // best candidate.
           for (const part of parts) {
             if (
               part.kind === "tool_call" &&
               part.status === "generating" &&
-              !part.name
+              part.name === name
             ) {
               card = part;
               break;
             }
           }
-        }
-      }
-      if (!card) {
-        card = newToolCard(id, name);
-        parts.push(card);
-      }
-      card.callId = id;
-      card.name = name;
-      card.title = title;
-      // Canonical arguments replace the accumulated delta text (also
-      // self-heals dropped deltas).
-      card.arguments = event.data.arguments;
-      card.status = "running";
-      break;
-    }
-
-    case "tool_output_delta": {
-      const card = findCard(event.data.call_id);
-      if (card) {
-        appendLiveOutput(card, event.data.stream, event.data.delta);
-      }
-      break;
-    }
-
-    case "tool_result": {
-      const card = findCard(event.data.call_id);
-      if (card) {
-        card.status = "done";
-        card.content = event.data.content;
-        card.isError = event.data.is_error;
-        card.details = (event.data.details ?? null) as Record<
-          string,
-          unknown
-        > | null;
-      }
-      break;
-    }
-
-    case "microcompacted": {
-      // 旧工具结果被 copy-on-write 替换为占位符：就地折叠工具卡片（所见
-      // 即模型所见）；重放幂等（按 call_id 覆盖，值不变）。
-      const d = event.data;
-      const applyCleared = (card: ToolCallPart, copyId: string) => {
-        card.content = MICROCOMPACT_PLACEHOLDER;
-        card.cleared = true;
-        card.clearedCopyMessageId = copyId;
-      };
-      for (const r of d.replacements ?? []) {
-        // microcompact 在 turn-top 触发且永不触碰最后一轮，目标几乎总在
-        // 历史消息的卡片里——必须遍历 messages.value 更新（经代理路径改，
-        // 保证响应性）。当前流式消息那份只在 streamState 里改：它在
-        // messages.value 中的克隆会被 flushStream 整体覆盖。
-        const live = findCard(r.call_id);
-        if (live) applyCleared(live, r.copy_message_id);
-        for (let i = messages.value.length - 1; i >= 0; i--) {
-          const m = messages.value[i]!;
-          if (streamState && m.id === streamState.messageId) continue;
-          for (const p of m.parts) {
-            if (p.kind === "tool_call" && p.callId === r.call_id) {
-              applyCleared(p, r.copy_message_id);
+          if (!card) {
+            for (const part of parts) {
+              if (
+                part.kind === "tool_call" &&
+                part.status === "generating" &&
+                !part.name
+              ) {
+                card = part;
+                break;
+              }
             }
           }
         }
-      }
-      break;
-    }
-
-    case "finish":
-    case "cancelled": {
-      finalizeUnconvergedCards();
-      streamState.isStreaming = false;
-      break;
-    }
-
-    case "error": {
-      const last = parts.at(-1);
-      if (last?.kind === "text") {
-        last.text += `\n\nError: ${event.data}`;
-      } else {
-        parts.push({ kind: "text", text: `Error: ${event.data}` });
-      }
-      finalizeUnconvergedCards();
-      streamState.isStreaming = false;
-      break;
-    }
-
-    case "compacting": {
-      // 摘要生成中：状态栏指示器切换为「压缩中」，不进消息流。
-      setCompacting(true);
-      break;
-    }
-
-    case "compacted": {
-      // 事件带全量 summary：当场插入分隔条（此刻通常位于本轮流式消息的
-      // 最前部），run 收尾的 loadMessages 会用 stored 标记行接管同一展示。
-      setCompacting(false);
-      const d = event.data;
-      parts.push({
-        kind: "compaction",
-        summary: d.summary,
-        triggeredBy: d.triggered_by,
-        compactedMessages: d.compacted_messages,
-        estTokensBefore: d.est_tokens_before,
-        estTokensAfter: d.est_tokens_after,
-      });
-      break;
-    }
-
-    case "usage": {
-      // 上下文占用指示器数据源（provider 报告的真实请求体积 + 窗口大小）。
-      recordUsageEvent(event.data);
-      break;
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// SSE 消费（sendMessage / resumeTurn 共用）
-// ---------------------------------------------------------------------------
-
-/**
- * 读取一个 SSE Response 直到流 EOF，把每个 data: 事件交给回调（默认
- * applyStreamEvent；attachRun 借此拦截 run_meta）。title_updated 是会话
- * 元数据更新，在此直接派发给监听器、不进回调。网络分片可能在任意
- * 字节边界断开（含 data: 前缀与 JSON 中间），逐行缓冲解析。
- */
-async function consumeSseStream(
-  res: Response,
-  conversationId: string,
-  onEvent: (event: AgentEvent) => void = applyStreamEvent,
-): Promise<void> {
-  const reader = res.body!.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-
-    for (const line of lines) {
-      if (!line.startsWith("data: ")) continue;
-      const payload = line.slice(6).trim();
-      if (payload === "[DONE]") continue;
-
-      let event: AgentEvent;
-      try {
-        event = JSON.parse(payload);
-      } catch {
-        // skip malformed SSE
-        continue;
-      }
-      if (event.type === "title_updated") {
-        // 派发放在 parse 的 try 之外：监听器异常不该被当成坏帧吞掉，
-        // 也不该中断其余监听器收到本事件。
-        for (const listener of titleListeners) {
-          listener(conversationId, event.data.title);
+        if (!card) {
+          card = newToolCard(id, name);
+          parts.push(card);
         }
-        continue;
+        card.callId = id;
+        card.name = name;
+        card.title = title;
+        // Canonical arguments replace the accumulated delta text (also
+        // self-heals dropped deltas).
+        card.arguments = event.data.arguments;
+        card.status = "running";
+        break;
       }
-      onEvent(event);
+
+      case "tool_output_delta": {
+        const card = findCard(event.data.call_id);
+        if (card) {
+          appendLiveOutput(card, event.data.stream, event.data.delta);
+        }
+        break;
+      }
+
+      case "tool_result": {
+        const card = findCard(event.data.call_id);
+        if (card) {
+          card.status = "done";
+          card.content = event.data.content;
+          card.isError = event.data.is_error;
+          card.details = (event.data.details ?? null) as Record<
+            string,
+            unknown
+          > | null;
+        }
+        break;
+      }
+
+      case "microcompacted": {
+        // 旧工具结果被 copy-on-write 替换为占位符：就地折叠工具卡片（所见
+        // 即模型所见）；重放幂等（按 call_id 覆盖，值不变）。
+        const d = event.data;
+        const applyCleared = (card: ToolCallPart, copyId: string) => {
+          card.content = MICROCOMPACT_PLACEHOLDER;
+          card.cleared = true;
+          card.clearedCopyMessageId = copyId;
+        };
+        for (const r of d.replacements ?? []) {
+          // microcompact 在 turn-top 触发且永不触碰最后一轮，目标几乎总在
+          // 历史消息的卡片里——必须遍历 messages.value 更新（经代理路径改，
+          // 保证响应性）。当前流式消息那份只在 streamState 里改：它在
+          // messages.value 中的克隆会被 flushStream 整体覆盖。
+          const live = findCard(r.call_id);
+          if (live) applyCleared(live, r.copy_message_id);
+          for (let i = messages.value.length - 1; i >= 0; i--) {
+            const m = messages.value[i]!;
+            if (streamState && m.id === streamState.messageId) continue;
+            for (const p of m.parts) {
+              if (p.kind === "tool_call" && p.callId === r.call_id) {
+                applyCleared(p, r.copy_message_id);
+              }
+            }
+          }
+        }
+        break;
+      }
+
+      case "finish":
+      case "cancelled": {
+        finalizeUnconvergedCards();
+        streamState.isStreaming = false;
+        break;
+      }
+
+      case "error": {
+        const last = parts.at(-1);
+        if (last?.kind === "text") {
+          last.text += `\n\nError: ${event.data}`;
+        } else {
+          parts.push({ kind: "text", text: `Error: ${event.data}` });
+        }
+        finalizeUnconvergedCards();
+        streamState.isStreaming = false;
+        break;
+      }
+
+      case "compacting": {
+        // 摘要生成中：状态栏指示器切换为「压缩中」，不进消息流。
+        usageCompacting.value = true;
+        if (trackContextUsage) setCompacting(true);
+        break;
+      }
+
+      case "compacted": {
+        // 事件带全量 summary：当场插入分隔条（此刻通常位于本轮流式消息的
+        // 最前部），run 收尾的 loadMessages 会用 stored 标记行接管同一展示。
+        usageCompacting.value = false;
+        if (trackContextUsage) setCompacting(false);
+        const d = event.data;
+        parts.push({
+          kind: "compaction",
+          summary: d.summary,
+          triggeredBy: d.triggered_by,
+          compactedMessages: d.compacted_messages,
+          estTokensBefore: d.est_tokens_before,
+          estTokensAfter: d.est_tokens_after,
+        });
+        break;
+      }
+
+      case "usage": {
+        // 上下文占用指示器数据源（provider 报告的真实请求体积 + 窗口大小）。
+        recordUsage(event.data);
+        break;
+      }
     }
   }
-}
 
-// ---------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // SSE 消费（sendMessage / resumeTurn / attach 共用）
+  // -------------------------------------------------------------------------
 
-export function useChat() {
+  /**
+   * 读取一个 SSE Response 直到流 EOF，把每个 data: 事件交给回调（默认
+   * applyStreamEvent；attachRun 借此拦截 run_meta）。title_updated 是会话
+   * 元数据更新，在此直接派发给监听器、不进回调；subagent_updated 同为
+   * 会话作用域的小状态事件（任务 store 的数据源），拦截后经
+   * options.onSubagentEvent 派发（携带流所属会话 id）。网络分片可能在
+   * 任意字节边界断开（含 data: 前缀与 JSON 中间），逐行缓冲解析。
+   */
+  async function consumeSseStream(
+    res: Response,
+    conversationId: string,
+    onEvent: (event: AgentEvent) => void = applyStreamEvent,
+  ): Promise<void> {
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const payload = line.slice(6).trim();
+        if (payload === "[DONE]") continue;
+
+        let event: ChatStreamEvent;
+        try {
+          event = JSON.parse(payload) as ChatStreamEvent;
+        } catch {
+          // skip malformed SSE
+          continue;
+        }
+        if (event.type === "title_updated") {
+          // 派发放在 parse 的 try 之外：监听器异常不该被当成坏帧吞掉，
+          // 也不该中断其余监听器收到本事件。
+          for (const listener of titleListeners) {
+            listener(conversationId, event.data.title);
+          }
+          continue;
+        }
+        if (event.type === "subagent_updated") {
+          options.onSubagentEvent?.(conversationId, event.data);
+          continue;
+        }
+        onEvent(event);
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+
   /** 实际拉取并重建 messages（绕过 fetchMessages 的 200ms 去重守卫）。 */
   const loadMessages = async (conversationId: string) => {
     lastFetch = { id: conversationId, at: Date.now() };
@@ -777,7 +892,8 @@ export function useChat() {
     if (!error && data) {
       messages.value = storedToDisplayList(data);
       activeConversationId = conversationId;
-      seedContextUsage(data);
+      usageInputTokens.value = lastAssistantInputTokens(data);
+      if (trackContextUsage) seedContextUsage(data);
     }
   };
 
@@ -825,6 +941,9 @@ export function useChat() {
     streamState = { messageId: assistantId, parts: [], isStreaming: true };
     startFlushing();
 
+    // 非 2xx 时从错误体提取可展示文案（pending_recovery 附引导提示）；
+    // 网络层异常仍走通用 fallback。
+    let failureText: string | null = null;
     try {
       const body: { content: string; provider_spec?: string } = { content };
       if (providerSpec) body.provider_spec = providerSpec;
@@ -835,6 +954,7 @@ export function useChat() {
       });
 
       if (!res.ok || !res.body) {
+        failureText = await sendFailureText(res);
         throw new Error(`HTTP ${res.status}`);
       }
 
@@ -843,7 +963,7 @@ export function useChat() {
       if (streamState) {
         streamState.parts.push({
           kind: "text",
-          text: "Failed to send message.",
+          text: failureText ?? "Failed to send message.",
         });
         streamDirty = true;
       }
@@ -1024,6 +1144,120 @@ export function useChat() {
   };
 
   /**
+   * 子代理面板的挂载入口：拉取子会话历史（/api/subagents/{agent_id}/
+   * messages，MessageDto 同形），再探测其当前 run 的事件流（/events）。
+   * 404 = 无活动 run，仅展示历史；200 则与 attachRun 同一套 run_meta
+   * 锚点截断 + 事件重放 + 实时增长语义（SSE 解析/reducer 完全共用）。
+   * usage 只进实例本地快照（不污染主面板的全局上下文环）。
+   */
+  const attachSubagent = async (agentId: string) => {
+    if (sending.value) return;
+    sending.value = true;
+    disposed = false;
+    attachAbort?.abort();
+    const controller = new AbortController();
+    attachAbort = controller;
+
+    /** 拉取子会话历史并落位（不经过 fetchMessages 的会话级守卫）。 */
+    const loadSubagentHistory = async () => {
+      const { data, error } = await client.GET(
+        "/api/subagents/{agentId}/messages",
+        { params: { path: { agentId } } },
+      );
+      if (!error && data) {
+        messages.value = storedToDisplayList(data);
+        activeConversationId = agentId;
+        usageInputTokens.value = lastAssistantInputTokens(data);
+        usageWindowTokens.value = null;
+      }
+    };
+
+    try {
+      await loadSubagentHistory();
+
+      const res = await fetch(`/api/subagents/${agentId}/events`, {
+        signal: controller.signal,
+      });
+      if (res.status === 404) {
+        // 无活动 run（已结束）：仅历史视图。
+        return;
+      }
+      if (!res.ok || !res.body) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+
+      // 与 attachRun 相同的截断锚点逻辑（run_meta 合成事件只在
+      // /events 重放里注入）。
+      let truncated = false;
+      const lastUserIndex = () => {
+        for (let i = messages.value.length - 1; i >= 0; i--) {
+          if (messages.value[i]?.role === "user") return i;
+        }
+        return messages.value.length - 1;
+      };
+      const truncate = (anchorIndex: number) => {
+        messages.value = messages.value.slice(0, anchorIndex + 1);
+        const assistantId = `reattached-${Date.now()}`;
+        messages.value = [
+          ...messages.value,
+          { id: assistantId, role: "assistant", parts: [], isStreaming: true },
+        ];
+        streamState = { messageId: assistantId, parts: [], isStreaming: true };
+        startFlushing();
+      };
+
+      await consumeSseStream(res, agentId, (event) => {
+        // 会话守卫 + dispose 守卫：关闭标签后（或切走后）本流的事件不再进
+        // 视图——abort 传播到 read 拒绝前仍可能有已缓冲的事件到达。
+        if (disposed || activeConversationId !== agentId) return;
+        if (!truncated) {
+          if (event.type === "run_meta") {
+            const idx = messages.value.findIndex(
+              (m) => m.id === event.data.start_message_id,
+            );
+            truncate(idx !== -1 ? idx : lastUserIndex());
+            truncated = true;
+            return; // 合成事件，不进 reducer
+          }
+          truncate(lastUserIndex());
+          truncated = true;
+        }
+        applyStreamEvent(event);
+      });
+    } catch {
+      // 网络失败/主动中断：静默，finally 统一收敛（中断时跳过收尾刷新）。
+    } finally {
+      if (attachAbort === controller) attachAbort = null;
+      stopFlushing();
+      if (streamState) {
+        finalizeUnconvergedCards();
+        streamState.isStreaming = false;
+        flushStream();
+        streamState = null;
+      }
+      if (!controller.signal.aborted && activeConversationId === agentId) {
+        try {
+          await loadSubagentHistory();
+        } catch {
+          // ignore: cosmetic refresh
+        }
+      }
+      sending.value = false;
+    }
+  };
+
+  /**
+   * 释放实例持有的流订阅（关闭子代理标签时调用）：中断在飞的 events
+   * 订阅。只是退订——后端执行不受影响，关闭子标签不取消任务。
+   */
+  const dispose = () => {
+    disposed = true;
+    attachAbort?.abort();
+    attachAbort = null;
+    stopFlushing();
+  };
+
+  /**
    * 请求取消该会话正在运行的 agent。UI 状态由 SSE 流（cancelled 事件 +
    * 流关闭）落定而非本响应；错误（如 run 已结束时的 404）忽略即可。
    */
@@ -1041,7 +1275,8 @@ export function useChat() {
   const compactConversation = async (conversationId: string) => {
     if (sending.value) return;
     sending.value = true;
-    setCompacting(true);
+    usageCompacting.value = true;
+    if (trackContextUsage) setCompacting(true);
     try {
       const { data, error } = await client.POST(
         "/api/conversations/{id}/compact",
@@ -1057,7 +1292,8 @@ export function useChat() {
     } catch (error) {
       console.error("compact failed", error);
     } finally {
-      setCompacting(false);
+      usageCompacting.value = false;
+      if (trackContextUsage) setCompacting(false);
       sending.value = false;
     }
   };
@@ -1065,7 +1301,10 @@ export function useChat() {
   const clearMessages = () => {
     messages.value = [];
     activeConversationId = null;
-    clearContextUsage();
+    usageInputTokens.value = null;
+    usageWindowTokens.value = null;
+    usageCompacting.value = false;
+    if (trackContextUsage) clearContextUsage();
   };
 
   /** 存在被中断的轮次可恢复：悬空工具卡片，或最后一条消息是 user。 */
@@ -1083,12 +1322,34 @@ export function useChat() {
     messages: readonly(messages),
     sending: readonly(sending),
     resumable,
+    usage: {
+      inputTokens: readonly(usageInputTokens),
+      windowTokens: readonly(usageWindowTokens),
+      compacting: readonly(usageCompacting),
+    },
     fetchMessages,
     sendMessage,
     resumeTurn,
     attachRun,
+    attachSubagent,
     cancelConversation,
     compactConversation,
     clearMessages,
+    dispose,
   };
+}
+
+/**
+ * 主面板的模块级单会话实例：`subagent_updated` 事件在此接线到
+ * useSubagents 任务 store（携带流所属会话 id，store 侧做迟到/跨会话
+ * 隔离）。子代理面板一律经 createChatSession 另建实例，不碰单例。
+ */
+const singletonSession = createChatSession({
+  onSubagentEvent: (conversationId, data) => {
+    applySubagentEvent(conversationId, data);
+  },
+});
+
+export function useChat() {
+  return singletonSession;
 }

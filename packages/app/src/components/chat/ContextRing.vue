@@ -119,13 +119,40 @@ import {
   useContextUsage,
 } from "@/composables/useContextUsage";
 
+/**
+ * 不传 props 时消费全局 useContextUsage 单例（主面板）；子代理 panel 传入
+ * 自己实例的 usage 快照（props 覆盖，undefined 表示"用单例"）——子 usage
+ * 不得写进单例（会覆盖父上下文环），只能经 props 喂给本组件。
+ */
+const props = defineProps<{
+  inputTokens?: number | null;
+  windowTokens?: number | null;
+  compacting?: boolean;
+}>();
+
 // 与后端自动压缩阈值一致（agent/compact.rs 的窗口 ×0.85）
 const AUTO_COMPACT_PERCENT = 85;
 
 const RING_RADIUS = 6;
 const CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
 
-const { inputTokens, windowTokens, compacting } = useContextUsage();
+const singletonUsage = useContextUsage();
+
+const inputTokens = computed(() =>
+  props.inputTokens !== undefined
+    ? props.inputTokens
+    : singletonUsage.inputTokens.value,
+);
+const windowTokens = computed(() =>
+  props.windowTokens !== undefined
+    ? props.windowTokens
+    : singletonUsage.windowTokens.value,
+);
+const compacting = computed(() =>
+  props.compacting !== undefined
+    ? props.compacting
+    : singletonUsage.compacting.value,
+);
 
 const percent = computed(() =>
   contextUsagePercent(inputTokens.value, windowTokens.value),

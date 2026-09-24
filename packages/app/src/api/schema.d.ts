@@ -137,6 +137,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/conversations/{id}/subagents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_subagents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/mcp/oauth/callback": {
         parameters: {
             query?: never;
@@ -542,6 +558,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/subagents/{agentId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["cancel_subagent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/subagents/{agentId}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["stream_subagent_events"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/subagents/{agentId}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_subagent_messages"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -724,6 +788,37 @@ export interface components {
             };
             /** @enum {string} */
             type: "run_meta";
+        } | {
+            /**
+             * @description A subagent task of this run changed state (started / settled /
+             *     recovered). Published on the PARENT run's hub only — small by design
+             *     (ADR 0002 §7.3): the child's own text/reasoning/tool events stay on
+             *     the child hub and are subscribed to separately. Never carries the
+             *     child's `finish`/`usage`: forwarding those would wrongly end the
+             *     parent stream or corrupt the parent's context ring.
+             */
+            data: {
+                /**
+                 * @description Best-effort activity summary at publish time (e.g. the tool the
+                 *     child is currently running); `None` when unknown.
+                 */
+                activity?: string | null;
+                /** @description The child's conversation id (== agent id in v1). */
+                agent_id: string;
+                description: string;
+                /**
+                 * Format: int64
+                 * @description Which execution instance produced the event: recovery bumps the
+                 *     epoch, letting consumers discard stale-instance events.
+                 */
+                execution_epoch: number;
+                /** @description The parent tool call this task answers. */
+                parent_call_id: string;
+                run_id: string;
+                status: components["schemas"]["SubagentRunStatus"];
+            };
+            /** @enum {string} */
+            type: "subagent_updated";
         };
         /** @description Query params for manual compaction. */
         CompactQuery: {
@@ -767,10 +862,22 @@ export interface components {
          */
         CompactionTrigger: "auto" | "manual";
         Conversation: {
+            /** @description For `subagent` rows: the worker role (`worker` in v1). */
+            agent_type?: string | null;
             /** Format: date-time */
             created_at: string;
             id: string;
+            /**
+             * @description `chat` (a normal sidebar conversation) or `subagent` (a managed
+             *     worker session created by the `task` tool; never listed, never sent
+             *     to directly — see ADR 0002 §6.2).
+             */
+            kind: string;
+            /** @description For `subagent` rows: the conversation whose run delegated this task. */
+            parent_conversation_id?: string | null;
             project_id: string;
+            /** @description For `subagent` rows: the root chat conversation of the task tree. */
+            root_conversation_id?: string | null;
             title: string;
             /**
              * @description Where `title` came from: `default` (untitled placeholder), `ai`
@@ -851,8 +958,9 @@ export interface components {
         /**
          * @description The error body of EVERY non-2xx API response. `code` is the stable
          *     machine-readable cause ("not_found", "bad_request", "conflict",
-         *     "already_running", "nothing_to_resume", "bad_gateway", "internal") —
-         *     clients branch on it and show `error` verbatim.
+         *     "already_running", "nothing_to_resume", "managed_conversation",
+         *     "pending_recovery", "bad_gateway", "internal") — clients branch on it
+         *     and show `error` verbatim.
          */
         ErrorBody: {
             code: string;
@@ -1342,6 +1450,47 @@ export interface components {
             swapped_at_revision?: number | null;
         };
         /**
+         * @description Lifecycle status of a subagent task (the `subagent_updated` event's
+         *     `status` and the subagent list API's status field). Mirrors the persisted
+         *     `agent_runs.status` vocabulary, with `running` while live and `lost`
+         *     meaning the executing instance died before settling.
+         * @enum {string}
+         */
+        SubagentRunStatus: "running" | "completed" | "failed" | "cancelled" | "lost";
+        /**
+         * @description One row of the subagent task list: the persisted run row merged with the
+         *     live in-memory activity. Field names are the fixed frontend contract.
+         */
+        SubagentTaskDto: {
+            /** @description The child conversation id (== agent id in v1). */
+            agent_id: string;
+            /** Format: date-time */
+            created_at: string;
+            description: string;
+            /** Format: int64 */
+            execution_epoch: number;
+            final_message_id?: string | null;
+            /** Format: date-time */
+            finished_at?: string | null;
+            /** Format: int64 */
+            input_tokens?: number | null;
+            model_id?: string | null;
+            /** Format: int64 */
+            output_tokens?: number | null;
+            parent_call_id?: string | null;
+            provider_id?: string | null;
+            run_id: string;
+            /** @description Whether an in-memory execution instance is live right now. */
+            running: boolean;
+            /**
+             * @description `running` | `completed` | `failed` | `cancelled` | `lost` (from the
+             *     DB row; `lost` = awaiting recovery).
+             */
+            status: string;
+            /** @description The child conversation's title (== the task description). */
+            title: string;
+        };
+        /**
          * @description One image attached to a tool result (e.g. an MCP server's image content
          *     block), passed through to the model alongside the text content.
          */
@@ -1698,6 +1847,36 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["RunningStatus"];
                 };
+            };
+        };
+    };
+    list_subagents: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Root conversation ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Subagent tasks of the conversation's task tree, running first then oldest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubagentTaskDto"][];
+                };
+            };
+            /** @description Conversation not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -2820,6 +2999,92 @@ export interface operations {
                 content?: never;
             };
             /** @description Model not found or is not deletable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cancel_subagent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Subagent (child conversation) ID */
+                agentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cancellation requested (active run), or a lost run persisted as cancelled */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No subagent, no run, or nothing cancellable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    stream_subagent_events: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Subagent (child conversation) ID */
+                agentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description SSE stream of the ACTIVE child run: a synthetic run_meta event (the delegation message boundary) followed by the run's full event log replayed from its start, then live events */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No active run for this subagent (it ended or was lost — read the history instead) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_subagent_messages: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Subagent (child conversation) ID */
+                agentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The subagent conversation's full history (same typed contract as the chat endpoint) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MessageDto"][];
+                };
+            };
+            /** @description No subagent conversation with this id */
             404: {
                 headers: {
                     [name: string]: unknown;

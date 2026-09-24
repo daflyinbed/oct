@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import client from "@/api/client";
-import { onTitleUpdated, useChat } from "@/composables/useChat";
+import {
+  createChatSession,
+  onTitleUpdated,
+  sendFailureText,
+  useChat,
+} from "@/composables/useChat";
 import {
   clearContextUsage,
   useContextUsage,
@@ -1424,5 +1429,316 @@ describe("上下文压缩", () => {
       summary: "手动摘要",
       triggeredBy: "manual",
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createChatSession：实例化隔离（子代理 panel 的会话状态不碰单例/全局）
+// ---------------------------------------------------------------------------
+
+describe("createChatSession 实例化", () => {
+  function stubFetch(...responses: Response[]) {
+    const fetchMock = vi.fn();
+    for (const r of responses) fetchMock.mockResolvedValueOnce(r);
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it("两个实例状态隔离：流入 A 的事件不出现在 B（单例也不受影响）", async () => {
+    const a = createChatSession();
+    const b = createChatSession();
+    const singletonBefore = messages.value.length;
+
+    stubFetch(
+      sse([
+        textDelta("A 的回答"),
+        toolCallStart("a-call", "read_file", "a.txt", "{}"),
+        toolResult("a-call", "A 的工具结果"),
+        finishEvent,
+      ]),
+    );
+    await a.sendMessage("conv-a", "hi");
+
+    expect(a.messages.value).toHaveLength(2);
+    expect(a.messages.value[1]?.parts).toEqual([
+      { kind: "text", text: "A 的回答" },
+      expect.objectContaining({ kind: "tool_call", callId: "a-call" }),
+    ]);
+    // B 完全干净；useChat 单例也不受影响
+    expect(b.messages.value).toHaveLength(0);
+    expect(b.sending.value).toBe(false);
+    expect(messages.value.length).toBe(singletonBefore);
+  });
+
+  it("contextUsage:false 不写全局上下文环；实例本地快照与压缩分隔条仍工作", async () => {
+    clearContextUsage();
+    const session = createChatSession({ contextUsage: false });
+
+    stubFetch(
+      sse([
+        { type: "compacting", data: { triggered_by: "auto" } },
+        {
+          type: "compacted",
+          data: {
+            summary_message_id: "m1",
+            triggered_by: "auto",
+            compacted_messages: 4,
+            est_tokens_before: 800,
+            est_tokens_after: 100,
+            summary: "实例内摘要",
+            context_window_tokens: 2000,
+          },
+        },
+        {
+          type: "usage",
+          data: {
+            input_tokens: 150,
+            output_tokens: 8,
+            reasoning_tokens: null,
+            context_window_tokens: 2000,
+          },
+        },
+        textDelta("子代理回答"),
+        finishEvent,
+      ]),
+    );
+    await session.sendMessage("conv-sub", "hi");
+
+    // 全局单例未被污染（子 usage 不进父上下文环）
+    const { inputTokens, windowTokens, compacting } = useContextUsage();
+    expect(inputTokens.value).toBeNull();
+    expect(windowTokens.value).toBeNull();
+    expect(compacting.value).toBe(false);
+
+    // 实例本地快照记录了 usage；压缩分隔条照常渲染
+    expect(session.usage.inputTokens.value).toBe(150);
+    expect(session.usage.windowTokens.value).toBe(2000);
+    expect(session.usage.compacting.value).toBe(false);
+    const last = session.messages.value.at(-1)!;
+    expect(last.parts[0]?.kind).toBe("compaction");
+    expect(last.parts[1]).toEqual({ kind: "text", text: "子代理回答" });
+  });
+
+  it("默认实例照旧写全局上下文环（主面板行为不变）", async () => {
+    clearContextUsage();
+    const session = createChatSession();
+    stubFetch(
+      sse([
+        {
+          type: "usage",
+          data: { input_tokens: 42, context_window_tokens: 1000 },
+        },
+        finishEvent,
+      ]),
+    );
+    await session.sendMessage("conv-main", "hi");
+
+    const { inputTokens } = useContextUsage();
+    expect(inputTokens.value).toBe(42);
+    expect(session.usage.inputTokens.value).toBe(42);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// attachSubagent：子代理面板挂载（历史 + 活动 run 探测/重放）
+// ---------------------------------------------------------------------------
+
+describe("attachSubagent", () => {
+  function stubFetch(...responses: Response[]) {
+    const fetchMock = vi.fn();
+    for (const r of responses) fetchMock.mockResolvedValueOnce(r);
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  /** 子会话历史（委派 user 消息 + 一轮 assistant）。 */
+  function subagentHistory() {
+    return [
+      storedMessage("user", '[{"Text":"检查 useChat 的重连路径"}]', {
+        id: "u1",
+      }),
+      storedMessage("assistant", '[{"Text":"第一轮半截回答"}]', { id: "a1" }),
+    ];
+  }
+
+  it("历史 + 404（无活动 run）：仅历史视图", async () => {
+    const session = createChatSession({ contextUsage: false });
+    const fetchMock = stubFetch(new Response("gone", { status: 404 }));
+    GET.mockResolvedValue({
+      data: subagentHistory(),
+      error: undefined,
+    } as never);
+
+    await session.attachSubagent("agent-1");
+
+    // 订阅打到子代理 events 端点；历史经 messages 端点拉取（首拉 + 收尾刷新）
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/subagents/agent-1/events");
+    expect(GET).toHaveBeenNthCalledWith(
+      1,
+      "/api/subagents/{agentId}/messages",
+      { params: { path: { agentId: "agent-1" } } },
+    );
+    expect(session.messages.value.map((m) => m.id)).toEqual(["u1", "a1"]);
+    expect(session.sending.value).toBe(false);
+  });
+
+  it("历史 + SSE 重放：run_meta 锚点截断后重放重建（与 attachRun 同语义）", async () => {
+    const session = createChatSession({ contextUsage: false });
+    // 重放会看到 a1（run 之内已落库的轮次）——重放前必须按锚点丢弃。
+    // 收尾刷新按失败处理（attachRun 测试同款），保留重建视图以便断言。
+    // as never：vi.mocked 的重载会把返回类型钉在首个路径上，子代理历史
+    // 端点的 MessageDto[] 形状与其不兼容（其余 mock 同款处理）。
+    GET.mockResolvedValueOnce({
+      data: subagentHistory(),
+      error: undefined,
+    } as never);
+    GET.mockResolvedValue({ data: undefined, error: {} } as never);
+    stubFetch(
+      sse([runMeta("u1"), textDelta("重建的"), textDelta("回答"), finishEvent]),
+    );
+
+    await session.attachSubagent("agent-1");
+
+    expect(session.messages.value.map((m) => m.id)).toEqual([
+      "u1",
+      expect.stringMatching(RE_reattachedId),
+    ]);
+    const rebuilt = session.messages.value[1]!;
+    expect(rebuilt.parts).toEqual([{ kind: "text", text: "重建的回答" }]);
+    expect(rebuilt.isStreaming).toBe(false);
+    expect(session.sending.value).toBe(false);
+  });
+
+  it("usage 只进实例本地快照（播种自历史，usage 事件覆盖）", async () => {
+    const session = createChatSession({ contextUsage: false });
+    clearContextUsage();
+    GET.mockResolvedValue({
+      data: [
+        ...subagentHistory(),
+        storedMessage("assistant", '[{"Text":"答"}]', { input_tokens: 77 }),
+      ],
+      error: undefined,
+    } as never);
+    stubFetch(new Response("gone", { status: 404 }));
+
+    await session.attachSubagent("agent-1");
+
+    expect(session.usage.inputTokens.value).toBe(77);
+    // 全局上下文环不被子会话播种污染
+    const { inputTokens } = useContextUsage();
+    expect(inputTokens.value).toBeNull();
+  });
+
+  it("dispose 中断在飞订阅：不再收事件、不再收尾刷新", async () => {
+    const session = createChatSession({ contextUsage: false });
+    // 可暂停的 SSE
+    const encoder = new TextEncoder();
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        streamController = c;
+      },
+    });
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(stream, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    GET.mockResolvedValue({
+      data: subagentHistory(),
+      error: undefined,
+    } as never);
+
+    const attachPromise = session.attachSubagent("agent-1");
+    streamController.enqueue(
+      encoder.encode(`data: ${JSON.stringify(runMeta("u1"))}\n\n`),
+    );
+    await vi.waitFor(() =>
+      expect(
+        session.messages.value.some((m) => RE_reattachedId.test(m.id)),
+      ).toBe(true),
+    );
+
+    // 关闭标签：dispose 中断订阅（只退订，不取消任务）。mock Response 不
+    // 模拟真实 fetch 的 abort 语义，这里手动放行一段"dispose 后到达的
+    // 迟到事件 + EOF"，验证 disposed 守卫拦下它们。
+    session.dispose();
+    const callsAfterDispose = GET.mock.calls.length;
+    streamController.enqueue(
+      encoder.encode(`data: ${JSON.stringify(textDelta("迟到事件"))}\n\n`),
+    );
+    streamController.close();
+    await attachPromise;
+
+    // 迟到事件不进视图；dispose 后没有额外的收尾刷新
+    expect(GET.mock.calls.length).toBe(callsAfterDispose);
+    expect(
+      session.messages.value.some((m) =>
+        m.parts.some((p) => p.kind === "text" && p.text.includes("迟到事件")),
+      ),
+    ).toBe(false);
+    expect(session.sending.value).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pending_recovery：send 409 的引导提示
+// ---------------------------------------------------------------------------
+
+describe("send 失败文案与 pending_recovery", () => {
+  function stubFetch(...responses: Response[]) {
+    const fetchMock = vi.fn();
+    for (const r of responses) fetchMock.mockResolvedValueOnce(r);
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it("sendFailureText：code=pending_recovery 附引导文案与后端错误", async () => {
+    const text = await sendFailureText(
+      new Response(
+        JSON.stringify({
+          code: "pending_recovery",
+          error: "存在未结算的子代理任务",
+        }),
+        { status: 409 },
+      ),
+    );
+    expect(text).toContain("存在未完成的子代理任务");
+    expect(text).toContain("「恢复此轮」");
+    expect(text).toContain("存在未结算的子代理任务");
+  });
+
+  it("sendFailureText：非 JSON / 其他错误体走通用文案", async () => {
+    expect(await sendFailureText(new Response("boom", { status: 500 }))).toBe(
+      "Failed to send message.",
+    );
+    expect(
+      await sendFailureText(
+        new Response(JSON.stringify({ code: "conflict", error: "x" }), {
+          status: 409,
+        }),
+      ),
+    ).toBe("Failed to send message.");
+  });
+
+  it("sendMessage 收到 pending_recovery 409 时把提示渲染进消息流", async () => {
+    stubFetch(
+      new Response(
+        JSON.stringify({
+          code: "pending_recovery",
+          error: "存在未结算的子代理任务",
+        }),
+        { status: 409 },
+      ),
+    );
+    await sendMessage(nextConvId(), "hi");
+
+    const text = messages.value[1]?.parts[0];
+    expect(text).toMatchObject({ kind: "text" });
+    expect((text as { text: string }).text).toContain("存在未完成的子代理任务");
+    expect((text as { text: string }).text).toContain("「恢复此轮」");
+    expect(sending.value).toBe(false);
   });
 });

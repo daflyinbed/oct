@@ -28,6 +28,10 @@
         class="h-3 w-3 flex-none"
       />
       <i-lucide-plug v-else-if="tab.kind === 'mcp'" class="h-3 w-3 flex-none" />
+      <i-lucide-bot
+        v-else-if="tab.kind === 'subagent'"
+        class="h-3 w-3 flex-none"
+      />
       <i-lucide-git-branch v-else class="h-3 w-3 flex-none" />
       <span class="max-w-[160px] truncate">{{ tab.title }}</span>
       <span
