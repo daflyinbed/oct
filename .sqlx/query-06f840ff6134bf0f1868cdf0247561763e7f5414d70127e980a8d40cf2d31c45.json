@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, project_id, title, title_source, created_at, updated_at FROM conversations WHERE id = $1",
+  "query": "SELECT id, role, parts_json, details_json, created_at FROM messages WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -9,28 +9,23 @@
         "type_info": "Text"
       },
       {
-        "name": "project_id",
+        "name": "role",
         "ordinal": 1,
         "type_info": "Text"
       },
       {
-        "name": "title",
+        "name": "parts_json",
         "ordinal": 2,
         "type_info": "Text"
       },
       {
-        "name": "title_source",
+        "name": "details_json",
         "ordinal": 3,
         "type_info": "Text"
       },
       {
         "name": "created_at",
         "ordinal": 4,
-        "type_info": "Datetime"
-      },
-      {
-        "name": "updated_at",
-        "ordinal": 5,
         "type_info": "Datetime"
       }
     ],
@@ -41,10 +36,9 @@
       false,
       false,
       false,
-      false,
-      false,
+      true,
       false
     ]
   },
-  "hash": "e08a1ba600ca7f20d8a331cee2b6a1484d65ac5addf036dc6f39e19c68b7c61f"
+  "hash": "06f840ff6134bf0f1868cdf0247561763e7f5414d70127e980a8d40cf2d31c45"
 }

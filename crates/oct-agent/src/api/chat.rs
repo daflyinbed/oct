@@ -1,14 +1,12 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
-use std::path::PathBuf;
 use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
 use utoipa::ToSchema;
 
 use oct_llm_provider::core::{Message, Role};
@@ -18,17 +16,12 @@ use super::AppState;
 use super::dto;
 use super::error::{ApiResult, AppError};
 use crate::agent::compact;
-use crate::agent::loop_runner::run_agent_loop;
-use crate::agent::prompt::system_prompt;
 use crate::agent::title;
-use crate::agent::{AgentContext, AgentEvent, CompactionTrigger, EventHub, RunHandle};
+use crate::agent::{AgentEvent, CompactionTrigger};
 use crate::context::{self, LlmView};
-use crate::db::{
-    conversations as conv_db, messages as msg_db, models as model_db, projects as project_db,
-    providers as provider_db,
-};
-use crate::tools;
-use crate::tools::workspace::WorkspaceRoots;
+use crate::db::{conversations as conv_db, messages as msg_db, projects as project_db, runs as run_db};
+use crate::runtime::{RootRunRequest, sse_event};
+use crate::subagent::{RecoveryJob, orchestrate};
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SendMessageRequest {
@@ -42,177 +35,60 @@ pub struct RunningStatus {
     pub running: bool,
 }
 
-fn parse_provider_spec(spec: &str) -> Result<(&str, &str), AppError> {
-    spec.split_once(':').ok_or_else(|| {
-        AppError::BadRequest(format!(
-            "Invalid provider_spec format: '{}'. Expected 'provider_id:model_id'",
-            spec
-        ))
-    })
-}
-
+/// Thin delegates over the RunService's resolvers (moved there so subagents
+/// and the recovery orchestrator resolve models exactly like a chat turn).
 async fn resolve_model(
     state: &AppState,
     provider_spec: &str,
 ) -> Result<(Box<dyn oct_llm_provider::model::ChatModel>, String, String), AppError> {
-    let spec = provider_spec.to_string();
-
-    let (provider_id, model_id) = parse_provider_spec(&spec)?;
-
-    let provider = provider_db::get_provider(&state.pool, provider_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Provider '{}' not found", provider_id)))?;
-
-    if provider.api_key.is_empty() {
-        return Err(AppError::BadRequest(format!(
-            "Provider '{}' has no API key configured",
-            provider_id
-        )));
-    }
-
-    let model = match provider.adapter_type.as_str() {
-        "anthropic" => state.registry.resolve_chat_model(&spec)?,
-        "openai_compatible" => {
-            let base_url = provider.base_url.as_deref().unwrap_or("");
-            state.registry.resolve_custom_openai_model(
-                provider_id,
-                model_id,
-                base_url,
-                &provider.api_key,
-            )?
-        }
-        other => {
-            return Err(AppError::BadRequest(format!(
-                "Unknown adapter_type: '{}'",
-                other
-            )));
-        }
-    };
-
-    Ok((model, provider_id.to_string(), model_id.to_string()))
+    state.runs.resolve_model(provider_spec).await
 }
 
-/// Context window for compaction decisions: built-in provider info first
-/// (Anthropic/Moonshot carry their limits in code), then the models table's
-/// `limit_context` (seeded from models.dev or set on custom models). `None`
-/// means unknown — auto compaction stays disabled, manual still works.
 async fn resolve_context_window(
     state: &AppState,
     model: &dyn oct_llm_provider::model::ChatModel,
     provider_id: &str,
     model_id: &str,
 ) -> Option<u32> {
-    if let Some(window) = model.info().limits.max_input_tokens.filter(|w| *w > 0) {
-        return Some(window);
-    }
-    let row = model_db::get_model(&state.pool, provider_id, model_id)
+    state
+        .runs
+        .resolve_context_window(model, provider_id, model_id)
         .await
-        .ok()
-        .flatten()?;
-    row.limit_context
-        .and_then(|v| u32::try_from(v).ok())
-        .filter(|w| *w > 0)
 }
 
-/// Shared tail of the chat endpoints: take the session entry the caller
-/// inserted (a real run handle with a fresh event hub), subscribe to the hub,
-/// spawn the agent loop, and return the SSE stream of the run's events.
-/// `state.sessions` must already hold the entry for `id` (so concurrent
-/// starts get a 409); the entry stays until the loop returns, which keeps
-/// GET /run reporting `running` and GET /events able to replay.
-/// `idle` is how long the conversation sat idle BEFORE this run started —
-/// the microcompact idle trigger.
-fn start_agent_run(
-    state: &AppState,
-    id: &str,
-    project: &project_db::Project,
-    chat_model: Box<dyn oct_llm_provider::model::ChatModel>,
-    view: LlmView,
-    context_window: Option<u32>,
-    idle: Option<std::time::Duration>,
-) -> ApiResult<Response> {
-    let handle = state
-        .sessions
-        .get(id)
-        .map(|entry| entry.value().clone())
-        .expect("caller inserted the session entry");
-
-    // Subscribe before spawning so the response stream is live from the very
-    // first event (the hub log would replay them anyway — subscribing first
-    // is just the cheaper path).
-    let stream = handle
-        .hub
-        .subscribe()
-        .map(|e| Ok::<_, Infallible>(sse_event(&e)));
-
-    // Re-resolved from the project row on every send/resume, so edits to a
-    // project's working directories take effect on the next turn. Additional
-    // directories are accessible to the tools via absolute paths only.
-    let additional: Vec<PathBuf> = project
-        .additional_dirs
-        .0
-        .iter()
-        .map(PathBuf::from)
-        .collect();
-    let roots = WorkspaceRoots::new(PathBuf::from(&project.working_dir), additional.clone());
-
-    // Default workspace tools plus every connected MCP server's tools that
-    // are in scope for THIS project (global + project-scoped; the LLM sees
-    // one flat toolset; MCP names are the mcp__{server}__{tool} forms
-    // deduplicated across servers).
-    let mut run_tools = tools::default_tools(roots);
-    run_tools.extend(state.mcp.tools_for_run(Some(&project.id)));
-
-    let ctx = AgentContext {
-        model: Arc::from(chat_model),
-        tools: Arc::new(run_tools),
-        pool: state.pool.clone(),
-        system_prompt: system_prompt(&PathBuf::from(&project.working_dir), &additional),
-        context_window,
-        idle,
-    };
-
-    let conv_id = id.to_string();
-    let sessions = state.sessions.clone();
-
-    tokio::spawn(async move {
-        run_agent_loop(ctx, conv_id.clone(), view, handle).await;
-        // Dropping the last run handle releases the hub: every subscriber
-        // stream reaches EOF (the SSE bodies end), matching the old broadcast
-        // termination semantics.
-        sessions.remove(&conv_id);
-    });
-
-    Ok(Sse::new(stream)
-        .keep_alive(KeepAlive::default())
-        .into_response())
-}
-
-/// Serialize an AgentEvent as an SSE `data:` payload.
-fn sse_event(e: &AgentEvent) -> Event {
-    Event::default()
-        .json_data(e)
-        .unwrap_or_else(|_| Event::default())
-}
-
-/// Insert the session entry for a new run: a REAL handle with a fresh event
-/// hub (not a placeholder channel). Unlike the previous placeholder scheme,
-/// a GET /events arriving in the run-startup window already replays from the
-/// same hub this run will publish to, so no handle swap is ever needed.
-fn insert_session_entry(state: &AppState, id: &str) -> Result<(), AppError> {
-    match state.sessions.entry(id.to_string()) {
-        dashmap::mapref::entry::Entry::Occupied(_) => Err(AppError::SessionBusy(
-            "Agent is already running for this conversation".into(),
-        )),
-        dashmap::mapref::entry::Entry::Vacant(entry) => {
-            entry.insert(RunHandle {
-                hub: Arc::new(EventHub::new()),
-                cancel: CancellationToken::new(),
-                start_message_id: None,
-            });
-            Ok(())
-        }
+/// 409 when the conversation is a managed subagent session: send / resume /
+/// compact must go through the manager (or the parent), never start a run
+/// behind its back.
+fn ensure_not_managed(conversation: &conv_db::Conversation) -> Result<(), AppError> {
+    if conversation.kind == "subagent" {
+        return Err(AppError::ManagedConversation(
+            "Conversation is a managed subagent session; drive it from the parent conversation"
+                .into(),
+        ));
     }
+    Ok(())
+}
+
+/// 409 when the conversation has dangling `task` delegations awaiting
+/// recovery: a plain send would repair them into error placeholders (or
+/// wedge behind a missing wait). The message guides to 恢复此轮.
+async fn ensure_no_pending_recovery(state: &AppState, id: &str) -> Result<(), AppError> {
+    let dangling = msg_db::find_dangling_tool_calls(&state.pool, id)
+        .await
+        .map_err(AppError::from)?;
+    if dangling.is_empty() {
+        return Ok(());
+    }
+    let managed = run_db::runs_for_parent_calls(&state.pool, id, &dangling)
+        .await
+        .map_err(AppError::from)?;
+    if managed.is_empty() {
+        return Ok(());
+    }
+    Err(AppError::PendingRecovery(
+        "This turn has unfinished subagent tasks waiting for recovery; use 恢复此轮 (resume) to continue it"
+            .into(),
+    ))
 }
 
 #[utoipa::path(
@@ -232,37 +108,33 @@ pub async fn send_message(
     Path(id): Path<String>,
     Json(req): Json<SendMessageRequest>,
 ) -> ApiResult<Response> {
-    insert_session_entry(&state, &id)?;
+    // The occupancy guard takes the session entry up front (concurrent
+    // starts get their 409 here) and releases it on drop — every `?` below
+    // frees the conversation, no manual cleanup needed.
+    let guard = state.runs.occupy(&id)?;
 
     let conversation = conv_db::get_conversation(&state.pool, &id)
         .await
         .map_err(AppError::from)?
-        .ok_or_else(|| {
-            state.sessions.remove(&id);
-            AppError::NotFound("Conversation not found".into())
-        })?;
+        .ok_or_else(|| AppError::NotFound("Conversation not found".into()))?;
+
+    // Managed subagent sessions are driven by their parent's `task` calls —
+    // never by a direct send.
+    ensure_not_managed(&conversation)?;
 
     let project = project_db::get_project(&state.pool, &conversation.project_id)
         .await
-        .map_err(|e| {
-            state.sessions.remove(&id);
-            AppError::from(e)
-        })?
-        .ok_or_else(|| {
-            state.sessions.remove(&id);
-            AppError::NotFound("Project not found".into())
-        })?;
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::NotFound("Project not found".into()))?;
 
-    let (chat_model, provider_id, model_id) = match resolve_model(&state, &req.provider_spec).await
-    {
-        Ok(m) => m,
-        Err(e) => {
-            state.sessions.remove(&id);
-            return Err(e);
-        }
-    };
+    let (chat_model, provider_id, model_id) = resolve_model(&state, &req.provider_spec).await?;
     let context_window =
         resolve_context_window(&state, chat_model.as_ref(), &provider_id, &model_id).await;
+
+    // A turn with unfinished (crashed) subagent tasks must be recovered, not
+    // appended to: the repair below would otherwise turn the pending task
+    // calls into error placeholders.
+    ensure_no_pending_recovery(&state, &id).await?;
 
     // Idle for the microcompact trigger: captured BEFORE the repair and the
     // new user message below — anything later would always look "just
@@ -273,13 +145,12 @@ pub async fn send_message(
     // leaves assistant ToolCalls without tool messages; repairing BEFORE the
     // new user message is appended keeps the stored history a legal
     // conversation for the provider.
-    if let Err(e) = msg_db::repair_dangling_tool_calls(&state.pool, &id).await {
-        state.sessions.remove(&id);
-        return Err(AppError::from(e));
-    }
+    msg_db::repair_dangling_tool_calls(&state.pool, &id)
+        .await
+        .map_err(AppError::from)?;
 
     let user_msg = Message::text(Role::User, &req.content);
-    let stored_user = match msg_db::insert_message(
+    let stored_user = msg_db::insert_message(
         &state.pool,
         &id,
         &user_msg,
@@ -288,29 +159,17 @@ pub async fn send_message(
         None,
     )
     .await
-    {
-        Ok(m) => m,
-        Err(e) => {
-            state.sessions.remove(&id);
-            return Err(AppError::from(e));
-        }
-    };
+    .map_err(AppError::from)?;
 
     // Record the run boundary on the (already live) session entry: the user
     // message row is the divide between DB history and this run's event log.
     // GET /events reports it as run_meta so a reconnecting frontend truncates
     // its history exactly here before replaying the run's events.
-    if let Some(mut entry) = state.sessions.get_mut(&id) {
-        entry.value_mut().start_message_id = Some(stored_user.id.clone());
-    }
+    state.runs.set_start_message_id(&id, &stored_user.id);
 
-    let view = match msg_db::load_llm_view(&state.pool, &id).await {
-        Ok(v) => v,
-        Err(e) => {
-            state.sessions.remove(&id);
-            return Err(AppError::from(e));
-        }
-    };
+    let view = msg_db::load_llm_view(&state.pool, &id)
+        .await
+        .map_err(AppError::from)?;
 
     // One-shot title generation: an independent background task firing
     // alongside the run (never inside it). Guards: the conversation still
@@ -354,15 +213,29 @@ pub async fn send_message(
         .ensure_connections(&state.pool, Some(&project.id))
         .await;
 
-    start_agent_run(
-        &state,
-        &id,
-        &project,
-        chat_model,
-        view,
-        context_window,
-        idle,
-    )
+    // Shared tail of the chat endpoints: hand the occupancy guard to the run
+    // service — it is CONSUMED by the supervised run, so occupancy lasts
+    // until the supervisor settles the terminal state (which keeps GET /run
+    // reporting `running` and GET /events able to replay until then) — and
+    // return the SSE stream of the run's events.
+    let started = state
+        .runs
+        .start_root_run(RootRunRequest {
+            guard,
+            conversation_id: id,
+            project,
+            model: chat_model,
+            provider_id,
+            model_id,
+            view,
+            context_window,
+            idle,
+            // Chat conversations get the delegation tool (their workers then
+            // never do — depth <= 1, enforced again at registration).
+            attach_task_tool: conversation.kind == "chat",
+        })
+        .await?;
+    Ok(started.response)
 }
 
 /// How long the conversation sat idle before this request, per the stored
@@ -391,114 +264,106 @@ pub async fn resume_turn(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> ApiResult<Response> {
-    insert_session_entry(&state, &id)?;
+    // Same occupancy guard as send_message: 409 on a live run, release on
+    // every error exit below via drop. The token is the orchestrator's:
+    // children restarted during recovery derive child tokens from it, and
+    // the parent run started at the end reuses the same session handle — so
+    // the cancel endpoint covers both phases.
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let guard = state.runs.occupy_with(&id, cancel.clone())?;
 
     let conversation = conv_db::get_conversation(&state.pool, &id)
         .await
         .map_err(AppError::from)?
-        .ok_or_else(|| {
-            state.sessions.remove(&id);
-            AppError::NotFound("Conversation not found".into())
-        })?;
+        .ok_or_else(|| AppError::NotFound("Conversation not found".into()))?;
+
+    // Managed subagent sessions recover through their parent conversation.
+    ensure_not_managed(&conversation)?;
 
     let project = project_db::get_project(&state.pool, &conversation.project_id)
         .await
-        .map_err(|e| {
-            state.sessions.remove(&id);
-            AppError::from(e)
-        })?
-        .ok_or_else(|| {
-            state.sessions.remove(&id);
-            AppError::NotFound("Project not found".into())
-        })?;
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::NotFound("Project not found".into()))?;
 
-    // Read-only resumability probe: a dangling ToolCall OR a trailing
-    // unanswered user message both mean the last turn never completed.
-    // Nothing is persisted yet — an empty/answered conversation must 409
-    // regardless of provider state.
-    let dangling = match msg_db::find_dangling_tool_calls(&state.pool, &id).await {
-        Ok(d) => d,
-        Err(e) => {
-            state.sessions.remove(&id);
-            return Err(AppError::from(e));
-        }
-    };
-    let last_is_user = match msg_db::last_message_is_user(&state.pool, &id).await {
-        Ok(v) => v,
-        Err(e) => {
-            state.sessions.remove(&id);
-            return Err(AppError::from(e));
-        }
-    };
-    if dangling.is_empty() && !last_is_user {
-        state.sessions.remove(&id);
+    // Read-only resumability probe — EXTENDED per ADR 0002 §6.4 (恢复资格看
+    // run 状态): a dangling ToolCall OR a trailing unanswered user message
+    // both mean the last turn never completed, and so does a `lost` latest
+    // run whose last row is a tool result (every tool result landed, but the
+    // next model request never completed). Nothing is persisted yet — an
+    // empty/answered conversation must 409 regardless of provider state.
+    let dangling = msg_db::find_dangling_tool_calls(&state.pool, &id)
+        .await
+        .map_err(AppError::from)?;
+    let last_is_user = msg_db::last_message_is_user(&state.pool, &id)
+        .await
+        .map_err(AppError::from)?;
+    let lost_with_tool_tail =
+        match run_db::latest_run_for_conversation(&state.pool, &id).await? {
+            Some(run) if run.status == "lost" => {
+                msg_db::last_message_role(&state.pool, &id).await?
+                    == Some("tool".to_string())
+            }
+            _ => false,
+        };
+    if dangling.is_empty() && !last_is_user && !lost_with_tool_tail {
         return Err(AppError::NothingToResume("Nothing to resume".into()));
     }
 
     // The resumed turn reuses the provider/model the conversation last ran
     // with; there is no request body to carry a fresh spec. Resolved before
-    // the repair below: persisting placeholder rows and then failing to
-    // resolve would leave the conversation permanently unresumable (nothing
-    // dangling anymore, last message now a tool row → "Nothing to resume").
-    let provider_spec = match msg_db::get_last_provider_spec(&state.pool, &id).await {
-        Ok(Some((provider_id, model_id))) => format!("{provider_id}:{model_id}"),
-        Ok(None) => {
-            state.sessions.remove(&id);
+    // ANY write (also before the orchestrator spawns): persisting
+    // placeholder rows and then failing to resolve would leave the
+    // conversation permanently unresumable.
+    let provider_spec = match msg_db::get_last_provider_spec(&state.pool, &id).await? {
+        Some((provider_id, model_id)) => format!("{provider_id}:{model_id}"),
+        None => {
             return Err(AppError::BadRequest(
                 "Conversation has no recorded provider/model to resume with".into(),
             ));
         }
-        Err(e) => {
-            state.sessions.remove(&id);
-            return Err(AppError::from(e));
-        }
     };
 
-    let (chat_model, provider_id, model_id) = match resolve_model(&state, &provider_spec).await {
-        Ok(m) => m,
-        Err(e) => {
-            state.sessions.remove(&id);
-            return Err(e);
-        }
-    };
+    let (chat_model, provider_id, model_id) = resolve_model(&state, &provider_spec).await?;
     let context_window =
         resolve_context_window(&state, chat_model.as_ref(), &provider_id, &model_id).await;
 
-    // Idle captured before the repair writes below (see send_message).
+    // Idle captured before any repair writes below (see send_message).
     let idle = conversation_idle(&state, &id).await;
 
-    // Only now persist the repair (idempotent): placeholder ToolResults for
-    // the dangling calls found above.
-    if let Err(e) = msg_db::repair_dangling_tool_calls(&state.pool, &id).await {
-        state.sessions.remove(&id);
-        return Err(AppError::from(e));
-    }
+    // Subscribe to the (already occupied) conversation's hub and return the
+    // SSE response IMMEDIATELY: keep-alive covers the recovery wait, and
+    // children publish `subagent_updated` onto this same hub so the UI is
+    // live. The orchestrator does every write (repair, backfill, child
+    // restarts) and finally starts the parent loop over the guard it holds.
+    let handle = state
+        .sessions
+        .get(&id)
+        .map(|entry| entry.value().clone())
+        .expect("the occupancy guard guarantees the session entry");
+    let hub = handle.hub.clone();
+    let stream = handle
+        .hub
+        .subscribe()
+        .map(|e| Ok::<_, Infallible>(sse_event(&e)));
 
-    // No new user message: the loop continues from the existing history.
-    let view = match msg_db::load_llm_view(&state.pool, &id).await {
-        Ok(v) => v,
-        Err(e) => {
-            state.sessions.remove(&id);
-            return Err(AppError::from(e));
-        }
-    };
-
-    // Same MCP reconcile as send_message, again scoped to the project: the
-    // resumed turn's toolset must reflect the current enabled servers.
-    state
-        .mcp
-        .ensure_connections(&state.pool, Some(&project.id))
-        .await;
-
-    start_agent_run(
-        &state,
-        &id,
-        &project,
-        chat_model,
-        view,
+    tokio::spawn(orchestrate(RecoveryJob {
+        runs: state.runs.clone(),
+        hub,
+        cancel,
+        guard,
+        conversation_id: id,
+        project,
+        model: chat_model,
+        provider_id,
+        model_id,
         context_window,
         idle,
-    )
+        dangling,
+    }));
+
+    Ok(Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response())
 }
 
 /// Query params for manual compaction.
@@ -545,12 +410,23 @@ pub async fn compact_conversation(
     axum::extract::Query(query): axum::extract::Query<CompactQuery>,
 ) -> ApiResult<Json<CompactResult>> {
     // The session entry doubles as the compaction mutex: an active run OR a
-    // concurrent manual compact gets a 409. Removed on every exit path below
-    // (a synchronous request, unlike the SSE run endpoints).
-    insert_session_entry(&state, &id)?;
-    let result = run_manual_compact(&state, &id, query.provider_spec.as_deref()).await;
-    state.sessions.remove(&id);
-    result
+    // concurrent manual compact gets a 409. The occupancy guard releases the
+    // entry on drop at every exit path below (a synchronous request, unlike
+    // the SSE run endpoints).
+    let _guard = state.runs.occupy(&id)?;
+
+    let conversation = conv_db::get_conversation(&state.pool, &id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Conversation not found".into()))?;
+    // Managed subagent sessions compact with their parent's history — the
+    // wait for their pending tasks would be lost otherwise.
+    ensure_not_managed(&conversation)?;
+    // A root conversation with crashed subagent tasks must recover first:
+    // compacting would summarize past the very calls whose results are still
+    // owed.
+    ensure_no_pending_recovery(&state, &id).await?;
+
+    run_manual_compact(&state, &id, query.provider_spec.as_deref()).await
 }
 
 async fn run_manual_compact(

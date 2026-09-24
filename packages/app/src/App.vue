@@ -80,6 +80,17 @@
               :server-id="activeTab.payload ?? ''"
               :active-project-id="activeProjectId"
             />
+            <!-- 子代理标签：每个 agent 一个实例（keyed），v-show 保活——
+                 切换标签保留子面板的消息/滚动状态；关闭标签才销毁（只关
+                 视图，不取消任务） -->
+            <SubagentTabView
+              v-for="tab in subagentTabs"
+              v-show="activeTab?.kind === 'subagent' && activeTabId === tab.id"
+              :key="tab.id"
+              :agent-id="tab.payload ?? ''"
+              :root-conversation-id="tab.rootConversationId ?? null"
+              :description="tab.title ?? ''"
+            />
           </div>
         </div>
       </SplitterPanel>
@@ -143,6 +154,7 @@
       :diff-visible="showDiffPanel"
       :file-tree-visible="showFileTree"
       :active-project-id="activeProjectId"
+      :root-conversation-id="selectedConversationId"
       @toggle-sidebar="showSidebar = !showSidebar"
       @toggle-chat="showChat = !showChat"
       @toggle-diff="showDiffPanel = !showDiffPanel"
@@ -176,6 +188,7 @@ import ProjectDialog from "@/components/layout/ProjectDialog.vue";
 import WorkspaceTabBar from "@/components/layout/WorkspaceTabBar.vue";
 import SettingsModal from "@/components/settings/SettingsModal.vue";
 import ProjectSidebar from "@/components/sidebar/ProjectSidebar.vue";
+import SubagentTabView from "@/components/subagent/SubagentTabView.vue";
 import DiffTabView from "@/components/views/DiffTabView.vue";
 import FileTabView from "@/components/views/FileTabView.vue";
 import GitGraphTabView from "@/components/views/GitGraphTabView.vue";
@@ -183,6 +196,7 @@ import McpTabView from "@/components/views/McpTabView.vue";
 import { onTitleUpdated, useChat } from "@/composables/useChat";
 import { useProjects } from "@/composables/useProjects";
 import { useProviders } from "@/composables/useProviders";
+import { refreshSubagents } from "@/composables/useSubagents";
 import { useTabs } from "@/composables/useTabs";
 import type { components } from "@/api/schema";
 import type { TabAction } from "@/components/layout/WorkspaceTabBar.vue";
@@ -286,8 +300,16 @@ watch(
   selectedConversationId,
   (id) => {
     if (id) openTab({ id: `chat:${id}`, kind: "chat", payload: id });
+    // 根会话的子任务快照：切会话即拉取（store 独立于可见 panel 存活）。
+    // 事件流期间的实时更新由 useChat 单例的 subagent_updated 派发维护。
+    void refreshSubagents(id);
   },
   { immediate: true },
+);
+
+/** 打开中的子代理标签（每个 agent 一个实例，App 层渲染并 v-show 保活）。 */
+const subagentTabs = computed(() =>
+  tabs.value.filter((tab) => tab.kind === "subagent"),
 );
 
 watch(activeTabId, (id, prevId) => {
@@ -307,7 +329,10 @@ watch(activeTabId, (id, prevId) => {
       // 流式进行中跳过——live 视图比库里的更完整；随后 attachRun 兜住
       // "刷新瞬间 run 恰好还在后端跑着"的情况（如另一窗口发起的 run）。
       const conversationId = tab.payload;
-      void fetchMessages(conversationId).then(() => attachRun(conversationId));
+      void fetchMessages(conversationId)
+        .then(() => attachRun(conversationId))
+        // 重连对账完成后再拉一次子任务快照（流内事件之外的状态收敛）。
+        .then(() => refreshSubagents(conversationId));
     }
   } else if (!tab && route.path !== "/") {
     router.push("/");

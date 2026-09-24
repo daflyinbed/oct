@@ -73,6 +73,12 @@ const COMPACT_PROMPT_SIGNATURE: &str = "compacting the history of an AI coding-a
 struct LlmMockState {
     /// One turn popped per incoming STREAMING request.
     turns: Mutex<VecDeque<LlmTurn>>,
+    /// Per-marker streaming queues (see [`LlmMock::push_marker_turns`]):
+    /// key = a substring unique to one agent's conversation (e.g. the task
+    /// delegation prompt embeds `TASKA-7f3a`). The ADR's "模型工厂" — parent
+    /// and children share this one mock, so per-agent scripting is routed by
+    /// request content.
+    marker_turns: Mutex<std::collections::HashMap<String, VecDeque<LlmTurn>>>,
     /// One turn popped per incoming NON-streaming request.
     title_turns: Mutex<VecDeque<TitleTurn>>,
     /// One turn popped per incoming NON-streaming request whose prompt is the
@@ -90,6 +96,28 @@ pub struct LlmMock {
 }
 
 impl LlmMock {
+    /// Queue more scripted STREAMING turns for the default (markerless)
+    /// queue — consumed in order alongside the turns passed to
+    /// [`spawn_llm_mock`].
+    pub fn push_turns(&self, turns: impl IntoIterator<Item = LlmTurn>) {
+        self.state.turns.lock().unwrap().extend(turns);
+    }
+
+    /// Queue scripted STREAMING turns for requests whose serialized messages
+    /// contain `marker`: the subagent tests embed a unique marker in each
+    /// task's delegation prompt, giving every agent (parent and children
+    /// alike) its own scripted queue on the ONE shared mock. A streaming
+    /// request matching no marker falls through to the default queue.
+    pub fn push_marker_turns(&self, marker: &str, turns: impl IntoIterator<Item = LlmTurn>) {
+        self.state
+            .marker_turns
+            .lock()
+            .unwrap()
+            .entry(marker.to_string())
+            .or_default()
+            .extend(turns);
+    }
+
     /// Queue scripted responses for non-streaming (title-generation) calls,
     /// consumed in order. A non-streaming request with an empty queue gets a
     /// 500 — tests that never trigger title generation never see it, and
@@ -112,6 +140,7 @@ impl LlmMock {
 pub async fn spawn_llm_mock(turns: Vec<LlmTurn>) -> LlmMock {
     let state = Arc::new(LlmMockState {
         turns: Mutex::new(turns.into()),
+        marker_turns: Mutex::new(std::collections::HashMap::new()),
         title_turns: Mutex::new(VecDeque::new()),
         compact_turns: Mutex::new(VecDeque::new()),
         requests: Mutex::new(Vec::new()),
@@ -177,7 +206,36 @@ async fn chat_completions(
         };
     }
 
-    let turn = state.turns.lock().unwrap().pop_front();
+    // Marker routing (see [`LlmMock::push_marker_turns`]): match on USER
+    // message content only. The delegation prompt is a user message in the
+    // CHILD's requests, but in the PARENT's later requests the very same
+    // text rides inside the assistant tool_call's arguments JSON — matching
+    // the whole body would route the parent to the child's queue. A
+    // marker-matched request NEVER falls through to the default queue (an
+    // empty marker queue 500s), so a child can never steal the parent's
+    // scripted turn either.
+    let turn = {
+        let user_text: String = body["messages"]
+            .as_array()
+            .map(|messages| {
+                messages
+                    .iter()
+                    .filter(|m| m["role"] == "user")
+                    .map(|m| m["content"].to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
+        let mut marker_queue = state.marker_turns.lock().unwrap();
+        match marker_queue
+            .keys()
+            .find(|marker| user_text.contains(marker.as_str()))
+            .cloned()
+        {
+            Some(marker) => marker_queue.get_mut(&marker).unwrap().pop_front(),
+            None => state.turns.lock().unwrap().pop_front(),
+        }
+    };
     match turn {
         None => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -251,7 +309,28 @@ pub fn text_chunk(content: &str) -> Value {
 }
 
 /// A streamed tool-call delta carrying the full call in one chunk (id,
-/// name and complete arguments together).
+/// name and complete arguments together). Parallel calls in ONE turn must
+/// use distinct `index`es — the adapter groups deltas by index, so two
+/// calls sharing index 0 would merge into one corrupted call.
+pub fn tool_call_chunk_at(index: u64, call_id: &str, name: &str, arguments: &str) -> Value {
+    json!({
+        "id": "chatcmpl-mock",
+        "object": "chat.completion.chunk",
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "tool_calls": [{
+                    "index": index,
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": name, "arguments": arguments},
+                }],
+            },
+        }],
+    })
+}
+
+/// [`tool_call_chunk_at`] at index 0 — the single-call convenience.
 pub fn tool_call_chunk(call_id: &str, name: &str, arguments: &str) -> Value {
     json!({
         "id": "chatcmpl-mock",
@@ -275,5 +354,22 @@ pub fn finish_chunk(reason: &str) -> Value {
         "id": "chatcmpl-mock",
         "object": "chat.completion.chunk",
         "choices": [{"index": 0, "delta": {}, "finish_reason": reason}],
+    })
+}
+
+/// A usage-only chunk (OpenAI's `stream_options.include_usage` final event
+/// shape): no choices, just the token accounting. The adapter maps it to a
+/// Usage stream event, which the agent loop aggregates into the run's
+/// persisted `agent_runs.input_tokens/output_tokens`.
+pub fn usage_chunk(prompt_tokens: u32, completion_tokens: u32) -> Value {
+    json!({
+        "id": "chatcmpl-mock",
+        "object": "chat.completion.chunk",
+        "choices": [],
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        },
     })
 }

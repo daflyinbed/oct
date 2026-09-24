@@ -137,6 +137,18 @@ impl EventHub {
         }
     }
 
+    /// The current replay log, cloned under the hub lock. Used for
+    /// best-effort derivations over a run's events so far (e.g. the
+    /// subagent activity summary) and by tests; not a subscriber — no
+    /// live events follow it.
+    pub fn snapshot(&self) -> Vec<AgentEvent> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .log
+            .clone()
+    }
+
     /// Subscribe to this run's events: the full replay log snapshot followed
     /// by live events. The snapshot clone and the sender registration happen
     /// atomically under the same lock `publish` takes, so the

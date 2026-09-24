@@ -1,21 +1,7 @@
 <template>
   <main class="workspace-panel min-w-0 flex-1 bg-background">
-    <div ref="scrollContainer" class="workspace-panel-body">
-      <div class="mx-auto max-w-[760px] px-7 pb-3 pt-[18px] space-y-[18px]">
-        <ChatMessage
-          v-for="msg in messages"
-          :key="msg.id"
-          :message="msg"
-          :conversation-id="conversationId"
-        />
-        <div v-if="messages.length === 0" class="pt-20 text-center text-faint">
-          <p class="mb-1.5 text-[15px] text-dim font-medium">
-            Start a conversation
-          </p>
-          <p class="text-[12.5px]">Select a chat or create a new one</p>
-        </div>
-      </div>
-    </div>
+    <!-- 消息展示链路与子代理 panel 共用（ChatMessageList） -->
+    <ChatMessageList :messages="messages" :conversation-id="conversationId" />
 
     <!-- 中断轮次的恢复提示条：悬空工具卡片 / 未获回答的 user 消息时出现 -->
     <div v-if="resumable && !sending" class="flex-none px-7 pt-2.5">
@@ -159,7 +145,7 @@ import {
   replaceSlashCommand,
   slashQueryOf,
 } from "@/composables/useSlashCommands";
-import ChatMessage from "./ChatMessage.vue";
+import ChatMessageList from "./ChatMessageList.vue";
 import ContextRing from "./ContextRing.vue";
 import PromptArgsDialog from "./PromptArgsDialog.vue";
 import SlashMenu from "./SlashMenu.vue";
@@ -196,7 +182,6 @@ const emit = defineEmits<{
 }>();
 
 const inputMessage = ref("");
-const scrollContainer = ref<HTMLElement | null>(null);
 const inputEl = ref<HTMLTextAreaElement | null>(null);
 
 const providersWithKey = computed(() =>
@@ -408,39 +393,4 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener("oct:focus-composer", focusComposer);
 });
-
-async function scrollToBottom() {
-  await nextTick();
-  if (scrollContainer.value) {
-    scrollContainer.value.scrollTop = scrollContainer.value.scrollHeight;
-  }
-}
-
-watch(
-  () => props.messages.length,
-  () => scrollToBottom(),
-);
-
-// 消息内容增长（文本/思考/工具参数/实时输出）时跟随滚动到底部
-watch(
-  () => {
-    const last = props.messages.at(-1);
-    if (!last) return 0;
-    let size = 0;
-    for (const part of last.parts) {
-      if (part.kind === "compaction") {
-        size += part.summary.length;
-      } else if (part.kind === "text" || part.kind === "reasoning") {
-        size += part.text.length;
-      } else {
-        size += part.arguments.length + part.liveOutput.droppedChars;
-        for (const seg of part.liveOutput.segments) {
-          size += seg.text.length;
-        }
-      }
-    }
-    return size;
-  },
-  () => scrollToBottom(),
-);
 </script>

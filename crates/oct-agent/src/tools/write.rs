@@ -5,18 +5,25 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::sync::Arc;
 
-use super::shared::{ToolSharedState, file_mtime};
+use super::shared::{AgentReadState, WorkspaceFileLocks, file_mtime};
 use super::workspace::WorkspaceRoots;
 use super::{AgentTool, ToolContext, ToolOutput};
 
 pub struct WriteFileTool {
     roots: WorkspaceRoots,
-    shared: Arc<ToolSharedState>,
+    /// Task-tree-shared per-file locks (root + subagents share one instance).
+    locks: Arc<WorkspaceFileLocks>,
+    /// This agent's own read records.
+    reads: Arc<AgentReadState>,
 }
 
 impl WriteFileTool {
-    pub fn new(roots: WorkspaceRoots, shared: Arc<ToolSharedState>) -> Self {
-        Self { roots, shared }
+    pub fn new(
+        roots: WorkspaceRoots,
+        locks: Arc<WorkspaceFileLocks>,
+        reads: Arc<AgentReadState>,
+    ) -> Self {
+        Self { roots, locks, reads }
     }
 }
 
@@ -78,8 +85,10 @@ impl AgentTool for WriteFileTool {
         };
 
         // Serialize with edit_file's read-modify-write on the same file so a
-        // concurrent edit cannot be clobbered (or vice versa).
-        let lock = self.shared.lock_for(&resolved);
+        // concurrent edit cannot be clobbered (or vice versa). The locks are
+        // shared across the whole task tree, so another agent's edit/write on
+        // the same path queues here too.
+        let lock = self.locks.lock_for(&resolved);
         let _guard = lock.lock().await;
 
         if args.create_dirs.unwrap_or(false) {
@@ -102,10 +111,10 @@ impl AgentTool for WriteFileTool {
         let bytes = args.content.len();
         match tokio::fs::write(&resolved, &args.content).await {
             Ok(()) => {
-                // Record the post-write mtime so a subsequent edit_file in the
-                // same run is not blocked as stale.
+                // Record the post-write mtime so a subsequent edit_file by
+                // the SAME agent is not blocked as stale.
                 if let Some(mtime) = file_mtime(&resolved) {
-                    self.shared.record_write(&resolved, mtime);
+                    self.reads.record_write(&resolved, mtime);
                 }
                 let details = WriteFileDetails {
                     title: args.path.clone(),
@@ -155,11 +164,12 @@ mod tests {
                     .as_nanos()
             ));
             std::fs::create_dir_all(&dir).unwrap();
-            let shared = Arc::new(ToolSharedState::new());
-            Self {
-                write: WriteFileTool::new(WorkspaceRoots::new(dir.clone(), vec![]), shared),
-                dir,
-            }
+            let write = WriteFileTool::new(
+                WorkspaceRoots::new(dir.clone(), vec![]),
+                Arc::new(WorkspaceFileLocks::new()),
+                Arc::new(AgentReadState::new()),
+            );
+            Self { write, dir }
         }
 
         async fn write(&self, path: &str, content: &str) -> ToolOutput {
@@ -219,8 +229,11 @@ mod tests {
         std::fs::create_dir_all(base.join("outside")).unwrap();
         std::os::unix::fs::symlink("../outside", base.join("wd/link")).unwrap();
 
-        let shared = Arc::new(ToolSharedState::new());
-        let tool = WriteFileTool::new(WorkspaceRoots::new(base.join("wd"), vec![]), shared);
+        let tool = WriteFileTool::new(
+            WorkspaceRoots::new(base.join("wd"), vec![]),
+            Arc::new(WorkspaceFileLocks::new()),
+            Arc::new(AgentReadState::new()),
+        );
         let out = tool
             .execute(
                 json!({ "path": "link/new.txt", "content": "x" }),
@@ -261,8 +274,11 @@ mod tests {
         std::fs::write(base.join("outside/f.txt"), "secret").unwrap();
         std::os::unix::fs::symlink("../outside/f.txt", base.join("wd/f.txt")).unwrap();
 
-        let shared = Arc::new(ToolSharedState::new());
-        let tool = WriteFileTool::new(WorkspaceRoots::new(base.join("wd"), vec![]), shared);
+        let tool = WriteFileTool::new(
+            WorkspaceRoots::new(base.join("wd"), vec![]),
+            Arc::new(WorkspaceFileLocks::new()),
+            Arc::new(AgentReadState::new()),
+        );
         let out = tool
             .execute(json!({ "path": "f.txt", "content": "x" }), &noop_ctx())
             .await

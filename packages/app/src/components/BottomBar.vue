@@ -148,6 +148,83 @@
       </DropdownMenuRoot>
     </template>
 
+    <!-- 子代理指示器：当前根会话的任务集合（无任务即隐藏）。运行中显示
+         脉冲点与运行计数；存在 lost（且无运行中）显示「待恢复」；全部
+         结算后转为安静的完成态但入口保留。点击向上展开任务列表，行点击
+         打开子代理 panel（与 TaskCard 同一个 openSubagentPanel），运行行
+         提供独立停止（click.stop，不触发打开） -->
+    <template v-if="subagentTasks.length > 0">
+      <span class="mx-1.5 h-3.5 w-px bg-line" />
+      <DropdownMenuRoot @update:open="handleSubagentMenuOpen">
+        <DropdownMenuTrigger
+          class="relative h-[22px] inline-flex items-center gap-1 control-ghost rounded-[5px] px-1 control-focus transition-colors"
+          title="子代理任务"
+        >
+          <i-lucide-bot class="h-3.5 w-3.5" />
+          <span class="text-[11.5px]">子代理 {{ runningTasks.length }}</span>
+          <!-- 运行中：脉冲点（demo .pulse 的不透明度脉冲） -->
+          <span
+            v-if="runningTasks.length > 0"
+            class="h-1.5 w-1.5 animate-pulse rounded-full bg-accent-7"
+          />
+          <!-- 待恢复：crash 后的 lost 任务，不能误显示为运行/完成 -->
+          <span
+            v-else-if="hasLostTasks"
+            class="h-[15px] inline-flex items-center whitespace-nowrap rounded-full bg-warning-7 px-1.5 text-[10px] text-warning-10 font-medium leading-none"
+            >待恢复</span
+          >
+          <!-- 全部结算：安静完成态，入口保留 -->
+          <span v-else class="text-[11.5px] text-success-10">✓</span>
+        </DropdownMenuTrigger>
+        <DropdownMenuPortal>
+          <DropdownMenuContent
+            side="top"
+            align="start"
+            :side-offset="6"
+            class="z-50 w-[300px] border border-neutral-5 rounded-lg bg-surface p-1 shadow-[var(--oct-shadow)]"
+          >
+            <p
+              class="px-2 pb-1 pt-1.5 text-[10.5px] text-faint font-medium tracking-wide uppercase"
+            >
+              子代理任务
+            </p>
+            <DropdownMenuItem
+              v-for="task in subagentTasks"
+              :key="task.run_id"
+              class="flex cursor-pointer items-center gap-2 rounded-[5px] px-2 py-1 text-[12.5px] outline-none data-[highlighted]:bg-neutral-1"
+              @select="openTask(task)"
+            >
+              <span
+                class="h-1.5 w-1.5 flex-none rounded-full"
+                :class="subagentStatusDot(task.status)"
+              />
+              <span class="min-w-0 flex-1">
+                <span class="block truncate text-neutral-10">{{
+                  task.title || task.description
+                }}</span>
+                <span
+                  v-if="task.activity && task.status === 'running'"
+                  class="block truncate text-[11px] text-faint"
+                  >{{ task.activity }}</span
+                >
+              </span>
+              <span class="flex-none text-[11px] text-faint tabular-nums">{{
+                taskElapsed(task)
+              }}</span>
+              <span
+                v-if="task.status === 'running'"
+                class="h-[20px] w-[20px] inline-flex flex-none items-center justify-center rounded-[5px] text-dim transition-colors hover:bg-danger-1 hover:text-danger-10"
+                title="停止此子任务"
+                @click.stop="stopTask(task)"
+              >
+                <i-lucide-square class="h-3 w-3 fill-current" />
+              </span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenuPortal>
+      </DropdownMenuRoot>
+    </template>
+
     <div class="flex-1" />
 
     <button
@@ -180,7 +257,7 @@
 </template>
 
 <script setup lang="ts">
-import { useLocalStorage } from "@vueuse/core";
+import { useLocalStorage, useNow } from "@vueuse/core";
 import {
   DropdownMenuContent,
   DropdownMenuItem,
@@ -202,8 +279,17 @@ import {
   useMcpStatus,
 } from "@/composables/useMcpStatus";
 import { useProjects } from "@/composables/useProjects";
+import {
+  cancelSubagent,
+  formatSubagentElapsed,
+  openSubagentPanel,
+  refreshSubagents,
+  subagentStatusDot,
+  useSubagents,
+} from "@/composables/useSubagents";
 import { useTabs } from "@/composables/useTabs";
 import type { components } from "@/api/schema";
+import type { SubagentTask } from "@/composables/useSubagents";
 
 type McpServerResponse = components["schemas"]["McpServerResponse"];
 
@@ -213,6 +299,8 @@ const props = defineProps<{
   diffVisible: boolean;
   fileTreeVisible: boolean;
   activeProjectId: string | null;
+  /** 当前根会话 id：指示器展示它的子任务集合（null/无任务时隐藏）。 */
+  rootConversationId: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -249,6 +337,45 @@ const serverGroups = computed(() => {
 
 function handleMenuOpen(open: boolean) {
   if (open && props.activeProjectId) void ensureServers(props.activeProjectId);
+}
+
+// --- 子代理任务指示器 --------------------------------------------------------
+
+const { subagentsFor } = useSubagents();
+// 作用域跟随当前根会话（非聊天标签也沿用所选根会话；切换会话时 store
+// 换集合，指示器跟着收敛，不混入其他会话/项目的任务）。
+const subagentTasks = subagentsFor(() => props.rootConversationId);
+const runningTasks = computed(() =>
+  subagentTasks.value.filter((task) => task.status === "running"),
+);
+const hasLostTasks = computed(() =>
+  subagentTasks.value.some((task) => task.status === "lost"),
+);
+
+// 运行中的耗时需要每秒走表（useNow 随组件作用域停止；BottomBar 常驻）
+const now = useNow({ interval: 1000 });
+
+function taskElapsed(task: SubagentTask): string {
+  return formatSubagentElapsed(
+    task.created_at,
+    task.finished_at ?? null,
+    now.value.valueOf(),
+  );
+}
+
+/** 打开菜单时对账一次快照（吸收别处启动/结算的任务）。 */
+function handleSubagentMenuOpen(open: boolean) {
+  if (open && props.rootConversationId) {
+    void refreshSubagents(props.rootConversationId);
+  }
+}
+
+function openTask(task: SubagentTask) {
+  openSubagentPanel(task.agent_id, task.description, props.rootConversationId);
+}
+
+function stopTask(task: SubagentTask) {
+  void cancelSubagent(task.agent_id); // click.stop：只停止，不打开 panel
 }
 
 /** 每个 server 一个独立面板 tab（失败时同一面板呈现错误日志）。 */

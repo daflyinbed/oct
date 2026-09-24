@@ -143,11 +143,64 @@ pub enum AgentEvent {
     /// truncate its DB-loaded history exactly at the run boundary.
     #[serde(rename = "run_meta")]
     RunMeta { start_message_id: String },
+
+    /// A subagent task of this run changed state (started / settled /
+    /// recovered). Published on the PARENT run's hub only — small by design
+    /// (ADR 0002 §7.3): the child's own text/reasoning/tool events stay on
+    /// the child hub and are subscribed to separately. Never carries the
+    /// child's `finish`/`usage`: forwarding those would wrongly end the
+    /// parent stream or corrupt the parent's context ring.
+    #[serde(rename = "subagent_updated")]
+    SubagentUpdated {
+        run_id: String,
+        /// The child's conversation id (== agent id in v1).
+        agent_id: String,
+        /// The parent tool call this task answers.
+        parent_call_id: String,
+        status: SubagentRunStatus,
+        /// Which execution instance produced the event: recovery bumps the
+        /// epoch, letting consumers discard stale-instance events.
+        execution_epoch: u64,
+        description: String,
+        /// Best-effort activity summary at publish time (e.g. the tool the
+        /// child is currently running); `None` when unknown.
+        activity: Option<String>,
+    },
+}
+
+/// Lifecycle status of a subagent task (the `subagent_updated` event's
+/// `status` and the subagent list API's status field). Mirrors the persisted
+/// `agent_runs.status` vocabulary, with `running` while live and `lost`
+/// meaning the executing instance died before settling.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentRunStatus {
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+    Lost,
+}
+
+impl SubagentRunStatus {
+    /// Parse the persisted `agent_runs.status` string.
+    pub fn from_run_status(status: &str) -> Self {
+        match status {
+            "completed" => SubagentRunStatus::Completed,
+            "failed" => SubagentRunStatus::Failed,
+            "cancelled" => SubagentRunStatus::Cancelled,
+            "lost" => SubagentRunStatus::Lost,
+            _ => SubagentRunStatus::Running,
+        }
+    }
 }
 
 pub struct AgentContext {
     pub model: Arc<dyn ChatModel>,
-    pub tools: Arc<Vec<Box<dyn AgentTool>>>,
+    /// The run's toolset as `Arc` clones: cheap per-call clones, and the
+    /// `task` tool can hand the very same instances to its subagents (minus
+    /// itself) instead of rebuilding stateful tools.
+    pub tools: Arc<Vec<Arc<dyn AgentTool>>>,
     pub pool: SqlitePool,
     pub system_prompt: String,
     /// Context window (max input tokens) of the resolved model: built-in
@@ -210,6 +263,46 @@ impl RunHandle {
     pub fn cancel(&self) {
         self.cancel.cancel();
     }
+}
+
+/// Terminal status of an agent run (ADR 0002 §6.1): the in-memory mirror of
+/// the persisted `agent_runs.status` terminal values. `lost` is
+/// process-crash only and never produced by a live loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunStatus {
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+/// Token usage aggregated over a run's Usage stream events. `None` (unknown)
+/// is deliberately distinct from zero: a run that never reported usage must
+/// not be mistaken for a free one (ADR 0002 §6.3).
+#[derive(Debug, Clone, Default)]
+pub struct RunUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+/// The agent loop's result envelope (ADR 0002 §6.1): events keep serving the
+/// UI, but the run's outcome is a value the supervisor can persist — never
+/// something a listener must reassemble from SSE text.
+#[derive(Debug, Clone)]
+pub struct RunOutcome {
+    pub status: RunStatus,
+    /// The persisted final assistant message row. Set when at least one
+    /// assistant message landed in the DB during the run.
+    pub final_message_id: Option<String>,
+    /// Its text; `None` when the row exists but its text is empty.
+    pub final_text: Option<String>,
+    /// Interrupted (failed/cancelled) but some assistant output was
+    /// persisted — the persisted tail must not be presented as a settled
+    /// success.
+    pub partial: bool,
+    /// Aggregated usage; `None` = no Usage event ever arrived (unknown).
+    pub usage: Option<RunUsage>,
+    /// Failure detail for [`RunStatus::Failed`].
+    pub error: Option<String>,
 }
 
 pub type ConversationId = Uuid;

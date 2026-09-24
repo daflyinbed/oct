@@ -2636,11 +2636,11 @@ async fn manual_compact_conflicts_with_active_run() {
     assert_eq!(resp.status(), 409);
 
     gate_tx.send(true).unwrap();
-    while let Some(p) = payloads.next().await {
-        if p["type"] == "finish" {
-            break;
-        }
-    }
+    // Drain to EOF, not just to the finish event: the supervisor persists
+    // the run's terminal state BEFORE releasing occupancy, so the stream
+    // ending IS the deterministic release signal (the finish event itself
+    // may still race the terminal write).
+    while payloads.next().await.is_some() {}
     // The session entry is released by the run; compact is possible again.
     let resp = app.compact(&conv).await;
     assert_eq!(
@@ -2999,4 +2999,298 @@ async fn idle_microcompact_triggers_via_api_after_backdated_activity() {
         !events.iter().any(|e| e["type"] == "microcompacted"),
         "recent activity ⇒ no idle clear"
     );
+}
+
+// --- agent_runs lifecycle rows (PR1: unified run supervision) -------------------
+
+use oct_agent::db::runs as run_db;
+
+/// (status, final_message_id, error, input_tokens, output_tokens) for each
+/// run row of a conversation, oldest first (rowid = insertion order).
+async fn agent_run_rows(
+    app: &TestApp,
+    conv_id: &str,
+) -> Vec<(String, Option<String>, Option<String>, Option<i64>, Option<i64>)> {
+    sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<i64>, Option<i64>)>(
+        "SELECT status, final_message_id, error, input_tokens, output_tokens \
+         FROM agent_runs WHERE conversation_id = ? ORDER BY rowid",
+    )
+    .bind(conv_id)
+    .fetch_all(&app.pool)
+    .await
+    .expect("agent_runs rows")
+}
+
+#[tokio::test]
+async fn model_failure_settles_run_row_failed_and_frees_conversation() {
+    let app = TestApp::new().await;
+    let llm_server = llm::spawn_llm_mock(vec![
+        // First attempt: the model's HTTP call itself fails.
+        LlmTurn::Fail(500),
+        // Second attempt (after the re-send below) succeeds.
+        LlmTurn::Complete(vec![text_chunk("recovered"), finish_chunk("stop")]),
+    ])
+    .await;
+    app.register_llm_provider(&llm_server).await;
+    let project_id = app.create_project().await;
+    let conv_id = app.create_conversation(&project_id).await;
+
+    let resp = app.send_message(&conv_id, "hi").await;
+    assert_eq!(resp.status(), 200);
+    let events = app.read_sse(resp).await;
+    assert_eq!(*event_types(&events).last().unwrap(), "error");
+
+    // SSE EOF ⟺ the supervisor released occupancy. The failed attempt
+    // settled its run row: failed, error text persisted, no final message.
+    let rows = agent_run_rows(&app, &conv_id).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0, "failed");
+    assert_eq!(rows[0].1, None);
+    let error = rows[0].2.as_deref().expect("error text persisted");
+    assert!(
+        error.contains("LLM error"),
+        "error should name the LLM failure: {error}"
+    );
+
+    // The conversation accepts a new send immediately (no stuck occupancy).
+    let resp = app.send_message(&conv_id, "again").await;
+    assert_eq!(resp.status(), 200);
+    let events = app.read_sse(resp).await;
+    assert_eq!(*event_types(&events).last().unwrap(), "finish");
+
+    // Every attempt owns its own run row.
+    let rows = agent_run_rows(&app, &conv_id).await;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[1].0, "completed");
+}
+
+#[tokio::test]
+async fn cancelled_run_settles_row_and_re_send_works() {
+    let app = TestApp::new().await;
+    let llm_server = llm::spawn_llm_mock(vec![
+        // First run hangs mid-stream; it must end via cancellation.
+        LlmTurn::Hang(vec![text_chunk("part")]),
+        LlmTurn::Complete(vec![text_chunk("done"), finish_chunk("stop")]),
+    ])
+    .await;
+    app.register_llm_provider(&llm_server).await;
+    let project_id = app.create_project().await;
+    let conv_id = app.create_conversation(&project_id).await;
+
+    let first = app.send_message(&conv_id, "slow one").await;
+    assert_eq!(first.status(), 200);
+    let cancel = app.cancel(&conv_id).await;
+    assert_eq!(cancel.status(), 200);
+    let events = app.read_sse(first).await;
+    assert_eq!(*event_types(&events).last().unwrap(), "cancelled");
+
+    // The interrupted attempt settled cancelled; no assistant row had been
+    // persisted at cancel time (the message lands only at stream end).
+    let rows = agent_run_rows(&app, &conv_id).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0, "cancelled");
+    assert_eq!(rows[0].1, None);
+    assert_eq!(rows[0].2, None, "a cancel is not an error");
+
+    // A re-send succeeds on the same conversation.
+    let second = app.send_message(&conv_id, "after cancel").await;
+    assert_eq!(second.status(), 200);
+    let events = app.read_sse(second).await;
+    assert_eq!(*event_types(&events).last().unwrap(), "finish");
+
+    let rows = agent_run_rows(&app, &conv_id).await;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].0, "cancelled");
+    assert_eq!(rows[1].0, "completed");
+}
+
+#[tokio::test]
+async fn completed_run_row_points_at_final_assistant_message_and_usage() {
+    let app = TestApp::new().await;
+    let llm_server = llm::spawn_llm_mock(vec![LlmTurn::Complete(vec![
+        text_chunk("the answer"),
+        finish_chunk("stop"),
+        // The OpenAI usage trailer: aggregated into the run row.
+        llm::usage_chunk(120, 30),
+    ])])
+    .await;
+    app.register_llm_provider(&llm_server).await;
+    let project_id = app.create_project().await;
+    let conv_id = app.create_conversation(&project_id).await;
+
+    let resp = app.send_message(&conv_id, "hi").await;
+    assert_eq!(resp.status(), 200);
+    let events = app.read_sse(resp).await;
+    assert_eq!(*event_types(&events).last().unwrap(), "finish");
+    // The usage event also reached the SSE stream (the aggregation source).
+    assert!(
+        events
+            .iter()
+            .any(|e| e["type"] == "usage" && e["data"]["input_tokens"] == 120)
+    );
+
+    // The final assistant row is what the run row must point at.
+    let stored = stored_messages(&app, &conv_id).await;
+    let assistant = stored.last().expect("assistant row");
+    assert_eq!(assistant["role"], "assistant");
+
+    let rows = agent_run_rows(&app, &conv_id).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0, "completed");
+    assert_eq!(
+        rows[0].1.as_deref(),
+        Some(assistant["id"].as_str().unwrap())
+    );
+    assert_eq!(rows[0].2, None);
+    assert_eq!(rows[0].3, Some(120), "input tokens aggregated");
+    assert_eq!(rows[0].4, Some(30), "output tokens aggregated");
+
+    // Full row shape through the typed accessor as well.
+    let latest = run_db::latest_run_for_conversation(&app.pool, &conv_id)
+        .await
+        .expect("latest run query")
+        .expect("one run row");
+    assert_eq!(latest.status, "completed");
+    assert_eq!(latest.kind, "root");
+    assert_eq!(latest.provider_id.as_deref(), Some("mock-llm"));
+    assert_eq!(latest.model_id.as_deref(), Some("test-model"));
+    assert_eq!(latest.input_tokens, Some(120));
+    assert_eq!(latest.output_tokens, Some(30));
+    assert!(latest.finished_at.is_some());
+    assert_eq!(latest.execution_epoch, 1);
+}
+
+#[tokio::test]
+async fn completed_run_without_usage_persists_null_not_zero() {
+    let app = TestApp::new().await;
+    let llm_server = llm::spawn_llm_mock(vec![LlmTurn::Complete(vec![
+        text_chunk("no accounting"),
+        finish_chunk("stop"),
+    ])])
+    .await;
+    app.register_llm_provider(&llm_server).await;
+    let project_id = app.create_project().await;
+    let conv_id = app.create_conversation(&project_id).await;
+
+    let resp = app.send_message(&conv_id, "hi").await;
+    assert_eq!(resp.status(), 200);
+    assert_eq!(*event_types(&app.read_sse(resp).await).last().unwrap(), "finish");
+
+    // No Usage event ever arrived ⇒ unknown (NULL), never 0.
+    let rows = agent_run_rows(&app, &conv_id).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].3, None);
+    assert_eq!(rows[0].4, None);
+}
+
+#[tokio::test]
+async fn send_and_resume_each_create_their_own_run_rows() {
+    let app = TestApp::new().await;
+    let llm_server = llm::spawn_llm_mock(vec![
+        LlmTurn::Complete(vec![text_chunk("first"), finish_chunk("stop")]),
+        LlmTurn::Complete(vec![text_chunk("resumed"), finish_chunk("stop")]),
+    ])
+    .await;
+    app.register_llm_provider(&llm_server).await;
+    let project_id = app.create_project().await;
+    let conv_id = app.create_conversation(&project_id).await;
+
+    let resp = app.send_message(&conv_id, "hi").await;
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        *event_types(&app.read_sse(resp).await).last().unwrap(),
+        "finish"
+    );
+    assert_eq!(agent_run_rows(&app, &conv_id).await.len(), 1);
+
+    // Simulate a crashed turn, then resume it: a second, independent run.
+    seed_dangling_tool_call(&app, &conv_id).await;
+    let resp = app.resume(&conv_id).await;
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        *event_types(&app.read_sse(resp).await).last().unwrap(),
+        "finish"
+    );
+
+    let rows = agent_run_rows(&app, &conv_id).await;
+    assert_eq!(rows.len(), 2, "send and resume are separate runs");
+    assert!(rows.iter().all(|r| r.0 == "completed"));
+
+    // The resume run's final message is the conversation's last assistant
+    // row (the reply the resumed turn produced).
+    let stored = stored_messages(&app, &conv_id).await;
+    let last_assistant = stored
+        .iter()
+        .rev()
+        .find(|m| m["role"] == "assistant")
+        .expect("assistant row");
+    assert_eq!(
+        rows[1].1.as_deref(),
+        Some(last_assistant["id"].as_str().unwrap())
+    );
+}
+
+#[tokio::test]
+async fn bootstrap_marks_leftover_running_runs_lost() {
+    // One "process" leaves a running run row behind (crash); a fresh server
+    // booting on the same database file must sweep it to lost — the
+    // persisted history itself stays untouched.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_url = format!("sqlite://{}", dir.path().join("test.db").display());
+    let pool = oct_agent::db::init_pool(&db_url)
+        .await
+        .expect("migrate scratch db");
+    let conv_id = support::new_conversation(&pool, dir.path()).await;
+    // Persisted history the "crashed" run leaves behind — the sweep must
+    // not touch it.
+    msg_db::insert_message(
+        &pool,
+        &conv_id,
+        &Message::text(Role::User, "interrupted"),
+        Some("mock-llm"),
+        Some("test-model"),
+        None,
+    )
+    .await
+    .expect("seed history row");
+
+    let run_id = "00000000-0000-0000-0000-000000000001".to_string();
+    sqlx::query(
+        "INSERT INTO agent_runs (id, conversation_id, kind, status) VALUES (?, ?, 'root', 'running')",
+    )
+    .bind(&run_id)
+    .bind(&conv_id)
+    .execute(&pool)
+    .await
+    .expect("seed running run row");
+    pool.close().await;
+
+    // "Restart": TestApp's constructor runs the same runtime::bootstrap the
+    // real server's run_server does.
+    let app = TestApp::new_with_dir(dir).await;
+    let status: (String,) = sqlx::query_as("SELECT status FROM agent_runs WHERE id = ?")
+        .bind(&run_id)
+        .fetch_one(&app.pool)
+        .await
+        .expect("seeded run row survived");
+    assert_eq!(status.0, "lost");
+
+    // The swept row is settled (carries a finish time) and the conversation's
+    // history is intact — `lost` recovers run state, it does not delete data.
+    let settled: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM agent_runs WHERE id = ? AND status = 'lost' AND finished_at IS NOT NULL",
+    )
+    .bind(&run_id)
+    .fetch_one(&app.pool)
+    .await
+    .expect("settled check");
+    assert_eq!(settled.0, 1, "the lost row carries a finish time");
+
+    let messages: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM conversation_messages WHERE conversation_id = ?")
+            .bind(&conv_id)
+            .fetch_one(&app.pool)
+            .await
+            .expect("history check");
+    assert_eq!(messages.0, 1, "persisted history untouched by the sweep");
 }

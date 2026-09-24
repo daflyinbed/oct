@@ -6,7 +6,7 @@ use serde::Serialize;
 use std::path::Path;
 use std::sync::Arc;
 
-use super::shared::{ReadCheck, ToolSharedState, file_mtime};
+use super::shared::{AgentReadState, ReadCheck, WorkspaceFileLocks, file_mtime};
 use super::workspace::WorkspaceRoots;
 use super::{AgentTool, ToolContext, ToolOutput};
 
@@ -26,12 +26,19 @@ struct EditFileDetails {
 
 pub struct EditFileTool {
     roots: WorkspaceRoots,
-    shared: Arc<ToolSharedState>,
+    /// Task-tree-shared per-file locks (root + subagents share one instance).
+    locks: Arc<WorkspaceFileLocks>,
+    /// This agent's own read records.
+    reads: Arc<AgentReadState>,
 }
 
 impl EditFileTool {
-    pub fn new(roots: WorkspaceRoots, shared: Arc<ToolSharedState>) -> Self {
-        Self { roots, shared }
+    pub fn new(
+        roots: WorkspaceRoots,
+        locks: Arc<WorkspaceFileLocks>,
+        reads: Arc<AgentReadState>,
+    ) -> Self {
+        Self { roots, locks, reads }
     }
 
     /// Create-new-file path (empty `old_string`). The whole exists-check and
@@ -59,7 +66,7 @@ impl EditFileTool {
             )));
         }
 
-        let lock = self.shared.lock_for(&resolved);
+        let lock = self.locks.lock_for(&resolved);
         let _guard = lock.lock().await;
 
         // Creating over an empty existing file is allowed; over content it is not.
@@ -77,7 +84,7 @@ impl EditFileTool {
         match tokio::fs::write(&resolved, &args.new_string).await {
             Ok(()) => {
                 if let Some(mtime) = file_mtime(&resolved) {
-                    self.shared.record_write(&resolved, mtime);
+                    self.reads.record_write(&resolved, mtime);
                 }
                 let details = EditFileDetails {
                     title: args.file_path.clone(),
@@ -99,7 +106,7 @@ impl EditFileTool {
     /// the per-file lock: the mtime check, the match, and the write form one
     /// read-modify-write critical section.
     async fn edit_existing(&self, args: &EditFileArgs, resolved: &Path) -> Result<ToolOutput> {
-        match self.shared.check_read(resolved) {
+        match self.reads.check_read(resolved) {
             ReadCheck::NotRead => {
                 return Ok(ToolOutput::error(
                     "File has not been read yet. Read it first before writing to it.",
@@ -182,7 +189,7 @@ impl EditFileTool {
                 // Record the post-write mtime so a follow-up edit in the same
                 // run is not blocked as stale.
                 if let Some(mtime) = file_mtime(resolved) {
-                    self.shared.record_write(resolved, mtime);
+                    self.reads.record_write(resolved, mtime);
                 }
                 let mut message =
                     format!("The file {} has been updated successfully.", args.file_path);
@@ -308,7 +315,7 @@ impl AgentTool for EditFileTool {
 
         // Serialize read-modify-write on the same file: concurrent tool calls
         // from the agent loop cannot interleave the mtime check with the write.
-        let lock = self.shared.lock_for(&resolved);
+        let lock = self.locks.lock_for(&resolved);
         let _guard = lock.lock().await;
         self.edit_existing(&args, &resolved).await
     }
@@ -352,11 +359,18 @@ mod tests {
                     .as_nanos()
             ));
             std::fs::create_dir_all(&dir).unwrap();
-            let shared = Arc::new(ToolSharedState::new());
+            // Mirrors how the run service wires the split pieces up: one
+            // shared lock set, one per-agent read state for this "agent".
+            let locks = Arc::new(WorkspaceFileLocks::new());
+            let reads = Arc::new(AgentReadState::new());
             Self {
-                edit: EditFileTool::new(WorkspaceRoots::new(dir.clone(), vec![]), shared.clone()),
-                read: ReadFileTool::new(WorkspaceRoots::new(dir.clone(), vec![]), shared.clone()),
-                write: WriteFileTool::new(WorkspaceRoots::new(dir.clone(), vec![]), shared),
+                edit: EditFileTool::new(
+                    WorkspaceRoots::new(dir.clone(), vec![]),
+                    locks.clone(),
+                    reads.clone(),
+                ),
+                read: ReadFileTool::new(WorkspaceRoots::new(dir.clone(), vec![]), reads.clone()),
+                write: WriteFileTool::new(WorkspaceRoots::new(dir.clone(), vec![]), locks, reads),
                 dir,
             }
         }

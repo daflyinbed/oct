@@ -1,0 +1,128 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT r.id, r.conversation_id, r.kind, r.parent_run_id, r.root_run_id, r.parent_tool_call_id, r.status, r.execution_epoch, r.provider_id, r.model_id, r.context_window, r.error, r.final_message_id, r.input_tokens, r.output_tokens, r.description, r.started_at, r.finished_at, c.title AS title FROM agent_runs r JOIN conversations c ON c.id = r.conversation_id AND c.root_conversation_id = $1 ORDER BY CASE WHEN r.status = 'running' THEN 0 ELSE 1 END, r.started_at ASC",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "conversation_id",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "kind",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "parent_run_id",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "root_run_id",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "parent_tool_call_id",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "status",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "execution_epoch",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "provider_id",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "model_id",
+        "ordinal": 9,
+        "type_info": "Text"
+      },
+      {
+        "name": "context_window",
+        "ordinal": 10,
+        "type_info": "Integer"
+      },
+      {
+        "name": "error",
+        "ordinal": 11,
+        "type_info": "Text"
+      },
+      {
+        "name": "final_message_id",
+        "ordinal": 12,
+        "type_info": "Text"
+      },
+      {
+        "name": "input_tokens",
+        "ordinal": 13,
+        "type_info": "Integer"
+      },
+      {
+        "name": "output_tokens",
+        "ordinal": 14,
+        "type_info": "Integer"
+      },
+      {
+        "name": "description",
+        "ordinal": 15,
+        "type_info": "Text"
+      },
+      {
+        "name": "started_at",
+        "ordinal": 16,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "finished_at",
+        "ordinal": 17,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "title",
+        "ordinal": 18,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "01dc14eb550a5a0ecd9c2520d14764d8bbcbbe216fa29f229d5bec5f71e1e4ac"
+}

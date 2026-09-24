@@ -295,7 +295,12 @@ pub async fn spawn_agent_full(
 
     let ctx = AgentContext {
         model: Arc::new(model),
-        tools: Arc::new(tools),
+        tools: Arc::new(
+            tools
+                .into_iter()
+                .map(std::sync::Arc::from)
+                .collect::<Vec<std::sync::Arc<dyn oct_agent::tools::AgentTool>>>(),
+        ),
         pool,
         system_prompt: "test system prompt".to_string(),
         context_window,
@@ -363,14 +368,42 @@ pub struct TestApp {
 impl TestApp {
     pub async fn new() -> Self {
         let dir = tempfile::tempdir().expect("create temp dir");
+        Self::new_with_dir(dir).await
+    }
+
+    /// [`TestApp::new`] on an EXISTING temp directory: the server boots
+    /// against whatever `test.db` state the directory already carries
+    /// (migrations re-run harmlessly on a fresh file). Lets a test simulate
+    /// a process restart against the same persisted database — the new
+    /// server's `runtime::bootstrap` sweep is part of what is under test.
+    pub async fn new_with_dir(dir: tempfile::TempDir) -> Self {
         let db_url = format!("sqlite://{}", dir.path().join("test.db").display());
         let pool = db::init_pool(&db_url).await.expect("init test database");
 
+        // Same startup sequence as run_server: sweep interrupted runs
+        // before the server accepts traffic.
+        oct_agent::runtime::bootstrap(&pool).await;
+
         let mcp = Arc::new(oct_agent::mcp::McpManager::default());
-        let state = oct_agent::api::AppState {
+        let sessions: Arc<dashmap::DashMap<String, oct_agent::agent::RunHandle>> =
+            Arc::new(dashmap::DashMap::new());
+        // Same two-phase wire as run_server (RunService owns the manager; the
+        // manager reaches back through a OnceLock).
+        let subagents = Arc::new(oct_agent::subagent::SubagentManager::default());
+        let runs = Arc::new(oct_agent::runtime::RunService {
             pool: pool.clone(),
             registry: Arc::new(default_registry()),
-            sessions: Arc::new(dashmap::DashMap::new()),
+            mcp: mcp.clone(),
+            sessions: sessions.clone(),
+            file_locks: dashmap::DashMap::new(),
+            subagents: subagents.clone(),
+        });
+        subagents.set_service(runs.clone());
+        let state = oct_agent::api::AppState {
+            runs,
+            pool: pool.clone(),
+            registry: Arc::new(default_registry()),
+            sessions,
             mcp: mcp.clone(),
             oauth_flows: Arc::new(oct_agent::oauth::OAuthFlowStore::default()),
         };

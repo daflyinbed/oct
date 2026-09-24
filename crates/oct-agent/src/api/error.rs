@@ -28,6 +28,18 @@ pub enum AppError {
     #[error("{0}")]
     NothingToResume(String),
 
+    /// 409: the conversation is a managed subagent session — send / resume /
+    /// compact must go through the parent conversation (or the manager),
+    /// never start a run behind its back.
+    #[error("{0}")]
+    ManagedConversation(String),
+
+    /// 409: the conversation's last turn has unfinished (crashed) subagent
+    /// tasks awaiting recovery; a plain send or compact would destroy the
+    /// pending wait. Resume (恢复此轮) instead.
+    #[error("{0}")]
+    PendingRecovery(String),
+
     /// The request itself was fine, but the upstream service it proxied to
     /// (e.g. an MCP server) failed, errored or timed out.
     #[error("{0}")]
@@ -47,8 +59,9 @@ pub type ApiResult<T> = std::result::Result<T, AppError>;
 
 /// The error body of EVERY non-2xx API response. `code` is the stable
 /// machine-readable cause ("not_found", "bad_request", "conflict",
-/// "already_running", "nothing_to_resume", "bad_gateway", "internal") —
-/// clients branch on it and show `error` verbatim.
+/// "already_running", "nothing_to_resume", "managed_conversation",
+/// "pending_recovery", "bad_gateway", "internal") — clients branch on it
+/// and show `error` verbatim.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ErrorBody {
     pub code: String,
@@ -66,6 +79,12 @@ impl IntoResponse for AppError {
             }
             AppError::NothingToResume(msg) => {
                 (StatusCode::CONFLICT, "nothing_to_resume", msg.clone())
+            }
+            AppError::ManagedConversation(msg) => {
+                (StatusCode::CONFLICT, "managed_conversation", msg.clone())
+            }
+            AppError::PendingRecovery(msg) => {
+                (StatusCode::CONFLICT, "pending_recovery", msg.clone())
             }
             AppError::BadGateway(msg) => (StatusCode::BAD_GATEWAY, "bad_gateway", msg.clone()),
             AppError::Internal(e) => {

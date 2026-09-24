@@ -42,12 +42,34 @@ async fn main() -> Result<()> {
 async fn run_server(database_url: &str, port: u16) -> Result<()> {
     let pool = db::init_pool(database_url).await?;
     let registry = Arc::new(default_registry());
+    let sessions: Arc<dashmap::DashMap<String, oct_agent::agent::RunHandle>> =
+        Arc::new(dashmap::DashMap::new());
+    let mcp = Arc::new(oct_agent::mcp::McpManager::default());
+
+    // Crash recovery (ADR 0002 §6.2): agent_runs rows a previous process
+    // left `running` become `lost` before this process accepts traffic.
+    oct_agent::runtime::bootstrap(&pool).await;
+
+    // Two-phase wire: the RunService owns the SubagentManager, the manager
+    // reaches back into the service through a OnceLock (set immediately
+    // below) — no reference cycle the process needs to break.
+    let subagents = Arc::new(oct_agent::subagent::SubagentManager::default());
+    let runs = Arc::new(oct_agent::runtime::RunService {
+        pool: pool.clone(),
+        registry: registry.clone(),
+        mcp: mcp.clone(),
+        sessions: sessions.clone(),
+        file_locks: dashmap::DashMap::new(),
+        subagents: subagents.clone(),
+    });
+    subagents.set_service(runs.clone());
 
     let state = api::AppState {
+        runs,
         pool,
         registry,
-        sessions: Arc::new(dashmap::DashMap::new()),
-        mcp: Arc::new(oct_agent::mcp::McpManager::default()),
+        sessions,
+        mcp,
         oauth_flows: Arc::new(oct_agent::oauth::OAuthFlowStore::default()),
     };
 

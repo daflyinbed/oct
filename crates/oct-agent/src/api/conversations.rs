@@ -100,6 +100,12 @@ pub async fn delete_conversation(
     State(state): State<AppState>,
     Path((_project_id, id)): Path<(String, String)>,
 ) -> ApiResult<StatusCode> {
+    // A root conversation's task tree must not outlive it (ADR 0002 §6.2):
+    // stop every ACTIVE subagent first and wait for their settlement
+    // (bounded), so the cascading row deletion below never races a live
+    // child's persistence.
+    super::subagents::cancel_children_of_root(&state, &id).await?;
+
     let deleted = db::delete_conversation(&state.pool, &id).await?;
     if deleted {
         Ok(StatusCode::NO_CONTENT)
