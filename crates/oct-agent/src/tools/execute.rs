@@ -11,6 +11,8 @@ use super::truncate::{MAX_TOOL_OUTPUT_BYTES, truncate_middle};
 use super::workspace::WorkspaceRoots;
 use super::{AgentTool, OutputStream, ToolContext, ToolOutput};
 
+use crate::runtime::background::{BackgroundTaskManager, BashStart};
+
 /// Timeout applied when the caller does not request one.
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 /// Upper bound for a requested timeout.
@@ -33,11 +35,36 @@ const TIMEOUT_EXIT_CODE: i32 = 124;
 
 pub struct ExecuteCommandTool {
     roots: WorkspaceRoots,
+    /// Set for ROOT runs only: the handle that lets `run_in_background`
+    /// hand the command to the background task manager. `None` (subagent
+    /// workers) keeps the schema identical but gates the flag at dispatch
+    /// — the wake/notification semantics only hold in the root
+    /// conversation (ADR 0003).
+    background: Option<ExecuteBackground>,
+}
+
+/// What the background branch needs: the manager plus the identity of the
+/// run handing the command over. Constructed per run by the RunService
+/// assembly (the same pattern the `task` tool's spawn config uses).
+pub struct ExecuteBackground {
+    pub manager: Arc<BackgroundTaskManager>,
+    pub conversation_id: String,
+    pub parent_run_id: String,
 }
 
 impl ExecuteCommandTool {
     pub fn new(roots: WorkspaceRoots) -> Self {
-        Self { roots }
+        Self {
+            roots,
+            background: None,
+        }
+    }
+
+    pub fn with_background(roots: WorkspaceRoots, background: ExecuteBackground) -> Self {
+        Self {
+            roots,
+            background: Some(background),
+        }
     }
 }
 
@@ -67,8 +94,15 @@ struct ExecuteCommandArgs {
     command: String,
     /// Working directory for the command (relative to project root). Defaults to project root.
     working_dir: Option<String>,
-    /// Timeout in seconds. Minimum 1, default 120, maximum 300.
+    /// Timeout in seconds (foreground only). Minimum 1, default 120, maximum 300.
     timeout_secs: Option<u64>,
+    /// Run the command detached in the background and return immediately
+    /// with a task id: output is written to a file you can read through the
+    /// `task_output` tool, `task_stop` stops the task, and you are notified
+    /// automatically when it finishes (do not poll or sleep while waiting).
+    /// Use this for long-running commands (dev servers, big builds, test
+    /// suites). Ignored by subagent workers.
+    run_in_background: Option<bool>,
 }
 
 /// Reader bookkeeping: the shared capped buffer plus the task draining the pipe.
@@ -202,7 +236,7 @@ async fn drain_reader(reader: Option<ReaderHandle>) -> Vec<u8> {
 /// that glue. SIGTERM (not SIGKILL) so well-behaved children can trap it,
 /// clean up, and take their own descendants down.
 #[cfg(all(unix, target_os = "linux"))]
-fn set_pdeathsig() -> std::io::Result<()> {
+pub(crate) fn set_pdeathsig() -> std::io::Result<()> {
     unsafe {
         libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
         // Race guard: if the parent died between fork and prctl, the signal
@@ -268,7 +302,10 @@ impl AgentTool for ExecuteCommandTool {
 
     fn description(&self) -> &str {
         "Execute a shell command and return its output. \
-         Commands run via `sh -c` on Unix. Use timeout_secs to limit execution time."
+         Commands run via `sh -c` on Unix. Use timeout_secs to limit execution time. \
+         For long-running commands (dev servers, big builds, test suites) pass \
+         run_in_background: true — it returns a task id immediately, the output is \
+         readable via task_output, and you are notified when it finishes."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -294,6 +331,35 @@ impl AgentTool for ExecuteCommandTool {
         } else {
             self.roots.primary().to_path_buf()
         };
+
+        // Background branch (ADR 0003): hand the command to the background
+        // task manager and answer the call immediately with the envelope.
+        // The call is ANSWERED here — no dangling tool call, so the loop's
+        // repair/recovery machinery never sees it.
+        if args.run_in_background.unwrap_or(false) {
+            let Some(bg) = self.background.as_ref() else {
+                return Ok(ToolOutput::error(
+                    "run_in_background is not available in this run: subagent workers \
+                     must use foreground commands",
+                ));
+            };
+            return match bg
+                .manager
+                .start_bash(BashStart {
+                    conversation_id: bg.conversation_id.clone(),
+                    parent_run_id: Some(bg.parent_run_id.clone()),
+                    parent_call_id: ctx.call_id().to_string(),
+                    command: args.command.clone(),
+                    cwd,
+                })
+                .await
+            {
+                Ok(task) => Ok(background_envelope(&task)),
+                Err(e) => Ok(ToolOutput::error(format!(
+                    "Failed to start background command: {e:#}"
+                ))),
+            };
+        }
 
         let timeout_secs = args
             .timeout_secs
@@ -479,6 +545,29 @@ impl AgentTool for ExecuteCommandTool {
             Ok(ToolOutput::error_with_details(result, details))
         }
     }
+}
+
+/// The tool result for a backgrounded command: the model-visible envelope
+/// plus the UI-only details that let the frontend render a live task card.
+fn background_envelope(task: &crate::db::background::BackgroundTask) -> ToolOutput {
+    let content = format!(
+        "Command started in the background.\n\
+         task_id: {id}\n\
+         status: running\n\
+         Use the task_output tool with this task_id to check status or read output, \
+         and task_stop to stop it. You will be notified automatically when it \
+         finishes — do not poll or sleep while waiting.",
+        id = task.id,
+    );
+    let details = serde_json::json!({
+        "kind": "background_task",
+        "task_id": task.id,
+        "command": task.command,
+        "working_dir": task.working_dir,
+        "output_path": task.output_path,
+        "status": "running",
+    });
+    ToolOutput::success_with_details(content, details)
 }
 
 #[cfg(test)]

@@ -12,8 +12,8 @@
 // only uses part of it.
 #![allow(dead_code)]
 
-pub mod llm;
 pub mod anthropic_llm;
+pub mod llm;
 pub mod mcp;
 pub mod mcp_http;
 pub mod oauth_as;
@@ -363,6 +363,10 @@ pub struct TestApp {
     /// inject scripted MCP connections (see [`mcp::FakeMcpConnection`])
     /// instead of spawning real server processes.
     pub mcp: Arc<oct_agent::mcp::McpManager>,
+    /// The very `Arc<BackgroundTaskManager>` the server's RunService holds:
+    /// lets tests inspect the active-task registry and shrink the output
+    /// limit for watchdog coverage.
+    pub background: Arc<oct_agent::runtime::background::BackgroundTaskManager>,
     http: reqwest::Client,
 }
 
@@ -389,8 +393,14 @@ impl TestApp {
         let sessions: Arc<dashmap::DashMap<String, oct_agent::agent::RunHandle>> =
             Arc::new(dashmap::DashMap::new());
         // Same two-phase wire as run_server (RunService owns the manager; the
-        // manager reaches back through a OnceLock).
+        // manager reaches back through a OnceLock). Background task output
+        // files live under the temp dir, mirroring the "next to the
+        // database" production placement.
         let subagents = Arc::new(oct_agent::subagent::SubagentManager::default());
+        let background = Arc::new(oct_agent::runtime::background::BackgroundTaskManager::new(
+            pool.clone(),
+            dir.path().join("exec"),
+        ));
         let runs = Arc::new(oct_agent::runtime::RunService {
             pool: pool.clone(),
             registry: Arc::new(default_registry()),
@@ -398,8 +408,10 @@ impl TestApp {
             sessions: sessions.clone(),
             file_locks: dashmap::DashMap::new(),
             subagents: subagents.clone(),
+            background: background.clone(),
         });
         subagents.set_service(runs.clone());
+        background.set_service(runs.clone());
         let state = oct_agent::api::AppState {
             runs,
             pool: pool.clone(),
@@ -423,6 +435,7 @@ impl TestApp {
             base_url: format!("http://127.0.0.1:{port}"),
             pool,
             mcp,
+            background,
             http: reqwest::Client::new(),
         }
     }

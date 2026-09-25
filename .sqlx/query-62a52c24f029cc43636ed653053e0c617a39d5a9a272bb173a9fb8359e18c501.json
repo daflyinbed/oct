@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT DISTINCT conversation_id FROM background_tasks WHERE notified = 0 AND status != 'running'",
+  "describe": {
+    "columns": [
+      {
+        "name": "conversation_id",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "62a52c24f029cc43636ed653053e0c617a39d5a9a272bb173a9fb8359e18c501"
+}

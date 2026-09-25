@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE background_tasks SET notified = 1 WHERE id IN (SELECT value FROM json_each($1))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "7df01aacc65ae44b19cdf9297d549307540a2eb56dcc9c8d47b784d94f82c309"
+}

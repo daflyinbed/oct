@@ -19,7 +19,9 @@ use crate::agent::compact;
 use crate::agent::title;
 use crate::agent::{AgentEvent, CompactionTrigger};
 use crate::context::{self, LlmView};
-use crate::db::{conversations as conv_db, messages as msg_db, projects as project_db, runs as run_db};
+use crate::db::{
+    conversations as conv_db, messages as msg_db, projects as project_db, runs as run_db,
+};
 use crate::runtime::{RootRunRequest, sse_event};
 use crate::subagent::{RecoveryJob, orchestrate};
 
@@ -140,6 +142,14 @@ pub async fn send_message(
     // new user message below — anything later would always look "just
     // active". Clock skew (negative delta) simply means "not idle".
     let idle = conversation_idle(&state, &id).await;
+
+    // Background task catch-up (ADR 0003): settled-but-unnotified tasks
+    // (typically `lost` rows after a restart, or deliveries whose wake run
+    // could not start) are flushed as one notification message BEFORE this
+    // turn's user message, so the run below consumes them.
+    if let Err(e) = crate::runtime::background::catch_up_notifications(&state.pool, &id).await {
+        tracing::warn!("failed to flush background task notifications: {e}");
+    }
 
     // Poison guard: a previous run interrupted mid-tool (e.g. backend crash)
     // leaves assistant ToolCalls without tool messages; repairing BEFORE the
@@ -297,14 +307,12 @@ pub async fn resume_turn(
     let last_is_user = msg_db::last_message_is_user(&state.pool, &id)
         .await
         .map_err(AppError::from)?;
-    let lost_with_tool_tail =
-        match run_db::latest_run_for_conversation(&state.pool, &id).await? {
-            Some(run) if run.status == "lost" => {
-                msg_db::last_message_role(&state.pool, &id).await?
-                    == Some("tool".to_string())
-            }
-            _ => false,
-        };
+    let lost_with_tool_tail = match run_db::latest_run_for_conversation(&state.pool, &id).await? {
+        Some(run) if run.status == "lost" => {
+            msg_db::last_message_role(&state.pool, &id).await? == Some("tool".to_string())
+        }
+        _ => false,
+    };
     if dangling.is_empty() && !last_is_user && !lost_with_tool_tail {
         return Err(AppError::NothingToResume("Nothing to resume".into()));
     }
@@ -329,6 +337,13 @@ pub async fn resume_turn(
 
     // Idle captured before any repair writes below (see send_message).
     let idle = conversation_idle(&state, &id).await;
+
+    // Background task catch-up (ADR 0003): same flush as send — the
+    // notifications land before the orchestrator's writes, so the resumed
+    // parent loop sees them.
+    if let Err(e) = crate::runtime::background::catch_up_notifications(&state.pool, &id).await {
+        tracing::warn!("failed to flush background task notifications: {e}");
+    }
 
     // Subscribe to the (already occupied) conversation's hub and return the
     // SSE response IMMEDIATELY: keep-alive covers the recovery wait, and
@@ -628,7 +643,9 @@ pub async fn get_messages(
 
     let messages = msg_db::list_messages(&state.pool, &id).await?;
 
-    Ok(Json(messages.iter().map(dto::MessageDto::from_stored).collect()))
+    Ok(Json(
+        messages.iter().map(dto::MessageDto::from_stored).collect(),
+    ))
 }
 
 /// The original content a microcompact copy replaced. Scope-checked through

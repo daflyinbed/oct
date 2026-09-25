@@ -1,0 +1,98 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE background_tasks SET status = 'lost', finished_at = $1 WHERE status = 'running' RETURNING id, conversation_id, parent_run_id, parent_call_id, command, working_dir, status, exit_code, output_path, output_bytes, error, notified, created_at, finished_at",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "conversation_id",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "parent_run_id",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "parent_call_id",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "command",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "working_dir",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "status",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "exit_code",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "output_path",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "output_bytes",
+        "ordinal": 9,
+        "type_info": "Integer"
+      },
+      {
+        "name": "error",
+        "ordinal": 10,
+        "type_info": "Text"
+      },
+      {
+        "name": "notified",
+        "ordinal": 11,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 12,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "finished_at",
+        "ordinal": 13,
+        "type_info": "Datetime"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "804a12f9a9813c06f2b909b50c8b65a472ce12824a113ccf2985b9d55a62aab3"
+}

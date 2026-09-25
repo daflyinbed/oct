@@ -50,10 +50,18 @@ async fn run_server(database_url: &str, port: u16) -> Result<()> {
     // left `running` become `lost` before this process accepts traffic.
     oct_agent::runtime::bootstrap(&pool).await;
 
-    // Two-phase wire: the RunService owns the SubagentManager, the manager
-    // reaches back into the service through a OnceLock (set immediately
-    // below) — no reference cycle the process needs to break.
+    // Two-phase wire: the RunService owns the SubagentManager and the
+    // background task manager; each manager reaches back into the service
+    // through a OnceLock (set immediately below) — no reference cycle the
+    // process needs to break.
     let subagents = Arc::new(oct_agent::subagent::SubagentManager::default());
+    let exec_dir = std::env::var("OCT_EXEC_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| exec_dir_for_database(&database_url));
+    let background = Arc::new(oct_agent::runtime::background::BackgroundTaskManager::new(
+        pool.clone(),
+        exec_dir,
+    ));
     let runs = Arc::new(oct_agent::runtime::RunService {
         pool: pool.clone(),
         registry: registry.clone(),
@@ -61,8 +69,10 @@ async fn run_server(database_url: &str, port: u16) -> Result<()> {
         sessions: sessions.clone(),
         file_locks: dashmap::DashMap::new(),
         subagents: subagents.clone(),
+        background: background.clone(),
     });
     subagents.set_service(runs.clone());
+    background.set_service(runs.clone());
 
     let state = api::AppState {
         runs,
@@ -82,4 +92,22 @@ async fn run_server(database_url: &str, port: u16) -> Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+/// Where background task output files live: next to the database file
+/// (`sqlite://dir/oct.db` → `dir/exec`), overridable via `OCT_EXEC_DIR`.
+/// Deliberately outside any project workspace — the sandboxed read tool
+/// must not reach it (ADR 0003).
+fn exec_dir_for_database(database_url: &str) -> std::path::PathBuf {
+    let file = database_url
+        .trim_start_matches("sqlite://")
+        .split('?')
+        .next()
+        .unwrap_or("oct.db");
+    let parent = std::path::Path::new(file)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default();
+    parent.join("exec")
 }

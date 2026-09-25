@@ -34,6 +34,8 @@
 /// DB-driven model resolution (the single ChatModel construction path).
 mod resolve;
 
+pub mod background;
+
 use std::convert::Infallible;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -109,6 +111,9 @@ pub struct RunService {
     /// service through a `OnceLock`, set right after construction — see
     /// `main.rs` / the test harness).
     pub subagents: Arc<SubagentManager>,
+    /// Background bash task registry/lifecycle (ADR 0003): same two-phase
+    /// wiring — the manager starts wake runs through this service.
+    pub background: Arc<background::BackgroundTaskManager>,
 }
 
 /// Everything [`RunService::start_root_run`] needs to launch one root run.
@@ -238,9 +243,7 @@ impl RunService {
         let provider = crate::db::providers::get_provider(&self.pool, provider_id)
             .await
             .map_err(AppError::from)?
-            .ok_or_else(|| {
-                AppError::NotFound(format!("Provider '{}' not found", provider_id))
-            })?;
+            .ok_or_else(|| AppError::NotFound(format!("Provider '{}' not found", provider_id)))?;
 
         let model = resolve::resolve_chat_model(&self.registry, &provider, provider_id, model_id)?;
 
@@ -353,20 +356,42 @@ impl RunService {
         // one flat toolset; MCP names are the mcp__{server}__{tool} forms
         // deduplicated across servers). The file tools share the project's
         // lock set so subagents serialize with this run on the same paths.
-        let mut run_tools: Vec<Arc<dyn tools::AgentTool>> = tools::default_tools_with(
-            roots.clone(),
-            locks.clone(),
-            reads,
-        )
-        .into_iter()
-        .map(Arc::from)
-        .collect();
+        let mut run_tools: Vec<Arc<dyn tools::AgentTool>> =
+            tools::default_tools_with(roots.clone(), locks.clone(), reads)
+                .into_iter()
+                .map(Arc::from)
+                .collect();
         run_tools.extend(
             self.mcp
                 .tools_for_run(Some(&project.id))
                 .into_iter()
                 .map(Arc::from),
         );
+
+        // Background execution surface (ADR 0003): the default set's plain
+        // execute tool is swapped in place for a background-enabled instance
+        // carrying this run's identity, and the two companion tools join the
+        // set. The swap is positional (schema order is otherwise unchanged).
+        for tool in run_tools.iter_mut() {
+            if tool.name() == "execute_command" {
+                *tool = Arc::new(tools::execute::ExecuteCommandTool::with_background(
+                    roots.clone(),
+                    tools::execute::ExecuteBackground {
+                        manager: self.background.clone(),
+                        conversation_id: conversation_id.clone(),
+                        parent_run_id: run.id.clone(),
+                    },
+                ));
+            }
+        }
+        run_tools.push(Arc::new(tools::task_output::TaskOutputTool::new(
+            self.background.clone(),
+            conversation_id.clone(),
+        )) as Arc<dyn tools::AgentTool>);
+        run_tools.push(Arc::new(tools::task_stop::TaskStopTool::new(
+            self.background.clone(),
+            conversation_id.clone(),
+        )) as Arc<dyn tools::AgentTool>);
 
         // The delegation tool for root runs of chat conversations: it hands
         // the SubagentManager everything it needs to spawn a worker —
@@ -376,8 +401,7 @@ impl RunService {
         // must reference: the lock is filled only after the full Arc'd set
         // (task included) exists, and every read happens at execute time,
         // long after.
-        let parent_toolset: crate::subagent::ToolsetSlot =
-            Arc::new(std::sync::OnceLock::new());
+        let parent_toolset: crate::subagent::ToolsetSlot = Arc::new(std::sync::OnceLock::new());
         if attach_task_tool {
             let task: Arc<dyn tools::AgentTool> = Arc::new(TaskTool::new(
                 self.subagents.clone(),
@@ -416,7 +440,11 @@ impl RunService {
             pool: self.pool.clone(),
             // Built from the ACTUAL tool list (task guidance included for
             // root agents; see the prompt module).
-            system_prompt: system_prompt(&PathBuf::from(&project.working_dir), &additional, &toolset),
+            system_prompt: system_prompt(
+                &PathBuf::from(&project.working_dir),
+                &additional,
+                &toolset,
+            ),
             context_window,
             idle,
         };
@@ -480,11 +508,14 @@ impl RunService {
         let child_tools: Vec<Arc<dyn tools::AgentTool>> = match parent_toolset {
             Some(parent) => derive_child_toolset(&parent, roots.clone(), locks.clone()),
             None => {
-                let mut rebuilt: Vec<Arc<dyn tools::AgentTool>> =
-                    tools::file_tools_with(roots.clone(), locks.clone(), Arc::new(AgentReadState::new()))
-                        .into_iter()
-                        .map(Arc::from)
-                        .collect();
+                let mut rebuilt: Vec<Arc<dyn tools::AgentTool>> = tools::file_tools_with(
+                    roots.clone(),
+                    locks.clone(),
+                    Arc::new(AgentReadState::new()),
+                )
+                .into_iter()
+                .map(Arc::from)
+                .collect();
                 rebuilt.extend(
                     self.mcp
                         .tools_for_run(Some(&project.id))
@@ -578,17 +609,32 @@ impl RunService {
 /// over the shared locks and a fresh read state. Everything else (stateless
 /// builtins, MCP tools) is Arc-cloned so connections and configs are reused
 /// verbatim — schema AND dispatch stay exactly parent-minus-task.
+///
+/// `execute_command` is likewise rebuilt (background gate closed, schema
+/// identical): subagent workers must not detach commands — the wake-run
+/// semantics only hold in the root conversation (ADR 0003). The background
+/// companions (`task_output`/`task_stop`) are scoped to the root
+/// conversation and simply dropped.
 pub(crate) fn derive_child_toolset(
     parent: &[Arc<dyn tools::AgentTool>],
     roots: WorkspaceRoots,
     locks: Arc<WorkspaceFileLocks>,
 ) -> Vec<Arc<dyn tools::AgentTool>> {
     let mut child: Vec<Arc<dyn tools::AgentTool>> =
-        tools::file_tools_with(roots, locks, Arc::new(AgentReadState::new()))
+        tools::file_tools_with(roots.clone(), locks, Arc::new(AgentReadState::new()))
             .into_iter()
             .map(Arc::from)
             .collect();
-    const NOT_REUSED: [&str; 4] = ["task", "read_file", "write_file", "edit_file"];
+    child.push(Arc::new(tools::execute::ExecuteCommandTool::new(roots)) as Arc<dyn tools::AgentTool>);
+    const NOT_REUSED: [&str; 7] = [
+        "task",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "execute_command",
+        "task_output",
+        "task_stop",
+    ];
     child.extend(
         parent
             .iter()
@@ -641,8 +687,14 @@ async fn supervise(
         final_status,
         outcome.final_message_id.as_deref(),
         outcome.error.as_deref(),
-        outcome.usage.as_ref().map(|u| i64::try_from(u.input_tokens).unwrap_or(i64::MAX)),
-        outcome.usage.as_ref().map(|u| i64::try_from(u.output_tokens).unwrap_or(i64::MAX)),
+        outcome
+            .usage
+            .as_ref()
+            .map(|u| i64::try_from(u.input_tokens).unwrap_or(i64::MAX)),
+        outcome
+            .usage
+            .as_ref()
+            .map(|u| i64::try_from(u.output_tokens).unwrap_or(i64::MAX)),
         // Root runs never resume their own row (recovery starts a NEW root
         // run), so no epoch guard is needed here.
         None,
@@ -680,17 +732,18 @@ async fn supervise_child(
     parent_hub: Arc<EventHub>,
     done_tx: watch::Sender<bool>,
 ) {
-    let outcome = match tokio::spawn(run_agent_loop(ctx, conv_id.clone(), view, handle.clone())).await {
-        Ok(outcome) => outcome,
-        Err(join_err) => RunOutcome {
-            status: RunStatus::Failed,
-            final_message_id: None,
-            final_text: None,
-            partial: false,
-            usage: None,
-            error: Some(format!("agent loop panicked: {join_err}")),
-        },
-    };
+    let outcome =
+        match tokio::spawn(run_agent_loop(ctx, conv_id.clone(), view, handle.clone())).await {
+            Ok(outcome) => outcome,
+            Err(join_err) => RunOutcome {
+                status: RunStatus::Failed,
+                final_message_id: None,
+                final_text: None,
+                partial: false,
+                usage: None,
+                error: Some(format!("agent loop panicked: {join_err}")),
+            },
+        };
 
     subagents
         .settle(
@@ -716,7 +769,10 @@ async fn supervise_child(
 /// Server-startup recovery (ADR 0002 §6.2): `agent_runs` rows a previous
 /// process left `running` are marked `lost` — the executing instance is
 /// gone, while the persisted history and the conversation's resume
-/// eligibility stay untouched. Call once per process, before traffic.
+/// eligibility stay untouched. The same sweep covers `background_tasks`
+/// rows (ADR 0003): PDEATHSIG already terminated the commands when the
+/// process died; their notifications are delivered by the send/resume
+/// catch-up. Call once per process, before traffic.
 pub async fn bootstrap(pool: &SqlitePool) {
     match run_db::mark_stale_runs_lost(pool).await {
         Ok(stale) => {
@@ -729,5 +785,17 @@ pub async fn bootstrap(pool: &SqlitePool) {
             }
         }
         Err(e) => tracing::error!("failed to sweep interrupted agent runs: {e}"),
+    }
+    match background::task_sweep(pool).await {
+        Ok(stale) => {
+            for task in &stale {
+                tracing::warn!(
+                    task_id = %task.id,
+                    conversation_id = %task.conversation_id,
+                    "marking background task left running by a previous process as lost"
+                );
+            }
+        }
+        Err(e) => tracing::error!("failed to sweep interrupted background tasks: {e}"),
     }
 }

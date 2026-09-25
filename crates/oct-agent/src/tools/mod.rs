@@ -19,6 +19,8 @@ pub mod listdir;
 pub mod read;
 pub mod search_common;
 pub mod shared;
+pub mod task_output;
+pub mod task_stop;
 pub mod truncate;
 pub mod workspace;
 pub mod write;
@@ -330,7 +332,11 @@ pub fn default_tools_with(
         Box::new(listdir::ListDirTool::new(roots.clone())),
         Box::new(grep::GrepTool::new(roots.clone())),
         Box::new(glob::GlobTool::new(roots.clone())),
-        Box::new(write::WriteFileTool::new(roots.clone(), locks.clone(), reads.clone())),
+        Box::new(write::WriteFileTool::new(
+            roots.clone(),
+            locks.clone(),
+            reads.clone(),
+        )),
         Box::new(edit::EditFileTool::new(roots.clone(), locks, reads)),
         Box::new(execute::ExecuteCommandTool::new(roots)),
     ]
@@ -346,7 +352,11 @@ pub fn file_tools_with(
 ) -> Vec<Box<dyn AgentTool>> {
     vec![
         Box::new(read::ReadFileTool::new(roots.clone(), reads.clone())),
-        Box::new(write::WriteFileTool::new(roots.clone(), locks.clone(), reads.clone())),
+        Box::new(write::WriteFileTool::new(
+            roots.clone(),
+            locks.clone(),
+            reads.clone(),
+        )),
         Box::new(edit::EditFileTool::new(roots, locks, reads)),
     ]
 }

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE background_tasks SET status = 'cancelled', finished_at = $1 WHERE id = $2 AND status = 'lost'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "f389e92803c24bf5b72fabd4132306708b6a7b6c746f7b26c618c712dce8d49f"
+}

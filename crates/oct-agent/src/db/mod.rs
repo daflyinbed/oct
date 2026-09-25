@@ -1,3 +1,4 @@
+pub mod background;
 pub mod conversations;
 pub mod mcp;
 pub mod mcp_tokens;

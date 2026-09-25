@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE background_tasks SET status = $1, finished_at = $2, exit_code = $3, error = $4, output_bytes = $5 WHERE id = $6 AND status = 'running'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "fa508f9e7d118360b63d474a29ff6a94d9d94be03a2d6d639732493ee8563988"
+}

@@ -1,3 +1,4 @@
+pub mod background;
 pub mod chat;
 pub mod conversations;
 pub mod dto;
@@ -80,6 +81,9 @@ pub struct AppState {
         chat::CompactQuery,
         chat::CompactResult,
         subagents::SubagentTaskDto,
+        background::BackgroundTaskDto,
+        background::TaskOutputQuery,
+        background::TaskOutputChunkDto,
         error::ErrorBody,
         dto::MessageDto,
         dto::MessagePart,
@@ -170,6 +174,12 @@ fn api_routes(state: AppState) -> OpenApiRouter<AppState> {
         // Run reconnection (frontend refresh while a run is in flight)
         .routes(utoipa_axum::routes!(chat::get_run_status))
         .routes(utoipa_axum::routes!(chat::stream_run_events))
+        // Background bash tasks (list / output read / cancel)
+        .routes(utoipa_axum::routes!(background::list_background_tasks))
+        .routes(utoipa_axum::routes!(
+            background::read_background_task_output
+        ))
+        .routes(utoipa_axum::routes!(background::cancel_background_task))
         // Subagents (task list / child history / child events / child cancel)
         .routes(utoipa_axum::routes!(subagents::list_subagents))
         .routes(utoipa_axum::routes!(subagents::get_subagent_messages))

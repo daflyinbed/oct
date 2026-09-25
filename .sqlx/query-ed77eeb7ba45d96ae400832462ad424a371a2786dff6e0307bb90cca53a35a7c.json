@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO background_tasks (id, conversation_id, parent_run_id, parent_call_id, command, working_dir, status, output_path, created_at) VALUES ($1, $2, $3, $4, $5, $6, 'running', $7, $8)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "ed77eeb7ba45d96ae400832462ad424a371a2786dff6e0307bb90cca53a35a7c"
+}
