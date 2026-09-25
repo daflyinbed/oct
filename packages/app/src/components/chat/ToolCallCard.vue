@@ -1,6 +1,14 @@
 <template>
+  <!-- 后台任务信封：execute_command 以 run_in_background 调用且结果
+       details.kind === "background_task" 时改走专属任务卡（命令在后台
+       运行时里，此卡片展示任务状态而非命令输出）；part key 不变 -->
+  <BashTaskCard
+    v-if="backgroundTaskId"
+    :part="part"
+    :conversation-id="conversationId"
+  />
   <!-- 工具调用：默认折叠为单行摘要（hover 出现箭头提示可点开），点开后显示完整卡片 -->
-  <div class="min-w-0" :class="frameClass">
+  <div v-else class="min-w-0" :class="frameClass">
     <!-- 头部：工具图标 + 显示名 + 标题 + 状态（生成中脉冲 / 运行中 spinner / 完成后徽标），点击切换折叠 -->
     <button
       type="button"
@@ -253,6 +261,7 @@
 import { computed, nextTick, ref, watch } from "vue";
 import client from "@/api/client";
 import DiffLines from "@/components/diff/DiffLines.vue";
+import BashTaskCard from "./BashTaskCard.vue";
 import type { ToolCallPart } from "@/composables/useChat";
 
 const props = defineProps<{
@@ -263,6 +272,18 @@ const props = defineProps<{
 
 // 折叠/展开（默认折叠）
 const open = ref(false);
+
+// --- 后台任务信封识别 --------------------------------------------------------
+// live 路径 details 是 tool_result 事件的原始 JSON（kind 在顶层）；历史
+// 路径 details 是 DTO 透传的 extra（dto 层把未识别 kind 原样放进 extra，
+// useChat 已把它整体赋给 details），两处形状一致。
+const backgroundTaskId = computed<string | null>(() => {
+  if (props.part.name !== "execute_command") return null;
+  const details = props.part.details;
+  if (!details || details.kind !== "background_task") return null;
+  const taskId = details.task_id;
+  return typeof taskId === "string" && taskId ? taskId : null;
+});
 
 // --- 微压缩「查看原文」 ------------------------------------------------------
 

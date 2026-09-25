@@ -1742,3 +1742,113 @@ describe("send 失败文案与 pending_recovery", () => {
     expect(sending.value).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 后台任务通知（ADR 0003）：stored 行 → notification 角色 + 文本块解析
+// ---------------------------------------------------------------------------
+
+describe("后台任务通知", () => {
+  it("notification user 行渲染为 notification 角色，details.tasks 与文本尾部合并", async () => {
+    GET.mockResolvedValue({
+      data: [
+        storedMessage(
+          "user",
+          String.raw`[{"Text":"The following background command(s) started earlier have finished — process their results and continue:\n\n<task-notification>\ntask_id: t-1\ncommand: cargo build\nstatus: completed\nexit_code: 0\noutput_file: /var/lib/oct/exec/c1/t-1.log\noutput (tail):\n[earlier output omitted]\n   Compiling oct\n</task-notification>"}]`,
+          {
+            details: {
+              extra: {
+                kind: "background_task_notification",
+                tasks: [
+                  {
+                    task_id: "t-1",
+                    command: "cargo build",
+                    status: "completed",
+                    exit_code: 0,
+                    error: null,
+                    output_path: "/var/lib/oct/exec/c1/t-1.log",
+                    created_at: "2026-09-24T00:00:00",
+                    finished_at: "2026-09-24T00:01:00",
+                  },
+                ],
+              },
+            },
+          },
+        ),
+      ],
+    } as never);
+
+    await fetchMessages(nextConvId());
+
+    expect(messages.value).toHaveLength(1);
+    const msg = messages.value[0]!;
+    expect(msg.role).toBe("notification");
+    const part = msg.parts[0] as {
+      kind: string;
+      tasks: readonly {
+        taskId: string;
+        command: string;
+        status: string;
+        exitCode: number | null;
+        tail: string | null;
+      }[];
+    };
+    expect(part.kind).toBe("task_notification");
+    expect(part.tasks).toHaveLength(1);
+    expect(part.tasks[0]).toMatchObject({
+      taskId: "t-1",
+      command: "cargo build",
+      status: "completed",
+      exitCode: 0,
+    });
+    // 尾部从 <task-notification> 文本块解析（含省略前缀）
+    expect(part.tasks[0]!.tail).toBe(
+      "[earlier output omitted]\n   Compiling oct",
+    );
+  });
+
+  it("details.tasks 缺失时回退纯文本解析（多块 + lost 注记 + 非数字退出码）", async () => {
+    GET.mockResolvedValue({
+      data: [
+        storedMessage(
+          "user",
+          String.raw`[{"Text":"<task-notification>\ntask_id: t-lost\ncommand: npm watch\nstatus: lost\nexit_code: unknown (killed by a signal)\nnote: interrupted by a backend restart — the command was terminated; the output below is partial.\noutput_file: /p/t-lost.log\noutput (tail):\npartial output\n</task-notification>\n\n<task-notification>\ntask_id: t-ok\ncommand: echo hi\nstatus: completed\nexit_code: 0\noutput_file: /p/t-ok.log\noutput (tail):\nhi\n</task-notification>"}]`,
+          {
+            details: {
+              extra: { kind: "background_task_notification" },
+            },
+          },
+        ),
+      ],
+    } as never);
+
+    await fetchMessages(nextConvId());
+
+    const part = messages.value[0]?.parts[0] as {
+      tasks: readonly {
+        taskId: string;
+        exitCode: number | null;
+        tail: string | null;
+      }[];
+    };
+    expect(part.tasks.map((t) => t.taskId)).toEqual(["t-lost", "t-ok"]);
+    expect(part.tasks[0]).toMatchObject({
+      exitCode: null,
+      tail: "partial output",
+    });
+    expect(part.tasks[1]).toMatchObject({ exitCode: 0, tail: "hi" });
+  });
+
+  it("末条是通知行时视为可恢复轮尾（唤醒 run 启动失败的续跑入口）", async () => {
+    GET.mockResolvedValue({
+      data: [
+        storedMessage(
+          "user",
+          String.raw`[{"Text":"<task-notification>\ntask_id: t-1\ncommand: x\nstatus: completed\nexit_code: 0\noutput_file: /p\noutput (tail):\n\n</task-notification>"}]`,
+          { details: { extra: { kind: "background_task_notification" } } },
+        ),
+      ],
+    } as never);
+    await fetchMessages(nextConvId());
+    expect(resumable.value).toBe(true);
+  });
+});

@@ -62,6 +62,8 @@ watch(
     for (const part of last.parts) {
       if (part.kind === "compaction") {
         size += part.summary.length;
+      } else if (part.kind === "task_notification") {
+        size += part.tasks.length;
       } else if (part.kind === "text" || part.kind === "reasoning") {
         size += part.text.length;
       } else {

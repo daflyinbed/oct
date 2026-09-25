@@ -193,6 +193,10 @@ import DiffTabView from "@/components/views/DiffTabView.vue";
 import FileTabView from "@/components/views/FileTabView.vue";
 import GitGraphTabView from "@/components/views/GitGraphTabView.vue";
 import McpTabView from "@/components/views/McpTabView.vue";
+import {
+  refreshBackgroundTasks,
+  setWakeRunHandler,
+} from "@/composables/useBackgroundTasks";
 import { onTitleUpdated, useChat } from "@/composables/useChat";
 import { useProjects } from "@/composables/useProjects";
 import { useProviders } from "@/composables/useProviders";
@@ -303,9 +307,22 @@ watch(
     // 根会话的子任务快照：切会话即拉取（store 独立于可见 panel 存活）。
     // 事件流期间的实时更新由 useChat 单例的 subagent_updated 派发维护。
     void refreshSubagents(id);
+    // 后台任务快照同理：切会话对账一次（PR1 无 hub 小事件，运行中任务
+    // 由 store 自己的轮询维持刷新，见 useBackgroundTasks）。
+    void refreshBackgroundTasks(id);
   },
   { immediate: true },
 );
+
+// 后台任务唤醒 run 的可见性（P1）：会话空闲时后端在任务终态后自动起的
+// wake run 没有前端 SSE 订阅——store 轮询在结算后的宽限窗内探测 /run，
+// 发现 running 就复用 attachRun 的 events 探测/重放机制挂回流。视图已
+// 切走时不挂（切回时上方 tab-return watch 的 fetchMessages + attachRun
+// 会兜底对账）。
+setWakeRunHandler((conversationId) => {
+  if (selectedConversationId.value !== conversationId) return;
+  return attachRun(conversationId);
+});
 
 /** 打开中的子代理标签（每个 agent 一个实例，App 层渲染并 v-show 保活）。 */
 const subagentTabs = computed(() =>
@@ -332,7 +349,9 @@ watch(activeTabId, (id, prevId) => {
       void fetchMessages(conversationId)
         .then(() => attachRun(conversationId))
         // 重连对账完成后再拉一次子任务快照（流内事件之外的状态收敛）。
-        .then(() => refreshSubagents(conversationId));
+        .then(() => refreshSubagents(conversationId))
+        // 后台任务快照同样对账（离开标签期间的任务结算/唤醒 run 落定）。
+        .then(() => refreshBackgroundTasks(conversationId));
     }
   } else if (!tab && route.path !== "/") {
     router.push("/");

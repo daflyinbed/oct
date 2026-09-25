@@ -93,15 +93,39 @@ export interface CompactionPart {
   estTokensAfter: number | null;
 }
 
+/** 后台任务通知行里的单个任务（details.extra.tasks 与文本块 tail 的合并视图）。 */
+export interface TaskNotificationTask {
+  taskId: string;
+  command: string;
+  /** BackgroundTaskStatus 同词表（宽松 string，未知原样展示）。 */
+  status: string;
+  exitCode: number | null;
+  error: string | null;
+  outputPath: string | null;
+  /** 通知内联的输出尾部（可能带 "[earlier output omitted]" 前缀）。 */
+  tail: string | null;
+}
+
+/**
+ * 后台任务通知（ADR 0003）：任务终态后后端合批插入的 user 行，渲染为
+ * 全宽分隔条而非聊天气泡。live 路径没有对应 SSE 事件——行随唤醒 run 的
+ * 历史重载/刷新进入视图（stored 路径是唯一来源）。
+ */
+export interface TaskNotificationPart {
+  kind: "task_notification";
+  tasks: readonly TaskNotificationTask[];
+}
+
 export type DisplayPart =
   | TextPart
   | ToolCallPart
   | ReasoningPart
-  | CompactionPart;
+  | CompactionPart
+  | TaskNotificationPart;
 
 export interface DisplayMessage {
   id: string;
-  role: "user" | "assistant" | "compaction";
+  role: "user" | "assistant" | "compaction" | "notification";
   parts: readonly DisplayPart[];
   isStreaming?: boolean;
 }
@@ -109,7 +133,7 @@ export interface DisplayMessage {
 /** Internal mutable shape used while building/merging messages. */
 interface BuildableMessage {
   id: string;
-  role: "user" | "assistant" | "compaction";
+  role: "user" | "assistant" | "compaction" | "notification";
   parts: DisplayPart[];
   isStreaming?: boolean;
 }
@@ -238,6 +262,104 @@ function summaryFromMarkerText(text: string): string {
 }
 
 /**
+ * 后台任务通知 DTO details（`extra`）的 kind 判别。dto 层把未识别 kind
+ * 原样透传进 `extra`（background_task_notification 不是结构性 kind），
+ * 所以历史行读的是 `details.extra.kind` 而非 `details.kind`。
+ */
+const TASK_NOTIFICATION_KIND = "background_task_notification";
+
+function isTaskNotificationRow(
+  details: ApiMessageDetails | null | undefined,
+): boolean {
+  return details?.extra?.kind === TASK_NOTIFICATION_KIND;
+}
+
+/** `<task-notification>` 文本块的字段视图（按 "key: value" 行解析）。 */
+interface ParsedNotificationBlock {
+  taskId: string;
+  command: string;
+  status: string;
+  /** 退出码原文（数字或 "unknown (killed by a signal)"）。 */
+  exitText: string | null;
+  outputPath: string | null;
+  tail: string;
+}
+
+const TASK_NOTIFICATION_BLOCK_PATTERN =
+  /<task-notification>\n([\s\S]*?)\n<\/task-notification>/g;
+
+/**
+ * 解析通知 content 里的 `<task-notification>` 块：`output (tail):` 之前的
+ * 行按 "key: value" 取字段（task_id/command/status/exit_code/output_file），
+ * 之后的内容整段作为输出尾部。
+ */
+export function parseTaskNotificationBlocks(
+  text: string,
+): ParsedNotificationBlock[] {
+  const blocks: ParsedNotificationBlock[] = [];
+  for (const match of text.matchAll(TASK_NOTIFICATION_BLOCK_PATTERN)) {
+    const lines = (match[1] ?? "").split("\n");
+    const fields: Record<string, string> = {};
+    let tail = "";
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]!;
+      if (line.startsWith("output (tail):")) {
+        tail = lines.slice(i + 1).join("\n");
+        break;
+      }
+      const sep = line.indexOf(": ");
+      if (sep > 0) fields[line.slice(0, sep)] = line.slice(sep + 2);
+    }
+    if (!fields.task_id) continue;
+    blocks.push({
+      taskId: fields.task_id,
+      command: fields.command ?? "",
+      status: fields.status ?? "",
+      exitText: fields.exit_code ?? null,
+      outputPath: fields.output_file ?? null,
+      tail,
+    });
+  }
+  return blocks;
+}
+
+function toNotificationTask(
+  raw: Record<string, unknown>,
+  tails: Map<string, string>,
+): TaskNotificationTask {
+  const num = (value: unknown): number | null =>
+    typeof value === "number" ? value : null;
+  const str = (value: unknown): string | null =>
+    typeof value === "string" ? value : null;
+  const taskId = str(raw.task_id) ?? "";
+  return {
+    taskId,
+    command: str(raw.command) ?? "",
+    status: str(raw.status) ?? "",
+    exitCode: num(raw.exit_code),
+    error: str(raw.error),
+    outputPath: str(raw.output_path),
+    tail: tails.get(taskId) ?? null,
+  };
+}
+
+function blockToNotificationTask(
+  block: ParsedNotificationBlock,
+): TaskNotificationTask {
+  return {
+    taskId: block.taskId,
+    command: block.command,
+    status: block.status,
+    exitCode: Number.isFinite(Number(block.exitText))
+      ? Number(block.exitText)
+      : null,
+    error: null,
+    outputPath: block.outputPath,
+    tail: block.tail || null,
+  };
+}
+
+/**
  * Build display messages from the typed history DTO. Tool messages are not
  * rendered as bubbles: their tool_result parts fill the matching tool card
  * (which may live in an earlier assistant message), re-applying the row's
@@ -297,6 +419,45 @@ function storedToDisplayList(stored: ApiMessage[]): DisplayMessage[] {
               compactedMessages: compaction?.compacted_message_count ?? 0,
               estTokensBefore: compaction?.estimated_tokens_before ?? null,
               estTokensAfter: compaction?.estimated_tokens_after ?? null,
+            },
+          ],
+        });
+        lastAssistant = null;
+        continue;
+      }
+      // 后台任务通知行（details.extra.kind=background_task_notification，
+      // 后端在任务终态后插入）：全宽分隔条（可展开尾部/定位卡片），渲染为
+      // 独立角色而非聊天气泡。结构化字段来自 extra.tasks，输出尾部从
+      // content 的 <task-notification> 文本块解析。
+      if (isTaskNotificationRow(m.details)) {
+        let text = "";
+        for (const part of m.parts) {
+          if (part.type === "text") text += part.text;
+        }
+        const parsed = parseTaskNotificationBlocks(text);
+        const tails = new Map(
+          parsed.map((block) => [block.taskId, block.tail]),
+        );
+        const rawTasks = m.details?.extra?.tasks;
+        const rows = Array.isArray(rawTasks)
+          ? rawTasks
+              .filter(
+                (raw): raw is Record<string, unknown> =>
+                  raw !== null && typeof raw === "object",
+              )
+              .map((raw) => toNotificationTask(raw, tails))
+          : [];
+        out.push({
+          id: m.id,
+          role: "notification",
+          parts: [
+            {
+              kind: "task_notification",
+              // details.tasks 缺失（异常行）时回退纯文本解析，保证可见。
+              tasks:
+                rows.length > 0
+                  ? rows
+                  : parsed.map((block) => blockToNotificationTask(block)),
             },
           ],
         });
@@ -1078,13 +1239,15 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
       }
 
       // 截断锚点：run_meta.start_message_id 对应的 user 消息行；后端没记
-      // 录（如 resume 续跑的 run，无新 user 消息）时兜底锚到最后一条
-      // user 消息。截断必须在应用任何 delta 之前完成，因此放在注入回调
+      // 录（如 resume 续跑的 run，无新 user 消息）时兜底锚到最后一条 user
+      // 消息。后台任务唤醒 run 的锚点是通知行（role=notification，等价
+      // user 轮尾）。截断必须在应用任何 delta 之前完成，因此放在注入回调
       // 里、随首个事件执行恰好一次。
       let truncated = false;
       const lastUserIndex = () => {
         for (let i = messages.value.length - 1; i >= 0; i--) {
-          if (messages.value[i]?.role === "user") return i;
+          const role = messages.value[i]?.role;
+          if (role === "user" || role === "notification") return i;
         }
         // 没有 user 消息（异常历史）：无从截断，全部保留。
         return messages.value.length - 1;
@@ -1307,10 +1470,13 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
     if (trackContextUsage) clearContextUsage();
   };
 
-  /** 存在被中断的轮次可恢复：悬空工具卡片，或最后一条消息是 user。 */
+  /** 存在被中断的轮次可恢复：悬空工具卡片，或最后一条消息是 user
+   *（含后台任务通知行——后端把它作为 user 行插入，唤醒 run 启动失败时
+   * 它就是可续跑的轮尾）。 */
   const resumable = computed(() => {
     if (messages.value.length === 0) return false;
-    if (messages.value.at(-1)?.role === "user") {
+    const lastRole = messages.value.at(-1)?.role;
+    if (lastRole === "user" || lastRole === "notification") {
       return true;
     }
     return messages.value.some((m) =>

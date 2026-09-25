@@ -225,6 +225,89 @@
       </DropdownMenuRoot>
     </template>
 
+    <!-- 后台任务指示器：当前根会话的后台命令集合（无任务即隐藏），照抄
+         子代理指示器。运行中显示脉冲点与运行计数；存在 lost（且无运行中）
+         显示「已中断」；全部结算后转为安静完成态但入口保留。行点击定位
+         消息流里的信封卡片，运行行提供独立停止（click.stop） -->
+    <template v-if="backgroundTasks.length > 0">
+      <span class="mx-1.5 h-3.5 w-px bg-line" />
+      <DropdownMenuRoot @update:open="handleBackgroundMenuOpen">
+        <DropdownMenuTrigger
+          class="relative h-[22px] inline-flex items-center gap-1 control-ghost rounded-[5px] px-1 control-focus transition-colors"
+          title="后台任务"
+        >
+          <i-lucide-terminal class="h-3.5 w-3.5" />
+          <span class="text-[11.5px]"
+            >后台任务 {{ runningBackgroundTasks.length }}</span
+          >
+          <span
+            v-if="runningBackgroundTasks.length > 0"
+            class="h-1.5 w-1.5 animate-pulse rounded-full bg-accent-7"
+          />
+          <!-- 已中断：后端重启击杀的后台命令 -->
+          <span
+            v-else-if="hasInterruptedBackgroundTasks"
+            class="h-[15px] inline-flex items-center whitespace-nowrap rounded-full bg-warning-7 px-1.5 text-[10px] text-warning-10 font-medium leading-none"
+            >已中断</span
+          >
+          <!-- 全部结算：安静完成态，入口保留 -->
+          <span v-else class="text-[11.5px] text-success-10">✓</span>
+        </DropdownMenuTrigger>
+        <DropdownMenuPortal>
+          <DropdownMenuContent
+            side="top"
+            align="start"
+            :side-offset="6"
+            class="z-50 w-[340px] border border-neutral-5 rounded-lg bg-surface p-1 shadow-[var(--oct-shadow)]"
+          >
+            <p
+              class="px-2 pb-1 pt-1.5 text-[10.5px] text-faint font-medium tracking-wide uppercase"
+            >
+              后台任务
+            </p>
+            <DropdownMenuItem
+              v-for="task in backgroundTasks"
+              :key="task.id"
+              class="flex cursor-pointer items-center gap-2 rounded-[5px] px-2 py-1 text-[12.5px] outline-none data-[highlighted]:bg-neutral-1"
+              @select="locateBackgroundTask(task)"
+            >
+              <span
+                class="h-1.5 w-1.5 flex-none rounded-full"
+                :class="backgroundStatusDot(task.status)"
+              />
+              <span class="min-w-0 flex-1">
+                <span
+                  class="block truncate text-[11.5px] text-neutral-10 font-mono"
+                  :title="task.command"
+                  >{{ task.command }}</span
+                >
+              </span>
+              <span
+                v-if="
+                  task.status === 'completed' &&
+                  task.exit_code != null &&
+                  task.exit_code !== 0
+                "
+                class="flex-none text-[11px] text-danger-10"
+                >exit {{ task.exit_code }}</span
+              >
+              <span class="flex-none text-[11px] text-faint tabular-nums">{{
+                backgroundTaskElapsed(task)
+              }}</span>
+              <span
+                v-if="!isBackgroundTaskTerminal(task.status)"
+                class="h-[20px] w-[20px] inline-flex flex-none items-center justify-center rounded-[5px] text-dim transition-colors hover:bg-danger-1 hover:text-danger-10"
+                title="停止此后台任务"
+                @click.stop="stopBackgroundTask(task)"
+              >
+                <i-lucide-square class="h-3 w-3 fill-current" />
+              </span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenuPortal>
+      </DropdownMenuRoot>
+    </template>
+
     <div class="flex-1" />
 
     <button
@@ -271,6 +354,14 @@ import {
 } from "reka-ui";
 import { computed, watch, watchEffect } from "vue";
 import {
+  backgroundStatusDot,
+  cancelBackgroundTask,
+  highlightBackgroundTask,
+  isBackgroundTaskTerminal,
+  refreshBackgroundTasks,
+  useBackgroundTasks,
+} from "@/composables/useBackgroundTasks";
+import {
   groupMcpServersByScope,
   mcpStatusClass,
   mcpStatusDot,
@@ -289,6 +380,7 @@ import {
 } from "@/composables/useSubagents";
 import { useTabs } from "@/composables/useTabs";
 import type { components } from "@/api/schema";
+import type { BackgroundTask } from "@/composables/useBackgroundTasks";
 import type { SubagentTask } from "@/composables/useSubagents";
 
 type McpServerResponse = components["schemas"]["McpServerResponse"];
@@ -376,6 +468,47 @@ function openTask(task: SubagentTask) {
 
 function stopTask(task: SubagentTask) {
   void cancelSubagent(task.agent_id); // click.stop：只停止，不打开 panel
+}
+
+// --- 后台任务指示器 ----------------------------------------------------------
+
+const { backgroundTasksFor } = useBackgroundTasks();
+// 作用域跟随当前根会话（与子代理指示器一致：切换会话时 store 换集合）。
+const backgroundTasks = backgroundTasksFor(() => props.rootConversationId);
+const runningBackgroundTasks = computed(() =>
+  backgroundTasks.value.filter(
+    (task) => !isBackgroundTaskTerminal(task.status),
+  ),
+);
+const hasInterruptedBackgroundTasks = computed(() =>
+  backgroundTasks.value.some((task) => task.status === "lost"),
+);
+
+function backgroundTaskElapsed(task: BackgroundTask): string {
+  return formatSubagentElapsed(
+    task.created_at,
+    task.finished_at ?? null,
+    now.value.valueOf(),
+  );
+}
+
+/** 打开菜单时对账一次快照（吸收别处启动/结算的任务）。 */
+function handleBackgroundMenuOpen(open: boolean) {
+  if (open && props.rootConversationId) {
+    void refreshBackgroundTasks(props.rootConversationId);
+  }
+}
+
+/** 定位：store 高亮（BashTaskCard 切 accent 边框）+ 平滑滚动到卡片。 */
+function locateBackgroundTask(task: BackgroundTask) {
+  highlightBackgroundTask(task.id);
+  document
+    .querySelector(`[data-bg-task-id="${CSS.escape(task.id)}"]`)
+    ?.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+function stopBackgroundTask(task: BackgroundTask) {
+  void cancelBackgroundTask(task.id); // click.stop：只停止，不触发定位
 }
 
 /** 每个 server 一个独立面板 tab（失败时同一面板呈现错误日志）。 */

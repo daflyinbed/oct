@@ -3,6 +3,10 @@
   <div v-if="message.role === 'compaction'" class="py-1">
     <CompactionDivider :part="compactionPart(message)" />
   </div>
+  <!-- 后台任务通知：同为全宽分隔条（任务终态后后端插入的 user 行） -->
+  <div v-else-if="message.role === 'notification'" class="py-1">
+    <TaskNotificationDivider :part="notificationPart(message)" />
+  </div>
   <!-- 用户消息：IM 式右侧气泡；助手回合：扁平无头像（对齐 redesign demo） -->
   <div v-else-if="message.role === 'user'" class="flex justify-end">
     <div
@@ -36,11 +40,15 @@
       <CompactionDivider v-else-if="part.kind === 'compaction'" :part="part" />
       <!-- task 工具（子代理委派）有专属任务卡片，不走通用工具卡片 -->
       <TaskCard
-        v-else-if="part.name === 'task'"
+        v-else-if="part.kind === 'tool_call' && part.name === 'task'"
         :part="part"
         :conversation-id="conversationId"
       />
-      <ToolCallCard v-else :part="part" :conversation-id="conversationId" />
+      <ToolCallCard
+        v-else-if="part.kind === 'tool_call'"
+        :part="part"
+        :conversation-id="conversationId"
+      />
     </template>
     <!-- 尚无任何内容时的流式占位光标 -->
     <div v-if="message.isStreaming && message.parts.length === 0">
@@ -52,12 +60,14 @@
 <script setup lang="ts">
 import CompactionDivider from "./CompactionDivider.vue";
 import TaskCard from "./TaskCard.vue";
+import TaskNotificationDivider from "./TaskNotificationDivider.vue";
 import ThinkingCard from "./ThinkingCard.vue";
 import ToolCallCard from "./ToolCallCard.vue";
 import type {
   CompactionPart,
   DisplayMessage,
   DisplayPart,
+  TaskNotificationPart,
 } from "@/composables/useChat";
 
 defineProps<{
@@ -73,5 +83,10 @@ function partKey(part: DisplayPart, index: number): string {
 /** compaction 角色的消息固定只含一个压缩 part。 */
 function compactionPart(message: DisplayMessage): CompactionPart {
   return message.parts[0] as CompactionPart;
+}
+
+/** notification 角色的消息固定只含一个通知 part。 */
+function notificationPart(message: DisplayMessage): TaskNotificationPart {
+  return message.parts[0] as TaskNotificationPart;
 }
 </script>

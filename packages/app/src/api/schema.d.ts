@@ -4,6 +4,64 @@
  */
 
 export interface paths {
+    "/api/background-tasks/{id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stop a background task (the UI stop button; the model's equivalent is
+         *     the `task_stop` tool). Active tasks are killed gracefully-then-forced;
+         *     `lost` rows are persisted as cancelled.
+         */
+        post: operations["cancel_background_task"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/background-tasks/{id}/output": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read a bounded slice of one task's output file. */
+        get: operations["read_background_task_output"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/conversations/{id}/background-tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every background task of a conversation, running first then oldest
+         *     first — the list the bottom-bar indicator and the task cards poll.
+         */
+        get: operations["list_background_tasks"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/conversations/{id}/cancel": {
         parameters: {
             query?: never;
@@ -820,6 +878,27 @@ export interface components {
             /** @enum {string} */
             type: "subagent_updated";
         };
+        /**
+         * @description One background task row as the API serves it. For a `running` row the
+         *     `output_bytes` field is refreshed from the live output file (the row
+         *     only carries the final size once settled).
+         */
+        BackgroundTaskDto: {
+            command: string;
+            conversation_id: string;
+            created_at: string;
+            error?: string | null;
+            /** Format: int64 */
+            exit_code?: number | null;
+            finished_at?: string | null;
+            id: string;
+            /** Format: int64 */
+            output_bytes?: number | null;
+            output_path: string;
+            /** @description `running` | `completed` | `failed` | `cancelled` | `lost` */
+            status: string;
+            working_dir?: string | null;
+        };
         /** @description Query params for manual compaction. */
         CompactQuery: {
             /**
@@ -1490,6 +1569,42 @@ export interface components {
             /** @description The child conversation's title (== the task description). */
             title: string;
         };
+        /** @description One bounded slice of a task's output file. */
+        TaskOutputChunkDto: {
+            /** @description Lossy-UTF-8 text of the slice. */
+            content: string;
+            /**
+             * Format: int64
+             * @description Offset the next page starts at, when more output follows.
+             */
+            next_offset?: number | null;
+            /**
+             * Format: int64
+             * @description Absolute byte offset the content starts at.
+             */
+            start: number;
+            /**
+             * Format: int64
+             * @description Current total size of the output file.
+             */
+            total_bytes: number;
+        };
+        /**
+         * @description Query params for the output read: `offset` pages from the start
+         *     (default: the tail), `limit` bounds the slice.
+         */
+        TaskOutputQuery: {
+            /**
+             * Format: int64
+             * @description Maximum bytes to return (default 64 KiB, cap 1 MiB).
+             */
+            limit?: number | null;
+            /**
+             * Format: int64
+             * @description Byte offset to read from; omit for the tail.
+             */
+            offset?: number | null;
+        };
         /**
          * @description One image attached to a tool result (e.g. an MCP server's image content
          *     block), passed through to the model alongside the text content.
@@ -1581,6 +1696,101 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    cancel_background_task: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Background task ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The settled task row */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackgroundTaskDto"];
+                };
+            };
+            /** @description Task not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    read_background_task_output: {
+        parameters: {
+            query?: {
+                /** @description Byte offset to read from; omit for the tail */
+                offset?: number;
+                /** @description Maximum bytes to return (default 64 KiB, cap 1 MiB) */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                /** @description Background task ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One bounded slice of the output */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskOutputChunkDto"];
+                };
+            };
+            /** @description Task not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_background_tasks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Conversation ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Background tasks of the conversation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackgroundTaskDto"][];
+                };
+            };
+            /** @description Conversation not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     cancel_agent: {
         parameters: {
             query?: never;
