@@ -491,16 +491,31 @@ pub async fn run_agent_loop(
                 title,
             });
 
+            // The permission gate (ADR 0004 §1.1) rides along with every
+            // call: Allow proceeds to `execute`, Deny produces an error
+            // ToolOutput that flows the NORMAL result path below (event +
+            // persistence + model feed-back), and Ask parks the future on
+            // an approval until answered, cancelled or timed out.
+            let permission = ctx.permission.clone();
+            let gate_hub = handle.hub.clone();
+            let gate_cancel = handle.cancel.clone();
+
             futures.push(async move {
                 let tool = tools.iter().find(|t| t.name() == tc.name);
-                let output = match tool {
-                    Some(t) => match t.execute(args, &tool_ctx).await {
-                        Ok(o) => o,
-                        Err(e) => {
-                            crate::tools::ToolOutput::error(format!("Tool execution error: {e}"))
-                        }
+                let output = match permission
+                    .check(&tc.name, &args, &tc.id, &gate_hub, &gate_cancel)
+                    .await
+                {
+                    crate::permissions::gate::GateVerdict::Denied(output) => output,
+                    crate::permissions::gate::GateVerdict::Proceed => match tool {
+                        Some(t) => match t.execute(args, &tool_ctx).await {
+                            Ok(o) => o,
+                            Err(e) => {
+                                crate::tools::ToolOutput::error(format!("Tool execution error: {e}"))
+                            }
+                        },
+                        None => crate::tools::ToolOutput::error(format!("Unknown tool: {}", tc.name)),
                     },
-                    None => crate::tools::ToolOutput::error(format!("Unknown tool: {}", tc.name)),
                 };
                 (idx, tc, output)
             });

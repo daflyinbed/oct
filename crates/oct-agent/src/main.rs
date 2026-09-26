@@ -57,7 +57,9 @@ async fn run_server(database_url: &str, port: u16) -> Result<()> {
     let subagents = Arc::new(oct_agent::subagent::SubagentManager::default());
     let exec_dir = std::env::var("OCT_EXEC_DIR")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| exec_dir_for_database(&database_url));
+        .unwrap_or_else(|_| {
+            oct_agent::runtime::background::exec_output_root(&database_url)
+        });
     let background = Arc::new(oct_agent::runtime::background::BackgroundTaskManager::new(
         pool.clone(),
         exec_dir,
@@ -70,6 +72,8 @@ async fn run_server(database_url: &str, port: u16) -> Result<()> {
         file_locks: dashmap::DashMap::new(),
         subagents: subagents.clone(),
         background: background.clone(),
+        approvals: Arc::new(oct_agent::permissions::registry::ApprovalRegistry::new()),
+        gates: Arc::new(dashmap::DashMap::new()),
     });
     subagents.set_service(runs.clone());
     background.set_service(runs.clone());
@@ -92,22 +96,4 @@ async fn run_server(database_url: &str, port: u16) -> Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
-}
-
-/// Where background task output files live: next to the database file
-/// (`sqlite://dir/oct.db` → `dir/exec`), overridable via `OCT_EXEC_DIR`.
-/// Deliberately outside any project workspace — the sandboxed read tool
-/// must not reach it (ADR 0003).
-fn exec_dir_for_database(database_url: &str) -> std::path::PathBuf {
-    let file = database_url
-        .trim_start_matches("sqlite://")
-        .split('?')
-        .next()
-        .unwrap_or("oct.db");
-    let parent = std::path::Path::new(file)
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .map(std::path::PathBuf::from)
-        .unwrap_or_default();
-    parent.join("exec")
 }

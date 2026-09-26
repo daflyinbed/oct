@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE conversations SET permission_mode = $1, updated_at = $2 WHERE id = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "8fe40193d3e34cfb0876321fd109813863afd4c74bd2b60ded38ab8b0ad211a3"
+}

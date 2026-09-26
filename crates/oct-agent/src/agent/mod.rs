@@ -166,6 +166,63 @@ pub enum AgentEvent {
         /// child is currently running); `None` when unknown.
         activity: Option<String>,
     },
+
+    /// A tool call parked on user approval (ADR 0004 §4): the run is
+    /// suspended at the gate until the decide endpoint answers, the run is
+    /// cancelled, or the approval times out. Replays idempotently off the
+    /// hub log; after a page refresh the pending-list endpoint is the
+    /// truth source for which approvals are still open.
+    #[serde(rename = "approval_requested")]
+    ApprovalRequested {
+        approval_id: String,
+        /// The tool call id the approval parks.
+        call_id: String,
+        /// Tool name as the model sees it (e.g. `write_file`).
+        tool: String,
+        /// Action class label (`read`/`write`/`edit`/`command`/`mcp`).
+        kind: String,
+        /// One-line summary: the resolved path, the command, or the tool
+        /// name.
+        title: String,
+        /// The RESOLVED path (post-symlink), file actions only.
+        path: Option<String>,
+        /// The raw command, execute actions only.
+        command: Option<String>,
+        /// Workspace containment verdict, file actions only.
+        outside: Option<bool>,
+        /// A conservative "always allow" pattern the user can edit before
+        /// submitting (see `permissions::evaluator::rule_suggestion`).
+        rule_suggestion: Option<String>,
+    },
+
+    /// The resolution of a previously requested approval (ADR 0004 §4):
+    /// approved/denied by the decide endpoint (which also persisted an
+    /// `allow_always` rule, named by `rule_id`), or cancelled/expired by
+    /// the gate and the settlement sweep. Every `ApprovalRequested` is
+    /// eventually followed by exactly one of these.
+    #[serde(rename = "approval_resolved")]
+    ApprovalResolved {
+        approval_id: String,
+        outcome: ApprovalOutcome,
+        /// The persisted permission rule an `allow_always` created; `None`
+        /// for every other outcome (and for plain `allow`).
+        rule_id: Option<String>,
+    },
+}
+
+/// How a pending approval was settled (the `approval_resolved` event's
+/// outcome and the approval flow's four terminal states).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalOutcome {
+    /// The user allowed the call (`allow` or `allow_always`).
+    Approved,
+    /// The user refused the call.
+    Denied,
+    /// The run was cancelled/settled while the approval was open.
+    Cancelled,
+    /// The approval timed out (fail-closed self-denial).
+    Expired,
 }
 
 /// Lifecycle status of a subagent task (the `subagent_updated` event's
@@ -212,6 +269,11 @@ pub struct AgentContext {
     /// later would always look "just active"). Drives microcompact's idle
     /// entry; `None`/short values mean waterline-only.
     pub idle: Option<std::time::Duration>,
+    /// The run's permission gate (ADR 0004 §1.1): every tool call passes
+    /// `check` before `execute`. Assembled by the RunService (root and
+    /// subagent runs alike) from the persisted rules, the conversation's
+    /// mode and the workspace roots.
+    pub permission: std::sync::Arc<crate::permissions::gate::PermissionGate>,
 }
 
 /// What started a compaction.

@@ -324,8 +324,10 @@ impl AgentTool for ExecuteCommandTool {
             serde_json::from_value(args).context("Invalid arguments for execute_command")?;
 
         let cwd = if let Some(ref dir) = args.working_dir {
-            match self.roots.validate_path(dir) {
-                Ok(p) => p,
+            // Resolution no longer rejects outside-workspace directories;
+            // the outside classification is the permission layer's input.
+            match self.roots.resolve_path(dir) {
+                Ok(resolved) => resolved.path,
                 Err(output) => return Ok(output),
             }
         } else {

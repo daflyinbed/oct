@@ -1020,6 +1020,9 @@ async fn mcp_tools_join_the_chat_loop_and_status_reports_live_state() {
 
     let project_id = app.create_project().await;
     let conv_id = app.create_conversation(&project_id).await;
+    // MCP tools ask under the default permission mode (ADR 0004 §2); this
+    // test pins the tool-join mechanics, not the approval flow.
+    app.set_permission_mode(&project_id, &conv_id, "bypass").await;
 
     // The chat turn reconciles (spawning the missing binary fails fast),
     // keeps the injected connection, and advertises the MCP tool to the LLM.
@@ -1383,6 +1386,9 @@ async fn mcp_project_scoped_tools_are_isolated_across_projects() {
     let project_b = app.create_project().await;
     let conv_a = app.create_conversation(&project_a).await;
     let conv_b = app.create_conversation(&project_b).await;
+    // A's turn invokes an MCP tool — an Ask under the default permission
+    // mode (ADR 0004 §2); scoping is under test here, not approvals.
+    app.set_permission_mode(&project_a, &conv_a, "bypass").await;
 
     // One server row scoped to A, with a scripted connection injected under
     // the SAME scope: A's runs see the tool, B's never do.
@@ -3402,4 +3408,575 @@ async fn bootstrap_marks_leftover_running_runs_lost() {
             .await
             .expect("history check");
     assert_eq!(messages.0, 1, "persisted history untouched by the sweep");
+}
+
+// --- Tool permissions (ADR 0004) --------------------------------------------------
+
+/// Read events from an in-flight SSE stream until one of `stop`'s kind
+/// arrives (inclusive); asserts the run does not end first.
+async fn next_of(
+    events: &mut (impl futures_util::Stream<Item = Value> + Unpin),
+    r#type: &str,
+) -> Value {
+    loop {
+        let ev = tokio::time::timeout(Duration::from_secs(30), events.next())
+            .await
+            .expect("timed out waiting for SSE event")
+            .expect("stream ended before the expected event");
+        let kind = ev["type"].as_str().expect("event type");
+        assert!(
+            kind != "finish" && kind != "error" && kind != "cancelled",
+            "run ended before a `{}` event: {}", r#type, ev
+        );
+        if kind == r#type {
+            return ev;
+        }
+    }
+}
+
+/// A scripted first turn that writes `file` under `outside` (an
+/// outside-workspace directory) plus the closing "done" turn.
+fn outside_write_turns(outside: &std::path::Path, file: &str) -> Vec<LlmTurn> {
+    vec![
+        LlmTurn::Complete(vec![
+            tool_call_chunk(
+                "call-1",
+                "write_file",
+                &serde_json::json!({
+                    "path": outside.join(file).display().to_string(),
+                    "content": "e2e-perm",
+                })
+                .to_string(),
+            ),
+            finish_chunk("tool_calls"),
+        ]),
+        LlmTurn::Complete(vec![text_chunk("done"), finish_chunk("stop")]),
+    ]
+}
+
+#[tokio::test]
+async fn approval_flow_allow_via_http_continues_run() {
+    let app = TestApp::new().await;
+    let outside = tempfile::tempdir().expect("outside dir");
+    let target = outside.path().join("http-out.txt");
+    let llm_server = llm::spawn_llm_mock(outside_write_turns(outside.path(), "http-out.txt")).await;
+    app.register_llm_provider(&llm_server).await;
+    let project_id = app.create_project().await;
+    let conv_id = app.create_conversation(&project_id).await;
+
+    let mut events = sse_payloads(app.send_message(&conv_id, "write outside").await);
+    let requested = next_of(&mut events, "approval_requested").await;
+    let data = &requested["data"];
+    assert_eq!(data["call_id"], "call-1");
+    assert_eq!(data["tool"], "write_file");
+    assert_eq!(data["kind"], "write");
+    assert_eq!(data["outside"], true);
+    // The write target does not exist yet — the expectation is the
+    // canonical OUTSIDE DIR plus the (not-yet-created) file name.
+    assert_eq!(
+        data["path"].as_str().unwrap(),
+        outside
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("http-out.txt")
+            .display()
+            .to_string()
+    );
+    assert_eq!(
+        data["rule_suggestion"].as_str().unwrap(),
+        format!("{}/**", outside.path().canonicalize().unwrap().display())
+    );
+    let approval_id = data["approval_id"].as_str().unwrap().to_string();
+
+    // The pending list agrees while the run is parked.
+    let resp = app
+        .get_json(&format!("/api/conversations/{conv_id}/approvals"))
+        .await;
+    assert_eq!(resp.status(), 200);
+    let pending: Vec<Value> = resp.json().await.unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0]["approval_id"], approval_id);
+    assert_eq!(pending[0]["outside"], true);
+
+    // Decide allow over HTTP: 200, resolved=true.
+    let resp = app
+        .post_json(
+            &format!("/api/conversations/{conv_id}/approvals/{approval_id}"),
+            serde_json::json!({"decision": "allow"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["resolved"], true);
+
+    // The run continues: resolution event → real write result → finish.
+    let rest: Vec<Value> = events.collect().await;
+    let types = event_types(&rest);
+    let resolved_at = types
+        .iter()
+        .position(|t| *t == "approval_resolved")
+        .expect("approval_resolved in stream");
+    let result_at = types
+        .iter()
+        .position(|t| *t == "tool_result")
+        .expect("tool_result in stream");
+    assert!(resolved_at < result_at, "the resolution precedes the result");
+    assert_eq!(rest[resolved_at]["data"]["outcome"], "approved");
+    assert_eq!(rest[resolved_at]["data"]["rule_id"], Value::Null);
+    assert_eq!(rest[result_at]["data"]["is_error"], false);
+    assert_eq!(*types.last().unwrap(), "finish");
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "e2e-perm",
+        "the approved write really landed outside the workspace"
+    );
+    // The pending list is empty after settlement.
+    let resp = app
+        .get_json(&format!("/api/conversations/{conv_id}/approvals"))
+        .await;
+    let pending: Vec<Value> = resp.json().await.unwrap();
+    assert!(pending.is_empty());
+}
+
+#[tokio::test]
+async fn approval_allow_always_persists_rule_and_next_run_skips_asking() {
+    let app = TestApp::new().await;
+    let outside = tempfile::tempdir().expect("outside dir");
+    let llm_server = llm::spawn_llm_mock(outside_write_turns(outside.path(), "first.txt")).await;
+    app.register_llm_provider(&llm_server).await;
+    let project_id = app.create_project().await;
+    let conv_id = app.create_conversation(&project_id).await;
+
+    let mut events = sse_payloads(app.send_message(&conv_id, "write outside").await);
+    let requested = next_of(&mut events, "approval_requested").await;
+    let approval_id = requested["data"]["approval_id"].as_str().unwrap().to_string();
+    let suggestion = requested["data"]["rule_suggestion"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // allow_always with no edited pattern: the suggestion becomes the rule.
+    let resp = app
+        .post_json(
+            &format!("/api/conversations/{conv_id}/approvals/{approval_id}"),
+            serde_json::json!({"decision": "allow_always"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 200);
+    let rest: Vec<Value> = events.collect().await;
+    assert!(event_types(&rest).contains(&"approval_resolved"));
+    assert_eq!(
+        std::fs::read_to_string(outside.path().join("first.txt")).unwrap(),
+        "e2e-perm"
+    );
+
+    // The rule landed in the project's list with source=approval.
+    let resp = app
+        .get_json(&format!("/api/projects/{project_id}/permission-rules"))
+        .await;
+    assert_eq!(resp.status(), 200);
+    let rules: Vec<Value> = resp.json().await.unwrap();
+    let rule = rules
+        .iter()
+        .find(|r| r["source"] == "approval")
+        .expect("the approval-sourced rule in the project list");
+    assert_eq!(rule["effect"], "allow");
+    assert_eq!(rule["tool"], "write_file");
+    assert_eq!(rule["pattern"], suggestion);
+    assert_eq!(rule["project_id"], project_id);
+    let rule_id = rule["id"].as_str().unwrap().to_string();
+    // The resolution event named the persisted rule.
+    let resolved = rest
+        .iter()
+        .find(|e| e["type"] == "approval_resolved")
+        .unwrap();
+    assert_eq!(resolved["data"]["rule_id"], rule_id);
+
+    // A SECOND run writing into the same directory never asks: the run
+    // assembly loaded the persisted rule.
+    llm_server.push_turns(outside_write_turns(outside.path(), "second.txt"));
+    let events = app
+        .read_sse(app.send_message(&conv_id, "write again").await)
+        .await;
+    assert!(
+        !event_types(&events).contains(&"approval_requested"),
+        "the persisted rule suppresses the second ask"
+    );
+    let result = events
+        .iter()
+        .find(|e| e["type"] == "tool_result")
+        .expect("tool result");
+    assert_eq!(result["data"]["is_error"], false);
+    assert_eq!(*event_types(&events).last().unwrap(), "finish");
+    assert_eq!(
+        std::fs::read_to_string(outside.path().join("second.txt")).unwrap(),
+        "e2e-perm"
+    );
+}
+
+#[tokio::test]
+async fn approval_deny_refuses_and_mode_patch_to_bypass_skips_asking() {
+    let app = TestApp::new().await;
+    let outside = tempfile::tempdir().expect("outside dir");
+    let target = outside.path().join("denied.txt");
+    let llm_server = llm::spawn_llm_mock(vec![
+        LlmTurn::Complete(vec![
+            tool_call_chunk(
+                "call-1",
+                "write_file",
+                &serde_json::json!({"path": target.display().to_string(), "content": "x"}).to_string(),
+            ),
+            finish_chunk("tool_calls"),
+        ]),
+        // After the refusal the model answers in text (it sees the error
+        // result and the next turn streams).
+        LlmTurn::Complete(vec![text_chunk("refused"), finish_chunk("stop")]),
+        // The bypass round.
+        LlmTurn::Complete(vec![
+            tool_call_chunk(
+                "call-2",
+                "write_file",
+                &serde_json::json!({"path": outside.path().join("bypassed.txt").display().to_string(), "content": "x"}).to_string(),
+            ),
+            finish_chunk("tool_calls"),
+        ]),
+        LlmTurn::Complete(vec![text_chunk("done"), finish_chunk("stop")]),
+    ])
+    .await;
+    app.register_llm_provider(&llm_server).await;
+    let project_id = app.create_project().await;
+    let conv_id = app.create_conversation(&project_id).await;
+
+    // Decide deny: the refusal rides the normal tool-result path.
+    let mut events = sse_payloads(app.send_message(&conv_id, "write outside").await);
+    let requested = next_of(&mut events, "approval_requested").await;
+    let approval_id = requested["data"]["approval_id"].as_str().unwrap().to_string();
+    let resp = app
+        .post_json(
+            &format!("/api/conversations/{conv_id}/approvals/{approval_id}"),
+            serde_json::json!({"decision": "deny"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 200);
+    let rest: Vec<Value> = events.collect().await;
+    let resolved = rest.iter().find(|e| e["type"] == "approval_resolved").unwrap();
+    assert_eq!(resolved["data"]["outcome"], "denied");
+    let result = rest.iter().find(|e| e["type"] == "tool_result").unwrap();
+    assert_eq!(result["data"]["is_error"], true);
+    assert!(result["data"]["content"]
+        .as_str()
+        .unwrap()
+        .contains("denied by the user"));
+    assert_eq!(*event_types(&rest).last().unwrap(), "finish");
+    assert!(!target.exists());
+
+    // PATCH the mode to bypass (mid-conversation, between runs): the next
+    // run reads it from the row and never asks.
+    app.set_permission_mode(&project_id, &conv_id, "bypass").await;
+    let conv = get_conversation(&app, &project_id, &conv_id).await;
+    assert_eq!(conv["permission_mode"], "bypass");
+
+    let events = app
+        .read_sse(app.send_message(&conv_id, "write again").await)
+        .await;
+    assert!(!event_types(&events).contains(&"approval_requested"));
+    let result = events.iter().find(|e| e["type"] == "tool_result").unwrap();
+    assert_eq!(result["data"]["is_error"], false);
+    assert_eq!(*event_types(&events).last().unwrap(), "finish");
+    assert!(outside.path().join("bypassed.txt").exists());
+}
+
+#[tokio::test]
+async fn approval_decide_is_idempotent_and_scoped() {
+    let app = TestApp::new().await;
+    let outside = tempfile::tempdir().expect("outside dir");
+    let llm_server = llm::spawn_llm_mock(outside_write_turns(outside.path(), "idem.txt")).await;
+    app.register_llm_provider(&llm_server).await;
+    let project_id = app.create_project().await;
+    let conv_id = app.create_conversation(&project_id).await;
+    let other_conv = app.create_conversation(&project_id).await;
+
+    let mut events = sse_payloads(app.send_message(&conv_id, "write outside").await);
+    let requested = next_of(&mut events, "approval_requested").await;
+    let approval_id = requested["data"]["approval_id"].as_str().unwrap().to_string();
+
+    // Unknown conversation → 404 even for a real approval id...
+    let resp = app
+        .post_json(
+            &format!("/api/conversations/{other_conv}/approvals/{approval_id}"),
+            serde_json::json!({"decision": "allow"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 404);
+    // ...and unknown-conversation pending lists 404.
+    let resp = app
+        .get_json("/api/conversations/no-such-conv/approvals")
+        .await;
+    assert_eq!(resp.status(), 404);
+    // An unknown approval id is the same 404...
+    let resp = app
+        .post_json(
+            &format!("/api/conversations/{conv_id}/approvals/apr_nope"),
+            serde_json::json!({"decision": "allow"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 404);
+    // ...as does an invalid decision value (400).
+    let resp = app
+        .post_json(
+            &format!("/api/conversations/{conv_id}/approvals/{approval_id}"),
+            serde_json::json!({"decision": "maybe"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 400);
+
+    // First real decide wins; the second is a 404 (already resolved).
+    let resp = app
+        .post_json(
+            &format!("/api/conversations/{conv_id}/approvals/{approval_id}"),
+            serde_json::json!({"decision": "allow"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 200);
+    let resp = app
+        .post_json(
+            &format!("/api/conversations/{conv_id}/approvals/{approval_id}"),
+            serde_json::json!({"decision": "deny"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 404);
+
+    let rest: Vec<Value> = events.collect().await;
+    assert_eq!(*event_types(&rest).last().unwrap(), "finish");
+    // The approve went through despite the probing requests above.
+    assert_eq!(
+        std::fs::read_to_string(outside.path().join("idem.txt")).unwrap(),
+        "e2e-perm"
+    );
+}
+
+#[tokio::test]
+async fn permission_deny_rule_blocks_without_asking() {
+    let app = TestApp::new().await;
+    let outside = tempfile::tempdir().expect("outside dir");
+    let secret = outside.path().join("secret.txt");
+    std::fs::write(&secret, "hidden").unwrap();
+    let pattern = format!("{}/**", outside.path().canonicalize().unwrap().display());
+
+    // A user-created project rule denying reads of the outside directory.
+    let resp = app
+        .post_json(
+            "/api/permission-rules",
+            serde_json::json!({"effect": "deny", "tool": "read_file", "pattern": pattern}),
+        )
+        .await;
+    assert_eq!(resp.status(), 201, "a global-scope rule is creatable too");
+    let global_rule: Value = resp.json().await.unwrap();
+    assert_eq!(global_rule["project_id"], Value::Null);
+    assert_eq!(global_rule["source"], "user");
+
+    let llm_server = llm::spawn_llm_mock(vec![
+        LlmTurn::Complete(vec![
+            tool_call_chunk(
+                "call-1",
+                "read_file",
+                &serde_json::json!({"path": secret.display().to_string()}).to_string(),
+            ),
+            finish_chunk("tool_calls"),
+        ]),
+        LlmTurn::Complete(vec![text_chunk("denied, moving on"), finish_chunk("stop")]),
+    ])
+    .await;
+    app.register_llm_provider(&llm_server).await;
+    let project_id = app.create_project().await;
+    let conv_id = app.create_conversation(&project_id).await;
+
+    // The deny rule short-circuits: no approval, straight refusal, and the
+    // persisted tool row carries the permission_denied marker.
+    let events = app
+        .read_sse(app.send_message(&conv_id, "read the secret").await)
+        .await;
+    assert!(!event_types(&events).contains(&"approval_requested"));
+    let result = events.iter().find(|e| e["type"] == "tool_result").unwrap();
+    assert_eq!(result["data"]["is_error"], true);
+    assert!(result["data"]["content"]
+        .as_str()
+        .unwrap()
+        .contains("Permission denied by rule"));
+    assert_eq!(result["data"]["details"]["kind"], "permission_denied");
+    assert_eq!(*event_types(&events).last().unwrap(), "finish");
+
+    let messages = stored_messages(&app, &conv_id).await;
+    let tool_row = messages
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .expect("persisted tool row");
+    assert_eq!(tool_row["details"]["kind"], "permission_denied");
+
+    // Cleanup through the delete endpoint (also covered below, but the
+    // global row must not leak into other suites — each TestApp has its own
+    // DB, this is just exercising the delete).
+    let resp = app
+        .http_delete(&format!(
+            "/api/permission-rules/{}",
+            global_rule["id"].as_str().unwrap()
+        ))
+        .await;
+    assert_eq!(resp.status(), 204);
+}
+
+#[tokio::test]
+async fn permission_rules_crud_roundtrip() {
+    let app = TestApp::new().await;
+    let project_id = app.create_project().await;
+
+    // Project-scoped create: full DTO echo.
+    let resp = app
+        .post_json(
+            &format!("/api/projects/{project_id}/permission-rules"),
+            serde_json::json!({"effect": "ask", "tool": "execute_command", "pattern": "rm -rf"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 201);
+    let rule: Value = resp.json().await.unwrap();
+    let id = rule["id"].as_str().unwrap().to_string();
+    assert_eq!(rule["effect"], "ask");
+    assert_eq!(rule["tool"], "execute_command");
+    assert_eq!(rule["pattern"], "rm -rf");
+    assert_eq!(rule["source"], "user");
+    assert_eq!(rule["project_id"], project_id);
+    assert_eq!(rule["conversation_id"], Value::Null);
+
+    // Global create lands with a null project scope.
+    let resp = app
+        .post_json(
+            "/api/permission-rules",
+            serde_json::json!({"effect": "allow", "tool": "glob", "pattern": None::<String>}),
+        )
+        .await;
+    assert_eq!(resp.status(), 201);
+    let global: Value = resp.json().await.unwrap();
+    let global_id = global["id"].as_str().unwrap().to_string();
+    assert_eq!(global["project_id"], Value::Null);
+
+    // The project list sees both (own + global); the global list sees only
+    // the global row.
+    let resp = app
+        .get_json(&format!("/api/projects/{project_id}/permission-rules"))
+        .await;
+    let listed: Vec<Value> = resp.json().await.unwrap();
+    assert_eq!(listed.len(), 2);
+    let resp = app.get_json("/api/permission-rules").await;
+    let globals: Vec<Value> = resp.json().await.unwrap();
+    assert_eq!(globals.len(), 1);
+    assert_eq!(globals[0]["id"], global_id);
+
+    // Validation: unknown effect and empty tool are 400s, unknown project
+    // a 404.
+    let resp = app
+        .post_json(
+            &format!("/api/projects/{project_id}/permission-rules"),
+            serde_json::json!({"effect": "maybe", "tool": "read_file"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 400);
+    let resp = app
+        .post_json(
+            &format!("/api/projects/{project_id}/permission-rules"),
+            serde_json::json!({"effect": "allow", "tool": "  "}),
+        )
+        .await;
+    assert_eq!(resp.status(), 400);
+    let resp = app
+        .post_json(
+            "/api/projects/no-such-project/permission-rules",
+            serde_json::json!({"effect": "allow", "tool": "read_file"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 404);
+
+    // Delete: one-shot.
+    let resp = app.http_delete(&format!("/api/permission-rules/{id}")).await;
+    assert_eq!(resp.status(), 204);
+    let resp = app.http_delete(&format!("/api/permission-rules/{id}")).await;
+    assert_eq!(resp.status(), 404);
+    let resp = app
+        .get_json(&format!("/api/projects/{project_id}/permission-rules"))
+        .await;
+    let listed: Vec<Value> = resp.json().await.unwrap();
+    assert_eq!(listed.len(), 1, "only the global rule remains");
+}
+
+#[tokio::test]
+async fn patch_permission_mode_accept_edits_and_validation() {
+    let app = TestApp::new().await;
+    let llm_server = llm::spawn_llm_mock(vec![
+        LlmTurn::Complete(vec![
+            tool_call_chunk(
+                "call-1",
+                "write_file",
+                &serde_json::json!({"path": "inside.txt", "content": "inner"}).to_string(),
+            ),
+            finish_chunk("tool_calls"),
+        ]),
+        LlmTurn::Complete(vec![text_chunk("done"), finish_chunk("stop")]),
+    ])
+    .await;
+    app.register_llm_provider(&llm_server).await;
+    let project_id = app.create_project().await;
+    let conv_id = app.create_conversation(&project_id).await;
+
+    // Invalid mode values never reach the DB.
+    let resp = app
+        .patch_json(
+            &format!("/api/projects/{project_id}/conversations/{conv_id}"),
+            serde_json::json!({"permission_mode": "yolo"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 400);
+    // An empty PATCH (no fields) is a 400; unknown conversation a 404.
+    let resp = app
+        .patch_json(
+            &format!("/api/projects/{project_id}/conversations/{conv_id}"),
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(resp.status(), 400);
+    let resp = app
+        .patch_json(
+            "/api/projects/x/conversations/no-such-conv",
+            serde_json::json!({"permission_mode": "bypass"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 404);
+
+    // accept_edits: an INSIDE-workspace write runs without asking.
+    app.set_permission_mode(&project_id, &conv_id, "accept_edits").await;
+    let conv = get_conversation(&app, &project_id, &conv_id).await;
+    assert_eq!(conv["permission_mode"], "accept_edits");
+
+    let events = app
+        .read_sse(app.send_message(&conv_id, "write inside").await)
+        .await;
+    assert!(!event_types(&events).contains(&"approval_requested"));
+    let result = events.iter().find(|e| e["type"] == "tool_result").unwrap();
+    assert_eq!(result["data"]["is_error"], false);
+    assert_eq!(*event_types(&events).last().unwrap(), "finish");
+    assert_eq!(
+        std::fs::read_to_string(app.dir.path().join("inside.txt")).unwrap(),
+        "inner"
+    );
+
+    // The title PATCH still works alongside the new field.
+    let resp = app
+        .patch_json(
+            &format!("/api/projects/{project_id}/conversations/{conv_id}"),
+            serde_json::json!({"title": "renamed", "permission_mode": "default"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 200);
+    let conv = get_conversation(&app, &project_id, &conv_id).await;
+    assert_eq!(conv["title"], "renamed");
+    assert_eq!(conv["permission_mode"], "default");
 }

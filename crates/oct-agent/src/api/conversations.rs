@@ -130,7 +130,8 @@ pub async fn delete_conversation(
     ),
     request_body = db::UpdateConversationRequest,
     responses(
-        (status = 200, description = "Title updated"),
+        (status = 200, description = "Updated (title and/or permission mode)"),
+        (status = 400, description = "No field to update, or an unknown permission mode"),
         (status = 404, description = "Conversation not found")
     ),
     tag = "conversations"
@@ -140,15 +141,43 @@ pub async fn update_conversation(
     Path((_project_id, id)): Path<(String, String)>,
     Json(req): Json<db::UpdateConversationRequest>,
 ) -> ApiResult<StatusCode> {
-    let title = req
-        .title
-        .as_deref()
-        .ok_or_else(|| AppError::BadRequest("title is required".into()))?;
+    // Either field may be updated, both at once included. A mode change is
+    // allowed while a run is active BY DESIGN (ADR 0004 §1.5: per-call
+    // immediate effect) — the live gates of the conversation are flipped
+    // below so the very next tool call of the running turn sees it.
+    let mut updated = false;
+    let mut found = true;
 
-    let updated = db::update_conversation_title(&state.pool, &id, title).await?;
-    if updated {
-        Ok(StatusCode::OK)
-    } else {
-        Err(AppError::NotFound("Conversation not found".into()))
+    if let Some(title) = req.title.as_deref() {
+        if db::update_conversation_title(&state.pool, &id, title).await? {
+            updated = true;
+        } else {
+            found = false;
+        }
     }
+
+    if let Some(mode_str) = req.permission_mode.as_deref() {
+        let mode = crate::permissions::evaluator::PermissionMode::from_str_opt(mode_str)
+            .ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "Invalid permission_mode: '{mode_str}' (expected one of: default, accept_edits, bypass)"
+                ))
+            })?;
+        if db::update_conversation_permission_mode(&state.pool, &id, mode.as_str()).await? {
+            updated = true;
+            state.runs.set_conversation_permission_mode(&id, mode);
+        } else {
+            found = false;
+        }
+    }
+
+    if !updated {
+        if found {
+            return Err(AppError::BadRequest(
+                "Nothing to update: provide title and/or permission_mode".into(),
+            ));
+        }
+        return Err(AppError::NotFound("Conversation not found".into()));
+    }
+    Ok(StatusCode::OK)
 }

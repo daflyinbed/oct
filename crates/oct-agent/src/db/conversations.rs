@@ -26,6 +26,10 @@ pub struct Conversation {
     pub root_conversation_id: Option<String>,
     /// For `subagent` rows: the worker role (`worker` in v1).
     pub agent_type: Option<String>,
+    /// Tool permission mode (ADR 0004 §1.5): `default` (write/execute/
+    /// outside-read all ask), `accept_edits` (in-workspace writes auto-
+    /// allowed), `bypass` (everything allowed — deny rules still win).
+    pub permission_mode: String,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
 }
@@ -38,6 +42,10 @@ pub struct CreateConversationRequest {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateConversationRequest {
     pub title: Option<String>,
+    /// Tool permission mode (ADR 0004 §1.5): `default` | `accept_edits` |
+    /// `bypass`. Takes effect on the active run's NEXT tool call (validated
+    /// and applied by the API layer, which also flips the live gates).
+    pub permission_mode: Option<String>,
 }
 
 pub async fn list_conversations_by_project(
@@ -48,7 +56,7 @@ pub async fn list_conversations_by_project(
         Conversation,
         // Only kind='chat' rows: subagent sessions are managed children of a
         // chat conversation and must never appear in the sidebar list.
-        "SELECT id, project_id, title, title_source, kind, parent_conversation_id, root_conversation_id, agent_type, created_at, updated_at FROM conversations WHERE project_id = $1 AND kind = 'chat' ORDER BY updated_at DESC",
+        "SELECT id, project_id, title, title_source, kind, parent_conversation_id, root_conversation_id, agent_type, permission_mode, created_at, updated_at FROM conversations WHERE project_id = $1 AND kind = 'chat' ORDER BY updated_at DESC",
         project_id,
     )
     .fetch_all(pool)
@@ -104,6 +112,8 @@ pub async fn create_conversation_in_tx(
         parent_conversation_id: None,
         root_conversation_id: None,
         agent_type: None,
+        // The INSERT above leaves the column at its DEFAULT.
+        permission_mode: "default".to_string(),
         created_at: now,
         updated_at: now,
     })
@@ -157,6 +167,10 @@ pub async fn create_subagent_conversation_in_tx(
         parent_conversation_id: Some(new.parent_conversation_id.to_string()),
         root_conversation_id: Some(new.root_conversation_id.to_string()),
         agent_type: Some(new.agent_type.to_string()),
+        // The INSERT above leaves the column at its DEFAULT; subagents
+        // inherit their parent conversation's mode at evaluation time, not
+        // here.
+        permission_mode: "default".to_string(),
         created_at: now,
         updated_at: now,
     })
@@ -165,7 +179,7 @@ pub async fn create_subagent_conversation_in_tx(
 pub async fn get_conversation(pool: &SqlitePool, id: &str) -> Result<Option<Conversation>> {
     let row = sqlx::query_as!(
         Conversation,
-        "SELECT id, project_id, title, title_source, kind, parent_conversation_id, root_conversation_id, agent_type, created_at, updated_at FROM conversations WHERE id = $1",
+        "SELECT id, project_id, title, title_source, kind, parent_conversation_id, root_conversation_id, agent_type, permission_mode, created_at, updated_at FROM conversations WHERE id = $1",
         id,
     )
     .fetch_optional(pool)
@@ -222,6 +236,28 @@ pub async fn update_conversation_title(pool: &SqlitePool, id: &str, title: &str)
     let result: sqlx::sqlite::SqliteQueryResult = sqlx::query!(
         "UPDATE conversations SET title = $1, title_source = 'user', updated_at = $2 WHERE id = $3",
         title,
+        now,
+        id
+    )
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected() > 0)
+}
+
+/// Switch a conversation's tool permission mode (ADR 0004 §1.5) — takes
+/// effect on the next tool call of the active run. `mode` is one of
+/// `default`/`accept_edits`/`bypass`; the column's CHECK constraint rejects
+/// anything else (same storage-layer-guard policy as the rest of this file).
+pub async fn update_conversation_permission_mode(
+    pool: &SqlitePool,
+    id: &str,
+    mode: &str,
+) -> Result<bool> {
+    let now = chrono::Utc::now().naive_utc();
+    let result: sqlx::sqlite::SqliteQueryResult = sqlx::query!(
+        "UPDATE conversations SET permission_mode = $1, updated_at = $2 WHERE id = $3",
+        mode,
         now,
         id
     )

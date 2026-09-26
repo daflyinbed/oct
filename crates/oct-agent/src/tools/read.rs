@@ -72,8 +72,10 @@ impl AgentTool for ReadFileTool {
         let args: ReadFileArgs =
             serde_json::from_value(args).context("Invalid arguments for read_file")?;
 
-        let resolved = match self.roots.validate_path(&args.path) {
-            Ok(p) => p,
+        // Resolution no longer rejects outside-workspace paths; the outside
+        // classification is the permission layer's input, not this tool's.
+        let resolved = match self.roots.resolve_path(&args.path) {
+            Ok(resolved) => resolved.path,
             Err(output) => return Ok(output),
         };
 

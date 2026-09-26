@@ -286,6 +286,36 @@ pub async fn spawn_agent_full(
     context_window: Option<u32>,
     idle: Option<Duration>,
 ) -> (RunHandle, SubscribeStream) {
+    // The default harness gate is all-allowing: these suites drive the loop
+    // directly and (unless a test passes its own gate through
+    // [`spawn_agent_with_gate`]) do not exercise the permission layer.
+    spawn_agent_with_gate(
+        model,
+        tools,
+        pool,
+        conv_id,
+        view,
+        context_window,
+        idle,
+        oct_agent::permissions::gate::PermissionGate::permissive(),
+    )
+    .await
+}
+
+/// [`spawn_agent_full`] with the run's permission gate supplied by the test
+/// (ADR 0004): permission suites park their ScriptedModel turns on the
+/// gate's approval flow and answer through the very registry the gate
+/// holds.
+pub async fn spawn_agent_with_gate(
+    model: ScriptedModel,
+    tools: Vec<Box<dyn oct_agent::tools::AgentTool>>,
+    pool: sqlx::SqlitePool,
+    conv_id: &str,
+    view: oct_agent::db::messages::LlmView,
+    context_window: Option<u32>,
+    idle: Option<Duration>,
+    permission: std::sync::Arc<oct_agent::permissions::gate::PermissionGate>,
+) -> (RunHandle, SubscribeStream) {
     let cancel = CancellationToken::new();
     let handle = RunHandle {
         hub: Arc::new(EventHub::new()),
@@ -306,6 +336,7 @@ pub async fn spawn_agent_full(
         system_prompt: "test system prompt".to_string(),
         context_window,
         idle,
+        permission,
     };
 
     let conv = conv_id.to_string();
@@ -409,6 +440,10 @@ impl TestApp {
             file_locks: dashmap::DashMap::new(),
             subagents: subagents.clone(),
             background: background.clone(),
+            approvals: Arc::new(
+                oct_agent::permissions::registry::ApprovalRegistry::new(),
+            ),
+            gates: Arc::new(dashmap::DashMap::new()),
         });
         subagents.set_service(runs.clone());
         background.set_service(runs.clone());
@@ -538,6 +573,21 @@ impl TestApp {
             .as_str()
             .expect("conversation id")
             .to_string()
+    }
+
+    /// PATCH a conversation's permission mode (ADR 0004). Suites that
+    /// predate the permission layer pin their conversations to `bypass` so
+    /// their model-driven writes/executions keep flowing without approval
+    /// interactions; permission suites use this to build the mode under
+    /// test.
+    pub async fn set_permission_mode(&self, project_id: &str, conv_id: &str, mode: &str) {
+        let resp = self
+            .patch_json(
+                &format!("/api/projects/{project_id}/conversations/{conv_id}"),
+                serde_json::json!({"permission_mode": mode}),
+            )
+            .await;
+        assert_eq!(resp.status(), 200, "setting permission mode should succeed");
     }
 
     /// POST a chat message; returns the response with headers received but

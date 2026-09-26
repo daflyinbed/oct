@@ -123,6 +123,9 @@ pub enum KnownDetailsKind {
     /// `supersedes_message_id` back-pointer — see the agent's
     /// `MicrocompactReplacement` event payload).
     MicrocompactCleared,
+    /// A tool result the permission gate refused (ADR 0004 §4): the model
+    /// saw the denial text; the frontend renders the "denied" badge.
+    PermissionDenied,
     /// Assistant-row thinking duration (older rows store this without a
     /// `kind` field; recognized structurally here).
     ReasoningDuration,
@@ -179,6 +182,15 @@ fn parse_details(details_json: Option<&str>) -> Option<MessageDetails> {
             extra.remove("kind");
             return Some(MessageDetails {
                 kind: Some(KnownDetailsKind::MicrocompactCleared),
+                compaction: None,
+                reasoning_duration_ms: None,
+                extra,
+            });
+        }
+        Some("permission_denied") => {
+            extra.remove("kind");
+            return Some(MessageDetails {
+                kind: Some(KnownDetailsKind::PermissionDenied),
                 compaction: None,
                 reasoning_duration_ms: None,
                 extra,
@@ -365,8 +377,21 @@ mod tests {
     }
 
     #[test]
-    fn unknown_details_pass_through_and_corrupt_parts_degrade() {
+    fn parses_permission_denied_marker() {
+        // The permission gate stamps refused tool results (ADR 0004 §5).
         let row = stored_row(
+            "tool",
+            r#"[{"ToolResult":{"call_id":"c1","content":"Permission denied by rule: /etc/hosts","is_error":true,"images":[]}}]"#,
+            Some(r#"{"kind":"permission_denied"}"#),
+        );
+        let dto = MessageDto::from_stored(&row);
+        let details = dto.details.expect("details");
+        assert_eq!(details.kind, Some(KnownDetailsKind::PermissionDenied));
+        assert!(details.extra.is_empty(), "kind consumed, nothing duplicated");
+    }
+
+    #[test]
+    fn unknown_details_pass_through_and_corrupt_parts_degrade() {        let row = stored_row(
             "tool",
             r#"[{"ToolResult":{"call_id":"c1","content":"o","is_error":false,"images":[]}}]"#,
             Some(r#"{"title":"cat a.txt","truncated":true}"#),

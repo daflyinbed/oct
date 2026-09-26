@@ -1,7 +1,8 @@
 //! Shared plumbing for the search tools (`grep` and `glob`): a directory
-//! walker with sandbox-safe, rg-like ignore defaults. Both tools walk the
-//! same way so they agree on what is searchable. (Path display lives on
-//! [`super::workspace::WorkspaceRoots`].)
+//! walker with rg-like ignore defaults. Both tools walk the same way so they
+//! agree on what is searchable. (Path resolution and inside/outside
+//! classification live on [`super::workspace::WorkspaceRoots`]; permissions
+//! are decided by the permissions layer, ADR 0004 §1.2.)
 
 use ignore::WalkBuilder;
 use ignore::overrides::OverrideBuilder;
@@ -20,8 +21,9 @@ const JUNK_DIR_NAMES: &[&str] = &["node_modules", "target", "__pycache__", "dist
 /// - respect `.gitignore` / global gitignore / `.git/info/exclude`
 ///   (gitignore rules only apply inside a git repository, like rg),
 /// - read ignore files from parent directories,
-/// - never follow symlinks (sandbox safety: a link could point outside the
-///   working directory).
+/// - never follow symlinks (rg's own default: matches stay inside the
+///   walked tree and a link pointing elsewhere cannot drag the walk — or
+///   its budget — out of the requested root).
 ///
 /// On top of that, the junk directories listed above are excluded via an
 /// override so they are skipped regardless of gitignore state. Override globs

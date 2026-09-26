@@ -44,8 +44,10 @@ impl EditFileTool {
     /// Create-new-file path (empty `old_string`). The whole exists-check and
     /// write runs under the per-file lock so concurrent creates cannot race.
     async fn create_file(&self, args: &EditFileArgs) -> Result<ToolOutput> {
-        let resolved = match self.roots.validate_write_path(&args.file_path) {
-            Ok(p) => p,
+        // Resolution no longer rejects outside-workspace targets or symlink
+        // traversal; the outside classification feeds the permission gate.
+        let resolved = match self.roots.resolve_write_path(&args.file_path) {
+            Ok(resolved) => resolved.path,
             Err(output) => return Ok(output),
         };
 
@@ -301,8 +303,11 @@ impl AgentTool for EditFileTool {
             return self.create_file(&args).await;
         }
 
-        let resolved = match self.roots.validate_path(&args.file_path) {
-            Ok(p) => p,
+        // Read-style resolution for the existing file: must exist (the
+        // read-before-edit semantics below depend on it), but no containment
+        // rejection — the permission gate owns that decision.
+        let resolved = match self.roots.resolve_path(&args.file_path) {
+            Ok(resolved) => resolved.path,
             Err(output) => return Ok(output),
         };
 
@@ -843,36 +848,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn path_outside_working_dir_is_denied() {
+    async fn edit_outside_working_dir_succeeds_after_read() {
         let fx = Fixture::new("escape");
         // A real file in the parent of the working dir, so canonicalization
-        // succeeds and the sandbox check (not the existence check) rejects it.
+        // succeeds; resolution no longer rejects it (allowing or asking is
+        // the permission layer's call), and the read-before-edit rule is
+        // what still applies.
         let outside = std::env::temp_dir().join(format!(
             "oct-edit-test-outside-{}-{}.txt",
             std::process::id(),
             std::time::SystemTime::now()
-                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
         ));
         std::fs::write(&outside, "secret\n").unwrap();
+        let rel = format!("../{}", outside.file_name().unwrap().to_string_lossy());
+
+        fx.read(&rel).await;
 
         let out = fx
             .edit
             .execute(
                 json!({
-                    "file_path": format!("../{}", outside.file_name().unwrap().to_string_lossy()),
+                    "file_path": rel,
                     "old_string": "secret",
-                    "new_string": "b"
+                    "new_string": "edited"
                 }),
                 &noop_ctx(),
             )
             .await
             .unwrap();
 
-        assert!(out.is_error);
-        assert!(out.content.contains("outside the working directory"));
-        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "secret\n");
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "edited\n");
         let _ = std::fs::remove_file(&outside);
     }
 

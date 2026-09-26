@@ -3013,3 +3013,548 @@ async fn split_migration_down_restores_cow_and_folds_losslessly() {
     assert_eq!(tool_row.3, 3);
     assert_eq!(tool_row.4, "c1");
 }
+
+// --- Permission gate (ADR 0004) ------------------------------------------------
+
+use futures_util::StreamExt as _;
+use oct_agent::agent::RunHandle;
+use oct_agent::agent::events::SubscribeStream;
+use oct_agent::permissions::evaluator::PermissionMode;
+use oct_agent::permissions::gate::{PermissionGate, publish_cancelled_approvals};
+use oct_agent::permissions::registry::{ApprovalDecision, ApprovalRegistry};
+use oct_agent::permissions::rules::{Effect, Rule, RuleSet};
+use oct_agent::tools::workspace::WorkspaceRoots;
+use support::spawn_agent_with_gate;
+
+/// One raw event with the shared bounded-timeout contract (same budget as
+/// `collect_events`).
+async fn next_rx_event(rx: &mut SubscribeStream) -> AgentEvent {
+    tokio::time::timeout(Duration::from_secs(30), rx.next())
+        .await
+        .expect("timed out waiting for agent event (loop hung?)")
+        .expect("agent event stream ended prematurely")
+}
+
+/// Read events until one `approval_requested` lands; returns it (the other
+/// events are dropped — later assertions read the hub snapshot instead).
+async fn wait_for_approval(rx: &mut SubscribeStream) -> (String, AgentEvent) {
+    loop {
+        let event = next_rx_event(rx).await;
+        if let AgentEvent::ApprovalRequested { approval_id, .. } = &event {
+            return (approval_id.clone(), event);
+        }
+        assert!(
+            !is_terminal(&event),
+            "run ended before asking for approval: {event:?}"
+        );
+    }
+}
+
+/// Spawn the real loop with a caller-built permission gate: the ADR 0004
+/// suites park scripted turns on the gate's approval flow and answer
+/// through the very registry the gate holds. The workspace is the test
+/// env's temp dir; "outside" targets are absolute paths in a second temp
+/// dir.
+async fn spawn_gated(
+    model: ScriptedModel,
+    pool: sqlx::SqlitePool,
+    env: &TestEnv,
+    conv_id: &str,
+    user_message: &str,
+    gate: Arc<PermissionGate>,
+) -> (RunHandle, SubscribeStream) {
+    let view = db::messages::LlmView {
+        messages: vec![oct_llm_provider::core::Message::text(
+            Role::User,
+            user_message,
+        )],
+        orderings: vec![1],
+        anchor: None,
+    };
+    spawn_agent_with_gate(
+        model,
+        tools::default_tools(WorkspaceRoots::new(env.dir.path().to_path_buf(), vec![])),
+        pool,
+        conv_id,
+        view,
+        None,
+        None,
+        gate,
+    )
+    .await
+}
+
+/// Build a gate over the env's workspace with the given mode/rule/subagent
+/// shape and hand back the shared registry so the test can play the decide
+/// endpoint. The exec root points somewhere nothing ever writes, keeping
+/// the built-in deny out of these suites' way (it has its own tests).
+fn build_gate(
+    env: &TestEnv,
+    conv_id: &str,
+    mode: PermissionMode,
+    subagent: bool,
+    rules: impl FnOnce(&mut RuleSet),
+) -> (Arc<PermissionGate>, Arc<ApprovalRegistry>) {
+    let registry = Arc::new(ApprovalRegistry::new());
+    let roots = WorkspaceRoots::new(env.dir.path().to_path_buf(), vec![]);
+    let mut set = RuleSet::new(env.dir.path().join("no-exec-root"));
+    rules(&mut set);
+    let gate = PermissionGate::new(
+        conv_id.to_string(),
+        "run-perm".to_string(),
+        roots,
+        set,
+        mode,
+        subagent,
+        registry.clone(),
+    );
+    (gate, registry)
+}
+
+/// Outside-workspace write arguments for `path` (the temp dir exists, so
+/// the write resolver anchors the target under it).
+fn outside_write_args(dir: &std::path::Path, file: &str) -> serde_json::Value {
+    json!({"path": dir.join(file).display().to_string(), "content": "perm-content"})
+}
+
+#[tokio::test]
+async fn permission_ask_allow_executes_outside_write() {
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+    let outside = tempfile::tempdir().expect("outside temp dir");
+    let canonical = outside.path().canonicalize().unwrap();
+    let target = canonical.join("out.txt");
+
+    let model = ScriptedModel::new(vec![
+        Turn::Stream(vec![
+            tool_call(
+                "call-1",
+                "write_file",
+                outside_write_args(outside.path(), "out.txt"),
+            ),
+            finish(FinishReason::ToolCalls),
+        ]),
+        Turn::Stream(vec![text("done"), finish(FinishReason::Stop)]),
+    ]);
+    let observer = model.observer();
+
+    let (gate, registry) =
+        build_gate(&env, &conv_id, PermissionMode::Default, false, |_| {});
+    let (handle, mut rx) =
+        spawn_gated(model, env.pool.clone(), &env, &conv_id, "write outside", gate).await;
+
+    let (approval_id, event) = wait_for_approval(&mut rx).await;
+    match event {
+        AgentEvent::ApprovalRequested {
+            call_id,
+            tool,
+            kind,
+            path,
+            outside: outside_flag,
+            rule_suggestion,
+            ..
+        } => {
+            assert_eq!(call_id, "call-1");
+            assert_eq!(tool, "write_file");
+            assert_eq!(kind, "write");
+            assert_eq!(path.as_deref(), Some(target.display().to_string().as_str()));
+            assert_eq!(outside_flag, Some(true), "the resolved target is outside");
+            assert_eq!(
+                rule_suggestion.as_deref(),
+                Some(format!("{}/**", canonical.display()).as_str())
+            );
+        }
+        other => panic!("expected ApprovalRequested, got {other:?}"),
+    }
+    let _ = approval_id;
+
+    // Answer allow (the decide endpoint's plain-allow path): the tool
+    // really executes and the run settles normally.
+    assert!(registry
+        .resolve(&approval_id, ApprovalDecision::Allow)
+        .is_ok());
+    let events = collect_events(&mut rx, is_terminal).await;
+    assert_eq!(*events.last().unwrap(), AgentEvent::Finish);
+    let result = events
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::ToolResult {
+                call_id, is_error, ..
+            } if call_id == "call-1" => Some(*is_error),
+            _ => None,
+        })
+        .expect("write result");
+    assert!(!result, "an allowed write must succeed");
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "perm-content",
+        "the file really landed outside the workspace"
+    );
+
+    // The refusal-free result flows back to the model like any tool result.
+    let second = &observer.requests()[1];
+    assert_eq!(second.messages.len(), 4);
+    assert_eq!(second.messages[3].role, Role::Tool);
+    drop(handle);
+}
+
+#[tokio::test]
+async fn permission_ask_deny_returns_error_result_visible_to_model() {
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+    let outside = tempfile::tempdir().expect("outside temp dir");
+
+    let model = ScriptedModel::new(vec![
+        Turn::Stream(vec![
+            tool_call(
+                "call-1",
+                "write_file",
+                outside_write_args(outside.path(), "denied.txt"),
+            ),
+            finish(FinishReason::ToolCalls),
+        ]),
+        Turn::Stream(vec![text("understood"), finish(FinishReason::Stop)]),
+    ]);
+    let observer = model.observer();
+
+    let (gate, registry) =
+        build_gate(&env, &conv_id, PermissionMode::Default, false, |_| {});
+    let (_handle, mut rx) =
+        spawn_gated(model, env.pool.clone(), &env, &conv_id, "write outside", gate).await;
+
+    let (approval_id, _) = wait_for_approval(&mut rx).await;
+    assert!(registry.resolve(&approval_id, ApprovalDecision::Deny).is_ok());
+
+    // The denial rides the NORMAL result path: an is_error ToolResult
+    // event, a persisted tool row and a tool message in the next request.
+    let events = collect_events(&mut rx, is_terminal).await;
+    assert_eq!(*events.last().unwrap(), AgentEvent::Finish);
+    match events.iter().find(|e| matches!(e, AgentEvent::ToolResult { .. })) {
+        Some(AgentEvent::ToolResult {
+            call_id,
+            content,
+            is_error,
+            details,
+            ..
+        }) => {
+            assert_eq!(call_id, "call-1");
+            assert!(*is_error);
+            assert!(content.contains("denied by the user"), "got: {content}");
+            assert_eq!(
+                details.as_ref().and_then(|d| d.get("kind")).and_then(|k| k.as_str()),
+                Some("permission_denied")
+            );
+        }
+        other => panic!("expected ToolResult, got {other:?}"),
+    }
+    let second = &observer.requests()[1];
+    match &second.messages[3].parts[0] {
+        ContentPart::ToolResult(ToolResult {
+            content,
+            is_error, ..
+        }) => {
+            assert!(*is_error);
+            assert!(
+                content
+                    .as_str()
+                    .is_some_and(|c| c.contains("denied by the user")),
+                "the model sees the refusal: {content}"
+            );
+        }
+        other => panic!("expected a ToolResult part, got {other:?}"),
+    }
+    // Nothing was written.
+    assert!(!outside.path().join("denied.txt").exists());
+}
+
+#[tokio::test]
+async fn permission_pending_cancel_resolves_cancelled() {
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+    let outside = tempfile::tempdir().expect("outside temp dir");
+
+    let model = ScriptedModel::new(vec![Turn::Stream(vec![
+        tool_call(
+            "call-1",
+            "write_file",
+            outside_write_args(outside.path(), "cancelled.txt"),
+        ),
+        finish(FinishReason::ToolCalls),
+    ])]);
+
+    let (gate, registry) =
+        build_gate(&env, &conv_id, PermissionMode::Default, false, |_| {});
+    let (handle, mut rx) =
+        spawn_gated(model, env.pool.clone(), &env, &conv_id, "write outside", gate).await;
+
+    let (approval_id, _) = wait_for_approval(&mut rx).await;
+
+    // Cancel while parked: the run ends in Cancelled...
+    handle.cancel();
+    let events = collect_events(&mut rx, is_terminal).await;
+    assert_eq!(*events.last().unwrap(), AgentEvent::Cancelled);
+
+    // ...and the supervisor's settlement sweep (the deterministic cleanup
+    // path — the parked future may simply be dropped) resolves the open
+    // approval as cancelled on the run's own hub, exactly once no matter
+    // which side won the select race.
+    publish_cancelled_approvals(registry.as_ref(), "run-perm", &handle.hub);
+    let snapshot = handle.hub.snapshot();
+    let cancelled: Vec<&AgentEvent> = snapshot
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                AgentEvent::ApprovalResolved {
+                    outcome: oct_agent::agent::ApprovalOutcome::Cancelled,
+                    ..
+                }
+            )
+        })
+        .collect();
+    assert_eq!(cancelled.len(), 1, "exactly one cancelled resolution");
+    match cancelled[0] {
+        AgentEvent::ApprovalResolved { approval_id: id, .. } => assert_eq!(*id, approval_id),
+        other => panic!("expected ApprovalResolved, got {other:?}"),
+    }
+    assert!(registry.pending_for_conversation(&conv_id).is_empty());
+    // The write never happened.
+    assert!(!outside.path().join("cancelled.txt").exists());
+}
+
+#[tokio::test]
+async fn permission_allow_always_injects_rule_and_skips_next_ask() {
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+    let outside = tempfile::tempdir().expect("outside temp dir");
+
+    // Two identical-class outside writes in one run: the first asks, the
+    // second (after the "endpoint" injected the allow_always rule) must
+    // pass without another approval.
+    let model = ScriptedModel::new(vec![
+        Turn::Stream(vec![
+            tool_call(
+                "call-1",
+                "write_file",
+                outside_write_args(outside.path(), "first.txt"),
+            ),
+            finish(FinishReason::ToolCalls),
+        ]),
+        Turn::Stream(vec![
+            tool_call(
+                "call-2",
+                "write_file",
+                outside_write_args(outside.path(), "second.txt"),
+            ),
+            finish(FinishReason::ToolCalls),
+        ]),
+        Turn::Stream(vec![text("done"), finish(FinishReason::Stop)]),
+    ]);
+
+    let (gate, registry) =
+        build_gate(&env, &conv_id, PermissionMode::Default, false, |_| {});
+    let (handle, mut rx) =
+        spawn_gated(model, env.pool.clone(), &env, &conv_id, "write twice", gate.clone()).await;
+
+    let (approval_id, event) = wait_for_approval(&mut rx).await;
+    let AgentEvent::ApprovalRequested {
+        rule_suggestion, ..
+    } = &event
+    else {
+        panic!("expected ApprovalRequested");
+    };
+    let pattern = rule_suggestion.clone().expect("write actions suggest a dir glob");
+
+    // Emulate the decide endpoint's allow_always path: persist is the DB
+    // layer's business (covered by the e2e suite); the LIVE part is the
+    // rule injection into the conversation's active gate + resolve.
+    gate.add_rule(Rule {
+        effect: Effect::Allow,
+        tool: "write_file".into(),
+        pattern: Some(pattern),
+    });
+    assert!(registry
+        .resolve(&approval_id, ApprovalDecision::AllowAlways)
+        .is_ok());
+
+    let events = collect_events(&mut rx, is_terminal).await;
+    assert_eq!(*events.last().unwrap(), AgentEvent::Finish);
+    assert_eq!(
+        handle
+            .hub
+            .snapshot()
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::ApprovalRequested { .. }))
+            .count(),
+        1,
+        "the second same-rule write must not ask again"
+    );
+    for file in ["first.txt", "second.txt"] {
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join(file)).unwrap(),
+            "perm-content",
+            "{file} must have been written"
+        );
+    }
+}
+
+#[tokio::test]
+async fn permission_bypass_mode_runs_without_asking() {
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+    let outside = tempfile::tempdir().expect("outside temp dir");
+
+    let model = ScriptedModel::new(vec![
+        Turn::Stream(vec![
+            tool_call(
+                "call-1",
+                "write_file",
+                outside_write_args(outside.path(), "bypassed.txt"),
+            ),
+            finish(FinishReason::ToolCalls),
+        ]),
+        Turn::Stream(vec![text("done"), finish(FinishReason::Stop)]),
+    ]);
+
+    let (gate, registry) = build_gate(&env, &conv_id, PermissionMode::Bypass, false, |_| {});
+    let (handle, mut rx) =
+        spawn_gated(model, env.pool.clone(), &env, &conv_id, "just write", gate).await;
+
+    let events = collect_events(&mut rx, is_terminal).await;
+    assert_eq!(*events.last().unwrap(), AgentEvent::Finish);
+    assert!(
+        handle
+            .hub
+            .snapshot()
+            .iter()
+            .all(|e| !matches!(e, AgentEvent::ApprovalRequested { .. })),
+        "bypass mode must never ask"
+    );
+    assert!(registry.pending_for_conversation(&conv_id).is_empty());
+    assert!(outside.path().join("bypassed.txt").exists());
+}
+
+#[tokio::test]
+async fn permission_outside_read_asks_in_default_mode() {
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+    let outside = tempfile::tempdir().expect("outside temp dir");
+    let secret = outside.path().join("secret.txt");
+    std::fs::write(&secret, "outside-bytes").unwrap();
+    let canonical = outside.path().canonicalize().unwrap();
+
+    let model = ScriptedModel::new(vec![
+        Turn::Stream(vec![
+            tool_call(
+                "call-1",
+                "read_file",
+                json!({"path": secret.display().to_string()}),
+            ),
+            finish(FinishReason::ToolCalls),
+        ]),
+        Turn::Stream(vec![text("done"), finish(FinishReason::Stop)]),
+    ]);
+
+    let (gate, registry) =
+        build_gate(&env, &conv_id, PermissionMode::Default, false, |_| {});
+    let (handle, mut rx) =
+        spawn_gated(model, env.pool.clone(), &env, &conv_id, "read outside", gate).await;
+
+    let (approval_id, event) = wait_for_approval(&mut rx).await;
+    match event {
+        AgentEvent::ApprovalRequested {
+            kind,
+            path,
+            outside: outside_flag,
+            ..
+        } => {
+            assert_eq!(kind, "read");
+            assert_eq!(
+                path.as_deref(),
+                Some(canonical.join("secret.txt").display().to_string().as_str())
+            );
+            assert_eq!(outside_flag, Some(true));
+        }
+        other => panic!("expected ApprovalRequested, got {other:?}"),
+    }
+
+    assert!(registry.resolve(&approval_id, ApprovalDecision::Allow).is_ok());
+    let events = collect_events(&mut rx, is_terminal).await;
+    assert_eq!(*events.last().unwrap(), AgentEvent::Finish);
+    match events.iter().find(|e| matches!(e, AgentEvent::ToolResult { .. })) {
+        Some(AgentEvent::ToolResult {
+            content, is_error, ..
+        }) => {
+            assert!(!is_error);
+            assert!(content.contains("outside-bytes"));
+        }
+        other => panic!("expected ToolResult, got {other:?}"),
+    }
+    drop(handle);
+}
+
+#[tokio::test]
+async fn permission_subagent_ask_downgrades_to_deny_for_model() {
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+
+    // An INSIDE-workspace write: Ask under default mode for a root run —
+    // but a worker's gate downgrades it to a refusal the child model sees.
+    let model = ScriptedModel::new(vec![
+        Turn::Stream(vec![
+            tool_call(
+                "call-1",
+                "write_file",
+                json!({"path": "inner.txt", "content": "x"}),
+            ),
+            finish(FinishReason::ToolCalls),
+        ]),
+        Turn::Stream(vec![text("will ask the user"), finish(FinishReason::Stop)]),
+    ]);
+    let observer = model.observer();
+
+    let (gate, registry) = build_gate(&env, &conv_id, PermissionMode::Default, true, |_| {});
+    let (handle, mut rx) =
+        spawn_gated(model, env.pool.clone(), &env, &conv_id, "worker task", gate).await;
+
+    let events = collect_events(&mut rx, is_terminal).await;
+    assert_eq!(*events.last().unwrap(), AgentEvent::Finish);
+    match events.iter().find(|e| matches!(e, AgentEvent::ToolResult { .. })) {
+        Some(AgentEvent::ToolResult {
+            content,
+            is_error,
+            details,
+            ..
+        }) => {
+            assert!(*is_error);
+            assert!(
+                content.contains("subagents cannot trigger interactive approval"),
+                "the downgrade copy guides the worker: {content}"
+            );
+            assert_eq!(
+                details.as_ref().and_then(|d| d.get("kind")).and_then(|k| k.as_str()),
+                Some("permission_denied")
+            );
+        }
+        other => panic!("expected ToolResult, got {other:?}"),
+    }
+    // The refusal reached the child model's next request verbatim; nothing
+    // was ever parked or published.
+    match &observer.requests()[1].messages[3].parts[0] {
+        ContentPart::ToolResult(ToolResult { content, .. }) => assert!(
+            content
+                .as_str()
+                .is_some_and(|c| c.contains("subagents cannot trigger interactive approval")),
+            "the child model sees the downgrade: {content}"
+        ),
+        other => panic!("expected a ToolResult part, got {other:?}"),
+    }
+    assert!(registry.pending_for_conversation(&conv_id).is_empty());
+    assert!(
+        handle
+            .hub
+            .snapshot()
+            .iter()
+            .all(|e| !matches!(e, AgentEvent::ApprovalRequested { .. }))
+    );
+}

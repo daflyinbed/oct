@@ -156,6 +156,11 @@ async fn wired_app(llm: &support::llm::LlmMock) -> (TestApp, String, String) {
     app.register_llm_provider(llm).await;
     let project = app.create_project().await;
     let conv = app.create_conversation(&project).await;
+    // This suite predates the permission layer (ADR 0004) and its workers
+    // write/edit inside the workspace — under `default` mode a subagent's
+    // Ask is downgraded to a Deny (§1.6), which is not what these tests
+    // exercise. `bypass` keeps the ADR 0002 flows as they were.
+    app.set_permission_mode(&project, &conv, "bypass").await;
     (app, project, conv)
 }
 

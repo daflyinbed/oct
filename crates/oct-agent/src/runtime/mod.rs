@@ -38,7 +38,7 @@ pub mod background;
 
 use std::convert::Infallible;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -62,6 +62,10 @@ use crate::context::LlmView;
 use crate::db::projects as project_db;
 use crate::db::runs as run_db;
 use crate::mcp::McpManager;
+use crate::permissions::evaluator::PermissionMode;
+use crate::permissions::gate::{PermissionGate, publish_cancelled_approvals};
+use crate::permissions::registry::ApprovalRegistry;
+use crate::permissions::rules::{Effect, Rule, RuleSet};
 use crate::subagent::{ChildHandle, ChildRunRequest, SubagentManager, TaskSpawnConfig, TaskTool};
 use crate::tools;
 use crate::tools::shared::{AgentReadState, WorkspaceFileLocks};
@@ -114,6 +118,14 @@ pub struct RunService {
     /// Background bash task registry/lifecycle (ADR 0003): same two-phase
     /// wiring — the manager starts wake runs through this service.
     pub background: Arc<background::BackgroundTaskManager>,
+    /// Pending tool-approval registry (ADR 0004 §4): every gate of this
+    /// service parks its Ask arms here; one registry process-wide is all
+    /// the decide endpoint needs.
+    pub approvals: Arc<ApprovalRegistry>,
+    /// Live permission gates by conversation id (ADR 0004 §1.8): weak so a
+    /// settled run's gate dies with its loop; `allow_always` decisions and
+    /// mode PATCHes reach the ACTIVE runs of a conversation through here.
+    pub gates: Arc<DashMap<String, Vec<Weak<PermissionGate>>>>,
 }
 
 /// Everything [`RunService::start_root_run`] needs to launch one root run.
@@ -219,6 +231,99 @@ impl RunService {
             .or_insert_with(|| Arc::new(WorkspaceFileLocks::new()))
             .value()
             .clone()
+    }
+
+    // --- Permission gate assembly (ADR 0004 §1.8) --------------------------
+
+    /// Assemble one run's permission gate: the project's rules (project +
+    /// global rows) loaded once into memory, the conversation mode, and the
+    /// built-in exec-root deny anchored at the SAME directory the
+    /// background manager writes to. Subagent runs pass their ROOT
+    /// conversation's id as `mode_conversation_id` (child rows carry no
+    /// effective mode, §1.6) and `subagent = true` (Ask → Deny).
+    ///
+    /// Best-effort by design: a rules/mode read failure degrades to an
+    /// empty rule set / the default mode rather than failing the run — the
+    /// gate's fail-closed defaults still hold.
+    pub(crate) async fn assemble_gate(
+        &self,
+        conversation_id: &str,
+        mode_conversation_id: &str,
+        run_id: &str,
+        project_id: &str,
+        roots: &WorkspaceRoots,
+        subagent: bool,
+    ) -> Arc<PermissionGate> {
+        let mut rules = RuleSet::new(self.background.exec_dir());
+        match crate::db::permissions::list_rules_for_project(&self.pool, project_id).await {
+            Ok(rows) => {
+                for row in &rows {
+                    // CHECK-constrained columns; an unparsable value (a
+                    // hand-edited DB) just drops the row.
+                    if let Some(effect) = Effect::from_str_opt(&row.effect) {
+                        rules.add(Rule {
+                            effect,
+                            tool: row.tool.clone(),
+                            pattern: row.pattern.clone(),
+                        });
+                    }
+                }
+            }
+            Err(e) => tracing::warn!("loading permission rules for run {run_id} failed: {e}"),
+        }
+        let mode = crate::db::conversations::get_conversation(&self.pool, mode_conversation_id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|conv| PermissionMode::from_str_opt(&conv.permission_mode))
+            .unwrap_or(PermissionMode::Default);
+
+        let gate = PermissionGate::new(
+            conversation_id.to_string(),
+            run_id.to_string(),
+            roots.clone(),
+            rules,
+            mode,
+            subagent,
+            self.approvals.clone(),
+        );
+        self.register_gate(conversation_id, &gate);
+        // Subagent gates also register under their ROOT conversation: a
+        // mode PATCH on the root reaches the workers whose mode it is, and
+        // a root `allow_always` covers the whole live task tree.
+        if subagent && mode_conversation_id != conversation_id {
+            self.register_gate(mode_conversation_id, &gate);
+        }
+        gate
+    }
+
+    /// Record a gate under a conversation key, pruning references whose
+    /// runs have settled (weak by design — the gate dies with its loop).
+    fn register_gate(&self, conversation_id: &str, gate: &Arc<PermissionGate>) {
+        let mut entry = self
+            .gates
+            .entry(conversation_id.to_string())
+            .or_default();
+        entry.retain(|weak| weak.strong_count() > 0);
+        entry.push(Arc::downgrade(gate));
+    }
+
+    /// The conversation's currently live gates (root run plus any live
+    /// subagent runs of its tree).
+    pub fn active_gates(&self, conversation_id: &str) -> Vec<Arc<PermissionGate>> {
+        match self.gates.get(conversation_id) {
+            Some(gates) => gates.iter().filter_map(Weak::upgrade).collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Live mode switch for every active gate of a conversation (the PATCH
+    /// endpoint; §1.5's per-call immediate effect). Subagent gates are
+    /// registered under the root id too, so the whole tree follows.
+    pub fn set_conversation_permission_mode(&self, conversation_id: &str, mode: PermissionMode) {
+        for gate in self.active_gates(conversation_id) {
+            gate.set_mode(mode);
+        }
     }
 
     /// Resolve `provider_id:model_id` into a live `ChatModel` (moved here
@@ -434,6 +539,20 @@ impl RunService {
             let _ = parent_toolset.set(Arc::downgrade(&toolset));
         }
 
+        // The run's permission gate (ADR 0004 §1.8): project rules + this
+        // conversation's mode, loaded once; `allow_always` decisions inject
+        // into it live through the service's gate index.
+        let gate = self
+            .assemble_gate(
+                &conversation_id,
+                &conversation_id,
+                &run.id,
+                &project.id,
+                &roots,
+                false,
+            )
+            .await;
+
         let ctx = AgentContext {
             model: Arc::from(model),
             tools: toolset.clone(),
@@ -447,12 +566,14 @@ impl RunService {
             ),
             context_window,
             idle,
+            permission: gate,
         };
 
         let run_id = run.id.clone();
         let pool = self.pool.clone();
+        let approvals = self.approvals.clone();
         tokio::spawn(async move {
-            supervise(pool, run_id, conversation_id, guard, ctx, view, handle).await;
+            supervise(pool, run_id, conversation_id, approvals, guard, ctx, view, handle).await;
         });
 
         Ok(run.id)
@@ -527,6 +648,31 @@ impl RunService {
         };
         let child_tools = Arc::new(child_tools);
 
+        // The child's permission gate (ADR 0004 §1.6/§1.8): rules load like
+        // a root run's, the MODE inherits the root conversation (child rows
+        // carry no effective mode — recovery included, since this assembly
+        // is the recovery path too), and Ask is downgraded to Deny because
+        // a worker has no interactive surface.
+        let root_conversation_id = crate::db::conversations::get_conversation(
+            &self.pool,
+            &conversation_id,
+        )
+        .await
+        .ok()
+        .flatten()
+        .and_then(|conv| conv.root_conversation_id)
+        .unwrap_or_else(|| conversation_id.clone());
+        let gate = self
+            .assemble_gate(
+                &conversation_id,
+                &root_conversation_id,
+                &run_id,
+                &project.id,
+                &roots,
+                true,
+            )
+            .await;
+
         let (_, additional) = workspace_roots(&project);
         let ctx = AgentContext {
             model: Arc::from(model),
@@ -539,6 +685,7 @@ impl RunService {
             ),
             context_window,
             idle: None,
+            permission: gate,
         };
 
         // Publish the running transition on the PARENT hub (small events
@@ -567,6 +714,7 @@ impl RunService {
         });
 
         let pool = self.pool.clone();
+        let approvals = self.approvals.clone();
         let subagents = self.subagents.clone();
         let hub = handle.hub.clone();
         let run_id2 = run_id.clone();
@@ -577,6 +725,7 @@ impl RunService {
         tokio::spawn(async move {
             supervise_child(
                 pool,
+                approvals,
                 subagents,
                 run_id2,
                 conv,
@@ -651,6 +800,7 @@ async fn supervise(
     pool: SqlitePool,
     run_id: String,
     conv_id: String,
+    approvals: Arc<ApprovalRegistry>,
     guard: OccupancyGuard,
     ctx: AgentContext,
     view: LlmView,
@@ -659,7 +809,9 @@ async fn supervise(
     // The loop runs in its OWN task: a panic inside it resolves this await
     // as a JoinError and becomes a Failed outcome here, instead of unwinding
     // past the supervisor and skipping both the terminal write and the
-    // occupancy release.
+    // occupancy release. The hub is cloned out first — the approval sweep
+    // below publishes on it after the loop (and with it `handle`) is gone.
+    let hub = handle.hub.clone();
     let outcome = match tokio::spawn(run_agent_loop(ctx, conv_id.clone(), view, handle)).await {
         Ok(outcome) => outcome,
         Err(join_err) => RunOutcome {
@@ -704,6 +856,12 @@ async fn supervise(
         tracing::error!("failed to persist terminal state of run {run_id}: {e}");
     }
 
+    // Pending-approval cleanup (ADR 0004 §4's guard duty): whatever the
+    // gate futures could not settle themselves (a cancel drops them
+    // mid-await) resolves here — published while the hub is still alive so
+    // subscribers see the closed cards before the stream ends.
+    publish_cancelled_approvals(approvals.as_ref(), &run_id, &hub);
+
     // Release occupancy LAST: dropping the guard removes the session entry,
     // the last hub `Arc` goes away, and every SSE stream reaches EOF — the
     // same termination semantics the pre-RunService inline cleanup had.
@@ -718,6 +876,7 @@ async fn supervise(
 #[allow(clippy::too_many_arguments)]
 async fn supervise_child(
     pool: SqlitePool,
+    approvals: Arc<ApprovalRegistry>,
     subagents: Arc<SubagentManager>,
     run_id: String,
     conv_id: String,
@@ -744,6 +903,11 @@ async fn supervise_child(
                 error: Some(format!("agent loop panicked: {join_err}")),
             },
         };
+
+    // Same pending-approval sweep as the root supervisor — uniformity over
+    // the (currently unreachable) subagent Ask arm: children downgrade Ask
+    // to Deny, but the sweep is what makes that structurally guaranteed.
+    publish_cancelled_approvals(approvals.as_ref(), &run_id, &handle.hub);
 
     subagents
         .settle(

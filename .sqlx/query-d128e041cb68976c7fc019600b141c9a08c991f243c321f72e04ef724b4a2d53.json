@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO permission_rules (id, project_id, conversation_id, effect, tool, pattern, source, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "d128e041cb68976c7fc019600b141c9a08c991f243c321f72e04ef724b4a2d53"
+}

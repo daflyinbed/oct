@@ -31,6 +31,10 @@ async fn wired_app(llm: &LlmMock) -> (TestApp, String, String) {
     app.register_llm_provider(llm).await;
     let project = app.create_project().await;
     let conv = app.create_conversation(&project).await;
+    // This suite predates the permission layer (ADR 0004) and drives
+    // `execute_command` end to end: pin the conversation to `bypass` so no
+    // approval interaction enters the flows under test.
+    app.set_permission_mode(&project, &conv, "bypass").await;
     (app, project, conv)
 }
 

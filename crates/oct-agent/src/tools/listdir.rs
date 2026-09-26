@@ -127,8 +127,10 @@ impl AgentTool for ListDirTool {
             serde_json::from_value(args).context("Invalid arguments for list_dir")?;
 
         let target = if let Some(ref path) = args.path {
-            match self.roots.validate_path(path) {
-                Ok(p) => p,
+            // Resolution no longer rejects outside-workspace paths; the
+            // outside classification is the permission layer's input.
+            match self.roots.resolve_path(path) {
+                Ok(resolved) => resolved.path,
                 Err(output) => return Ok(output),
             }
         } else {

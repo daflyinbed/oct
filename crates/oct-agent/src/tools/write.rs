@@ -46,12 +46,13 @@ struct WriteFileArgs {
     create_dirs: Option<bool>,
 }
 
-/// Validation for write targets lives on [`WorkspaceRoots`]:
-/// `validate_write_path` doesn't require the file to exist already — for
+/// Resolution for write targets lives on [`WorkspaceRoots`]:
+/// `resolve_write_path` doesn't require the file to exist already — for
 /// paths that don't exist yet, the deepest existing ancestor is resolved
-/// via canonicalize (following symlinks) and the remaining components are
-/// re-appended, refusing to traverse any symlink in the non-existent tail (it
-/// could redirect the write outside the sandbox).
+/// via canonicalize (following symlinks to their real targets) and the
+/// remaining components are re-appended. Nothing is rejected at this layer:
+/// outside-workspace targets and symlinked destinations are the permission
+/// layer's call (ADR 0004 §1.2).
 
 #[async_trait]
 impl AgentTool for WriteFileTool {
@@ -79,8 +80,10 @@ impl AgentTool for WriteFileTool {
         let args: WriteFileArgs =
             serde_json::from_value(args).context("Invalid arguments for write_file")?;
 
-        let resolved = match self.roots.validate_write_path(&args.path) {
-            Ok(p) => p,
+        // Resolution no longer rejects outside-workspace targets or symlink
+        // traversal; the outside classification feeds the permission gate.
+        let resolved = match self.roots.resolve_write_path(&args.path) {
+            Ok(resolved) => resolved.path,
             Err(output) => return Ok(output),
         };
 
@@ -205,18 +208,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_path_denies_absolute_path_outside() {
+    async fn write_to_absolute_path_outside_the_roots_succeeds() {
+        // Outside-workspace targets are no longer rejected here; allowing or
+        // asking is the permission layer's call (ADR 0004 §1.2).
         let fx = Fixture::new("abs-outside");
-        let out = fx
-            .write("/oct-write-test-definitely-not-inside/a.txt", "x")
-            .await;
-        assert!(out.is_error);
-        assert!(out.content.contains("outside the working directory"));
+        let target = std::env::temp_dir().join(format!(
+            "oct-write-test-outside-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let out = fx.write(&target.display().to_string(), "x").await;
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");
+        let _ = std::fs::remove_file(&target);
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn create_path_denies_symlinked_dir_escape() {
+    async fn write_through_symlinked_dir_lands_at_real_target() {
+        // The ancestor canonicalization follows the symlink, so the write
+        // lands in the link's real destination (what an approval card would
+        // show); no symlink-traversal rejection anymore.
         let base = std::env::temp_dir().join(format!(
             "oct-write-test-symdir-{}-{}",
             std::process::id(),
@@ -241,26 +256,37 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(out.is_error);
-        assert!(out.content.contains("outside the working directory"));
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(
+            std::fs::read_to_string(base.join("outside/new.txt")).unwrap(),
+            "x"
+        );
 
         let _ = std::fs::remove_dir_all(&base);
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn create_path_denies_dangling_symlink_target() {
+    async fn write_through_dangling_symlink_creates_its_target() {
+        // A dangling link cannot be canonicalized, so it stays literal in
+        // the resolved path and write(2) follows it, creating the target.
         let fx = Fixture::new("dangling");
         std::os::unix::fs::symlink("no-such-target", fx.dir.join("dang")).unwrap();
 
         let out = fx.write("dang", "x").await;
-        assert!(out.is_error);
-        assert!(out.content.contains("symbolic link"));
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(
+            std::fs::read_to_string(fx.dir.join("no-such-target")).unwrap(),
+            "x"
+        );
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn existing_symlink_pointing_outside_is_denied() {
+    async fn write_via_existing_symlink_lands_at_real_target() {
+        // An existing symlinked file canonicalizes to its real target before
+        // writing: the destination outside the roots is the permission
+        // layer's call, and the write lands on the target file, not the link.
         let base = std::env::temp_dir().join(format!(
             "oct-write-test-symfile-{}-{}",
             std::process::id(),
@@ -283,8 +309,13 @@ mod tests {
             .execute(json!({ "path": "f.txt", "content": "x" }), &noop_ctx())
             .await
             .unwrap();
-        assert!(out.is_error);
-        assert!(out.content.contains("outside the working directory"));
+        assert!(!out.is_error, "{}", out.content);
+        // The real target was overwritten, through the still-intact link.
+        assert_eq!(std::fs::read_to_string(base.join("outside/f.txt")).unwrap(), "x");
+        assert!(std::fs::symlink_metadata(base.join("wd/f.txt"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
 
         let _ = std::fs::remove_dir_all(&base);
     }

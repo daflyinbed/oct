@@ -4,6 +4,7 @@ pub mod mcp;
 pub mod mcp_tokens;
 pub mod messages;
 pub mod models;
+pub mod permissions;
 pub mod projects;
 pub mod providers;
 pub mod runs;

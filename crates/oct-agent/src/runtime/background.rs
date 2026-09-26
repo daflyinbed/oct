@@ -112,6 +112,27 @@ pub struct BackgroundTaskManager {
     delivering: DashMap<String, ()>,
 }
 
+/// Where background task output files live: next to the database file
+/// (`sqlite://dir/oct.db` → `dir/exec`), overridable via `OCT_EXEC_DIR`
+/// (the env override itself stays in `main`). Deliberately outside any
+/// project workspace — the sandboxed read tool must not reach it (ADR
+/// 0003). The permission evaluator (ADR 0004) resolves the SAME root
+/// through this function for its built-in `{exec root}/**` deny, so the
+/// manager and the deny can never drift apart.
+pub fn exec_output_root(database_url: &str) -> PathBuf {
+    let file = database_url
+        .trim_start_matches("sqlite://")
+        .split('?')
+        .next()
+        .unwrap_or("oct.db");
+    let parent = Path::new(file)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    parent.join("exec")
+}
+
 /// Open (create) the task's output file for appending: O_APPEND keeps the
 /// two stdio fds (stdout/stderr) interleaving without tearing, 0o600
 /// because command output can carry secrets the command printed.
@@ -160,6 +181,14 @@ impl BackgroundTaskManager {
     /// The pool the task rows live in (shared with the tools and the API).
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+
+    /// The output root the manager writes task files under. The permission
+    /// evaluator (ADR 0004 §1.3) anchors its built-in `{exec root}/**` deny
+    /// here, so the deny and the actual output placement — including the
+    /// `OCT_EXEC_DIR` override — can never drift apart.
+    pub fn exec_dir(&self) -> &Path {
+        &self.exec_dir
     }
 
     /// The output-file cap the size watchdog enforces.

@@ -146,8 +146,10 @@ impl AgentTool for GrepTool {
         let args: GrepArgs = serde_json::from_value(args).context("Invalid arguments for grep")?;
 
         let root = match args.path.as_deref() {
-            Some(path) => match self.roots.validate_path(path) {
-                Ok(resolved) => resolved,
+            // Resolution no longer rejects outside-workspace paths; the
+            // outside classification is the permission layer's input.
+            Some(path) => match self.roots.resolve_path(path) {
+                Ok(resolved) => resolved.path,
                 Err(output) => return Ok(output),
             },
             None => self
@@ -785,25 +787,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn path_outside_working_dir_is_denied() {
+    async fn path_outside_working_dir_resolves_and_searches() {
+        // Outside-workspace search roots are no longer rejected here; the
+        // permission layer owns that decision. Results outside every root
+        // display as absolute paths (relativize's fallback).
         let wd = temp_workspace("outside");
-        let outside = wd.parent().unwrap().to_path_buf();
+        let outside = temp_workspace("outside-target");
+        std::fs::write(outside.join("secret.txt"), "NEEDLE\n").unwrap();
 
         let out = GrepTool::new(WorkspaceRoots::new(wd.clone(), vec![]))
             .execute(
                 serde_json::json!({
-                    "pattern": "anything",
-                    "path": outside.display().to_string()
+                    "pattern": "NEEDLE",
+                    "path": outside.display().to_string(),
+                    "output_mode": "files_with_matches"
                 }),
                 &noop_ctx(),
             )
             .await
             .unwrap();
 
-        assert!(out.is_error);
-        assert!(out.content.contains("outside the working directory"));
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("Found 1 files"));
+        let absolute = outside.join("secret.txt").canonicalize().unwrap();
+        assert!(out.content.contains(&absolute.display().to_string()));
 
         std::fs::remove_dir_all(&wd).unwrap();
+        std::fs::remove_dir_all(&outside).unwrap();
     }
 
     #[tokio::test]

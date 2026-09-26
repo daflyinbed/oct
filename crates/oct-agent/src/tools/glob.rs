@@ -91,8 +91,10 @@ impl AgentTool for GlobTool {
         let args: GlobArgs = serde_json::from_value(args).context("Invalid arguments for glob")?;
 
         let root = match args.path.as_deref() {
-            Some(path) => match self.roots.validate_path(path) {
-                Ok(resolved) => resolved,
+            // Resolution no longer rejects outside-workspace paths; the
+            // outside classification is the permission layer's input.
+            Some(path) => match self.roots.resolve_path(path) {
+                Ok(resolved) => resolved.path,
                 Err(output) => return Ok(output),
             },
             None => self

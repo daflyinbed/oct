@@ -1,0 +1,68 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, project_id, conversation_id, effect, tool, pattern, source, created_at, updated_at FROM permission_rules WHERE project_id IS NULL AND conversation_id IS NULL ORDER BY created_at ASC",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "project_id",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "conversation_id",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "effect",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "tool",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "pattern",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "source",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 7,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 8,
+        "type_info": "Datetime"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "0064bf10e86743cab3b46e7ef6f4b836253a91110d7b81ba8d238cbbbb9b1345"
+}

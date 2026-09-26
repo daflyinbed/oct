@@ -1,3 +1,4 @@
+pub mod approvals;
 pub mod background;
 pub mod chat;
 pub mod conversations;
@@ -6,6 +7,7 @@ pub mod error;
 pub mod files;
 pub mod git;
 pub mod mcp;
+pub mod permissions;
 pub mod projects;
 pub mod providers;
 pub mod subagents;
@@ -84,6 +86,11 @@ pub struct AppState {
         background::BackgroundTaskDto,
         background::TaskOutputQuery,
         background::TaskOutputChunkDto,
+        approvals::PendingApprovalDto,
+        approvals::DecideApprovalRequest,
+        approvals::DecideApprovalResponse,
+        permissions::PermissionRuleDto,
+        permissions::CreatePermissionRuleRequest,
         error::ErrorBody,
         dto::MessageDto,
         dto::MessagePart,
@@ -95,6 +102,7 @@ pub struct AppState {
         crate::agent::MicrocompactTrigger,
         crate::agent::MicrocompactReplacement,
         crate::agent::SubagentRunStatus,
+        crate::agent::ApprovalOutcome,
         files::FileContent,
         files::FileEntry,
         files::FileEntryKind,
@@ -164,6 +172,23 @@ fn api_routes(state: AppState) -> OpenApiRouter<AppState> {
         .routes(utoipa_axum::routes!(conversations::get_conversation))
         .routes(utoipa_axum::routes!(conversations::delete_conversation))
         .routes(utoipa_axum::routes!(conversations::update_conversation))
+        // Tool approvals (ADR 0004): pending list + decide
+        .routes(utoipa_axum::routes!(approvals::list_pending_approvals))
+        .routes(utoipa_axum::routes!(approvals::decide_approval))
+        // Permission rules (ADR 0004): project scope + global scope + delete
+        .routes(utoipa_axum::routes!(
+            permissions::list_project_permission_rules
+        ))
+        .routes(utoipa_axum::routes!(
+            permissions::create_project_permission_rule
+        ))
+        .routes(utoipa_axum::routes!(
+            permissions::list_global_permission_rules
+        ))
+        .routes(utoipa_axum::routes!(
+            permissions::create_global_permission_rule
+        ))
+        .routes(utoipa_axum::routes!(permissions::delete_permission_rule))
         // Chat
         .routes(utoipa_axum::routes!(chat::send_message))
         .routes(utoipa_axum::routes!(chat::get_messages))
