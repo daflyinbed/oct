@@ -15,9 +15,38 @@ type ApiMessagePart = components["schemas"]["MessagePart"];
 type ApiMessageDetails = components["schemas"]["MessageDetails"];
 type AgentEvent = components["schemas"]["AgentEvent"];
 type OutputStream = components["schemas"]["OutputStream"];
+type PendingApprovalDto = components["schemas"]["PendingApprovalDto"];
 
 /** The SSE event union, straight from the generated OpenAPI schema. */
 export type ChatStreamEvent = AgentEvent;
+
+/** 审批决定（decide 端点的 decision 字段词表）。 */
+export type ApprovalDecision = "allow" | "allow_always" | "deny";
+
+/**
+ * 会话内待决审批（ADR 0004 §4）：`approval_requested` 事件与 pending
+ * 快照端点（GET /approvals）两路归一的展示形状。审批内存即焚，前端只
+ * 维护 pending 集合——resolved 事件/decide 响应即移除，无持久化。
+ */
+export interface PendingApproval {
+  approvalId: string;
+  /** 被挂起的工具调用 id（审批卡与消息流里的工具卡对应关系）。 */
+  callId: string;
+  /** 模型侧工具名（如 `write_file` / `mcp__server__tool`）。 */
+  tool: string;
+  /** 动作类别（`read`/`write`/`edit`/`command`/`mcp`）。 */
+  kind: string;
+  /** 单行摘要：解析后的真实路径 / 命令行 / 工具名。 */
+  title: string;
+  /** 解析后路径（文件类动作）。 */
+  path: string | null;
+  /** 原始命令（execute 动作）。 */
+  command: string | null;
+  /** 工作区外标记（文件类动作；null 视为 false）。 */
+  outside: boolean;
+  /** 「总是允许」的保守 pattern 建议（用户可改后再提交）。 */
+  ruleSuggestion: string | null;
+}
 
 /** One continuous run of a single stream inside the live output pane. */
 export interface LiveOutputSegment {
@@ -63,6 +92,12 @@ export interface ToolCallPart {
    */
   cleared: boolean;
   clearedCopyMessageId: string | null;
+  /**
+   * 权限门拒绝（ADR 0004：details kind=permission_denied）：卡片显示
+   * 「已拒绝」徽标。live 路径来自 tool_result 事件的 details，历史路径
+   * 来自 DTO details 的已知 kind（与 microcompact_cleared 同一判别位）。
+   */
+  denied: boolean;
 }
 
 export interface ReasoningPart {
@@ -180,6 +215,7 @@ function newToolCard(callId: string, name: string | null): ToolCallPart {
     isError: false,
     cleared: false,
     clearedCopyMessageId: null,
+    denied: false,
   };
 }
 
@@ -394,6 +430,10 @@ function storedToDisplayList(stored: ApiMessage[]): DisplayMessage[] {
     if (details?.kind === "microcompact_cleared") {
       card.cleared = true;
       card.clearedCopyMessageId = rowId;
+    }
+    // 权限门拒绝行（details kind=permission_denied）：「已拒绝」徽标。
+    if (details?.kind === "permission_denied") {
+      card.denied = true;
     }
   };
 
@@ -655,6 +695,116 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
   const usageWindowTokens = ref<number | null>(null);
   const usageCompacting = ref(false);
 
+  // --- 审批状态（ADR 0004 §4） -------------------------------------------------
+  // 按会话分桶的 pending 审批：事件（upsert/remove）与 pending 快照端点
+  // （整表替换）两路维护；重放幂等由「requested 后必跟 resolved」的事件
+  // 时序保证。审批内存即焚，不进消息 reducer。
+
+  /** 会话 id → 待决审批列表（审批卡的数据源）。 */
+  const pendingApprovals = ref(new Map<string, PendingApproval[]>());
+
+  /** approval_requested 事件负载 → 展示形状。 */
+  function approvalFromEvent(
+    data: Extract<AgentEvent, { type: "approval_requested" }>["data"],
+  ): PendingApproval {
+    return {
+      approvalId: data.approval_id,
+      callId: data.call_id,
+      tool: data.tool,
+      kind: data.kind,
+      title: data.title,
+      path: data.path ?? null,
+      command: data.command ?? null,
+      outside: data.outside === true,
+      ruleSuggestion: data.rule_suggestion ?? null,
+    };
+  }
+
+  /** pending 快照 DTO → 展示形状（与事件负载同字段，另带 run/created_at）。 */
+  function approvalFromDto(dto: PendingApprovalDto): PendingApproval {
+    return {
+      approvalId: dto.approval_id,
+      callId: dto.call_id,
+      tool: dto.tool,
+      kind: dto.kind,
+      title: dto.title,
+      path: dto.path ?? null,
+      command: dto.command ?? null,
+      outside: dto.outside === true,
+      ruleSuggestion: dto.rule_suggestion ?? null,
+    };
+  }
+
+  /** 按 approvalId upsert（重放重复到达时原地覆盖，不产生重复卡片）。 */
+  function upsertApproval(conversationId: string, approval: PendingApproval) {
+    const list = pendingApprovals.value.get(conversationId) ?? [];
+    const index = list.findIndex(
+      (item) => item.approvalId === approval.approvalId,
+    );
+    const next =
+      index === -1 ? [...list, approval] : list.with(index, approval);
+    pendingApprovals.value = new Map(pendingApprovals.value).set(
+      conversationId,
+      next,
+    );
+  }
+
+  /** 移除一条 pending（resolved 事件 / decide 落地；未命中时静默幂等）。 */
+  function removeApproval(conversationId: string, approvalId: string) {
+    const list = pendingApprovals.value.get(conversationId);
+    if (!list?.some((item) => item.approvalId === approvalId)) return;
+    pendingApprovals.value = new Map(pendingApprovals.value).set(
+      conversationId,
+      list.filter((item) => item.approvalId !== approvalId),
+    );
+  }
+
+  /**
+   * 拉取会话的 pending 快照并以 GET 为准整表替换该会话的分桶（页面刷新/
+   * 重连后的真相源；事件重放在其之后叠加）。尽力而为：失败（网络/非 2xx）
+   * 保留旧列表静默返回，绝不阻断 attachRun 的重连主流程。
+   */
+  const refreshApprovals = async (conversationId: string) => {
+    try {
+      const { data, error } = await client.GET(
+        "/api/conversations/{id}/approvals",
+        { params: { path: { id: conversationId } } },
+      );
+      if (!error && data) {
+        pendingApprovals.value = new Map(pendingApprovals.value).set(
+          conversationId,
+          data.map(approvalFromDto),
+        );
+      }
+    } catch {
+      // 网络层异常：与 HTTP 错误同路径，保留旧列表
+    }
+  };
+
+  /**
+   * 应答一条审批（§4）：POST decide；成功（或 404=已决/未知）即本地清掉
+   * 条目——approval_resolved 事件随后到达时的移除是幂等空操作。其余错误
+   * 保留卡片供重试。
+   */
+  const decideApproval = async (
+    conversationId: string,
+    approvalId: string,
+    decision: ApprovalDecision,
+    pattern?: string,
+  ) => {
+    const { error, response } = await client.POST(
+      "/api/conversations/{id}/approvals/{approval_id}",
+      {
+        params: { path: { id: conversationId, approval_id: approvalId } },
+        body: { decision, pattern: pattern ?? null },
+      },
+    );
+    // 404 = 已决/未知 id（§4 的幂等 decide）：与成功同等对待，静默清卡。
+    const settled = !error || response.status === 404;
+    if (settled) removeApproval(conversationId, approvalId);
+    return settled;
+  };
+
   /** Plain (non-reactive) mirror of the streaming message; flushed every tick. */
   let streamState: StreamState | null = null;
   let flushTimer: ReturnType<typeof setInterval> | null = null;
@@ -899,6 +1049,8 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
             string,
             unknown
           > | null;
+          // 权限门拒绝（details kind=permission_denied）：「已拒绝」徽标。
+          if (card.details?.kind === "permission_denied") card.denied = true;
         }
         break;
       }
@@ -1034,6 +1186,16 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
         }
         if (event.type === "subagent_updated") {
           options.onSubagentEvent?.(conversationId, event.data);
+          continue;
+        }
+        // 审批事件是会话作用域状态而非消息内容：在此按流所属会话 upsert/
+        // remove（不依赖 activeConversationId），也不进消息 reducer。
+        if (event.type === "approval_requested") {
+          upsertApproval(conversationId, approvalFromEvent(event.data));
+          continue;
+        }
+        if (event.type === "approval_resolved") {
+          removeApproval(conversationId, event.data.approval_id);
           continue;
         }
         onEvent(event);
@@ -1231,6 +1393,11 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
         // 的竞态——刷新拿到 DB 终态）。
         return;
       }
+
+      // 先拉一次 pending 审批快照（ADR 0004 §4：页面刷新后的真相源），
+      // 再订阅事件流——重放的 requested/resolved 事件在其后叠加，最终
+      // 状态与后端注册表一致。
+      await refreshApprovals(conversationId);
 
       const res = await fetch(`/api/conversations/${conversationId}/events`);
       if (!res.ok || !res.body) {
@@ -1467,6 +1634,7 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
     usageInputTokens.value = null;
     usageWindowTokens.value = null;
     usageCompacting.value = false;
+    pendingApprovals.value = new Map();
     if (trackContextUsage) clearContextUsage();
   };
 
@@ -1493,6 +1661,8 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
       windowTokens: readonly(usageWindowTokens),
       compacting: readonly(usageCompacting),
     },
+    /** 会话 id → 待决审批列表（ApprovalBanner 的数据源，按当前会话取桶）。 */
+    pendingApprovals: readonly(pendingApprovals),
     fetchMessages,
     sendMessage,
     resumeTurn,
@@ -1500,6 +1670,8 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
     attachSubagent,
     cancelConversation,
     compactConversation,
+    decideApproval,
+    refreshApprovals,
     clearMessages,
     dispose,
   };

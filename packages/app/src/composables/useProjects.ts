@@ -5,6 +5,49 @@ import type { components } from "@/api/schema";
 type Project = components["schemas"]["Project"];
 type Conversation = components["schemas"]["Conversation"];
 
+// ---------------------------------------------------------------------------
+// 工具权限模式（ADR 0004 §1.5）：三档词表与归一化（Conversation DTO 的
+// permission_mode 是宽松 string，展示/提交前先收窄）。
+// ---------------------------------------------------------------------------
+
+export type PermissionMode = "default" | "accept_edits" | "bypass";
+
+const PERMISSION_MODES: readonly PermissionMode[] = [
+  "default",
+  "accept_edits",
+  "bypass",
+];
+
+/** 未知/缺失值归一为 default（旧数据或异常输入的兜底）。 */
+export function normalizePermissionMode(
+  value: string | null | undefined,
+): PermissionMode {
+  return (PERMISSION_MODES as readonly string[]).includes(value ?? "")
+    ? (value as PermissionMode)
+    : "default";
+}
+
+/** 模式切换器的选项（label 用于 AppSelect 触发器与菜单）。 */
+export const PERMISSION_MODE_OPTIONS: readonly {
+  value: PermissionMode;
+  label: string;
+}[] = [
+  { value: "default", label: "默认" },
+  { value: "accept_edits", label: "自动接受编辑" },
+  { value: "bypass", label: "全部放行" },
+];
+
+/** 侧栏会话行的档位短标（default 不显示）。 */
+export function permissionModeBadge(
+  mode: string | null | undefined,
+): { label: string; title: string } | null {
+  const normalized = normalizePermissionMode(mode);
+  if (normalized === "default") return null;
+  return normalized === "accept_edits"
+    ? { label: "自动编辑", title: "权限模式：工作区内的写入/编辑自动放行" }
+    : { label: "全放行", title: "权限模式：全部放行（deny 规则仍然生效）" };
+}
+
 const projects = ref<Project[]>([]);
 const conversations = ref<Map<string, Conversation[]>>(new Map());
 const loading = ref(false);
@@ -165,6 +208,35 @@ export function useProjects() {
     return true;
   };
 
+  /**
+   * 切换会话的工具权限模式（ADR 0004 §1.5）：PATCH conversations 的
+   * permission_mode，成功后同步本地列表（侧栏档位标即时更新）。逐次
+   * 调用即时生效——活动 run 的下一笔工具调用就按新档走。会话不在任何
+   * 已加载列表（找不到归属项目）时返回 false。
+   */
+  const setConversationPermissionMode = async (
+    conversationId: string,
+    mode: PermissionMode,
+  ): Promise<boolean> => {
+    for (const [projectId, list] of conversations.value) {
+      const index = list.findIndex((c) => c.id === conversationId);
+      if (index === -1) continue;
+      const { error } = await client.PATCH(
+        "/api/projects/{projectId}/conversations/{id}",
+        {
+          params: { path: { projectId, id: conversationId } },
+          body: { permission_mode: mode },
+        },
+      );
+      if (error) return false;
+      const next = [...list];
+      next[index] = { ...next[index]!, permission_mode: mode };
+      conversations.value = new Map(conversations.value).set(projectId, next);
+      return true;
+    }
+    return false;
+  };
+
   return {
     // shallowReadonly 而非 readonly：additional_dirs 是数组字段，DeepReadonly
     // 会把它变成 readonly string[]，与各组件 Project prop 的 string[] 不兼容。
@@ -180,5 +252,6 @@ export function useProjects() {
     deleteConversation,
     updateConversationTitle,
     renameConversation,
+    setConversationPermissionMode,
   };
 }

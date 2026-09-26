@@ -23,6 +23,17 @@
       </div>
     </div>
 
+    <!-- 审批条（ADR 0004）：pending 审批逐条卡片堆叠于输入区上方，
+         decide 经 emit 交给页面层调 decideApproval -->
+    <ApprovalBanner
+      v-if="approvals.length > 0"
+      :approvals="approvals"
+      @decide="
+        (approvalId, decision, pattern) =>
+          $emit('decideApproval', approvalId, decision, pattern)
+      "
+    />
+
     <!-- 输入区：模型选择器内嵌在输入框内（Zed agent 面板的做法） -->
     <div class="flex-none px-7 pb-3.5 pt-2.5">
       <div
@@ -65,6 +76,19 @@
         </div>
         <div class="flex items-center gap-0.5 p-2">
           <span class="flex-1" />
+
+          <!-- 工具权限模式（ADR 0004 §1.5）：三档切换，bypass 警示色 -->
+          <AppSelect
+            :model-value="permissionMode"
+            :options="PERMISSION_MODE_OPTIONS"
+            placeholder="权限"
+            title="工具权限模式"
+            align="end"
+            :trigger-class="`max-w-[128px] ${permissionMode === 'bypass' ? 'text-warning-10' : 'text-dim'}`"
+            :disabled="!conversationId"
+            @update:model-value="(v: string) => $emit('setPermissionMode', v)"
+          />
+          <span class="mx-0.5 flex-none text-[12px] text-faint">/</span>
 
           <!-- 上下文占用圆环：hover 弹出容量详情 -->
           <ContextRing class="mr-1" />
@@ -136,6 +160,7 @@ import {
 import AppSelect from "@/components/ui/AppSelect.vue";
 import { renderMcpPrompt } from "@/composables/useMcpServers";
 import { useMcpStatus } from "@/composables/useMcpStatus";
+import { PERMISSION_MODE_OPTIONS } from "@/composables/useProjects";
 import {
   buildSlashMenuGroups,
   builtinSlashCommands,
@@ -145,12 +170,17 @@ import {
   replaceSlashCommand,
   slashQueryOf,
 } from "@/composables/useSlashCommands";
+import ApprovalBanner from "./ApprovalBanner.vue";
 import ChatMessageList from "./ChatMessageList.vue";
 import ContextRing from "./ContextRing.vue";
 import PromptArgsDialog from "./PromptArgsDialog.vue";
 import SlashMenu from "./SlashMenu.vue";
 import type { components } from "@/api/schema";
-import type { DisplayMessage } from "@/composables/useChat";
+import type {
+  ApprovalDecision,
+  DisplayMessage,
+  PendingApproval,
+} from "@/composables/useChat";
 import type {
   BuiltinSlashCommand,
   SlashMenuGroup,
@@ -170,6 +200,10 @@ const props = defineProps<{
   providers: readonly ProviderResponse[];
   selectedProviderId: string | null;
   selectedModelId: string | null;
+  /** 当前会话的待决审批（approval_requested 事件 / pending 快照）。 */
+  approvals: readonly PendingApproval[];
+  /** 会话当前的工具权限模式（default/accept_edits/bypass）。 */
+  permissionMode: string | null;
 }>();
 const emit = defineEmits<{
   send: [content: string];
@@ -179,6 +213,14 @@ const emit = defineEmits<{
   compact: [];
   selectProvider: [providerId: string];
   selectModel: [modelId: string];
+  /** 审批卡决定（ADR 0004）：交页面层调 decideApproval。 */
+  decideApproval: [
+    approvalId: string,
+    decision: ApprovalDecision,
+    pattern?: string,
+  ];
+  /** 权限模式切换：交页面层 PATCH conversations。 */
+  setPermissionMode: [mode: string];
 }>();
 
 const inputMessage = ref("");

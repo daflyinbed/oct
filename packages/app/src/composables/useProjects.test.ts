@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import client from "@/api/client";
-import { useProjects } from "@/composables/useProjects";
+import {
+  normalizePermissionMode,
+  permissionModeBadge,
+  useProjects,
+} from "@/composables/useProjects";
 
 vi.mock("@/api/client", () => ({
   default: { GET: vi.fn(), POST: vi.fn(), PATCH: vi.fn(), DELETE: vi.fn() },
@@ -18,6 +22,7 @@ const {
   updateProject,
   updateConversationTitle,
   renameConversation,
+  setConversationPermissionMode,
 } = useProjects();
 
 function conversation(id: string, title: string) {
@@ -26,6 +31,7 @@ function conversation(id: string, title: string) {
     project_id: "p1",
     title,
     title_source: "default",
+    permission_mode: "default",
     created_at: "2026-09-21T00:00:00",
     updated_at: "2026-09-21T00:00:00",
   };
@@ -218,5 +224,56 @@ describe("renameConversation（侧栏行内改名）", () => {
     expect(ok).toBe(false);
     expect(conversations.value.get("p1")?.[0]?.title).toBe("old");
     expect(conversations.value.get("p1")?.[0]?.title_source).toBe("default");
+  });
+});
+
+describe("权限模式（ADR 0004 §1.5）", () => {
+  it("setConversationPermissionMode：PATCH 正确端点/body，成功后本地列表同步档位", async () => {
+    stubList([conversation("c1", "New conversation")]);
+    await fetchConversations("p1");
+
+    PATCH.mockResolvedValue({ data: undefined, error: undefined } as never);
+
+    const ok = await setConversationPermissionMode("c1", "accept_edits");
+
+    expect(ok).toBe(true);
+    expect(PATCH).toHaveBeenCalledWith(
+      "/api/projects/{projectId}/conversations/{id}",
+      {
+        params: { path: { projectId: "p1", id: "c1" } },
+        body: { permission_mode: "accept_edits" },
+      },
+    );
+    expect(conversations.value.get("p1")?.[0]?.permission_mode).toBe(
+      "accept_edits",
+    );
+  });
+
+  it("权限模式 PATCH 失败返回 false，本地档位不变；未加载的会话也返回 false", async () => {
+    stubList([conversation("c1", "New conversation")]);
+    await fetchConversations("p1");
+
+    PATCH.mockResolvedValue({ data: undefined, error: {} } as never);
+    expect(await setConversationPermissionMode("c1", "bypass")).toBe(false);
+    expect(conversations.value.get("p1")?.[0]?.permission_mode).toBe("default");
+
+    expect(await setConversationPermissionMode("not-loaded", "bypass")).toBe(
+      false,
+    );
+    expect(PATCH).toHaveBeenCalledTimes(1);
+  });
+
+  it("normalizePermissionMode 归一化；permissionModeBadge 仅非 default 有档位标", () => {
+    expect(normalizePermissionMode("accept_edits")).toBe("accept_edits");
+    expect(normalizePermissionMode("bypass")).toBe("bypass");
+    expect(normalizePermissionMode("default")).toBe("default");
+    expect(normalizePermissionMode("nonsense")).toBe("default");
+    expect(normalizePermissionMode(null)).toBe("default");
+    expect(normalizePermissionMode(undefined)).toBe("default");
+
+    expect(permissionModeBadge("default")).toBeNull();
+    expect(permissionModeBadge(null)).toBeNull();
+    expect(permissionModeBadge("accept_edits")?.label).toBe("自动编辑");
+    expect(permissionModeBadge("bypass")?.label).toBe("全放行");
   });
 });

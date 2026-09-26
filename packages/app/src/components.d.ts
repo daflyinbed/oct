@@ -11,6 +11,7 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    ApprovalBanner: typeof import('./components/chat/ApprovalBanner.vue')['default']
     AppSelect: typeof import('./components/ui/AppSelect.vue')['default']
     BashTaskCard: typeof import('./components/chat/BashTaskCard.vue')['default']
     BashTaskOutputDialog: typeof import('./components/chat/BashTaskOutputDialog.vue')['default']
@@ -78,6 +79,7 @@ declare module 'vue' {
     McpEditPage: typeof import('./components/settings/mcp/McpEditPage.vue')['default']
     McpListPage: typeof import('./components/settings/mcp/McpListPage.vue')['default']
     McpTabView: typeof import('./components/views/McpTabView.vue')['default']
+    PermissionRulesPage: typeof import('./components/settings/permissions/PermissionRulesPage.vue')['default']
     ProjectDialog: typeof import('./components/layout/ProjectDialog.vue')['default']
     ProjectSidebar: typeof import('./components/sidebar/ProjectSidebar.vue')['default']
     PromptArgsDialog: typeof import('./components/chat/PromptArgsDialog.vue')['default']

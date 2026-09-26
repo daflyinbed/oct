@@ -30,10 +30,12 @@ const {
   messages,
   sending,
   resumable,
+  pendingApprovals,
   fetchMessages,
   sendMessage,
   resumeTurn,
   attachRun,
+  decideApproval,
   clearMessages,
 } = useChat();
 
@@ -834,10 +836,13 @@ describe("attachRun 重连重放", () => {
     };
   }
 
-  /** GET 队列：初始历史 → /run 探测 →（终态）静默刷新。 */
+  /** GET 队列：初始历史 → /run 探测 →（运行中）approvals 快照 →（终态）静默刷新。 */
   function stubGetQueue(...results: unknown[]) {
     for (const r of results) GET.mockResolvedValueOnce(r as never);
   }
+
+  /** 运行中 run 的 approvals 快照槽位（空 pending）。 */
+  const emptyApprovals = { data: [] };
 
   /** 终态刷新失败：保留重建视图以便断言重放结果（loadMessages 失败不动视图）。 */
   const failedRefresh = { data: undefined, error: {} };
@@ -860,6 +865,7 @@ describe("attachRun 重连重放", () => {
         ],
       },
       { data: { running: true } },
+      emptyApprovals,
       failedRefresh,
     );
     const sse = pausableSse();
@@ -901,13 +907,15 @@ describe("attachRun 重连重放", () => {
     ]);
     expect(rebuilt.isStreaming).toBe(false);
     expect(sending.value).toBe(false);
-    // 订阅打到 events 端点；GET 轨迹：初始加载 → /run 探测 → 终态刷新
+    // 订阅打到 events 端点；GET 轨迹：初始加载 → /run 探测 → approvals
+    // 快照 → 终态刷新
     expect(sse.fetchMock.mock.calls[0]?.[0]).toBe(
       `/api/conversations/${conv}/events`,
     );
-    expect(GET).toHaveBeenCalledTimes(3);
+    expect(GET).toHaveBeenCalledTimes(4);
     expect(GET.mock.calls[1]?.[0]).toBe("/api/conversations/{id}/run");
-    expect(GET.mock.calls[2]?.[0]).toBe("/api/conversations/{id}/messages");
+    expect(GET.mock.calls[2]?.[0]).toBe("/api/conversations/{id}/approvals");
+    expect(GET.mock.calls[3]?.[0]).toBe("/api/conversations/{id}/messages");
   });
 
   it("空闲会话：只静默刷新收敛，不订阅事件流、不悬挂", async () => {
@@ -948,6 +956,7 @@ describe("attachRun 重连重放", () => {
         ],
       },
       { data: { running: true } },
+      emptyApprovals,
       failedRefresh,
     );
     stubFetch(sse([textDelta("续答"), finishEvent]));
@@ -968,6 +977,7 @@ describe("attachRun 重连重放", () => {
     stubGetQueue(
       { data: [storedMessage("user", '[{"Text":"问"}]', { id: "u1" })] },
       { data: { running: true } },
+      emptyApprovals,
       {
         data: [
           storedMessage("user", '[{"Text":"问"}]', { id: "u1" }),
@@ -981,7 +991,7 @@ describe("attachRun 重连重放", () => {
 
     expect(messages.value.map((m) => m.role)).toEqual(["user", "assistant"]);
     expect(messages.value.some((m) => RE_reattachedId.test(m.id))).toBe(false);
-    expect(GET).toHaveBeenCalledTimes(3);
+    expect(GET).toHaveBeenCalledTimes(4);
     expect(sending.value).toBe(false);
   });
 
@@ -995,6 +1005,7 @@ describe("attachRun 重连重放", () => {
         ],
       },
       { data: { running: true } },
+      emptyApprovals,
       failedRefresh,
     );
     // 中途 run 结束（hub drop ⟹ 流关闭）且最后一截没带终态事件
@@ -1019,6 +1030,7 @@ describe("attachRun 重连重放", () => {
         ],
       },
       { data: { running: true } },
+      emptyApprovals,
     );
     const sse = pausableSse();
 
@@ -1029,7 +1041,7 @@ describe("attachRun 重连重放", () => {
       expect(messages.value.some((m) => RE_reattachedId.test(m.id))).toBe(true),
     );
 
-    // 切换到会话 B（GET#3：B 的加载）
+    // 切换到会话 B（GET#4：B 的加载）
     const convB = nextConvId();
     stubGetQueue({
       data: [storedMessage("user", '[{"Text":"B会话"}]', { id: "b1" })],
@@ -1042,7 +1054,7 @@ describe("attachRun 重连重放", () => {
     await attachPromise;
 
     expect(messages.value.map((m) => m.id)).toEqual(["b1"]);
-    expect(GET).toHaveBeenCalledTimes(3); // A 初始 + A 探测 + B 切换（A 收尾刷新被拦）
+    expect(GET).toHaveBeenCalledTimes(4); // A 初始 + A 探测 + A 快照 + B 切换（A 收尾刷新被拦）
     expect(sending.value).toBe(false);
   });
 });
@@ -1850,5 +1862,251 @@ describe("后台任务通知", () => {
     } as never);
     await fetchMessages(nextConvId());
     expect(resumable.value).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 审批（ADR 0004 §4）：approval_requested/resolved 事件、pending 快照恢复、
+// decide 端点
+// ---------------------------------------------------------------------------
+
+describe("审批（ADR 0004）", () => {
+  function stubFetch(...responses: Response[]) {
+    const fetchMock = vi.fn();
+    for (const r of responses) fetchMock.mockResolvedValueOnce(r);
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  const approvalRequested = (
+    approvalId: string,
+    extra: Record<string, unknown> = {},
+  ) => ({
+    type: "approval_requested",
+    data: {
+      approval_id: approvalId,
+      call_id: `call-${approvalId}`,
+      tool: "write_file",
+      kind: "write",
+      title: "/tmp/outside.txt",
+      path: "/tmp/outside.txt",
+      command: null,
+      outside: true,
+      rule_suggestion: "/tmp/**",
+      ...extra,
+    },
+  });
+
+  const approvalResolved = (
+    approvalId: string,
+    outcome: string = "approved",
+  ) => ({
+    type: "approval_resolved",
+    data: { approval_id: approvalId, outcome, rule_id: null },
+  });
+
+  function pendingOf(conv: string): number {
+    return pendingApprovals.value.get(conv)?.length ?? 0;
+  }
+
+  beforeEach(() => {
+    POST.mockReset();
+  });
+
+  it("approval_requested 事件 upsert 进 pending 分桶；重复到达原地覆盖", async () => {
+    const conv = nextConvId();
+    stubFetch(
+      sse([
+        approvalRequested("a1"),
+        approvalRequested("a1"), // 重放/重复：同 id 覆盖，不产生第二张卡
+        approvalRequested("a2", {
+          tool: "execute_command",
+          kind: "command",
+          title: "cargo build",
+          path: null,
+          command: "cargo build",
+          outside: null,
+          rule_suggestion: "cargo build",
+        }),
+        textDelta("ok"),
+        finishEvent,
+      ]),
+    );
+
+    await sendMessage(conv, "hi");
+
+    const list = pendingApprovals.value.get(conv) ?? [];
+    expect(list).toHaveLength(2);
+    expect(list[0]).toMatchObject({
+      approvalId: "a1",
+      callId: "call-a1",
+      tool: "write_file",
+      kind: "write",
+      outside: true,
+      ruleSuggestion: "/tmp/**",
+    });
+    expect(list[1]).toMatchObject({
+      approvalId: "a2",
+      kind: "command",
+      command: "cargo build",
+      outside: false, // null 归一为 false
+    });
+    // 审批事件不产生消息内容
+    expect(
+      messages.value.some((m) =>
+        m.parts.some(
+          (p) => p.kind === "text" && p.text.includes("/tmp/outside.txt"),
+        ),
+      ),
+    ).toBe(false);
+  });
+
+  it("approval_resolved 事件移除 pending（requested→resolved 重放时序后干净）", async () => {
+    const conv = nextConvId();
+    stubFetch(
+      sse([
+        approvalRequested("a1"),
+        approvalRequested("a2"),
+        approvalResolved("a1", "denied"),
+        approvalResolved("a2", "expired"),
+        approvalResolved("a-unknown", "cancelled"), // 未命中：静默幂等
+        textDelta("ok"),
+        finishEvent,
+      ]),
+    );
+
+    await sendMessage(conv, "hi");
+
+    expect(pendingOf(conv)).toBe(0);
+  });
+
+  it("会话分桶隔离：另一会话的 pending 不串桶；clearMessages 清空", async () => {
+    const convA = nextConvId();
+    stubFetch(sse([approvalRequested("a1"), finishEvent]));
+    await sendMessage(convA, "hi");
+
+    const convB = nextConvId();
+    stubFetch(sse([approvalRequested("b1"), finishEvent]));
+    await sendMessage(convB, "hi");
+
+    expect(pendingOf(convA)).toBe(1);
+    expect(pendingOf(convB)).toBe(1);
+
+    clearMessages();
+    expect(pendingOf(convA)).toBe(0);
+    expect(pendingOf(convB)).toBe(0);
+  });
+
+  it("decideApproval：POST 端点与 body 正确；成功/404 移除本地，其他错误保留", async () => {
+    const conv = nextConvId();
+    stubFetch(
+      sse([
+        approvalRequested("a1"),
+        approvalRequested("a2"),
+        approvalRequested("a3"),
+        finishEvent,
+      ]),
+    );
+    await sendMessage(conv, "hi");
+    expect(pendingOf(conv)).toBe(3);
+
+    // 成功：本地即清（approval_resolved 事件再清一次是幂等空操作）
+    POST.mockResolvedValueOnce({
+      data: { resolved: true },
+      error: undefined,
+      response: new Response(),
+    } as never);
+    await decideApproval(conv, "a1", "allow");
+    expect(POST).toHaveBeenCalledWith(
+      "/api/conversations/{id}/approvals/{approval_id}",
+      {
+        params: { path: { id: conv, approval_id: "a1" } },
+        body: { decision: "allow", pattern: null },
+      },
+    );
+    expect(pendingOf(conv)).toBe(2);
+
+    // 404（已决/未知 id）：静默清掉本地条目
+    POST.mockResolvedValueOnce({
+      data: undefined,
+      error: { message: "unknown" },
+      response: new Response(null, { status: 404 }),
+    } as never);
+    await decideApproval(conv, "a2", "deny");
+    expect(pendingOf(conv)).toBe(1);
+
+    // 其他错误（如 500）：保留卡片供重试；pattern 随 allow_always 提交
+    POST.mockResolvedValueOnce({
+      data: undefined,
+      error: { message: "boom" },
+      response: new Response(null, { status: 500 }),
+    } as never);
+    await decideApproval(conv, "a3", "allow_always", "/custom/**");
+    expect(POST).toHaveBeenLastCalledWith(
+      "/api/conversations/{id}/approvals/{approval_id}",
+      {
+        params: { path: { id: conv, approval_id: "a3" } },
+        body: { decision: "allow_always", pattern: "/custom/**" },
+      },
+    );
+    expect(pendingOf(conv)).toBe(1);
+  });
+
+  it("attachRun：run 运行中先拉 pending 快照，以 GET 为准整表替换", async () => {
+    const conv = nextConvId();
+    // 预置一条陈旧本地条目（后端早已决，但事件未及到达的模拟）
+    stubFetch(sse([approvalRequested("stale"), finishEvent]));
+    await sendMessage(conv, "hi");
+    expect(pendingOf(conv)).toBe(1);
+
+    // 重连：/run 探测 running → GET approvals 返回空 → 重放流无审批事件
+    GET.mockResolvedValueOnce({ data: { running: true } } as never);
+    GET.mockResolvedValueOnce({ data: [] } as never); // approvals 快照
+    GET.mockResolvedValueOnce({ data: undefined, error: {} } as never); // 终态刷新失败：保留视图
+    stubFetch(sse([textDelta("续"), finishEvent]));
+
+    await attachRun(conv);
+
+    // GET 轨迹：/run → approvals →（事件流）→ messages
+    expect(GET.mock.calls[0]?.[0]).toBe("/api/conversations/{id}/run");
+    expect(GET.mock.calls[1]?.[0]).toBe("/api/conversations/{id}/approvals");
+    expect(GET.mock.calls[1]?.[1]).toEqual({
+      params: { path: { id: conv } },
+    });
+    // 陈旧条目被快照清掉（以 GET 为准）
+    expect(pendingOf(conv)).toBe(0);
+  });
+
+  it("permission_denied 工具卡：live 事件与历史行两路都标记 denied", async () => {
+    // live：tool_result 的 details 顶层 kind=permission_denied
+    stubFetch(
+      sse([
+        toolCallStart("c1", "write_file", "/etc/hosts", "{}"),
+        toolResult("c1", "工具调用被拒绝：用户拒绝了本次写入。", true, {
+          kind: "permission_denied",
+        }),
+        finishEvent,
+      ]),
+    );
+    await sendMessage(nextConvId(), "hi");
+    expect(toolCards()[0]!.denied).toBe(true);
+    expect(toolCards()[0]!.isError).toBe(true);
+
+    // 历史：DTO details 的已知 kind（typed 字段，不进 extra）
+    GET.mockResolvedValue({
+      data: [
+        storedMessage(
+          "assistant",
+          String.raw`[{"ToolCall":{"id":"c2","name":"write_file","arguments":"{}"}}]`,
+        ),
+        storedMessage(
+          "tool",
+          String.raw`[{"ToolResult":{"call_id":"c2","content":"被拒绝","is_error":true}}]`,
+          { details: { kind: "permission_denied" } },
+        ),
+      ],
+    } as never);
+    await fetchMessages(nextConvId());
+    expect(toolCards()[0]!.denied).toBe(true);
   });
 });

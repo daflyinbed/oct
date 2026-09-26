@@ -42,6 +42,51 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/conversations/{id}/approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The pending approvals of a conversation — the truth source a refreshed
+         *     UI rebuilds its open approval cards from (the event log replays, but
+         *     only this list tells which approvals are still undecided).
+         */
+        get: operations["list_pending_approvals"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/conversations/{id}/approvals/{approval_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Answer a pending approval (§4): `allow` proceeds the parked call,
+         *     `deny` refuses it, and `allow_always` persists an allow rule (source
+         *     `approval`, project scope), injects it into the conversation's LIVE
+         *     gates (so the same run stops asking — §1.8) and then proceeds. The
+         *     resolution event lands on the conversation's hub for live viewers and
+         *     the replay log.
+         */
+        post: operations["decide_approval"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/conversations/{id}/background-tasks": {
         parameters: {
             query?: never;
@@ -353,6 +398,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/permission-rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The global rules (every project's runs evaluate them). */
+        get: operations["list_global_permission_rules"];
+        put?: never;
+        /** Create a global rule (`project_id = NULL`). */
+        post: operations["create_global_permission_rule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/permission-rules/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete a rule (either scope — the id is global). */
+        delete: operations["delete_permission_rule"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects": {
         parameters: {
             query?: never;
@@ -546,6 +626,28 @@ export interface paths {
          *     server that cannot be spawned reports `failed` here, never a 5xx.
          */
         post: operations["ensure_project_mcp_servers"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{projectId}/permission-rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The rules visible to a project: its own rows plus the global ones. */
+        get: operations["list_project_permission_rules"];
+        put?: never;
+        /**
+         * Create a project-scoped rule. Manual CRUD writes the DB only — runs
+         *     already in flight keep their assembly-time rule set; the next run loads
+         *     the new row (§1.8).
+         */
+        post: operations["create_project_permission_rule"];
         delete?: never;
         options?: never;
         head?: never;
@@ -877,7 +979,67 @@ export interface components {
             };
             /** @enum {string} */
             type: "subagent_updated";
+        } | {
+            /**
+             * @description A tool call parked on user approval (ADR 0004 §4): the run is
+             *     suspended at the gate until the decide endpoint answers, the run is
+             *     cancelled, or the approval times out. Replays idempotently off the
+             *     hub log; after a page refresh the pending-list endpoint is the
+             *     truth source for which approvals are still open.
+             */
+            data: {
+                approval_id: string;
+                /** @description The tool call id the approval parks. */
+                call_id: string;
+                /** @description The raw command, execute actions only. */
+                command?: string | null;
+                /** @description Action class label (`read`/`write`/`edit`/`command`/`mcp`). */
+                kind: string;
+                /** @description Workspace containment verdict, file actions only. */
+                outside?: boolean | null;
+                /** @description The RESOLVED path (post-symlink), file actions only. */
+                path?: string | null;
+                /**
+                 * @description A conservative "always allow" pattern the user can edit before
+                 *     submitting (see `permissions::evaluator::rule_suggestion`).
+                 */
+                rule_suggestion?: string | null;
+                /**
+                 * @description One-line summary: the resolved path, the command, or the tool
+                 *     name.
+                 */
+                title: string;
+                /** @description Tool name as the model sees it (e.g. `write_file`). */
+                tool: string;
+            };
+            /** @enum {string} */
+            type: "approval_requested";
+        } | {
+            /**
+             * @description The resolution of a previously requested approval (ADR 0004 §4):
+             *     approved/denied by the decide endpoint (which also persisted an
+             *     `allow_always` rule, named by `rule_id`), or cancelled/expired by
+             *     the gate and the settlement sweep. Every `ApprovalRequested` is
+             *     eventually followed by exactly one of these.
+             */
+            data: {
+                approval_id: string;
+                outcome: components["schemas"]["ApprovalOutcome"];
+                /**
+                 * @description The persisted permission rule an `allow_always` created; `None`
+                 *     for every other outcome (and for plain `allow`).
+                 */
+                rule_id?: string | null;
+            };
+            /** @enum {string} */
+            type: "approval_resolved";
         };
+        /**
+         * @description How a pending approval was settled (the `approval_resolved` event's
+         *     outcome and the approval flow's four terminal states).
+         * @enum {string}
+         */
+        ApprovalOutcome: "approved" | "denied" | "cancelled" | "expired";
         /**
          * @description One background task row as the API serves it. For a `running` row the
          *     `output_bytes` field is refreshed from the live output file (the row
@@ -954,6 +1116,12 @@ export interface components {
             kind: string;
             /** @description For `subagent` rows: the conversation whose run delegated this task. */
             parent_conversation_id?: string | null;
+            /**
+             * @description Tool permission mode (ADR 0004 §1.5): `default` (write/execute/
+             *     outside-read all ask), `accept_edits` (in-workspace writes auto-
+             *     allowed), `bypass` (everything allowed — deny rules still win).
+             */
+            permission_mode: string;
             project_id: string;
             /** @description For `subagent` rows: the root chat conversation of the task tree. */
             root_conversation_id?: string | null;
@@ -1021,6 +1189,18 @@ export interface components {
             temperature?: boolean | null;
             tool_call?: boolean | null;
         };
+        /** @description The rule-creation body (both scopes). */
+        CreatePermissionRuleRequest: {
+            /** @description `allow` | `deny` | `ask`. */
+            effect: string;
+            /**
+             * @description Optional pattern; semantics per tool class (the front end is
+             *     responsible for offering sensible patterns).
+             */
+            pattern?: string | null;
+            /** @description Tool name; non-empty. */
+            tool: string;
+        };
         CreateProjectRequest: {
             /** @description Additional working directories (absolute paths). Defaults to empty. */
             additional_dirs?: string[] | null;
@@ -1033,6 +1213,20 @@ export interface components {
             doc_url?: string | null;
             id: string;
             name: string;
+        };
+        /** @description The decide endpoint's body. */
+        DecideApprovalRequest: {
+            /** @description `allow` | `allow_always` | `deny`. */
+            decision: string;
+            /**
+             * @description Overrides the request's `rule_suggestion` for the rule an
+             *     `allow_always` persists (the user-edited pattern).
+             */
+            pattern?: string | null;
+        };
+        /** @description The decide endpoint's answer. */
+        DecideApprovalResponse: {
+            resolved: boolean;
         };
         /**
          * @description The error body of EVERY non-2xx API response. `code` is the stable
@@ -1129,7 +1323,7 @@ export interface components {
          * @description Metadata kinds the API understands structurally.
          * @enum {string}
          */
-        KnownDetailsKind: "compaction" | "microcompact_cleared" | "reasoning_duration";
+        KnownDetailsKind: "compaction" | "microcompact_cleared" | "permission_denied" | "reasoning_duration";
         /** @description One declared argument of a cached `prompts/list` entry. */
         McpPromptArgumentSummary: {
             description?: string | null;
@@ -1399,6 +1593,55 @@ export interface components {
          * @enum {string}
          */
         OutputStream: "stdout" | "stderr";
+        /**
+         * @description One pending approval as the API serves it — the same fields the
+         *     `approval_requested` event carried, plus `created_at`; the list a page
+         *     refresh recovers its open approval cards from.
+         */
+        PendingApprovalDto: {
+            approval_id: string;
+            /** @description The tool call id the approval parks. */
+            call_id: string;
+            /** @description The raw command, execute actions only. */
+            command?: string | null;
+            created_at: string;
+            /** @description Action class label (`read`/`write`/`edit`/`command`/`mcp`). */
+            kind: string;
+            /** @description Workspace containment verdict, file actions only. */
+            outside?: boolean | null;
+            /** @description The RESOLVED path, file actions only. */
+            path?: string | null;
+            /**
+             * @description A conservative "always allow" pattern the user can edit before
+             *     submitting with `allow_always`.
+             */
+            rule_suggestion?: string | null;
+            run_id: string;
+            /** @description One-line summary (resolved path / command / tool name). */
+            title: string;
+            tool: string;
+        };
+        /** @description One persisted permission rule as the API serves it. */
+        PermissionRuleDto: {
+            /** @description Always `None` today (reserved, ADR 0004 §3). */
+            conversation_id?: string | null;
+            created_at: string;
+            /** @description `allow` | `deny` | `ask`. */
+            effect: string;
+            id: string;
+            /**
+             * @description `None` = any invocation; command prefix for `execute_command`;
+             *     absolute-path glob for the file tools.
+             */
+            pattern?: string | null;
+            /** @description `None` = a global rule. */
+            project_id?: string | null;
+            /** @description `user` (this API) or `approval` (an "always allow" answer). */
+            source: string;
+            /** @description Exact tool name (e.g. `execute_command`) or `mcp__{server}__*`. */
+            tool: string;
+            updated_at: string;
+        };
         Project: {
             /**
              * @description Additional directories the agent may access via absolute paths,
@@ -1621,6 +1864,12 @@ export interface components {
             mime_type: string;
         };
         UpdateConversationRequest: {
+            /**
+             * @description Tool permission mode (ADR 0004 §1.5): `default` | `accept_edits` |
+             *     `bypass`. Takes effect on the active run's NEXT tool call (validated
+             *     and applied by the API layer, which also flips the live gates).
+             */
+            permission_mode?: string | null;
             title?: string | null;
         };
         UpdateMcpServerRequest: {
@@ -1753,6 +2002,79 @@ export interface operations {
                 };
             };
             /** @description Task not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_pending_approvals: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Conversation ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Pending approvals */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PendingApprovalDto"][];
+                };
+            };
+            /** @description Conversation not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    decide_approval: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Conversation ID */
+                id: string;
+                /** @description Approval ID (from the approval_requested event or the pending list) */
+                approval_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DecideApprovalRequest"];
+            };
+        };
+        responses: {
+            /** @description Decision delivered to the waiting run */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DecideApprovalResponse"];
+                };
+            };
+            /** @description Unknown decision value */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Conversation not found, or the approval is unknown / already resolved */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -2462,6 +2784,85 @@ export interface operations {
             };
         };
     };
+    list_global_permission_rules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Global rules */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PermissionRuleDto"][];
+                };
+            };
+        };
+    };
+    create_global_permission_rule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreatePermissionRuleRequest"];
+            };
+        };
+        responses: {
+            /** @description Created rule */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PermissionRuleDto"];
+                };
+            };
+            /** @description Invalid effect or empty tool */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_permission_rule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Rule ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rule deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Rule not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     list_projects: {
         parameters: {
             query?: never;
@@ -2754,8 +3155,15 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Title updated */
+            /** @description Updated (title and/or permission mode) */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No field to update, or an unknown permission mode */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2991,6 +3399,77 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["McpServerResponse"][];
                 };
+            };
+            /** @description Project not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_project_permission_rules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project ID */
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rules visible to the project (own + global) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PermissionRuleDto"][];
+                };
+            };
+            /** @description Project not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create_project_permission_rule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project ID */
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreatePermissionRuleRequest"];
+            };
+        };
+        responses: {
+            /** @description Created rule */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PermissionRuleDto"];
+                };
+            };
+            /** @description Invalid effect or empty tool */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Project not found */
             404: {

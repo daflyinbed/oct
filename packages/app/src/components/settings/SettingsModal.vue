@@ -84,7 +84,9 @@
                   >
                 </template>
               </template>
-              <template v-else>
+              <template
+                v-else-if="view.name === 'mcp' || view.name === 'mcp-edit'"
+              >
                 <button
                   class="text-[12.5px] text-dim transition-colors hover:text-neutral-10"
                   @click="view = { name: 'mcp' }"
@@ -97,6 +99,18 @@
                     editingServerName ?? "Add Server"
                   }}</span>
                 </template>
+              </template>
+              <template v-else-if="view.name === 'permissions'">
+                <button
+                  class="text-[12.5px] text-dim transition-colors hover:text-neutral-10"
+                  @click="view = { name: 'ai' }"
+                >
+                  AI
+                </button>
+                <span class="text-[12.5px] text-faint">/</span>
+                <span class="text-[12.5px] text-neutral-10 font-semibold">
+                  权限规则
+                </span>
               </template>
             </template>
             <span v-else class="text-[12.5px] text-neutral-10 font-semibold">
@@ -196,6 +210,40 @@
                   <i-lucide-chevron-right class="h-3 w-3 text-dim" />
                 </button>
               </div>
+              <!-- 权限规则（ADR 0004）：项目作用域看 本项目+全局 两组，
+                   全局作用域只看全局组；两个作用域都提供入口 -->
+              <div
+                class="flex items-center gap-[18px] border-b border-line-soft border-dashed py-3"
+              >
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center gap-2">
+                    <span class="text-[13px] text-strong font-semibold">
+                      权限规则
+                    </span>
+                    <span
+                      v-if="!inProjectScope"
+                      class="rounded bg-neutral-2 px-1.5 py-px text-[10.5px] text-dim font-medium leading-[16px]"
+                    >
+                      全局
+                    </span>
+                  </div>
+                  <div class="mt-0.5 text-[12px] text-dim">
+                    {{
+                      inProjectScope
+                        ? "工具调用的 allow/deny/ask 规则；「总是允许」的审批也会落在这里。"
+                        : "对所有项目生效的工具 allow/deny/ask 规则；项目专属规则切到项目作用域添加。"
+                    }}
+                  </div>
+                </div>
+                <button
+                  class="h-[26px] inline-flex flex-none items-center gap-1.5 control-surface rounded-md px-2.5 text-[12px] font-medium control-focus"
+                  title="配置权限规则"
+                  @click="view = { name: 'permissions' }"
+                >
+                  Configure
+                  <i-lucide-chevron-right class="h-3 w-3 text-dim" />
+                </button>
+              </div>
             </template>
 
             <!-- ============ 子页：表单状态归各子页所有 ============ -->
@@ -237,6 +285,14 @@
               @cancel="view = { name: 'mcp' }"
               @target-gone="view = { name: 'mcp' }"
             />
+            <!-- 权限规则（ADR 0004）：列表/表单状态归子页所有，进入即拉取，
+                 作用域切换由子页自己的 scopeId watch 响应 -->
+            <PermissionRulesPage
+              v-else-if="view.name === 'permissions'"
+              :scope-id="scopeId"
+              :in-project-scope="inProjectScope"
+              :active-scope-project-name="activeScopeProjectName"
+            />
           </div>
         </div>
         <DialogDescription class="sr-only">
@@ -260,6 +316,7 @@ import {
 import { computed, ref, watch } from "vue";
 import McpEditPage from "@/components/settings/mcp/McpEditPage.vue";
 import McpListPage from "@/components/settings/mcp/McpListPage.vue";
+import PermissionRulesPage from "@/components/settings/permissions/PermissionRulesPage.vue";
 import ConnectProviderPage from "@/components/settings/provider/ConnectProviderPage.vue";
 import ProviderDetailPage from "@/components/settings/provider/ProviderDetailPage.vue";
 import ProviderListPage from "@/components/settings/provider/ProviderListPage.vue";
@@ -299,7 +356,8 @@ type View =
   | { name: "provider"; id: string }
   | { name: "connect-provider" }
   | { name: "mcp" }
-  | { name: "mcp-edit"; id: string | null };
+  | { name: "mcp-edit"; id: string | null }
+  | { name: "permissions" };
 
 const view = ref<View>({ name: "ai" });
 const query = ref("");
@@ -385,6 +443,8 @@ function goBack() {
     view.value = { name: "ai" };
   } else if (view.value.name === "mcp" || view.value.name === "mcp-edit") {
     view.value = { name: "mcp" };
+  } else if (view.value.name === "permissions") {
+    view.value = { name: "ai" };
   } else {
     view.value = { name: "providers" };
   }

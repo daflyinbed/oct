@@ -73,7 +73,22 @@
                   v-if="selectedConversationId === conv.id"
                   class="absolute left-2 top-1/2 h-3.5 w-[3px] rounded-full bg-accent-7 -translate-y-1/2"
                 />
-                <span class="truncate">{{ conv.title || "New Chat" }}</span>
+                <span class="min-w-0 flex-1 truncate">{{
+                  conv.title || "New Chat"
+                }}</span>
+                <!-- 权限模式档位（ADR 0004）：非 default 时显示短标 -->
+                <span
+                  v-if="permissionModeBadge(conv.permission_mode)"
+                  class="h-[15px] inline-flex flex-none items-center whitespace-nowrap rounded-full px-1.5 text-[10px] font-medium leading-none"
+                  :class="
+                    conv.permission_mode === 'bypass'
+                      ? 'bg-warning-7 text-warning-10'
+                      : 'bg-accent-3 text-accent-10'
+                  "
+                  :title="permissionModeBadge(conv.permission_mode)!.title"
+                >
+                  {{ permissionModeBadge(conv.permission_mode)!.label }}
+                </span>
               </button>
             </ContextMenuTrigger>
             <ContextMenuPortal>
@@ -121,6 +136,7 @@ import {
 } from "reka-ui";
 import { computed, ref, watch } from "vue";
 import ConversationRenameDialog from "@/components/sidebar/ConversationRenameDialog.vue";
+import { permissionModeBadge } from "@/composables/useProjects";
 import type { components } from "@/api/schema";
 
 type Project = components["schemas"]["Project"];
