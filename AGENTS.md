@@ -69,8 +69,7 @@ pnpm -r exec eslint .                 # ESLint with @xwbx/eslint-config flat con
 
 ## Docs（改敏感区前先读）
 
-- `docs/adr/0001-provider-model-project-redesign.md` / `docs/adr/0002-subagent-runtime.md` / `docs/adr/0003-background-bash-runtime.md`：架构决策记录（provider/model/project 重设计；子代理运行时——run 生命周期/worker 执行与写入协作/崩溃恢复；后台 bash 运行时——envelope 即答/文件直写输出/通知唤醒）
-- `docs/explore/`：各主题调研笔记（compaction、MCP、subagent、测试基建、工具调研等）；`docs/backlog.md`：待办
+- `docs/explore/`：各主题调研笔记（compaction、MCP、subagent、测试基建、工具调研等）；`docs/backlog.md`：待办。注意 docs/ 整体不入库，均为本地文档；历史架构决策记录（ADR 0001–0004）已删，见 git 历史。
 
 ## Architecture
 
