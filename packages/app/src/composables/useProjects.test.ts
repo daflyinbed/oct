@@ -227,7 +227,7 @@ describe("renameConversation（侧栏行内改名）", () => {
   });
 });
 
-describe("权限模式（ADR 0004 §1.5）", () => {
+describe("权限模式", () => {
   it("setConversationPermissionMode：PATCH 正确端点/body，成功后本地列表同步档位", async () => {
     stubList([conversation("c1", "New conversation")]);
     await fetchConversations("p1");

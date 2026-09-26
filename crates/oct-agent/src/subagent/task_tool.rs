@@ -1,4 +1,4 @@
-//! The `task` tool (ADR 0002 §4): the model-facing delegation interface.
+//! The `task` tool: the model-facing delegation interface.
 //!
 //! First version: exactly two required arguments (`description` = short UI
 //! title, `prompt` = full instructions). The role is fixed to `worker` by

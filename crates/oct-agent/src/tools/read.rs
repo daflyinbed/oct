@@ -13,7 +13,7 @@ use super::{AgentTool, ToolContext, ToolOutput};
 pub struct ReadFileTool {
     roots: WorkspaceRoots,
     /// This agent's own read records (shared with its write/edit tools only
-    /// — never with another agent; ADR 0002 §5.3).
+    /// — never with another agent).
     reads: Arc<AgentReadState>,
 }
 

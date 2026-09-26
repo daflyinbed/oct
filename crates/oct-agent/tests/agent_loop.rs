@@ -3014,7 +3014,7 @@ async fn split_migration_down_restores_cow_and_folds_losslessly() {
     assert_eq!(tool_row.4, "c1");
 }
 
-// --- Permission gate (ADR 0004) ------------------------------------------------
+// --- Permission gate ------------------------------------------------
 
 use futures_util::StreamExt as _;
 use oct_agent::agent::RunHandle;
@@ -3050,7 +3050,7 @@ async fn wait_for_approval(rx: &mut SubscribeStream) -> (String, AgentEvent) {
     }
 }
 
-/// Spawn the real loop with a caller-built permission gate: the ADR 0004
+/// Spawn the real loop with a caller-built permission gate: the permission
 /// suites park scripted turns on the gate's approval flow and answer
 /// through the very registry the gate holds. The workspace is the test
 /// env's temp dir; "outside" targets are absolute paths in a second temp

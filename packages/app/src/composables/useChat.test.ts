@@ -1756,7 +1756,7 @@ describe("send 失败文案与 pending_recovery", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 后台任务通知（ADR 0003）：stored 行 → notification 角色 + 文本块解析
+// 后台任务通知：stored 行 → notification 角色 + 文本块解析
 // ---------------------------------------------------------------------------
 
 describe("后台任务通知", () => {
@@ -1866,11 +1866,11 @@ describe("后台任务通知", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 审批（ADR 0004 §4）：approval_requested/resolved 事件、pending 快照恢复、
+// 审批：approval_requested/resolved 事件、pending 快照恢复、
 // decide 端点
 // ---------------------------------------------------------------------------
 
-describe("审批（ADR 0004）", () => {
+describe("审批", () => {
   function stubFetch(...responses: Response[]) {
     const fetchMock = vi.fn();
     for (const r of responses) fetchMock.mockResolvedValueOnce(r);

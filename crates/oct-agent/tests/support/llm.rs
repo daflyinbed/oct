@@ -75,7 +75,7 @@ struct LlmMockState {
     turns: Mutex<VecDeque<LlmTurn>>,
     /// Per-marker streaming queues (see [`LlmMock::push_marker_turns`]):
     /// key = a substring unique to one agent's conversation (e.g. the task
-    /// delegation prompt embeds `TASKA-7f3a`). The ADR's "模型工厂" — parent
+    /// delegation prompt embeds `TASKA-7f3a`). The "模型工厂" — parent
     /// and children share this one mock, so per-agent scripting is routed by
     /// request content.
     marker_turns: Mutex<std::collections::HashMap<String, VecDeque<LlmTurn>>>,

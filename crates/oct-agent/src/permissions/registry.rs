@@ -1,4 +1,4 @@
-//! The Ask arm's parking lot (ADR 0004 §4): in-memory pending approvals,
+//! The Ask arm's parking lot: in-memory pending approvals,
 //! answered through a oneshot. Deliberately primitive — waiting, the
 //! `select!` over oneshot/cancel/timeout and rule persistence for
 //! `allow_always` live in the gate (a later PR); this type only registers,
@@ -9,8 +9,8 @@ use tokio::sync::oneshot;
 
 use crate::permissions::evaluator::{PermissionAction, rule_suggestion};
 
-/// What the user answered to an approval request — the REST decide body
-/// (§5). `AllowAlways` makes the gate persist a rule before proceeding;
+/// What the user answered to an approval request — the REST decide body.
+/// `AllowAlways` makes the gate persist a rule before proceeding;
 /// the registry itself only transports the answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -22,7 +22,7 @@ pub enum ApprovalDecision {
 
 /// Display summary of one parked approval — the payload the
 /// `ApprovalRequested` event, the pending-list DTO and the cancel cleanup
-/// share (§4: title/summary with the outside mark, real path, command).
+/// share (title/summary with the outside mark, real path, command).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingApprovalMeta {
     pub id: String,
@@ -41,7 +41,7 @@ pub struct PendingApprovalMeta {
     pub outside: Option<bool>,
     pub path: Option<String>,
     pub command: Option<String>,
-    /// A conservative "always allow" pattern for this action (§3), offered
+    /// A conservative "always allow" pattern for this action, offered
     /// with the approval so the user can edit it before submitting; the
     /// decide endpoint persists it verbatim on `allow_always`.
     pub rule_suggestion: Option<String>,
@@ -98,13 +98,13 @@ pub struct PendingApproval {
 }
 
 /// The decide outcome for an id the registry does not hold. Unknown and
-/// already-resolved are deliberately indistinguishable (§4's idempotent
+/// already-resolved are deliberately indistinguishable (the idempotent
 /// decide endpoint answers both the same way).
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 #[error("approval is unknown or already resolved")]
 pub struct UnknownApproval;
 
-/// In-memory registry of pending approvals (§4): memory-only by design —
+/// In-memory registry of pending approvals: memory-only by design —
 /// the only durable traces of an approval are the rules it produced and
 /// the ToolResult it gated. Mounts on `RunService` in the wiring PR; safe
 /// to share across threads.
@@ -166,7 +166,7 @@ impl ApprovalRegistry {
     }
 
     /// Drop every pending approval of a run — the settlement/cancel/crash
-    /// cleanup (§4's guard duty). Their waiters see the oneshot close.
+    /// cleanup. Their waiters see the oneshot close.
     /// Returns the metas so the caller can publish
     /// `ApprovalResolved { cancelled }` events for each.
     pub fn remove_for_run(&self, run_id: &str) -> Vec<PendingApprovalMeta> {
@@ -183,7 +183,7 @@ impl ApprovalRegistry {
     }
 
     /// The pending approvals of a conversation, for the pending-list DTO
-    /// (§4's refresh-after-reload truth source). Iteration order is the
+    /// (the refresh-after-reload truth source). Iteration order is the
     /// map's, not insertion — fine for a list the front end re-renders
     /// from; parallel tool calls stack, they do not queue.
     pub fn pending_for_conversation(&self, conversation_id: &str) -> Vec<PendingApprovalMeta> {

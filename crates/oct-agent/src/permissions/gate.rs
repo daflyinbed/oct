@@ -1,4 +1,4 @@
-//! The permission gate (ADR 0004 §1.1/§4): the single checkpoint every
+//! The permission gate: the single checkpoint every
 //! model-driven tool call passes through, invoked at the agent loop's
 //! dispatch point before `Tool::execute`. One gate instance serves one run;
 //! [`crate::runtime::RunService`] assembles it (root and child alike) from
@@ -12,7 +12,7 @@
 //! * **Ask** → register a pending approval, publish `ApprovalRequested`,
 //!   and park on `select! { oneshot, run cancel, timeout }`. Subagent runs
 //!   never park: their Ask is downgraded to a Deny with an explanatory
-//!   message (§1.6 — the requirement travels back to the root instead).
+//!   message (the requirement travels back to the root instead).
 
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -44,10 +44,10 @@ pub enum GateVerdict {
 /// (the resolved path or the command) so the model can tell WHICH call was
 /// refused when a round carried several.
 const RULE_DENY_PREFIX: &str = "Permission denied by rule";
-/// The built-in exec-root deny (§1.3): ADR 0003's isolation promise,
-/// restated for the model.
+/// The built-in exec-root deny: the background-task output isolation
+/// promise, restated for the model.
 const EXEC_ROOT_DENY: &str = "Permission denied: background task output is only readable through the task_output tool";
-/// Subagent Ask downgrade (§1.6).
+/// Subagent Ask downgrade.
 const SUBAGENT_ASK_DOWNGRADE: &str = "Permission denied: subagents cannot trigger interactive approval; state the needed action in your final answer";
 const USER_DENY: &str = "Permission denied by the user";
 const TIMEOUT_DENY: &str = "Permission denied: approval timed out";
@@ -55,7 +55,7 @@ const TIMEOUT_DENY: &str = "Permission denied: approval timed out";
 /// into the existing cancel semantics (the run is ending anyway).
 const CANCELLED: &str = "用户取消了执行";
 
-/// Default Ask timeout (fail-closed, §1.4): 10 minutes.
+/// Default Ask timeout (fail-closed): 10 minutes.
 const DEFAULT_APPROVAL_TIMEOUT_SECS: u64 = 600;
 
 /// How long an Ask parks before self-denying. `OCT_APPROVAL_TIMEOUT`
@@ -90,7 +90,7 @@ pub struct PermissionGate {
     rules: RwLock<RuleSet>,
     mode: RwLock<PermissionMode>,
     /// Subagent runs have no interactive surface: their Ask becomes a Deny
-    /// (§1.6) carrying the guidance copy.
+    /// carrying the guidance copy.
     subagent: bool,
     registry: Arc<ApprovalRegistry>,
 }
@@ -151,8 +151,8 @@ impl PermissionGate {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Live mode switch (the PATCH conversation endpoint; §1.5's
-    /// "per-call immediate effect").
+    /// Live mode switch (the PATCH conversation endpoint; takes effect on
+    /// the very next tool call of a live run).
     pub fn set_mode(&self, mode: PermissionMode) {
         *self
             .mode
@@ -160,9 +160,9 @@ impl PermissionGate {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = mode;
     }
 
-    /// Live rule injection (the `allow_always` decide endpoint: §1.8 —
+    /// Live rule injection (the `allow_always` decide endpoint):
     /// persist the row, then push it into every active gate of the
-    /// conversation so the SAME run stops asking).
+    /// conversation so the SAME run stops asking.
     pub fn add_rule(&self, rule: Rule) {
         self.rules
             .write()
@@ -170,7 +170,7 @@ impl PermissionGate {
             .add(rule);
     }
 
-    /// Gate one tool call (§4's protocol). The hub is passed per call — the
+    /// Gate one tool call. The hub is passed per call — the
     /// gate must not hold a strong hub reference of its own (the SSE EOF
     /// guarantee belongs to the run handle).
     pub async fn check(
@@ -219,7 +219,7 @@ impl PermissionGate {
         }
     }
 
-    /// The Ask arm (§4): register, publish, and `select!` over the oneshot,
+    /// The Ask arm: register, publish, and `select!` over the oneshot,
     /// the run's cancellation and the timeout.
     async fn park_for_approval(
         &self,
@@ -265,7 +265,7 @@ impl PermissionGate {
             answer = &mut responder => match answer {
                 // The decide endpoint resolves allow/allow_always alike
                 // into a Proceed (rule persistence and gate injection are
-                // the endpoint's job, §1.8).
+                // the endpoint's job).
                 Ok(ApprovalDecision::Allow) | Ok(ApprovalDecision::AllowAlways) => {
                     GateVerdict::Proceed
                 }
@@ -284,7 +284,7 @@ impl PermissionGate {
                 GateVerdict::Denied(ToolOutput::error(CANCELLED))
             }
             _ = tokio::time::sleep(approval_timeout()) => {
-                // Fail-closed self-denial (§1.4); only THIS approval is
+                // Fail-closed self-denial; only THIS approval is
                 // dropped — a parallel sibling keeps waiting for its user.
                 if let Some(meta) = self.registry.remove(&approval_id) {
                     hub.publish(AgentEvent::ApprovalResolved {
@@ -300,7 +300,7 @@ impl PermissionGate {
 }
 
 /// Drop every pending approval of a run and publish a `cancelled`
-/// resolution for each (§4's cleanup): the deterministic sweep both run
+/// resolution for each: the deterministic sweep both run
 /// supervisors call at settlement, right before releasing occupancy — a
 /// parked gate future may simply be dropped when the loop's cancel branch
 /// wins the select race, so the supervisor (not the gate) owns this.

@@ -1,11 +1,11 @@
-//! Subagent runtime integration tests (ADR 0002 §9 PR2 acceptance).
+//! Subagent runtime integration tests (PR2 acceptance).
 //!
 //! Everything rides the full production chain — HTTP API → RunService →
 //! agent loop → real tools → SQLite → SSE — with the LLM behind the shared
 //! OpenAI-compatible mock. Per-agent scripting is routed by MARKER: each
 //! task's delegation prompt embeds a unique marker (`TASKA-7f3a`), so the
 //! parent's turns and every child's turns each get their own scripted queue
-//! on the one mock (the ADR's "可按 agent/run 分配的模型工厂").
+//! on the one mock (the "可按 agent/run 分配的模型工厂").
 //!
 //! No sleeps: every wait is parked on an SSE event, a stream EOF (the
 //! settlement signal — the child's occupancy guard drops exactly when its
@@ -156,10 +156,10 @@ async fn wired_app(llm: &support::llm::LlmMock) -> (TestApp, String, String) {
     app.register_llm_provider(llm).await;
     let project = app.create_project().await;
     let conv = app.create_conversation(&project).await;
-    // This suite predates the permission layer (ADR 0004) and its workers
+    // This suite predates the permission layer and its workers
     // write/edit inside the workspace — under `default` mode a subagent's
-    // Ask is downgraded to a Deny (§1.6), which is not what these tests
-    // exercise. `bypass` keeps the ADR 0002 flows as they were.
+    // Ask is downgraded to a Deny, which is not what these tests
+    // exercise. `bypass` keeps the subagent flows as they were.
     app.set_permission_mode(&project, &conv, "bypass").await;
     (app, project, conv)
 }
@@ -430,7 +430,7 @@ async fn cancel_single_child_only() {
 // --- 5. Cross-agent read-state isolation ------------------------------------
 
 /// A worker's edit_file without its own read_file is rejected — the parent's
-/// (or a sibling's) reads never authorize it (ADR 0002 §5.3).
+/// (or a sibling's) reads never authorize it.
 #[tokio::test]
 async fn child_edit_without_own_read_errors() {
     let llm = spawn_llm_mock(vec![

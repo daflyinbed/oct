@@ -1,4 +1,4 @@
-//! Tool-list-driven system prompts (ADR 0002 §3/§5.1): the prompt is built
+//! Tool-list-driven system prompts: the prompt is built
 //! from the tools the run ACTUALLY carries, not a static list — the curated
 //! guideline text stays for the seven built-ins, everything else (MCP tools
 //! surfaced as `mcp__{server}__{tool}`) gets a generic one-liner derived
@@ -166,7 +166,7 @@ pub fn system_prompt(
     base_prompt(working_dir, additional_dirs, tools)
 }
 
-/// The subagent (worker) system prompt (ADR 0002 §5.1): the same base, but
+/// The subagent (worker) system prompt: the same base, but
 /// NEVER the task guidance — workers cannot nest delegations — plus the
 /// worker identity paragraph describing the required report shape.
 pub fn worker_system_prompt(

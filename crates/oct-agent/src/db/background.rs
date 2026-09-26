@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::NaiveDateTime;
 use sqlx::SqlitePool;
 
-/// One persisted background bash task (ADR 0003): the lifecycle row created
+/// One persisted background bash task: the lifecycle row created
 /// when `execute_command` starts a command with `run_in_background = true`
 /// and settled exactly once by [`finish_task`] (or by
 /// [`mark_stale_tasks_lost`] after a crash). The in-memory registry holds
@@ -133,7 +133,7 @@ pub async fn finish_task(
     Ok(result.rows_affected() > 0)
 }
 
-/// Crash recovery (ADR 0003, mirrors `runs::mark_stale_runs_lost`): task
+/// Crash recovery (mirrors `runs::mark_stale_runs_lost`): task
 /// rows a previous process left `running` become `lost`. PDEATHSIG already
 /// terminated the commands themselves when that process died; the row just
 /// records the fact so the catch-up can tell the model what happened.

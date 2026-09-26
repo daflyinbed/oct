@@ -1,4 +1,4 @@
-//! Crash-recovery orchestration (ADR 0002 §6.4), driven by `resume_turn`.
+//! Crash-recovery orchestration, driven by `resume_turn`.
 //!
 //! The HTTP layer resolves the parent model BEFORE any write, subscribes to
 //! the (already occupied) conversation's hub and returns the SSE response
@@ -213,7 +213,7 @@ async fn recover_one(job: &RecoveryJob, run: AgentRun) -> Result<()> {
         msg_db::find_dangling_tool_calls(pool, &run.conversation_id).await?;
     let child_messages = msg_db::list_messages(pool, &run.conversation_id).await?;
 
-    // "Child effectively completed" shortcut (ADR 0002 §6.4): the crash
+    // "Child effectively completed" shortcut: the crash
     // happened between the final message persisting and the run row
     // settling — no dangling calls, last row an assistant without tool
     // calls. Settle the row as completed without calling the model again.

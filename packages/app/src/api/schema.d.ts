@@ -73,10 +73,10 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Answer a pending approval (§4): `allow` proceeds the parked call,
+         * Answer a pending approval: `allow` proceeds the parked call,
          *     `deny` refuses it, and `allow_always` persists an allow rule (source
          *     `approval`, project scope), injects it into the conversation's LIVE
-         *     gates (so the same run stops asking — §1.8) and then proceeds. The
+         *     gates (so the same run stops asking) and then proceeds. The
          *     resolution event lands on the conversation's hub for live viewers and
          *     the replay log.
          */
@@ -645,7 +645,7 @@ export interface paths {
         /**
          * Create a project-scoped rule. Manual CRUD writes the DB only — runs
          *     already in flight keep their assembly-time rule set; the next run loads
-         *     the new row (§1.8).
+         *     the new row.
          */
         post: operations["create_project_permission_rule"];
         delete?: never;
@@ -951,8 +951,8 @@ export interface components {
         } | {
             /**
              * @description A subagent task of this run changed state (started / settled /
-             *     recovered). Published on the PARENT run's hub only — small by design
-             *     (ADR 0002 §7.3): the child's own text/reasoning/tool events stay on
+             *     recovered). Published on the PARENT run's hub only — small by design:
+             *     the child's own text/reasoning/tool events stay on
              *     the child hub and are subscribed to separately. Never carries the
              *     child's `finish`/`usage`: forwarding those would wrongly end the
              *     parent stream or corrupt the parent's context ring.
@@ -981,7 +981,7 @@ export interface components {
             type: "subagent_updated";
         } | {
             /**
-             * @description A tool call parked on user approval (ADR 0004 §4): the run is
+             * @description A tool call parked on user approval: the run is
              *     suspended at the gate until the decide endpoint answers, the run is
              *     cancelled, or the approval times out. Replays idempotently off the
              *     hub log; after a page refresh the pending-list endpoint is the
@@ -1016,7 +1016,7 @@ export interface components {
             type: "approval_requested";
         } | {
             /**
-             * @description The resolution of a previously requested approval (ADR 0004 §4):
+             * @description The resolution of a previously requested approval:
              *     approved/denied by the decide endpoint (which also persisted an
              *     `allow_always` rule, named by `rule_id`), or cancelled/expired by
              *     the gate and the settlement sweep. Every `ApprovalRequested` is
@@ -1111,13 +1111,13 @@ export interface components {
             /**
              * @description `chat` (a normal sidebar conversation) or `subagent` (a managed
              *     worker session created by the `task` tool; never listed, never sent
-             *     to directly — see ADR 0002 §6.2).
+             *     to directly).
              */
             kind: string;
             /** @description For `subagent` rows: the conversation whose run delegated this task. */
             parent_conversation_id?: string | null;
             /**
-             * @description Tool permission mode (ADR 0004 §1.5): `default` (write/execute/
+             * @description Tool permission mode: `default` (write/execute/
              *     outside-read all ask), `accept_edits` (in-workspace writes auto-
              *     allowed), `bypass` (everything allowed — deny rules still win).
              */
@@ -1623,7 +1623,7 @@ export interface components {
         };
         /** @description One persisted permission rule as the API serves it. */
         PermissionRuleDto: {
-            /** @description Always `None` today (reserved, ADR 0004 §3). */
+            /** @description Always `None` today (reserved). */
             conversation_id?: string | null;
             created_at: string;
             /** @description `allow` | `deny` | `ask`. */
@@ -1865,7 +1865,7 @@ export interface components {
         };
         UpdateConversationRequest: {
             /**
-             * @description Tool permission mode (ADR 0004 §1.5): `default` | `accept_edits` |
+             * @description Tool permission mode: `default` | `accept_edits` |
              *     `bypass`. Takes effect on the active run's NEXT tool call (validated
              *     and applied by the API layer, which also flips the live gates).
              */

@@ -1,11 +1,11 @@
-//! Action extraction (ADR 0004 §3): `(tool_name, args)` → the neutral
+//! Action extraction: `(tool_name, args)` → the neutral
 //! [`PermissionAction`] the decision table consumes. The single place that
 //! knows which argument of which tool carries the path/command, so rule
 //! matching and approval display always describe the same action the model
 //! asked for.
 //!
-//! Failure policy (§1.1's "the gate never steals the tool's error
-//! semantics"): a call whose arguments cannot produce a descriptor — missing
+//! Failure policy ("the gate never steals the tool's error semantics"):
+//! a call whose arguments cannot produce a descriptor — missing
 //! parameter, non-string value, path that fails to resolve — maps to
 //! [`PermissionAction::Trusted`] and proceeds. The TOOL then reports the
 //! error itself ("Path not found: …"), which is both the message the model
@@ -22,7 +22,7 @@ use crate::tools::workspace::WorkspaceRoots;
 /// Extract the action a tool call is about to perform.
 pub fn describe(tool_name: &str, args: &Value, roots: &WorkspaceRoots) -> PermissionAction {
     match tool_name {
-        // The read class shares one decision row (§2): all four tools
+        // The read class shares one decision row: all four tools
         // resolve their optional path argument the same way.
         "read_file" | "list_dir" | "grep" | "glob" => read_action(args, roots),
         "write_file" => write_action(args, roots, "path"),
@@ -92,8 +92,8 @@ fn write_action(args: &Value, roots: &WorkspaceRoots, key: &str) -> PermissionAc
 
 /// Command extraction: the raw command string (prefix matching happens in
 /// the rule layer). `working_dir` is deliberately NOT part of the action —
-/// §3 keeps Ask independent of the cwd; the resolved working dir is display
-/// context the gate could surface later, not a decision input.
+/// the Ask verdict is independent of the cwd; the resolved working dir is
+/// display context the gate could surface later, not a decision input.
 fn command_action(args: &Value) -> PermissionAction {
     match str_arg(args, "command") {
         Some(command) => PermissionAction::Command {
@@ -268,7 +268,7 @@ mod tests {
                 command: "cargo build --release".into()
             }
         );
-        // The working dir is not part of the action (§3).
+        // The working dir is not part of the action.
         assert_eq!(
             describe(
                 "execute_command",

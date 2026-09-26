@@ -710,7 +710,7 @@ pub async fn repair_dangling_tool_calls(
 /// [`repair_dangling_tool_calls`] with an exclusion set: call ids in
 /// `exclude` are NEVER repaired. The recovery coordinator passes the managed
 /// `task` delegations here — those calls are waiting on their child runs and
-/// must not be turned into error placeholders (ADR 0002 §6.4: 父级未结算的
+/// must not be turned into error placeholders (父级未结算的
 /// task 不走普通“补中断错误”修复).
 pub async fn repair_dangling_tool_calls_except(
     pool: &SqlitePool,
@@ -747,7 +747,7 @@ pub async fn repair_dangling_tool_calls_except(
     Ok(dangling)
 }
 
-/// The "结果只落一次" primitive (ADR 0002 §6.4): persist a ToolResult
+/// The "结果只落一次" primitive: persist a ToolResult
 /// answering `call_id` in `conversation_id` — but only when no tool row
 /// already answers it (same scan family as [`find_dangling_tool_calls`]).
 /// Returns whether THIS call inserted the row; the envelope is the caller's
@@ -802,8 +802,8 @@ pub async fn last_message_is_user(pool: &SqlitePool, conversation_id: &str) -> R
 /// The role of the conversation's last message (by ordering), or `None` for
 /// an empty conversation. The extended resume-eligibility probe needs the
 /// raw role: a `lost` run may have crashed after every tool result landed
-/// but before the next model request, leaving `tool` as the last row (ADR
-/// 0002 §6.4 恢复资格看 run 状态).
+/// but before the next model request, leaving `tool` as the last row
+/// (恢复资格看 run 状态).
 pub async fn last_message_role(
     pool: &SqlitePool,
     conversation_id: &str,

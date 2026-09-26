@@ -46,7 +46,7 @@ async fn run_server(database_url: &str, port: u16) -> Result<()> {
         Arc::new(dashmap::DashMap::new());
     let mcp = Arc::new(oct_agent::mcp::McpManager::default());
 
-    // Crash recovery (ADR 0002 §6.2): agent_runs rows a previous process
+    // Crash recovery: agent_runs rows a previous process
     // left `running` become `lost` before this process accepts traffic.
     oct_agent::runtime::bootstrap(&pool).await;
 

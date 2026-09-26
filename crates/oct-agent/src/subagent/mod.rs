@@ -1,4 +1,4 @@
-//! Subagent runtime (ADR 0002): the `task` tool, the
+//! Subagent runtime: the `task` tool, the
 //! [`SubagentManager`] and the crash-recovery orchestrator. Workers reuse
 //! the production agent loop, tool execution, compaction and persistence
 //! through the shared [`crate::runtime::RunService`] — there is no separate

@@ -1,4 +1,4 @@
-//! Permission-rule REST surface (ADR 0004 §5): the settings page's CRUD
+//! Permission-rule REST surface: the settings page's CRUD
 //! over the `permission_rules` table. Project scope
 //! (`/projects/{projectId}/permission-rules`) and global scope
 //! (`/permission-rules`) share the handlers' bodies; `allow_always`
@@ -22,7 +22,7 @@ pub struct PermissionRuleDto {
     pub id: String,
     /// `None` = a global rule.
     pub project_id: Option<String>,
-    /// Always `None` today (reserved, ADR 0004 §3).
+    /// Always `None` today (reserved).
     pub conversation_id: Option<String>,
     /// `allow` | `deny` | `ask`.
     pub effect: String,
@@ -110,7 +110,7 @@ pub async fn list_project_permission_rules(
 
 /// Create a project-scoped rule. Manual CRUD writes the DB only — runs
 /// already in flight keep their assembly-time rule set; the next run loads
-/// the new row (§1.8).
+/// the new row.
 #[utoipa::path(
     post,
     path = "/projects/{projectId}/permission-rules",

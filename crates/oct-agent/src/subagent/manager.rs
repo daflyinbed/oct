@@ -1,4 +1,4 @@
-//! The subagent lifecycle manager (ADR 0002 §6): registration identity,
+//! The subagent lifecycle manager: registration identity,
 //! launch/re-launch, settlement and result envelopes.
 //!
 //! Memory holds ACTIVE objects only — a terminal child's info lives in the
@@ -173,7 +173,7 @@ impl SubagentManager {
         self.by_agent.contains_key(agent_id)
     }
 
-    /// The `task` tool's execution path (ADR 0002 §4/§6): register (or
+    /// The `task` tool's execution path: register (or
     /// re-attach to) the child run for one parent tool call, run it to a
     /// terminal state and return the settled row — the envelope is built
     /// from that row by the caller.
@@ -264,7 +264,7 @@ impl SubagentManager {
         }
 
         // Atomic registration: child conversation + delegation message + run
-        // row in ONE transaction (ADR 0002 §6.4 注册边界). A concurrent
+        // row in ONE transaction (the registration boundary). A concurrent
         // re-entry loses the (parent_run_id, parent_tool_call_id) UNIQUE
         // index race and re-reads the winner's row.
         let (run, start_message_id) = match register_child_tx(
@@ -530,7 +530,7 @@ fn is_unique_violation(e: &anyhow::Error) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Create the child conversation, the delegation user message and the
-/// `agent_runs` row in ONE transaction (ADR 0002 §6.4). The provider/model
+/// `agent_runs` row in ONE transaction. The provider/model
 /// are stamped on the delegation message so the child history records its
 /// model, and on the run row as the effective-config snapshot.
 async fn register_child_tx(
@@ -594,8 +594,8 @@ pub struct TaskEnvelope {
     pub details: Value,
 }
 
-/// Build the task envelope from a SETTLED run row + the child pool (ADR
-/// 0002 §4): shared verbatim by the live path, the crash backfill and the
+/// Build the task envelope from a SETTLED run row + the child pool:
+/// shared verbatim by the live path, the crash backfill and the
 /// recovery — the DB row is the single source of truth.
 pub async fn build_task_envelope(
     pool: &sqlx::SqlitePool,
@@ -637,7 +637,7 @@ pub async fn build_task_envelope(
 }
 
 /// `{"input_tokens":..,"output_tokens":..}` when either side is known,
-/// `null` when usage never arrived (unknown ≠ zero; ADR 0002 §6.3).
+/// `null` when usage never arrived (unknown ≠ zero).
 fn usage_json(run: &run_db::AgentRun) -> Value {
     match (run.input_tokens, run.output_tokens) {
         (None, None) => Value::Null,

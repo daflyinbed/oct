@@ -1,5 +1,5 @@
 //! State shared between the file-manipulating tools — split by ownership
-//! scope (ADR 0002 §5.3):
+//! scope:
 //!
 //! - [`WorkspaceFileLocks`]: per-file async mutexes serializing
 //!   read-modify-write cycles on the same path. Shared across EVERY agent of
@@ -31,7 +31,7 @@ pub enum ReadCheck {
     Fresh,
 }
 
-/// Per-agent read/write records (ADR 0002 §5.3): one instance per agent —
+/// Per-agent read/write records: one instance per agent —
 /// the parent and every subagent keep their own, so an edit by one never
 /// counts as a read by another.
 pub struct AgentReadState {
@@ -176,8 +176,8 @@ mod tests {
     #[test]
     fn read_state_is_per_agent() {
         // A's records must not authorize or refresh B's view: two separate
-        // AgentReadState instances never see each other's reads (the split
-        // ToolSharedState guarantees in ADR 0002 §5.3). A REAL file is needed:
+        // AgentReadState instances never see each other's reads (the
+        // per-agent state split guarantees this). A REAL file is needed:
         // a stat failure degrades to Fresh by design, so a path that never
         // exists cannot exercise the Stale branch.
         let dir = std::env::temp_dir().join(format!(

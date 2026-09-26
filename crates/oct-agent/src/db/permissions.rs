@@ -3,7 +3,7 @@ use chrono::NaiveDateTime;
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
-/// One persisted permission rule (ADR 0004 §3): the allow/deny/ask chain
+/// One persisted permission rule: the allow/deny/ask chain
 /// every tool call is evaluated against. Rows are loaded once at run
 /// assembly into an in-memory `permissions::rules::RuleSet`; the settings
 /// page and "always allow" approvals write them here.

@@ -1,4 +1,4 @@
-//! Background bash task e2e (ADR 0003): the `execute_command`
+//! Background bash task e2e: the `execute_command`
 //! `run_in_background` path over the full HTTP stack — envelope-immediate
 //! tool answer, fd-direct-write output files, one-shot settlement, the
 //! wake-run notification chain, the send-time catch-up after a simulated
@@ -31,7 +31,7 @@ async fn wired_app(llm: &LlmMock) -> (TestApp, String, String) {
     app.register_llm_provider(llm).await;
     let project = app.create_project().await;
     let conv = app.create_conversation(&project).await;
-    // This suite predates the permission layer (ADR 0004) and drives
+    // This suite predates the permission layer and drives
     // `execute_command` end to end: pin the conversation to `bypass` so no
     // approval interaction enters the flows under test.
     app.set_permission_mode(&project, &conv, "bypass").await;

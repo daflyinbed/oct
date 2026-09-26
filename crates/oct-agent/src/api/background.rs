@@ -1,4 +1,4 @@
-//! Background bash task REST surface (ADR 0003): the list the UI polls
+//! Background bash task REST surface: the list the UI polls
 //! while tasks run, bounded output reads for the full-log viewer, and the
 //! HTTP cancel behind the UI stop button. The model-facing equivalents are
 //! the `task_output` / `task_stop` tools; these endpoints serve the

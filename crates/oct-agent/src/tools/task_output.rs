@@ -1,4 +1,4 @@
-//! The `task_output` tool (ADR 0003): the model's read/wait surface for
+//! The `task_output` tool: the model's read/wait surface for
 //! background bash tasks started via `execute_command(run_in_background)`.
 //! Reads bounded slices of the task's output FILE (the only durable output
 //! store), optionally blocking until the task settles. Root runs only —

@@ -76,7 +76,7 @@
                 <span class="min-w-0 flex-1 truncate">{{
                   conv.title || "New Chat"
                 }}</span>
-                <!-- 权限模式档位（ADR 0004）：非 default 时显示短标 -->
+                <!-- 权限模式档位：非 default 时显示短标 -->
                 <span
                   v-if="permissionModeBadge(conv.permission_mode)"
                   class="h-[15px] inline-flex flex-none items-center whitespace-nowrap rounded-full px-1.5 text-[10px] font-medium leading-none"

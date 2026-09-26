@@ -4,7 +4,7 @@ use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnection;
 use uuid::Uuid;
 
-/// One persisted agent run (ADR 0002 §6.2): the lifecycle row created when a
+/// One persisted agent run: the lifecycle row created when a
 /// run starts and settled exactly once by [`finish_run`] (or by
 /// [`mark_stale_runs_lost`] after a crash). Root runs reference the
 /// conversation directly; subagent runs (later PRs) additionally carry the
@@ -67,7 +67,7 @@ pub async fn create_run(pool: &SqlitePool, new: NewRun) -> Result<AgentRun> {
 
 /// Create a run row inside a caller-owned transaction (the subagent
 /// registration creates the child conversation, delegation message and run
-/// row atomically — ADR 0002 §6.4 注册边界). The `(parent_run_id,
+/// row atomically). The `(parent_run_id,
 /// parent_tool_call_id)` UNIQUE index makes double registration under
 /// concurrent re-entry fail here; callers catch the constraint error and
 /// re-read the existing row.
@@ -201,7 +201,7 @@ pub async fn cancel_lost_run(
 /// Pick a not-yet-settled run (`running` or `lost`) up by a NEW execution
 /// instance: bump `execution_epoch`, flip the row back to `running` and
 /// clear `finished_at`. Returns the new epoch, or `None` when the row is
-/// already terminal (a terminal run must never restart — ADR 0002 §6.2).
+/// already terminal (a terminal run must never restart).
 pub async fn bump_execution_epoch(pool: &SqlitePool, run_id: &str) -> Result<Option<i64>> {
     let epoch = sqlx::query_scalar!(
         "UPDATE agent_runs SET execution_epoch = execution_epoch + 1, status = 'running', finished_at = NULL WHERE id = $1 AND status IN ('running', 'lost') RETURNING execution_epoch",
@@ -212,7 +212,7 @@ pub async fn bump_execution_epoch(pool: &SqlitePool, run_id: &str) -> Result<Opt
     Ok(epoch)
 }
 
-/// Crash recovery (ADR 0002 §6.2): runs a previous process left `running`
+/// Crash recovery: runs a previous process left `running`
 /// become `lost` — the executing instance is gone, but the persisted history
 /// and the conversation's resume eligibility are untouched. Called once at
 /// server startup, before any new run can be created.
@@ -258,7 +258,7 @@ pub async fn latest_run_for_conversation(
 }
 
 /// The child run registered for one parent tool call, if any — the
-/// registration identity of a `task` delegation (ADR 0002 §6.2: the
+/// registration identity of a `task` delegation (the
 /// `(parent_run_id, parent_tool_call_id)` pair is unique).
 pub async fn find_run_by_parent_call(
     pool: &SqlitePool,

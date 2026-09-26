@@ -143,7 +143,7 @@ pub async fn send_message(
     // active". Clock skew (negative delta) simply means "not idle".
     let idle = conversation_idle(&state, &id).await;
 
-    // Background task catch-up (ADR 0003): settled-but-unnotified tasks
+    // Background task catch-up: settled-but-unnotified tasks
     // (typically `lost` rows after a restart, or deliveries whose wake run
     // could not start) are flushed as one notification message BEFORE this
     // turn's user message, so the run below consumes them.
@@ -295,8 +295,8 @@ pub async fn resume_turn(
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::NotFound("Project not found".into()))?;
 
-    // Read-only resumability probe — EXTENDED per ADR 0002 §6.4 (恢复资格看
-    // run 状态): a dangling ToolCall OR a trailing unanswered user message
+    // Read-only resumability probe — EXTENDED beyond dangling calls
+    // (恢复资格看 run 状态): a dangling ToolCall OR a trailing unanswered user message
     // both mean the last turn never completed, and so does a `lost` latest
     // run whose last row is a tool result (every tool result landed, but the
     // next model request never completed). Nothing is persisted yet — an
@@ -338,7 +338,7 @@ pub async fn resume_turn(
     // Idle captured before any repair writes below (see send_message).
     let idle = conversation_idle(&state, &id).await;
 
-    // Background task catch-up (ADR 0003): same flush as send — the
+    // Background task catch-up: same flush as send — the
     // notifications land before the orchestrator's writes, so the resumed
     // parent loop sees them.
     if let Err(e) = crate::runtime::background::catch_up_notifications(&state.pool, &id).await {

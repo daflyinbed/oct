@@ -1,5 +1,5 @@
 <template>
-  <!-- 审批条（ADR 0004 §4）：pending 审批逐条卡片垂直堆叠于输入区上方。
+  <!-- 审批条：pending 审批逐条卡片垂直堆叠于输入区上方。
        数据源是 useChat 会话的 pendingApprovals 分桶（事件 upsert / GET
        快照整表替换两路维护），decide 经 emit 交给页面层调 decideApproval -->
   <div class="flex-none px-7 pt-2.5">

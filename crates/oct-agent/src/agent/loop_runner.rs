@@ -81,7 +81,7 @@ pub async fn run_agent_loop(
     let mut idle_micro_due = ctx.idle.is_some_and(|d| d >= micro::IDLE_TRIGGER);
     let mut micro_disabled = false;
 
-    // RunOutcome bookkeeping (ADR 0002 §6.1): the most recent successfully
+    // RunOutcome bookkeeping: the most recent successfully
     // persisted assistant row `(id, text)` — text may be empty when the row
     // carried only reasoning/tool parts — and the usage aggregate over every
     // Usage event seen during the run (absent ⇒ unknown, not zero).
@@ -200,8 +200,8 @@ pub async fn run_agent_loop(
             options: GenerateOptions::default(),
         };
 
-        // The request-establishment await must respond to cancellation too
-        // (ADR 0002 §6.1): a cancelled run must not hang inside connection
+        // The request-establishment await must respond to cancellation too:
+        // a cancelled run must not hang inside connection
         // setup waiting for a stream that may never open.
         let stream_result = tokio::select! {
             result = ctx.model.stream(request) => result,
@@ -491,7 +491,7 @@ pub async fn run_agent_loop(
                 title,
             });
 
-            // The permission gate (ADR 0004 §1.1) rides along with every
+            // The permission gate rides along with every
             // call: Allow proceeds to `execute`, Deny produces an error
             // ToolOutput that flows the NORMAL result path below (event +
             // persistence + model feed-back), and Ask parks the future on

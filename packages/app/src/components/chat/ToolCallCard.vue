@@ -96,7 +96,7 @@
           class="h-[16px] inline-flex items-center whitespace-nowrap rounded-full bg-warning-7 px-1.5 text-[10.5px] text-warning-10 font-medium leading-none"
           >已中断</span
         >
-        <!-- 已拒绝：权限门拒绝的调用（ADR 0004，details kind=
+        <!-- 已拒绝：权限门拒绝的调用（details kind=
              permission_denied），结构与「已清除」徽标同款 -->
         <span
           v-else-if="part.denied"

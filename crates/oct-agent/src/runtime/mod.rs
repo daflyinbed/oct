@@ -1,4 +1,4 @@
-//! Application-layer run lifecycle (ADR 0002 §6.1/§6.2): the RunService owns
+//! Application-layer run lifecycle: the RunService owns
 //! conversation occupancy, run-row persistence, model/tool assembly, loop
 //! startup and terminal-state settlement — the pieces the HTTP chat handlers
 //! used to stitch together by hand. The API layer keeps only its
@@ -96,7 +96,7 @@ impl Drop for OccupancyGuard {
 }
 
 /// Application-layer run orchestration: conversation occupancy, agent_runs
-/// persistence, model/tool assembly and loop supervision (ADR 0002 §6.1).
+/// persistence, model/tool assembly and loop supervision.
 /// Holds clones of the same `Arc`s `AppState` holds — the `sessions` map in
 /// particular is one shared instance so the reconnect/status endpoints keep
 /// observing the same occupancy.
@@ -107,7 +107,7 @@ pub struct RunService {
     /// Same instance as `AppState.sessions`: the conversation occupancy map
     /// shared by send/resume/compact and every SSE reconnect reader.
     pub sessions: Arc<DashMap<String, RunHandle>>,
-    /// Per-project workspace file locks (ADR 0002 §5.3): every run of a
+    /// Per-project workspace file locks: every run of a
     /// project — root and subagent alike — shares the same lock set so
     /// cross-agent writes to one file serialize. Keyed by project id.
     pub file_locks: DashMap<String, Arc<WorkspaceFileLocks>>,
@@ -115,14 +115,14 @@ pub struct RunService {
     /// service through a `OnceLock`, set right after construction — see
     /// `main.rs` / the test harness).
     pub subagents: Arc<SubagentManager>,
-    /// Background bash task registry/lifecycle (ADR 0003): same two-phase
+    /// Background bash task registry/lifecycle: same two-phase
     /// wiring — the manager starts wake runs through this service.
     pub background: Arc<background::BackgroundTaskManager>,
-    /// Pending tool-approval registry (ADR 0004 §4): every gate of this
+    /// Pending tool-approval registry: every gate of this
     /// service parks its Ask arms here; one registry process-wide is all
     /// the decide endpoint needs.
     pub approvals: Arc<ApprovalRegistry>,
-    /// Live permission gates by conversation id (ADR 0004 §1.8): weak so a
+    /// Live permission gates by conversation id: weak so a
     /// settled run's gate dies with its loop; `allow_always` decisions and
     /// mode PATCHes reach the ACTIVE runs of a conversation through here.
     pub gates: Arc<DashMap<String, Vec<Weak<PermissionGate>>>>,
@@ -233,14 +233,14 @@ impl RunService {
             .clone()
     }
 
-    // --- Permission gate assembly (ADR 0004 §1.8) --------------------------
+    // --- Permission gate assembly ------------------------------------------
 
     /// Assemble one run's permission gate: the project's rules (project +
     /// global rows) loaded once into memory, the conversation mode, and the
     /// built-in exec-root deny anchored at the SAME directory the
     /// background manager writes to. Subagent runs pass their ROOT
     /// conversation's id as `mode_conversation_id` (child rows carry no
-    /// effective mode, §1.6) and `subagent = true` (Ask → Deny).
+    /// effective mode; Ask is downgraded to Deny) and `subagent = true`.
     ///
     /// Best-effort by design: a rules/mode read failure degrades to an
     /// empty rule set / the default mode rather than failing the run — the
@@ -318,7 +318,7 @@ impl RunService {
     }
 
     /// Live mode switch for every active gate of a conversation (the PATCH
-    /// endpoint; §1.5's per-call immediate effect). Subagent gates are
+    /// endpoint; takes effect on the very next tool call). Subagent gates are
     /// registered under the root id too, so the whole tree follows.
     pub fn set_conversation_permission_mode(&self, conversation_id: &str, mode: PermissionMode) {
         for gate in self.active_gates(conversation_id) {
@@ -473,7 +473,7 @@ impl RunService {
                 .map(Arc::from),
         );
 
-        // Background execution surface (ADR 0003): the default set's plain
+        // Background execution surface: the default set's plain
         // execute tool is swapped in place for a background-enabled instance
         // carrying this run's identity, and the two companion tools join the
         // set. The swap is positional (schema order is otherwise unchanged).
@@ -539,7 +539,7 @@ impl RunService {
             let _ = parent_toolset.set(Arc::downgrade(&toolset));
         }
 
-        // The run's permission gate (ADR 0004 §1.8): project rules + this
+        // The run's permission gate: project rules + this
         // conversation's mode, loaded once; `allow_always` decisions inject
         // into it live through the service's gate index.
         let gate = self
@@ -648,7 +648,7 @@ impl RunService {
         };
         let child_tools = Arc::new(child_tools);
 
-        // The child's permission gate (ADR 0004 §1.6/§1.8): rules load like
+        // The child's permission gate: rules load like
         // a root run's, the MODE inherits the root conversation (child rows
         // carry no effective mode — recovery included, since this assembly
         // is the recovery path too), and Ask is downgraded to Deny because
@@ -689,8 +689,8 @@ impl RunService {
         };
 
         // Publish the running transition on the PARENT hub (small events
-        // only — the child's full stream stays on its own hub; ADR 0002
-        // §7.3).
+        // only — the child's full stream stays on its own hub; the parent
+        // stream must not be flooded with child deltas).
         let agent_id = conversation_id.clone();
         parent_hub.publish(AgentEvent::SubagentUpdated {
             run_id: run_id.clone(),
@@ -753,7 +753,7 @@ impl RunService {
     }
 }
 
-/// Derive a worker's toolset from the parent's live set (ADR 0002 §5.2):
+/// Derive a worker's toolset from the parent's live set:
 /// parent set − `task`, with `read_file`/`write_file`/`edit_file` rebuilt
 /// over the shared locks and a fresh read state. Everything else (stateless
 /// builtins, MCP tools) is Arc-cloned so connections and configs are reused
@@ -761,7 +761,7 @@ impl RunService {
 ///
 /// `execute_command` is likewise rebuilt (background gate closed, schema
 /// identical): subagent workers must not detach commands — the wake-run
-/// semantics only hold in the root conversation (ADR 0003). The background
+/// semantics only hold in the root conversation. The background
 /// companions (`task_output`/`task_stop`) are scoped to the root
 /// conversation and simply dropped.
 pub(crate) fn derive_child_toolset(
@@ -793,7 +793,7 @@ pub(crate) fn derive_child_toolset(
     child
 }
 
-/// The run supervisor (ADR 0002 §6.1): await the loop, persist the terminal
+/// The run supervisor: await the loop, persist the terminal
 /// state, then release the conversation's occupancy — in that order, so a
 /// new run can never start before the previous one's outcome is on disk.
 async fn supervise(
@@ -856,7 +856,7 @@ async fn supervise(
         tracing::error!("failed to persist terminal state of run {run_id}: {e}");
     }
 
-    // Pending-approval cleanup (ADR 0004 §4's guard duty): whatever the
+    // Pending-approval cleanup: whatever the
     // gate futures could not settle themselves (a cancel drops them
     // mid-await) resolves here — published while the hub is still alive so
     // subscribers see the closed cards before the stream ends.
@@ -930,11 +930,11 @@ async fn supervise_child(
     drop(guard);
 }
 
-/// Server-startup recovery (ADR 0002 §6.2): `agent_runs` rows a previous
+/// Server-startup recovery: `agent_runs` rows a previous
 /// process left `running` are marked `lost` — the executing instance is
 /// gone, while the persisted history and the conversation's resume
 /// eligibility stay untouched. The same sweep covers `background_tasks`
-/// rows (ADR 0003): PDEATHSIG already terminated the commands when the
+/// rows: PDEATHSIG already terminated the commands when the
 /// process died; their notifications are delivered by the send/resume
 /// catch-up. Call once per process, before traffic.
 pub async fn bootstrap(pool: &SqlitePool) {

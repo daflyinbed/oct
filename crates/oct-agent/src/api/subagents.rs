@@ -1,4 +1,4 @@
-//! The subagent API surface (ADR 0002 §7 / PR2): the task list of a root
+//! The subagent API surface (PR2): the task list of a root
 //! conversation, read-only history access to a managed child conversation,
 //! its live event stream, and per-task cancellation. The field names are
 //! the FIXED frontend contract — the TaskCard and the bottom-bar list
@@ -201,7 +201,7 @@ pub async fn cancel_subagent(
 
     // NOT active, but the latest run is `lost` (a crashed execution instance
     // with no live memory handle): persist it as cancelled so a later resume
-    // never restarts it (ADR 0002 §6.3).
+    // never restarts it.
     if let Some(run) = run_db::latest_run_for_conversation(&state.pool, &agent_id).await?
         && run.status == "lost"
     {

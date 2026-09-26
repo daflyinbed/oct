@@ -1,7 +1,7 @@
-//! Background bash task runtime (ADR 0003): the manager `execute_command`
+//! Background bash task runtime: the manager `execute_command`
 //! hands detached commands to when the model passes `run_in_background`.
 //!
-//! The shape deliberately mirrors the subagent runtime (ADR 0002):
+//! The shape deliberately mirrors the subagent runtime:
 //!
 //! * **Envelope-immediate**: the tool call is ANSWERED on the spot with the
 //!   task id, so the agent loop's history stays legal (no dangling calls,
@@ -115,8 +115,8 @@ pub struct BackgroundTaskManager {
 /// Where background task output files live: next to the database file
 /// (`sqlite://dir/oct.db` → `dir/exec`), overridable via `OCT_EXEC_DIR`
 /// (the env override itself stays in `main`). Deliberately outside any
-/// project workspace — the sandboxed read tool must not reach it (ADR
-/// 0003). The permission evaluator (ADR 0004) resolves the SAME root
+/// project workspace — the sandboxed read tool must not reach it. The
+/// permission evaluator resolves the SAME root
 /// through this function for its built-in `{exec root}/**` deny, so the
 /// manager and the deny can never drift apart.
 pub fn exec_output_root(database_url: &str) -> PathBuf {
@@ -184,7 +184,7 @@ impl BackgroundTaskManager {
     }
 
     /// The output root the manager writes task files under. The permission
-    /// evaluator (ADR 0004 §1.3) anchors its built-in `{exec root}/**` deny
+    /// evaluator anchors its built-in `{exec root}/**` deny
     /// here, so the deny and the actual output placement — including the
     /// `OCT_EXEC_DIR` override — can never drift apart.
     pub fn exec_dir(&self) -> &Path {

@@ -1,5 +1,5 @@
 //! Path resolution and workspace classification for the file-manipulating
-//! tools (ADR 0004 §1.2).
+//! tools.
 //!
 //! A project has one primary working directory (the anchor for all relative
 //! paths) plus, optionally, additional working directories that the agent may
@@ -33,7 +33,7 @@ pub struct WorkspaceRoots {
 ///
 /// `outside` says whether the path lands inside ANY workspace root
 /// (additional roots included). Tools themselves ignore it — the permissions
-/// layer consumes it as a decision-table input (ADR 0004 §2).
+/// layer consumes it as a decision-table input.
 #[derive(Debug, Clone)]
 pub struct ResolvedPath {
     /// The resolved path (canonicalized, symlinks followed).
@@ -80,7 +80,7 @@ impl WorkspaceRoots {
     /// Resolve a request for READ-style use: the path must exist (it is
     /// canonicalized, so symlinks resolve to their real targets). Paths
     /// outside every root resolve fine — classify with [`ResolvedPath`]'s
-    /// `outside` flag and let the permissions layer decide (ADR 0004 §1.2).
+    /// `outside` flag and let the permissions layer decide.
     ///
     /// Absolute requests are taken as-is; relative requests are joined onto
     /// the primary root.

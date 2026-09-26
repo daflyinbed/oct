@@ -1,4 +1,4 @@
-//! The `task_stop` tool (ADR 0003): stop a background bash task. Cancels
+//! The `task_stop` tool: stop a background bash task. Cancels
 //! the task's own token (SIGTERM → grace → SIGKILL on the process group —
 //! see the runtime's `kill_group_graceful`), waits (bounded) for the
 //! settlement and reports the settled row. Root runs only.

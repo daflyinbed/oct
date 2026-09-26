@@ -1,10 +1,10 @@
-//! Tool permission layer (ADR 0004): the gate every model-driven tool call
+//! Tool permission layer: the gate every model-driven tool call
 //! passes through at the agent loop's dispatch point.
 //!
 //! * [`rules`] — the in-memory rule model and its matching semantics
 //!   (exact tool name or `mcp__{server}__*`; NULL pattern, command prefix,
 //!   absolute-path glob).
-//! * [`evaluator`] — the §2 decision table: `decide(action, mode, rules)`
+//! * [`evaluator`] — the decision table: `decide(action, mode, rules)`
 //!   with fixed precedence deny > ask > allow > mode default, plus the
 //!   built-in deny over the background-task output directory.
 //! * [`descriptor`] — `(tool_name, args)` → the neutral action the table

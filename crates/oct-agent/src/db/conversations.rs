@@ -18,7 +18,7 @@ pub struct Conversation {
     pub title_source: String,
     /// `chat` (a normal sidebar conversation) or `subagent` (a managed
     /// worker session created by the `task` tool; never listed, never sent
-    /// to directly — see ADR 0002 §6.2).
+    /// to directly).
     pub kind: String,
     /// For `subagent` rows: the conversation whose run delegated this task.
     pub parent_conversation_id: Option<String>,
@@ -26,7 +26,7 @@ pub struct Conversation {
     pub root_conversation_id: Option<String>,
     /// For `subagent` rows: the worker role (`worker` in v1).
     pub agent_type: Option<String>,
-    /// Tool permission mode (ADR 0004 §1.5): `default` (write/execute/
+    /// Tool permission mode: `default` (write/execute/
     /// outside-read all ask), `accept_edits` (in-workspace writes auto-
     /// allowed), `bypass` (everything allowed — deny rules still win).
     pub permission_mode: String,
@@ -42,7 +42,7 @@ pub struct CreateConversationRequest {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateConversationRequest {
     pub title: Option<String>,
-    /// Tool permission mode (ADR 0004 §1.5): `default` | `accept_edits` |
+    /// Tool permission mode: `default` | `accept_edits` |
     /// `bypass`. Takes effect on the active run's NEXT tool call (validated
     /// and applied by the API layer, which also flips the live gates).
     pub permission_mode: Option<String>,
@@ -78,7 +78,7 @@ pub async fn create_conversation(
 
 /// Create a conversation inside a caller-owned transaction. The subagent
 /// registration uses this so the child conversation, its delegation message
-/// and the agent_runs row land atomically (ADR 0002 §6.4 注册边界).
+/// and the agent_runs row land atomically.
 pub async fn create_conversation_in_tx(
     tx: &mut SqliteConnection,
     project_id: &str,
@@ -245,7 +245,7 @@ pub async fn update_conversation_title(pool: &SqlitePool, id: &str, title: &str)
     Ok(result.rows_affected() > 0)
 }
 
-/// Switch a conversation's tool permission mode (ADR 0004 §1.5) — takes
+/// Switch a conversation's tool permission mode — takes
 /// effect on the next tool call of the active run. `mode` is one of
 /// `default`/`accept_edits`/`bypass`; the column's CHECK constraint rejects
 /// anything else (same storage-layer-guard policy as the rest of this file).

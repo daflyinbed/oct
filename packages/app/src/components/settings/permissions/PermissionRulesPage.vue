@@ -3,7 +3,7 @@
     权限规则
   </DialogTitle>
   <p class="mt-1 text-[12px] text-dim">
-    工具权限层的持久规则（ADR 0004）：匹配优先级 deny &gt; ask &gt; allow &gt;
+    工具权限层的持久规则：匹配优先级 deny &gt; ask &gt; allow &gt;
     会话模式默认，deny 在任何模式（含全部放行）下都生效。{{
       inProjectScope
         ? `项目「${activeScopeProjectName}」的规则只对该项目生效；下方同时列出对所有项目生效的全局规则。`

@@ -1,4 +1,4 @@
-//! Approval REST surface (ADR 0004 §4/§5): the pending list a refreshed
+//! Approval REST surface: the pending list a refreshed
 //! frontend rebuilds its approval cards from, and the decide endpoint that
 //! answers a parked tool call. Approvals are memory-only by design — the
 //! durable traces are the rules an `allow_always` persists and the
@@ -114,10 +114,10 @@ pub async fn list_pending_approvals(
     Ok(Json(pending.into_iter().map(PendingApprovalDto::from_meta).collect()))
 }
 
-/// Answer a pending approval (§4): `allow` proceeds the parked call,
+/// Answer a pending approval: `allow` proceeds the parked call,
 /// `deny` refuses it, and `allow_always` persists an allow rule (source
 /// `approval`, project scope), injects it into the conversation's LIVE
-/// gates (so the same run stops asking — §1.8) and then proceeds. The
+/// gates (so the same run stops asking) and then proceeds. The
 /// resolution event lands on the conversation's hub for live viewers and
 /// the replay log.
 #[utoipa::path(
@@ -147,7 +147,7 @@ pub async fn decide_approval(
 
     // Scope check through the conversation's own pending list: an approval
     // of another conversation (or an unknown/already-decided id) is the
-    // same indistinguishable 404 (§4's idempotent decide).
+    // same indistinguishable 404 (the idempotent decide).
     let meta = state
         .runs
         .approvals
@@ -158,9 +158,9 @@ pub async fn decide_approval(
             AppError::NotFound("Approval is unknown or already resolved".into())
         })?;
 
-    // `allow_always`: persist first (§1.8), then inject into every live
+    // `allow_always`: persist first, then inject into every live
     // gate of the conversation, then resolve. MCP tools take a NULL
-    // pattern (a patterned MCP rule can never match — §3); an action with
+    // pattern (a patterned MCP rule can never match); an action with
     // no usable pattern (none submitted, none suggested) degrades to a
     // one-shot allow.
     let mut rule_id = None;

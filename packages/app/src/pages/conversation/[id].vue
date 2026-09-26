@@ -60,7 +60,7 @@ const {
   getProviderSpec,
 } = useProviders();
 
-// --- 审批（ADR 0004）：当前会话的 pending 分桶喂给 ApprovalBanner -----------
+// --- 审批：当前会话的 pending 分桶喂给 ApprovalBanner -----------------------
 // 事件流（upsert/remove）与 attachRun 里的 pending 快照（GET 整表替换）在
 // useChat 会话内维护，这里只按当前会话取桶。
 
@@ -77,7 +77,7 @@ function handleDecideApproval(
   void decideApproval(conversationId.value, approvalId, decision, pattern);
 }
 
-// --- 权限模式（ADR 0004 §1.5）：会话行数据来自 useProjects 的会话列表 -------
+// --- 权限模式：会话行数据来自 useProjects 的会话列表 -------------------------
 
 const { conversations, setConversationPermissionMode } = useProjects();
 

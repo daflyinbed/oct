@@ -1,4 +1,4 @@
-//! In-memory rule model and matching semantics (ADR 0004 §3).
+//! In-memory rule model and matching semantics.
 //!
 //! A [`Rule`] is a `permission_rules` row minus its scoping columns — the
 //! run-assembly loader decides WHICH rows a run evaluates against (project
@@ -13,7 +13,7 @@ use crate::permissions::evaluator::PermissionAction;
 
 /// What a rule does to a matching action, as persisted in
 /// `permission_rules.effect`. Evaluation precedence is fixed:
-/// deny > ask > allow > mode default (§1.3).
+/// deny > ask > allow > mode default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Effect {
     Allow,
@@ -69,7 +69,7 @@ impl Rule {
     /// under the matching class's semantics.
     pub fn matches(&self, action: &PermissionAction) -> bool {
         let tool_matches = match action {
-            // Free-pass tools never build a descriptor (§3): no rule can
+            // Free-pass tools never build a descriptor: no rule can
             // name them, so nothing matches — not even a deny.
             PermissionAction::Trusted => false,
             PermissionAction::Mcp { tool } => mcp_tool_matches(&self.tool, tool),
@@ -86,7 +86,7 @@ impl Rule {
         match (&self.pattern, action) {
             // NULL pattern: any invocation of the matched tool.
             (None, _) => true,
-            // execute_command: plain command-string prefix (§3). Deliberately
+            // execute_command: plain command-string prefix. Deliberately
             // NOT token-boundary-aware — a one-token rule like `cargo` is
             // broad on purpose; the rule_suggestion's two-token form exists
             // to keep "always allow" conservative.
@@ -106,7 +106,7 @@ impl Rule {
     }
 }
 
-/// Tool-name matching for MCP actions (§3): exact full name, or the
+/// Tool-name matching for MCP actions: exact full name, or the
 /// documented wildcard `mcp__{server}__*`. A trailing `*` is only honored
 /// on `mcp__`-prefixed names; anywhere else it compares literally (no such
 /// tool exists, so the rule is dead — visible in settings, inert at
@@ -131,9 +131,9 @@ fn path_glob_matches(pattern: &str, path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// The rules one run evaluates against (§1.8): loaded from the DB once at
+/// The rules one run evaluates against: loaded from the DB once at
 /// run assembly, extended live by `allow_always` approvals. Also carries
-/// the background-task output root, because the built-in deny (§1.3) is
+/// the background-task output root, because the built-in deny is
 /// part of every evaluation and is not a row anyone could delete.
 #[derive(Debug, Clone)]
 pub struct RuleSet {
@@ -182,7 +182,7 @@ impl RuleSet {
         &self.exec_root
     }
 
-    /// The built-in, undeletable deny (§1.3): file actions under the
+    /// The built-in, undeletable deny: file actions under the
     /// background-task output root never pass — the model reads task
     /// output through `task_output` only. Component-wise prefix, which is
     /// exactly the `{exec_root}/**` glob without letting a sibling like

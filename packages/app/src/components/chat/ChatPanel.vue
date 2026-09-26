@@ -23,7 +23,7 @@
       </div>
     </div>
 
-    <!-- 审批条（ADR 0004）：pending 审批逐条卡片堆叠于输入区上方，
+    <!-- 审批条：pending 审批逐条卡片堆叠于输入区上方，
          decide 经 emit 交给页面层调 decideApproval -->
     <ApprovalBanner
       v-if="approvals.length > 0"
@@ -77,7 +77,7 @@
         <div class="flex items-center gap-0.5 p-2">
           <span class="flex-1" />
 
-          <!-- 工具权限模式（ADR 0004 §1.5）：三档切换，bypass 警示色 -->
+          <!-- 工具权限模式：三档切换，bypass 警示色 -->
           <AppSelect
             :model-value="permissionMode"
             :options="PERMISSION_MODE_OPTIONS"
@@ -213,7 +213,7 @@ const emit = defineEmits<{
   compact: [];
   selectProvider: [providerId: string];
   selectModel: [modelId: string];
-  /** 审批卡决定（ADR 0004）：交页面层调 decideApproval。 */
+  /** 审批卡决定：交页面层调 decideApproval。 */
   decideApproval: [
     approvalId: string,
     decision: ApprovalDecision,

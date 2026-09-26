@@ -1020,7 +1020,7 @@ async fn mcp_tools_join_the_chat_loop_and_status_reports_live_state() {
 
     let project_id = app.create_project().await;
     let conv_id = app.create_conversation(&project_id).await;
-    // MCP tools ask under the default permission mode (ADR 0004 §2); this
+    // MCP tools ask under the default permission mode; this
     // test pins the tool-join mechanics, not the approval flow.
     app.set_permission_mode(&project_id, &conv_id, "bypass").await;
 
@@ -1387,7 +1387,7 @@ async fn mcp_project_scoped_tools_are_isolated_across_projects() {
     let conv_a = app.create_conversation(&project_a).await;
     let conv_b = app.create_conversation(&project_b).await;
     // A's turn invokes an MCP tool — an Ask under the default permission
-    // mode (ADR 0004 §2); scoping is under test here, not approvals.
+    // mode; scoping is under test here, not approvals.
     app.set_permission_mode(&project_a, &conv_a, "bypass").await;
 
     // One server row scoped to A, with a scripted connection injected under
@@ -3410,7 +3410,7 @@ async fn bootstrap_marks_leftover_running_runs_lost() {
     assert_eq!(messages.0, 1, "persisted history untouched by the sweep");
 }
 
-// --- Tool permissions (ADR 0004) --------------------------------------------------
+// --- Tool permissions --------------------------------------------------
 
 /// Read events from an in-flight SSE stream until one of `stop`'s kind
 /// arrives (inclusive); asserts the run does not end first.

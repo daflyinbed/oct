@@ -210,7 +210,7 @@
                   <i-lucide-chevron-right class="h-3 w-3 text-dim" />
                 </button>
               </div>
-              <!-- 权限规则（ADR 0004）：项目作用域看 本项目+全局 两组，
+              <!-- 权限规则：项目作用域看 本项目+全局 两组，
                    全局作用域只看全局组；两个作用域都提供入口 -->
               <div
                 class="flex items-center gap-[18px] border-b border-line-soft border-dashed py-3"
@@ -285,7 +285,7 @@
               @cancel="view = { name: 'mcp' }"
               @target-gone="view = { name: 'mcp' }"
             />
-            <!-- 权限规则（ADR 0004）：列表/表单状态归子页所有，进入即拉取，
+            <!-- 权限规则：列表/表单状态归子页所有，进入即拉取，
                  作用域切换由子页自己的 scopeId watch 响应 -->
             <PermissionRulesPage
               v-else-if="view.name === 'permissions'"

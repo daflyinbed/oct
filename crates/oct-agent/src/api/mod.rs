@@ -31,7 +31,7 @@ pub struct AppState {
     pub pool: SqlitePool,
     pub registry: Arc<ProviderRegistry>,
     pub sessions: Arc<DashMap<String, RunHandle>>,
-    /// Application-layer run lifecycle (ADR 0002 §6.1): conversation
+    /// Application-layer run lifecycle: conversation
     /// occupancy, agent_runs persistence and loop supervision. Holds clones
     /// of the `Arc`s above — `sessions` in particular is the SAME instance,
     /// so the reconnect/status endpoints keep observing the same occupancy.
@@ -172,10 +172,10 @@ fn api_routes(state: AppState) -> OpenApiRouter<AppState> {
         .routes(utoipa_axum::routes!(conversations::get_conversation))
         .routes(utoipa_axum::routes!(conversations::delete_conversation))
         .routes(utoipa_axum::routes!(conversations::update_conversation))
-        // Tool approvals (ADR 0004): pending list + decide
+        // Tool approvals: pending list + decide
         .routes(utoipa_axum::routes!(approvals::list_pending_approvals))
         .routes(utoipa_axum::routes!(approvals::decide_approval))
-        // Permission rules (ADR 0004): project scope + global scope + delete
+        // Permission rules: project scope + global scope + delete
         .routes(utoipa_axum::routes!(
             permissions::list_project_permission_rules
         ))

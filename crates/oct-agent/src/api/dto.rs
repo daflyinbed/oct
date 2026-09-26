@@ -123,7 +123,7 @@ pub enum KnownDetailsKind {
     /// `supersedes_message_id` back-pointer — see the agent's
     /// `MicrocompactReplacement` event payload).
     MicrocompactCleared,
-    /// A tool result the permission gate refused (ADR 0004 §4): the model
+    /// A tool result the permission gate refused: the model
     /// saw the denial text; the frontend renders the "denied" badge.
     PermissionDenied,
     /// Assistant-row thinking duration (older rows store this without a
@@ -378,7 +378,7 @@ mod tests {
 
     #[test]
     fn parses_permission_denied_marker() {
-        // The permission gate stamps refused tool results (ADR 0004 §5).
+        // The permission gate stamps refused tool results.
         let row = stored_row(
             "tool",
             r#"[{"ToolResult":{"call_id":"c1","content":"Permission denied by rule: /etc/hosts","is_error":true,"images":[]}}]"#,

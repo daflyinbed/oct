@@ -52,7 +52,7 @@ struct WriteFileArgs {
 /// via canonicalize (following symlinks to their real targets) and the
 /// remaining components are re-appended. Nothing is rejected at this layer:
 /// outside-workspace targets and symlinked destinations are the permission
-/// layer's call (ADR 0004 §1.2).
+/// layer's call.
 
 #[async_trait]
 impl AgentTool for WriteFileTool {
@@ -210,7 +210,7 @@ mod tests {
     #[tokio::test]
     async fn write_to_absolute_path_outside_the_roots_succeeds() {
         // Outside-workspace targets are no longer rejected here; allowing or
-        // asking is the permission layer's call (ADR 0004 §1.2).
+        // asking is the permission layer's call.
         let fx = Fixture::new("abs-outside");
         let target = std::env::temp_dir().join(format!(
             "oct-write-test-outside-{}-{}.txt",

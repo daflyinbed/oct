@@ -145,8 +145,8 @@ pub enum AgentEvent {
     RunMeta { start_message_id: String },
 
     /// A subagent task of this run changed state (started / settled /
-    /// recovered). Published on the PARENT run's hub only — small by design
-    /// (ADR 0002 §7.3): the child's own text/reasoning/tool events stay on
+    /// recovered). Published on the PARENT run's hub only — small by design:
+    /// the child's own text/reasoning/tool events stay on
     /// the child hub and are subscribed to separately. Never carries the
     /// child's `finish`/`usage`: forwarding those would wrongly end the
     /// parent stream or corrupt the parent's context ring.
@@ -167,7 +167,7 @@ pub enum AgentEvent {
         activity: Option<String>,
     },
 
-    /// A tool call parked on user approval (ADR 0004 §4): the run is
+    /// A tool call parked on user approval: the run is
     /// suspended at the gate until the decide endpoint answers, the run is
     /// cancelled, or the approval times out. Replays idempotently off the
     /// hub log; after a page refresh the pending-list endpoint is the
@@ -195,7 +195,7 @@ pub enum AgentEvent {
         rule_suggestion: Option<String>,
     },
 
-    /// The resolution of a previously requested approval (ADR 0004 §4):
+    /// The resolution of a previously requested approval:
     /// approved/denied by the decide endpoint (which also persisted an
     /// `allow_always` rule, named by `rule_id`), or cancelled/expired by
     /// the gate and the settlement sweep. Every `ApprovalRequested` is
@@ -269,7 +269,7 @@ pub struct AgentContext {
     /// later would always look "just active"). Drives microcompact's idle
     /// entry; `None`/short values mean waterline-only.
     pub idle: Option<std::time::Duration>,
-    /// The run's permission gate (ADR 0004 §1.1): every tool call passes
+    /// The run's permission gate: every tool call passes
     /// `check` before `execute`. Assembled by the RunService (root and
     /// subagent runs alike) from the persisted rules, the conversation's
     /// mode and the workspace roots.
@@ -327,7 +327,7 @@ impl RunHandle {
     }
 }
 
-/// Terminal status of an agent run (ADR 0002 §6.1): the in-memory mirror of
+/// Terminal status of an agent run: the in-memory mirror of
 /// the persisted `agent_runs.status` terminal values. `lost` is
 /// process-crash only and never produced by a live loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -339,14 +339,14 @@ pub enum RunStatus {
 
 /// Token usage aggregated over a run's Usage stream events. `None` (unknown)
 /// is deliberately distinct from zero: a run that never reported usage must
-/// not be mistaken for a free one (ADR 0002 §6.3).
+/// not be mistaken for a free one.
 #[derive(Debug, Clone, Default)]
 pub struct RunUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
 }
 
-/// The agent loop's result envelope (ADR 0002 §6.1): events keep serving the
+/// The agent loop's result envelope: events keep serving the
 /// UI, but the run's outcome is a value the supervisor can persist — never
 /// something a listener must reassemble from SSE text.
 #[derive(Debug, Clone)]

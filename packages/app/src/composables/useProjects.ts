@@ -6,7 +6,7 @@ type Project = components["schemas"]["Project"];
 type Conversation = components["schemas"]["Conversation"];
 
 // ---------------------------------------------------------------------------
-// 工具权限模式（ADR 0004 §1.5）：三档词表与归一化（Conversation DTO 的
+// 工具权限模式：三档词表与归一化（Conversation DTO 的
 // permission_mode 是宽松 string，展示/提交前先收窄）。
 // ---------------------------------------------------------------------------
 
@@ -209,7 +209,7 @@ export function useProjects() {
   };
 
   /**
-   * 切换会话的工具权限模式（ADR 0004 §1.5）：PATCH conversations 的
+   * 切换会话的工具权限模式：PATCH conversations 的
    * permission_mode，成功后同步本地列表（侧栏档位标即时更新）。逐次
    * 调用即时生效——活动 run 的下一笔工具调用就按新档走。会话不在任何
    * 已加载列表（找不到归属项目）时返回 false。

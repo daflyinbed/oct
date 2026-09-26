@@ -302,8 +302,8 @@ pub async fn spawn_agent_full(
     .await
 }
 
-/// [`spawn_agent_full`] with the run's permission gate supplied by the test
-/// (ADR 0004): permission suites park their ScriptedModel turns on the
+/// [`spawn_agent_full`] with the run's permission gate supplied by the test:
+/// permission suites park their ScriptedModel turns on the
 /// gate's approval flow and answer through the very registry the gate
 /// holds.
 pub async fn spawn_agent_with_gate(
@@ -575,7 +575,7 @@ impl TestApp {
             .to_string()
     }
 
-    /// PATCH a conversation's permission mode (ADR 0004). Suites that
+    /// PATCH a conversation's permission mode. Suites that
     /// predate the permission layer pin their conversations to `bypass` so
     /// their model-driven writes/executions keep flowing without approval
     /// interactions; permission suites use this to build the mode under

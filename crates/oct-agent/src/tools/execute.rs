@@ -39,7 +39,7 @@ pub struct ExecuteCommandTool {
     /// hand the command to the background task manager. `None` (subagent
     /// workers) keeps the schema identical but gates the flag at dispatch
     /// — the wake/notification semantics only hold in the root
-    /// conversation (ADR 0003).
+    /// conversation.
     background: Option<ExecuteBackground>,
 }
 
@@ -334,7 +334,7 @@ impl AgentTool for ExecuteCommandTool {
             self.roots.primary().to_path_buf()
         };
 
-        // Background branch (ADR 0003): hand the command to the background
+        // Background branch: hand the command to the background
         // task manager and answer the call immediately with the envelope.
         // The call is ANSWERED here — no dangling tool call, so the loop's
         // repair/recovery machinery never sees it.

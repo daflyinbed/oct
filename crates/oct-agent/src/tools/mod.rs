@@ -309,7 +309,7 @@ pub fn to_tool_spec(tool: &dyn AgentTool) -> oct_llm_provider::core::ToolSpec {
 ///
 /// The file-manipulating tools (read/write/edit) share one lock set and one
 /// per-agent read state so read-before-edit tracking and per-file locks work
-/// across all of them within a single agent run (ADR 0002 §5.3).
+/// across all of them within a single agent run.
 pub fn default_tools(roots: workspace::WorkspaceRoots) -> Vec<Box<dyn AgentTool>> {
     default_tools_with(
         roots,

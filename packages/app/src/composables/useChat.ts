@@ -24,7 +24,7 @@ export type ChatStreamEvent = AgentEvent;
 export type ApprovalDecision = "allow" | "allow_always" | "deny";
 
 /**
- * 会话内待决审批（ADR 0004 §4）：`approval_requested` 事件与 pending
+ * 会话内待决审批：`approval_requested` 事件与 pending
  * 快照端点（GET /approvals）两路归一的展示形状。审批内存即焚，前端只
  * 维护 pending 集合——resolved 事件/decide 响应即移除，无持久化。
  */
@@ -93,7 +93,7 @@ export interface ToolCallPart {
   cleared: boolean;
   clearedCopyMessageId: string | null;
   /**
-   * 权限门拒绝（ADR 0004：details kind=permission_denied）：卡片显示
+   * 权限门拒绝（details kind=permission_denied）：卡片显示
    * 「已拒绝」徽标。live 路径来自 tool_result 事件的 details，历史路径
    * 来自 DTO details 的已知 kind（与 microcompact_cleared 同一判别位）。
    */
@@ -142,7 +142,7 @@ export interface TaskNotificationTask {
 }
 
 /**
- * 后台任务通知（ADR 0003）：任务终态后后端合批插入的 user 行，渲染为
+ * 后台任务通知：任务终态后后端合批插入的 user 行，渲染为
  * 全宽分隔条而非聊天气泡。live 路径没有对应 SSE 事件——行随唤醒 run 的
  * 历史重载/刷新进入视图（stored 路径是唯一来源）。
  */
@@ -628,7 +628,7 @@ export interface CreateChatSessionOptions {
   /**
    * 是否把 usage / 压缩状态写进全局 useContextUsage 单例（主面板输入框
    * 圆环的数据源）。子代理面板必须传 false——子 Finish/Usage 事件不得
-   * 结束父流或覆盖父上下文环（ADR §7.3）；实例自身的 usage 快照（返回值
+   * 结束父流或覆盖父上下文环；实例自身的 usage 快照（返回值
    * 的 usage 字段）始终记录，供面板本地的用量环消费。默认 true。
    */
   contextUsage?: boolean;
@@ -695,7 +695,7 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
   const usageWindowTokens = ref<number | null>(null);
   const usageCompacting = ref(false);
 
-  // --- 审批状态（ADR 0004 §4） -------------------------------------------------
+  // --- 审批状态 ---------------------------------------------------------------
   // 按会话分桶的 pending 审批：事件（upsert/remove）与 pending 快照端点
   // （整表替换）两路维护；重放幂等由「requested 后必跟 resolved」的事件
   // 时序保证。审批内存即焚，不进消息 reducer。
@@ -782,7 +782,7 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
   };
 
   /**
-   * 应答一条审批（§4）：POST decide；成功（或 404=已决/未知）即本地清掉
+   * 应答一条审批：POST decide；成功（或 404=已决/未知）即本地清掉
    * 条目——approval_resolved 事件随后到达时的移除是幂等空操作。其余错误
    * 保留卡片供重试。
    */
@@ -799,7 +799,7 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
         body: { decision, pattern: pattern ?? null },
       },
     );
-    // 404 = 已决/未知 id（§4 的幂等 decide）：与成功同等对待，静默清卡。
+    // 404 = 已决/未知 id（decide 的幂等语义）：与成功同等对待，静默清卡。
     const settled = !error || response.status === 404;
     if (settled) removeApproval(conversationId, approvalId);
     return settled;
@@ -1394,7 +1394,7 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
         return;
       }
 
-      // 先拉一次 pending 审批快照（ADR 0004 §4：页面刷新后的真相源），
+      // 先拉一次 pending 审批快照（页面刷新后的真相源），
       // 再订阅事件流——重放的 requested/resolved 事件在其后叠加，最终
       // 状态与后端注册表一致。
       await refreshApprovals(conversationId);

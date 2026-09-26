@@ -1,4 +1,4 @@
-//! The decision core (ADR 0004 §2): action + mode + rules → Allow | Ask |
+//! The decision core: action + mode + rules → Allow | Ask |
 //! Deny, with fixed precedence deny > ask > allow > mode default.
 
 use std::path::{Path, PathBuf};
@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::permissions::rules::{Effect, RuleSet};
 
-/// Per-conversation tool permission mode (`conversations.permission_mode`,
-/// §1.5): the default decision when no rule matched.
+/// Per-conversation tool permission mode (`conversations.permission_mode`):
+/// the default decision when no rule matched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionMode {
@@ -42,7 +42,7 @@ impl PermissionMode {
     }
 }
 
-/// Neutral description of what a tool call is about to do (§3) — the
+/// Neutral description of what a tool call is about to do — the
 /// single input of the decision table, shared by rule matching and the
 /// approval display. The gate (a later PR) extracts it at the loop's
 /// dispatch point from `(tool_name, args)`.
@@ -54,11 +54,11 @@ pub enum PermissionAction {
     Read { path: PathBuf, outside: bool },
     Write { path: PathBuf, outside: bool },
     Edit { path: PathBuf, outside: bool },
-    /// `execute_command` (foreground and `run_in_background` alike — §1.7).
+    /// `execute_command` (foreground and `run_in_background` alike).
     Command { command: String },
     /// An MCP tool invocation, named by its fully qualified name.
     Mcp { tool: String },
-    /// Free-pass tools (`task`/`task_output`/`task_stop`, §2): constant
+    /// Free-pass tools (`task`/`task_output`/`task_stop`): constant
     /// Allow; no descriptor is built for them at the gate.
     Trusted,
 }
@@ -105,7 +105,7 @@ impl PermissionAction {
     }
 }
 
-/// The gate's verdict (§1.1).
+/// The gate's verdict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
     /// Execute the tool.
@@ -116,26 +116,26 @@ pub enum Decision {
     Deny,
 }
 
-/// The gate (§1.1): rule chain first (fixed precedence deny > ask > allow,
+/// The gate: rule chain first (fixed precedence deny > ask > allow,
 /// same effect wins on any single hit), mode default last. Two denies sit
 /// above every rule: the built-in exec-root deny and — trivially — the
 /// free-pass class, which no rule can name.
 pub fn decide(action: &PermissionAction, mode: PermissionMode, rules: &RuleSet) -> Decision {
-    // Free-pass tools (§2's constant-Allow row): no descriptor is built for
+    // Free-pass tools (the constant-Allow row): no descriptor is built for
     // them, so no rule ever matches — deny included.
     if matches!(action, PermissionAction::Trusted) {
         return Decision::Allow;
     }
 
-    // Built-in exec-root deny (§1.3): outranks every rule and every mode —
+    // Built-in exec-root deny: outranks every rule and every mode —
     // the background-task output stays readable through `task_output` only.
     if rules.denies_exec_root(action) {
         return Decision::Deny;
     }
 
     // The rule chain. A deny returns on the spot; ask and allow are
-    // remembered so ask beats allow regardless of rule order (§1.3: no
-    // specificity ranking).
+    // remembered so ask beats allow regardless of rule order (fixed
+    // precedence, no specificity ranking).
     let mut saw_ask = false;
     let mut saw_allow = false;
     for rule in rules.rules() {
@@ -157,7 +157,7 @@ pub fn decide(action: &PermissionAction, mode: PermissionMode, rules: &RuleSet) 
     mode_default(action, mode)
 }
 
-/// The §2 decision table's mode axis — the verdict when no rule matched.
+/// The decision table's mode axis — the verdict when no rule matched.
 fn mode_default(action: &PermissionAction, mode: PermissionMode) -> Decision {
     if mode == PermissionMode::Bypass {
         // Bypass allows every class; deny rules already returned earlier.
@@ -188,8 +188,8 @@ fn mode_default(action: &PermissionAction, mode: PermissionMode) -> Decision {
     }
 }
 
-/// A conservative `pattern` for an "always allow" rule off this action
-/// (§3), offered with the approval so the user can edit before submitting:
+/// A conservative `pattern` for an "always allow" rule off this action,
+/// offered with the approval so the user can edit before submitting:
 /// `execute_command` → the first two whitespace tokens of the command
 /// (`cargo build` for `cargo build --release`); file actions → the file's
 /// immediate parent directory as an absolute `{dir}/**` glob. Everything
@@ -292,11 +292,11 @@ mod tests {
         }
     }
 
-    /// The §2 table, cell by cell, with NO rules: every mode × every
+    /// The decision table, cell by cell, with NO rules: every mode × every
     /// action × inside/outside. The tuples carry (default, accept_edits,
-    /// bypass) straight from the ADR.
+    /// bypass).
     #[test]
-    fn decision_table_matches_adr_section_2() {
+    fn decision_table_cells_match() {
         let cases: Vec<(PermissionAction, [Decision; 3])> = vec![
             // read/listdir/grep/glob — inside: constant Allow.
             (read("/ws/src/a.rs", false), [Decision::Allow, Decision::Allow, Decision::Allow]),
@@ -368,7 +368,7 @@ mod tests {
                 assert_eq!(
                     decide(action, mode, &ruleset_with(matching_rule(action, Effect::Deny))),
                     Decision::Deny,
-                    // The headline case: deny survives even bypass (§1.3).
+                    // The headline case: deny survives even bypass.
                     "deny rule: {action:?} {mode:?}"
                 );
             }
@@ -389,7 +389,7 @@ mod tests {
     }
 
     /// When ask and allow rules both match, ask wins regardless of order
-    /// (§1.3: fixed precedence, no specificity ranking); any deny in the
+    /// (fixed precedence, no specificity ranking); any deny in the
     /// chain wins over both.
     #[test]
     fn ask_beats_allow_and_deny_beats_all_regardless_of_order() {

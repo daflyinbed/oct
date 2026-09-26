@@ -100,11 +100,11 @@ pub async fn delete_conversation(
     State(state): State<AppState>,
     Path((_project_id, id)): Path<(String, String)>,
 ) -> ApiResult<StatusCode> {
-    // A root conversation's task tree must not outlive it (ADR 0002 §6.2):
+    // A root conversation's task tree must not outlive it:
     // stop every ACTIVE subagent first and wait for their settlement
     // (bounded), so the cascading row deletion below never races a live
     // child's persistence. Background bash tasks get the same treatment
-    // (ADR 0003) — plus their output directory, which the DB cascade
+    // — plus their output directory, which the DB cascade
     // cannot reach.
     super::subagents::cancel_children_of_root(&state, &id).await?;
     state
@@ -142,8 +142,8 @@ pub async fn update_conversation(
     Json(req): Json<db::UpdateConversationRequest>,
 ) -> ApiResult<StatusCode> {
     // Either field may be updated, both at once included. A mode change is
-    // allowed while a run is active BY DESIGN (ADR 0004 §1.5: per-call
-    // immediate effect) — the live gates of the conversation are flipped
+    // allowed while a run is active BY DESIGN (per-call immediate effect)
+    // — the live gates of the conversation are flipped
     // below so the very next tool call of the running turn sees it.
     let mut updated = false;
     let mut found = true;

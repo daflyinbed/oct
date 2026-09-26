@@ -2,7 +2,7 @@
 //! walker with rg-like ignore defaults. Both tools walk the same way so they
 //! agree on what is searchable. (Path resolution and inside/outside
 //! classification live on [`super::workspace::WorkspaceRoots`]; permissions
-//! are decided by the permissions layer, ADR 0004 §1.2.)
+//! are decided by the permissions layer.)
 
 use ignore::WalkBuilder;
 use ignore::overrides::OverrideBuilder;
