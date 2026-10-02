@@ -12,6 +12,7 @@ use crate::core::{
 use crate::model::{ChatModel, ChatRequest, ChatResponse, ChatStream};
 use crate::provider::ModelInfo;
 use crate::transport::{SseDecoder, check_response_status};
+use crate::wire;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OpenAiCompatibleConfig {
@@ -472,6 +473,16 @@ impl ChatModel for OpenAiCompatibleChatModel {
 
     async fn generate(&self, req: ChatRequest) -> Result<ChatResponse, ModelError> {
         let wire = self.to_wire_request(&req)?;
+        let ctx = wire::WireCtx::new(
+            &self.config.provider_name,
+            &self.config.model_info.model_id,
+            self.endpoint(),
+        );
+        if wire::enabled() {
+            if let Ok(body) = serde_json::to_string(&wire) {
+                wire::log_request(&ctx, &body, false);
+            }
+        }
         let response = self
             .client
             .post(self.endpoint())
@@ -479,19 +490,46 @@ impl ChatModel for OpenAiCompatibleChatModel {
             .json(&wire)
             .send()
             .await
-            .map_err(|err| ModelError::transport(format!("request failed: {err}")))?;
-        let response = check_response_status(response, &self.config.provider_name).await?;
-
-        let payload: ChatCompletionResponse = response
-            .json()
-            .await
-            .map_err(|err| ModelError::transport(format!("invalid response json: {err}")))?;
+            .map_err(|err| {
+                let message = format!("request failed: {err}");
+                wire::log_error(&ctx, "connect", None, &message, None);
+                ModelError::transport(message)
+            })?;
+        let status_code = response.status().as_u16();
+        let response = match check_response_status(response, &self.config.provider_name).await {
+            Ok(response) => response,
+            Err(err) => {
+                wire::log_error(&ctx, "status", Some(status_code), &err.to_string(), None);
+                return Err(err);
+            }
+        };
+        let body = response.text().await.map_err(|err| {
+            let message = format!("failed to read response body: {err}");
+            wire::log_error(&ctx, "read", Some(status_code), &message, None);
+            ModelError::transport(message)
+        })?;
+        wire::log_response(&ctx, status_code, &body, ctx.elapsed_ms());
+        let payload: ChatCompletionResponse = serde_json::from_str(&body).map_err(|err| {
+            let message = format!("invalid response json: {err}");
+            wire::log_error(&ctx, "parse", Some(status_code), &message, Some(&body));
+            ModelError::transport(message)
+        })?;
 
         map_chat_completion_response(payload)
     }
 
     async fn stream(&self, req: ChatRequest) -> Result<ChatStream, ModelError> {
         let wire = self.to_streaming_wire_request(&req)?;
+        let ctx = wire::WireCtx::new(
+            &self.config.provider_name,
+            &self.config.model_info.model_id,
+            self.endpoint(),
+        );
+        if wire::enabled() {
+            if let Ok(body) = serde_json::to_string(&wire) {
+                wire::log_request(&ctx, &body, true);
+            }
+        }
         let response = self
             .client
             .post(self.endpoint())
@@ -499,34 +537,84 @@ impl ChatModel for OpenAiCompatibleChatModel {
             .json(&wire)
             .send()
             .await
-            .map_err(|err| ModelError::transport(format!("request failed: {err}")))?;
-        let response = check_response_status(response, &self.config.provider_name).await?;
+            .map_err(|err| {
+                let message = format!("request failed: {err}");
+                wire::log_error(&ctx, "connect", None, &message, None);
+                ModelError::transport(message)
+            })?;
+        let status_code = response.status().as_u16();
+        let response = match check_response_status(response, &self.config.provider_name).await {
+            Ok(response) => response,
+            Err(err) => {
+                wire::log_error(&ctx, "status", Some(status_code), &err.to_string(), None);
+                return Err(err);
+            }
+        };
 
         let byte_stream = response.bytes_stream();
         let stream = try_stream! {
+            // See anthropic.rs: the generator is polled outside the
+            // caller's task-local scope, so the wire ctx moves in and the
+            // guard reports llm_stream_end exactly once (incl. Drop).
+            // try_stream! only supports `?`, so error paths log via map_err
+            // side effects before propagating.
+            let ctx = ctx;
             let mut decoder = SseDecoder::new();
             let mut tool_state = HashMap::new();
+            let guard = wire::StreamEndGuard::new(ctx.clone());
             futures_util::pin_mut!(byte_stream);
 
             while let Some(chunk) = byte_stream.next().await {
-                let chunk = chunk
-                    .map_err(|err| ModelError::transport(format!("stream read failed: {err}")))?;
-                for event in decoder.push(&chunk)? {
-                    for normalized in parse_openai_sse_event_with_state(&event, &mut tool_state)? {
+                let chunk = chunk.map_err(|err| {
+                    let message = format!("stream read failed: {err}");
+                    wire::log_error(&ctx, "read", None, &message, None);
+                    guard.mark_error();
+                    ModelError::transport(message)
+                })?;
+                for event in decoder.push(&chunk).map_err(|err| {
+                    wire::log_error(&ctx, "parse", None, &err.to_string(), None);
+                    guard.mark_error();
+                    err
+                })? {
+                    wire::log_sse(&ctx, guard.next_seq(), &event);
+                    guard.count();
+                    for normalized in parse_openai_sse_with_wire(&event, &ctx, &guard, &mut tool_state)? {
                         yield normalized;
                     }
                 }
             }
 
-            for event in decoder.finish()? {
-                for normalized in parse_openai_sse_event_with_state(&event, &mut tool_state)? {
+            for event in decoder.finish().map_err(|err| {
+                wire::log_error(&ctx, "parse", None, &err.to_string(), None);
+                guard.mark_error();
+                err
+            })? {
+                wire::log_sse(&ctx, guard.next_seq(), &event);
+                guard.count();
+                for normalized in parse_openai_sse_with_wire(&event, &ctx, &guard, &mut tool_state)? {
                     yield normalized;
                 }
             }
+            guard.finish();
         };
 
         Ok(Box::pin(stream))
     }
+}
+
+/// Parse one framed SSE event with wire-log error reporting (see the
+/// anthropic twin: log + mark the stream outcome before propagating).
+fn parse_openai_sse_with_wire(
+    event: &str,
+    ctx: &wire::WireCtx,
+    guard: &wire::StreamEndGuard,
+    tool_state: &mut HashMap<String, OpenAiToolCallAccumulator>,
+) -> Result<Vec<StreamEvent>, ModelError> {
+    parse_openai_sse_event_with_state(event, tool_state).map_err(|err| {
+        wire::log_error(ctx, "parse", None, &err.to_string(), None);
+        guard.mark_error();
+        err
+    })
 }
 
 pub fn map_chat_completion_response(

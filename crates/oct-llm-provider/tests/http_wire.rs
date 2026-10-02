@@ -655,3 +655,310 @@ async fn anthropic_tool_result_images_ride_the_wire_as_base64_blocks() {
     let block = &body["messages"][8]["content"][0];
     assert_eq!(block["content"], "plain text result");
 }
+
+// --- Wire log ---------------------------------------------------------------
+//
+// The sink + subscriber are process-global, so they install ONCE per test
+// binary: the first wire test's temp dir wins and every later assertion
+// filters by its own conversation id (files are shared, lines are not).
+
+fn wire_sink_dir() -> std::path::PathBuf {
+    use std::sync::OnceLock;
+    static DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("oct-provider-wire-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let control = oct_llm_provider::wire::init(dir.clone(), true);
+        use tracing_subscriber::prelude::*;
+        let _ = tracing_subscriber::registry()
+            .with(oct_llm_provider::wire::WireLogLayer)
+            .try_init();
+        let _ = control;
+        dir
+    })
+    .clone()
+}
+
+/// Bounded poll for the writer thread (a plain std thread — no event to
+/// await). The channel handoff is fast; this only guards scheduling.
+fn wait_for_lines(conversation_id: &str, pred: impl Fn(&[serde_json::Value]) -> bool) -> Vec<serde_json::Value> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Ok(raw) = std::fs::read_to_string(
+            wire_sink_dir().join(format!("{conversation_id}.jsonl")),
+        ) {
+            let lines: Vec<serde_json::Value> = raw
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .map(|l| serde_json::from_str(l).expect("valid JSONL"))
+                .collect();
+            if pred(&lines) {
+                return lines;
+            }
+        }
+        assert!(std::time::Instant::now() < deadline, "wire lines never arrived");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[tokio::test]
+async fn wire_log_records_request_sse_events_and_reambles_byte_faithfully() {
+    // Install the subscriber BEFORE any model call: events emitted before
+    // it exists are dropped by tracing itself, not by the sink.
+    wire_sink_dir();
+    let ev1 = "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"你\"}}]}";
+    let ev2 = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"好🌍\"}}]}";
+    let ev3 = "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}";
+    let ev4 = "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5,\"total_tokens\":8}}";
+    let done = "data: [DONE]";
+    let raw = [ev1, ev2, ev3, ev4, done].join("\n\n") + "\n\n";
+
+    // Same hostile cuts as the reassembly test above.
+    let emoji_mid = raw.find("🌍").unwrap() + 2;
+    let separator_mid = raw.find(ev3).unwrap() - 1;
+    let after_data_prefix = raw.find(ev4).unwrap() + "data:".len();
+
+    let server = spawn_server(vec![MockResponse::sse_split(
+        &raw,
+        &[emoji_mid, separator_mid, after_data_prefix],
+    )])
+    .await;
+    let model = OpenAiCompatibleChatModel::new_with_client(
+        openai_config(server.url(), Some("test-key")),
+        reqwest::Client::new(),
+    );
+
+    let conversation_id = "wire-conv-stream".to_string();
+    let tags = oct_llm_provider::wire::Tags {
+        conversation_id: Some(conversation_id.clone()),
+        run_id: Some("run-1".to_string()),
+        run_kind: Some("root".to_string()),
+        purpose: Some("chat".to_string()),
+    };
+    let events = collect(
+        oct_llm_provider::wire::with_tags(tags, model.stream(chat_request()))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(!events.is_empty());
+
+    let lines = wait_for_lines(&conversation_id, |ls| {
+        ls.iter().any(|l| l["kind"] == "llm_stream_end")
+    });
+
+    // Envelope: every line of this request shares the request id and
+    // carries the full correlation set from the tags.
+    let request_ids: Vec<_> = lines.iter().map(|l| l["request_id"].as_str().unwrap()).collect();
+    assert!(
+        request_ids.iter().all(|id| id == &request_ids[0]),
+        "one request id across all lines"
+    );
+    for line in &lines {
+        assert_eq!(line["target"], "oct_llm_provider::wire");
+        assert_eq!(line["conversation_id"], "wire-conv-stream");
+        assert_eq!(line["run_id"], "run-1");
+        assert_eq!(line["run_kind"], "root");
+        assert_eq!(line["purpose"], "chat");
+        assert_eq!(line["provider"], "mock-openai");
+        assert_eq!(line["model"], "test-model");
+        assert!(line["endpoint"].as_str().unwrap().contains("/chat/completions"));
+        assert!(line["ts"].as_str().unwrap().contains('T'));
+        assert!(line["ts_ms"].is_i64());
+    }
+
+    // Request: the logged body is the exact serialized request.
+    let request = lines.iter().find(|l| l["kind"] == "llm_request").unwrap();
+    assert_eq!(request["stream"], true);
+    let logged_body: serde_json::Value =
+        serde_json::from_str(request["body"].as_str().unwrap()).unwrap();
+    let captured_body = server.captured()[0].body_json();
+    assert_eq!(logged_body, captured_body);
+    assert_eq!(request["truncated"], false);
+
+    // SSE events: seq is dense 1..=N and joining the raw blocks (with the
+    // framing separators re-added) reproduces the response body exactly.
+    let mut sse: Vec<&serde_json::Value> = lines
+        .iter()
+        .filter(|l| l["kind"] == "llm_sse_event")
+        .collect();
+    sse.sort_by_key(|l| l["seq"].as_u64().unwrap());
+    let seqs: Vec<u64> = sse.iter().map(|l| l["seq"].as_u64().unwrap()).collect();
+    assert_eq!(seqs, (1..=5).collect::<Vec<_>>());
+    let reassembled: String = sse
+        .iter()
+        .map(|l| l["raw"].as_str().unwrap())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+        + "\n\n";
+    assert_eq!(reassembled, raw, "byte-faithful reassembly by seq");
+
+    // Stream end: one eof line counting the SSE events, no error lines.
+    let ends: Vec<&serde_json::Value> = lines
+        .iter()
+        .filter(|l| l["kind"] == "llm_stream_end")
+        .collect();
+    assert_eq!(ends.len(), 1);
+    assert_eq!(ends[0]["outcome"], "eof");
+    assert_eq!(ends[0]["events"], 5);
+    assert!(!lines.iter().any(|l| l["kind"] == "llm_error"));
+}
+
+#[tokio::test]
+async fn wire_log_generate_path_and_orphan_routing() {
+    // Install the subscriber BEFORE any model call: events emitted before
+    // it exists are dropped by tracing itself, not by the sink.
+    wire_sink_dir();
+    let body = serde_json::json!({
+        "id": "msg_wire_gen",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-test",
+        "content": [{"type": "text", "text": "wire gen ok"}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 4, "output_tokens": 1}
+    })
+    .to_string();
+    let server = spawn_server(vec![
+        MockResponse::json(200, body.clone()),
+        // The untagged call below consumes its own response.
+        MockResponse::json(200, body.clone()),
+    ])
+    .await;
+
+    // Tagged call → its own conversation file.
+    let conversation_id = "wire-conv-generate".to_string();
+    let tags = oct_llm_provider::wire::Tags {
+        conversation_id: Some(conversation_id.clone()),
+        purpose: Some("compact".to_string()),
+        ..Default::default()
+    };
+    oct_llm_provider::wire::with_tags(
+        tags,
+        anthropic_model(server.url(), "sk-wire-gen").generate(chat_request()),
+    )
+    .await
+    .unwrap();
+
+    let lines = wait_for_lines(&conversation_id, |ls| {
+        ls.iter().any(|l| l["kind"] == "llm_response")
+    });
+    let kinds: Vec<&str> = lines.iter().map(|l| l["kind"].as_str().unwrap()).collect();
+    assert_eq!(kinds, vec!["llm_request", "llm_response"]);
+    let request = &lines[0];
+    assert_eq!(request["stream"], false);
+    assert_eq!(request["purpose"], "compact");
+    // No run tags were set: run_id/run_kind stay absent, not empty strings.
+    assert!(request.get("run_id").is_none());
+    let response = &lines[1];
+    assert_eq!(response["status"], 200);
+    assert_eq!(response["body"].as_str().unwrap(), body);
+    assert!(response["duration_ms"].is_u64());
+    // No SSE events and no stream end on the generate path.
+    assert!(!kinds.contains(&"llm_sse_event"));
+    assert!(!kinds.contains(&"llm_stream_end"));
+
+    // Untagged call (no with_tags scope) → `_orphan.jsonl`.
+    anthropic_model(server.url(), "sk-wire-gen").generate(chat_request())
+        .await
+        .unwrap();
+    let orphan = wait_for_lines("_orphan", |ls| {
+        ls.iter().filter(|l| l["kind"] == "llm_response").count() >= 1
+            && ls
+                .iter()
+                .any(|l| l.get("conversation_id").is_none())
+    });
+    assert!(
+        orphan
+            .iter()
+            .any(|l| l.get("conversation_id").is_none() && l["kind"] == "llm_request"),
+        "untagged events land in _orphan.jsonl without a conversation_id key"
+    );
+}
+
+#[tokio::test]
+async fn wire_log_records_error_stages() {
+    // Install the subscriber BEFORE any model call: events emitted before
+    // it exists are dropped by tracing itself, not by the sink.
+    wire_sink_dir();
+    let server = spawn_server(vec![
+        MockResponse::json(500, "{\"error\":\"kaboom\"}"),
+    ])
+    .await;
+    let conversation_id = "wire-conv-error".to_string();
+    let tags = oct_llm_provider::wire::Tags {
+        conversation_id: Some(conversation_id.clone()),
+        ..Default::default()
+    };
+    let result = oct_llm_provider::wire::with_tags(
+        tags,
+        anthropic_model(server.url(), "sk-wire-err").stream(chat_request()),
+    )
+    .await;
+    assert!(result.is_err());
+
+    let lines = wait_for_lines(&conversation_id, |ls| {
+        ls.iter().any(|l| l["kind"] == "llm_error")
+    });
+    let request = lines.iter().find(|l| l["kind"] == "llm_request").unwrap();
+    assert_eq!(request["stream"], true);
+    let error = lines.iter().find(|l| l["kind"] == "llm_error").unwrap();
+    assert_eq!(error["stage"], "status");
+    assert!(
+        error["message"].as_str().unwrap().contains("kaboom"),
+        "error message carries the provider body: {}",
+        error["message"]
+    );
+    // A request that failed at the status stage never produces SSE events.
+    assert!(!lines.iter().any(|l| l["kind"] == "llm_sse_event"));
+}
+
+/// The reassembly invariant under CRLF framing: the decoder strips the
+/// `\r\n\r\n` separators but keeps each block's internal `\r\n` line
+/// endings, so re-joining with `\r\n\r\n` must reproduce the body exactly.
+#[tokio::test]
+async fn wire_log_sse_raw_is_byte_faithful_under_crlf_framing() {
+    let ev1 = "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"he\"}}]}";
+    let ev2 = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"llo\"}}]}";
+    let ev3 = "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}";
+    let done = "data: [DONE]";
+    let raw = [ev1, ev2, ev3, done].join("\r\n\r\n") + "\r\n\r\n";
+    let cut = raw.find("llo").unwrap() - 2;
+
+    wire_sink_dir();
+    let server = spawn_server(vec![MockResponse::sse_split(&raw, &[cut])]).await;
+    let model = OpenAiCompatibleChatModel::new_with_client(
+        openai_config(server.url(), Some("test-key")),
+        reqwest::Client::new(),
+    );
+    let conversation_id = "wire-conv-crlf".to_string();
+    let events = collect(
+        oct_llm_provider::wire::with_tags(
+            oct_llm_provider::wire::Tags {
+                conversation_id: Some(conversation_id.clone()),
+                ..Default::default()
+            },
+            model.stream(chat_request()),
+        )
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(text_of(&events), "hello");
+
+    let lines = wait_for_lines(&conversation_id, |ls| {
+        ls.iter().any(|l| l["kind"] == "llm_stream_end")
+    });
+    let mut sse: Vec<&serde_json::Value> = lines
+        .iter()
+        .filter(|l| l["kind"] == "llm_sse_event")
+        .collect();
+    sse.sort_by_key(|l| l["seq"].as_u64().unwrap());
+    let reassembled: String = sse
+        .iter()
+        .map(|l| l["raw"].as_str().unwrap())
+        .collect::<Vec<_>>()
+        .join("\r\n\r\n")
+        + "\r\n\r\n";
+    assert_eq!(reassembled, raw, "byte-faithful reassembly under CRLF");
+}

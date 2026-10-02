@@ -10,6 +10,11 @@ path = "src/lib.rs"
 [dependencies]
 async-trait = "0.1"
 async-stream = "0.3"
+# Wire-log timestamps only (RFC3339 + epoch millis); already in the
+# workspace tree via oct-agent/sqlx, no default features needed.
+chrono = { version = "0.4", default-features = false, features = [
+  "now",
+] }
 futures-core = "0.3"
 futures-util = "0.3"
 # 0.13 renamed the rustls feature: 0.12's "rustls-tls" is now "rustls"
@@ -25,11 +30,23 @@ thiserror = "2"
 tokio = { version = "1", features = [
   "rt",
   "rt-multi-thread",
-  "macros" 
+  "macros"
+] }
+tracing = "0.1"
+# Only for `Interest` in the wire layer's register_callsite override.
+tracing-core = "0.1"
+# Only the `Layer` trait for the wire-log file layer (no fmt/env-filter).
+tracing-subscriber = { version = "0.3", default-features = false }
+uuid = { version = "1", features = [
+  "v4"
 ] }
 
 [dev-dependencies]
 insta = { version = "1", features = [ "yaml" ] }
+# registry: assembling the layered test subscriber for wire-log tests.
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+  "registry",
+] }
 clap = { version = "4", features = [
   "derive",
   "env" 
