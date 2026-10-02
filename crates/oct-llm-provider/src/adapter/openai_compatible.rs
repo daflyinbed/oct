@@ -1,7 +1,7 @@
 use async_stream::try_stream;
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
@@ -401,6 +401,9 @@ impl OpenAiCompatibleChatModel {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         headers.insert(AUTHORIZATION, self.auth_header_value()?);
+        // Identity default first: a caller-configured `User-Agent` in
+        // default_headers is applied below and wins over it.
+        headers.insert(USER_AGENT, crate::transport::user_agent());
 
         for (key, value) in &self.config.default_headers {
             let value = value.as_str().ok_or_else(|| {

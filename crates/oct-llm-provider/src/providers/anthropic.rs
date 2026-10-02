@@ -1,7 +1,7 @@
 use async_stream::try_stream;
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
+use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
@@ -471,6 +471,7 @@ impl AnthropicChatModel {
             })?,
         );
         headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+        headers.insert(USER_AGENT, crate::transport::user_agent());
         Ok(headers)
     }
 

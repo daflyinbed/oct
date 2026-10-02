@@ -200,6 +200,79 @@ async fn openai_generate_maps_json_response_and_captures_request_shape() {
     assert!(body["messages"][0]["content"].to_string().contains("hello"));
 }
 
+// --- User-Agent ------------------------------------------------------------
+
+/// Identity contract: every LLM request carries the explicit `oct/{version}`
+/// User-Agent (opencode-style bare `product/version` token); a
+/// caller-configured `User-Agent` default header wins over it.
+#[tokio::test]
+async fn llm_requests_carry_oct_user_agent_unless_explicitly_configured() {
+    let openai_body = serde_json::json!({
+        "id": "chatcmpl-ua",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "test-model",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "ok"},
+            "finish_reason": "stop"
+        }]
+    })
+    .to_string();
+
+    // OpenAI-compatible default: the adapter's own identity.
+    let server = spawn_server(vec![MockResponse::json(200, openai_body.clone())]).await;
+    let model = OpenAiCompatibleChatModel::new_with_client(
+        openai_config(server.url(), Some("test-key")),
+        reqwest::Client::new(),
+    );
+    model.generate(chat_request()).await.unwrap();
+    assert_eq!(
+        server.captured()[0].header("user-agent"),
+        // Same package, so the test's CARGO_PKG_VERSION is the library's.
+        Some(concat!("oct/", env!("CARGO_PKG_VERSION"))),
+    );
+
+    // A caller-configured `User-Agent` default header wins over the
+    // automatic identity.
+    let server = spawn_server(vec![MockResponse::json(200, openai_body)]).await;
+    let mut config = openai_config(server.url(), Some("test-key"));
+    config.default_headers.insert(
+        "User-Agent".to_string(),
+        serde_json::Value::String("custom-agent/9".to_string()),
+    );
+    let model = OpenAiCompatibleChatModel::new_with_client(config, reqwest::Client::new());
+    model.generate(chat_request()).await.unwrap();
+    assert_eq!(
+        server.captured()[0].header("user-agent"),
+        Some("custom-agent/9")
+    );
+
+    // The Anthropic path rides the same identity, alongside
+    // anthropic-version.
+    let anthropic_body = serde_json::json!({
+        "id": "msg_ua",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-test",
+        "content": [{"type": "text", "text": "ok"}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 1, "output_tokens": 1}
+    })
+    .to_string();
+    let server = spawn_server(vec![MockResponse::json(200, anthropic_body)]).await;
+    anthropic_model(server.url(), "test-key")
+        .generate(chat_request())
+        .await
+        .unwrap();
+    let captured = &server.captured()[0];
+    assert_eq!(
+        captured.header("user-agent"),
+        Some(concat!("oct/", env!("CARGO_PKG_VERSION"))),
+    );
+    assert_eq!(captured.header("anthropic-version"), Some("2023-06-01"));
+}
+
 // --- Anthropic -------------------------------------------------------------
 
 /// CRLF-framed events (plus one mixed `\r\n\n` separator) and a final event

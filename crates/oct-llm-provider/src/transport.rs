@@ -4,6 +4,16 @@
 //! machine; this module only owns what is byte-identical between them.
 
 use crate::core::ModelError;
+use reqwest::header::HeaderValue;
+
+/// User-Agent sent with every outgoing LLM request: `oct/{crate version}`
+/// (opencode-style `product/version` identity — set explicitly, never left
+/// to the HTTP client's default). Injected by each protocol's
+/// `build_headers` before caller-configured headers, so an explicit
+/// `User-Agent` there still wins.
+pub(crate) fn user_agent() -> HeaderValue {
+    HeaderValue::from_static(concat!("oct/", env!("CARGO_PKG_VERSION")))
+}
 
 /// Map a provider HTTP response's status to the common error kinds (401 →
 /// `Authentication`, 429 → `RateLimited`, other failures → `Provider` with
