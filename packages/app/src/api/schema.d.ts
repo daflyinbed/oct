@@ -718,6 +718,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_settings"];
+        put: operations["update_settings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/subagents/{agentId}/cancel": {
         parameters: {
             query?: never;
@@ -1033,6 +1049,14 @@ export interface components {
             };
             /** @enum {string} */
             type: "approval_resolved";
+        };
+        AppSettings: {
+            /**
+             * @description Whether LLM wire logging is currently in effect (the live control,
+             *     not just the persisted row — a process started with
+             *     `OCT_LLM_WIRE_LOG=off` reports `false` here regardless of the row).
+             */
+            llm_wire_log: boolean;
         };
         /**
          * @description How a pending approval was settled (the `approval_resolved` event's
@@ -1862,6 +1886,10 @@ export interface components {
         ToolResultImage: {
             data: string;
             mime_type: string;
+        };
+        UpdateAppSettings: {
+            /** @description Omitted keys are left untouched (the PUT is a partial update). */
+            llm_wire_log?: boolean | null;
         };
         UpdateConversationRequest: {
             /**
@@ -3693,6 +3721,50 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    get_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current application settings */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppSettings"];
+                };
+            };
+        };
+    };
+    update_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateAppSettings"];
+            };
+        };
+        responses: {
+            /** @description Settings after applying the update */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppSettings"];
+                };
             };
         };
     };

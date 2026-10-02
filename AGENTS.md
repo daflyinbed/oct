@@ -51,6 +51,12 @@ pnpm --filter frontend test:browser  # 浏览器 e2e 拦截层（chromium；首�
 pnpm -r exec eslint .                 # ESLint with @xwbx/eslint-config flat config
 ```
 
+### LLM wire 日志
+
+- 每个 LLM HTTP 交互的原始 wire 记录（精确请求体 + 每个 framing SSE 事件块 + 流结束/错误），一条一事件的 JSONL，**按对话拆文件**：`{db目录}/llm-wire/{conversation_id}.jsonl`（无会话上下文落 `_orphan.jsonl`；0600；**无总量上限/轮转**；单字段默认 1 MiB 截断标 `truncated`，`OCT_LLM_WIRE_FIELD_MAX=0` 关闭）。
+- 开关：设置弹窗 AI 根页（`GET/PUT /api/settings` 的 `llm_wire_log`，持久化在 `settings` 表、运行时即时生效，默认开）；`OCT_LLM_WIRE_LOG=off` 进程级硬关；`OCT_LLM_WIRE_DIR` 改目录。stderr 镜像：`RUST_LOG="oct_llm_provider::wire=trace"`。
+- 埋点在 `oct-llm-provider/src/wire.rs`（target `oct_llm_provider::wire`；相关性字段用 task-local tags——host 侧 `wire::with_tags` 包住模型调用，`try_stream!` 生成器由消费方 poll、不在 scope 内，故 `stream()` 入口捕获进 `WireCtx`）。注意 `Layer::register_callsite` 必须返回 `Interest::sometimes()`：默认实现会在开关关闭时缓存 `never`，毒化 callsite 导致再开也不记录。
+
 ## Build & Database
 
 - **Database**: SQLite. Default `DATABASE_URL`: `sqlite://oct.db` (override via env var or `.env`)
@@ -91,10 +97,11 @@ pnpm -r exec eslint .                 # ESLint with @xwbx/eslint-config flat con
   - **Git**: `GET /api/projects/{projectId}/git/status|diff|history|stashes` + `POST /api/projects/{projectId}/git/actions`（stage/unstage/commit/push 等全量操作，驱动前端 Changes 面板）
   - **Conversations**: CRUD (list, create, get, update, delete). Conversations belong to a project.
   - **Chat**: Send message (SSE streaming), get messages, manual compaction (`POST /api/conversations/{id}/compact`). Resume (`POST /api/conversations/{id}/resume`) doubles as the subagent crash-recovery entry（有受管委派时 orchestrator 先重建任务树再续父 loop）。
+  - **Settings**: `GET/PUT /api/settings`（应用设置;v1 键 `llm_wire_log`——PUT 落库 + 进程内开关即时生效）。
   - **Subagents**: `GET /api/conversations/{id}/subagents`（根会话任务快照,running 优先）; `GET /api/subagents/{agentId}/messages|events`（子历史/活动 run 的 SSE,含 run_meta 注入）; `POST /api/subagents/{agentId}/cancel`（单独取消;lost run 持久化为 cancelled）。
   - **Background tasks**（前端面）: `GET /api/conversations/{id}/background-tasks`（任务列表,running 优先）; `GET /api/background-tasks/{id}/output?offset&limit`（有界输出切片）; `POST /api/background-tasks/{id}/cancel`。
   - **MCP servers**: CRUD at `/api/mcp/servers`（列表/详情并入 `McpManager` 实时连接状态与 tools/prompts/resources 目录）；`POST /api/projects/{projectId}/mcp/ensure` 先 reconcile 再返回该项目有效集合；`POST /api/mcp/servers/{id}/prompts/{name}` 渲染 prompt（带参）；`POST /api/mcp/servers/{id}/resources/read` 读 resource；`POST /api/mcp/servers/{id}/oauth/start` + `GET /api/mcp/oauth/callback` + `DELETE /api/mcp/servers/{id}/oauth` 构成 OAuth 授权码 + PKCE 流。
-- **AppState**: Holds `SqlitePool`, `Arc<ProviderRegistry>`, `Arc<DashMap<String, RunHandle>>` for tracking active agent sessions, `Arc<McpManager>` for MCP connections, `Arc<OAuthFlowStore>` for in-flight MCP OAuth authorization flows (memory-only), and `Arc<RunService>`（`state.runs`——占用/装配/supervisor 与子代理/后台任务管理）。
+- **AppState**: Holds `SqlitePool`, `Arc<ProviderRegistry>`, `Arc<DashMap<String, RunHandle>>` for tracking active agent sessions, `Arc<McpManager>` for MCP connections, `Arc<OAuthFlowStore>` for in-flight MCP OAuth authorization flows (memory-only), `Arc<RunService>`（`state.runs`——占用/装配/supervisor 与子代理/后台任务管理）, and `WireLogControl`（`state.wire_log`——LLM wire 日志开关的进程级句柄,settings API 即时翻转）。
 - **Frontend** (`packages/app`): Vue 3 + Vite 8 + UnoCSS (OKLCH tokens). Uses `openapi-fetch` to consume the generated OpenAPI schema. `@vueuse/core` for composables. `unplugin-vue-components` for auto-imports. `shiki`（`utils/highlight.ts`）做代码高亮. Key directories:
   - `src/composables/`: `useChat.ts`（`createChatSession()` 工厂——主面板单例 `useChat()` 之外,子代理面板持有实例化会话状态:`attachSubagent`/`dispose`/`contextUsage:false`）, `useSubagents.ts`（根会话任务 store:快照+`subagent_updated` upsert/epoch 去重,TaskCard 与底部指示器共用）, `useProjects.ts`, `useProviders.ts`, `useMcpServers.ts` + `useMcpServerForm.ts`, `useMcpStatus.ts`, `useSlashCommands.ts`（斜杠命令菜单）, `useBackgroundTasks.ts`（后台 bash 任务快照 store:列表轮询(存在非终态且页面可见时 2s)+cancel upsert+唤醒 run 宽限窗探测）, `useContextUsage.ts`（上下文占用指示器）, `useGit.ts`（Changes 面板：status/diff/history/stashes/actions）, `useFileContent.ts`（文件预览）, `useTabs.ts`（工作区标签页）
   - `src/components/`: `chat/`（含 BashTaskCard 后台任务卡/TaskNotificationDivider 通知分隔条/输出查看 Dialog）, `subagent/`（TaskCard/子代理面板）, `changes/`（Git Changes）, `diff/`, `file-tree/`, `views/`（标签页视图）, `layout/`, `ui/`, `settings/`, `sidebar/`
@@ -102,7 +109,7 @@ pnpm -r exec eslint .                 # ESLint with @xwbx/eslint-config flat con
 
 ## Database Schema
 
-10 tables（migrations 按时间序累加：`init_schema` → `add_details_json_to_messages` → `add_conversation_title_source` → `add_project_additional_dirs` → `add_mcp_servers` → `add_project_scope_to_mcp_servers` → `add_mcp_server_tokens` → `split_message_membership` → `add_agent_runs` → `add_subagent_conversations` → `add_background_tasks`）:
+11 tables（migrations 按时间序累加：`init_schema` → `add_details_json_to_messages` → `add_conversation_title_source` → `add_project_additional_dirs` → `add_mcp_servers` → `add_project_scope_to_mcp_servers` → `add_mcp_server_tokens` → `split_message_membership` → `add_agent_runs` → `add_subagent_conversations` → `add_background_tasks` → `add_tool_permissions` → `add_settings`）:
 
 - `providers`: id, name, adapter_type, base_url, api_key, doc_url, source (`seeded`/`custom`), timestamps
 - `models`: id, provider*id, model_id, name, family, reasoning, tool_call, attachment, structured_output, temperature, knowledge, release_date, open_weights, cost*\_, limit\_\_, modalities\_\*, source, is_enabled, timestamps
@@ -114,6 +121,7 @@ pnpm -r exec eslint .                 # ESLint with @xwbx/eslint-config flat con
 - `mcp_servers`: id, name (UNIQUE), transport (`stdio`/`http`), command, args_json, env_json, url, headers_json (http 侧静态 headers/bearer), enabled, tool_timeout_ms, project_id (NULL=全局；非 NULL=仅该项目，FK cascade 随项目删除), timestamps
 - `mcp_server_tokens`: server_id (PK=UNIQUE, FK cascade → mcp_servers), client_id, client_secret, access_token, refresh_token, token_type, scope, expires_at, obtained_at, timestamps（OAuth 凭据，永不经 API 返回）
 - `background_tasks`: id（调用方生成,`bg_{uuid}`——注册表键=输出文件名=行 id）, conversation_id (FK cascade), parent_run_id (FK cascade → agent_runs), parent_call_id, command, working_dir, status (`running`/`completed`/`failed`/`cancelled`/`lost`), exit_code, output_path, output_bytes, error, notified（0/1,与通知消息插入同事务置位）, created_at, finished_at（内存只存活动任务）
+- `settings`: key (PK), value, updated_at——进程级开关的持久侧（KV 存储,已知键归 API 层的类型化 DTO 管;v1 键 `llm_wire_log`='on'/'off'）
 
 ## Testing
 

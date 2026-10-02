@@ -164,6 +164,31 @@
                 class="flex items-center gap-[18px] border-b border-line-soft border-dashed py-3"
               >
                 <div class="min-w-0 flex-1">
+                  <div class="text-[13px] text-strong font-semibold">
+                    LLM Wire 日志
+                  </div>
+                  <div class="mt-0.5 text-[12px] text-dim">
+                    按对话记录与模型交互的原始请求与 SSE 流（JSONL，数据库目录的
+                    llm-wire/ 下）；用于排查模型交互问题，切换即时生效。
+                  </div>
+                </div>
+                <SwitchRoot
+                  :model-value="llmWireLog"
+                  :disabled="wireLogPending"
+                  class="h-[18px] w-[32px] flex flex-none items-center border rounded-full px-[2px] control-focus transition-colors data-[state=checked]:border-accent-6 data-[state=unchecked]:border-neutral-5 data-[state=checked]:bg-accent-6 data-[state=unchecked]:bg-neutral-3"
+                  title="LLM wire 日志开关"
+                  @update:model-value="toggleLlmWireLog"
+                >
+                  <SwitchThumb
+                    class="block h-[12px] w-[12px] rounded-full bg-white transition-transform duration-150 data-[state=checked]:translate-x-[14px] data-[state=unchecked]:translate-x-0"
+                  />
+                </SwitchRoot>
+              </div>
+              <div
+                v-if="!inProjectScope"
+                class="flex items-center gap-[18px] border-b border-line-soft border-dashed py-3"
+              >
+                <div class="min-w-0 flex-1">
                   <div class="flex items-center gap-2">
                     <span class="text-[13px] text-strong font-semibold">
                       LLM Providers
@@ -312,6 +337,8 @@ import {
   DialogPortal,
   DialogRoot,
   DialogTitle,
+  SwitchRoot,
+  SwitchThumb,
 } from "reka-ui";
 import { computed, ref, watch } from "vue";
 import McpEditPage from "@/components/settings/mcp/McpEditPage.vue";
@@ -324,6 +351,7 @@ import AppSelect from "@/components/ui/AppSelect.vue";
 import { useMcpServers } from "@/composables/useMcpServers";
 import { useProjects } from "@/composables/useProjects";
 import { useProviders } from "@/composables/useProviders";
+import { useSettings } from "@/composables/useSettings";
 
 /**
  * 设置弹窗的壳层：Dialog、作用域、搜索、导航（面包屑/返回）与深链定位。
@@ -349,6 +377,26 @@ const emit = defineEmits<{
 const { providers } = useProviders();
 const { servers: mcpServers, fetchServers: fetchMcpServers } = useMcpServers();
 const { projects } = useProjects();
+const { llmWireLog, load: loadSettings, setLlmWireLog } = useSettings();
+const wireLogPending = ref(false);
+
+/** 弹窗打开时拉一次设置（wire 开关行在 AI 根页展示当前生效值）。 */
+watch(
+  () => props.visible,
+  (visible) => {
+    if (visible) void loadSettings();
+  },
+  { immediate: true },
+);
+
+async function toggleLlmWireLog(on: boolean): Promise<void> {
+  wireLogPending.value = true;
+  try {
+    await setLlmWireLog(on);
+  } finally {
+    wireLogPending.value = false;
+  }
+}
 
 type View =
   | { name: "ai" }
