@@ -401,6 +401,27 @@ pub struct TestApp {
     http: reqwest::Client,
 }
 
+/// Wire-log test support: the sink and subscriber are process-global
+/// (tracing), so both install ONCE per test binary — the first caller's
+/// process-level temp dir wins and later TestApps share it. Assertions
+/// never rely on file isolation: every line carries its conversation /
+/// request ids, so shared files are filtered, not partitioned.
+fn wire_test_setup() -> oct_llm_provider::wire::WireLogControl {
+    static WIRE: std::sync::OnceLock<oct_llm_provider::wire::WireLogControl> =
+        std::sync::OnceLock::new();
+    WIRE.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("oct-wire-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let control = oct_llm_provider::wire::init(dir, true);
+        use tracing_subscriber::prelude::*;
+        let _ = tracing_subscriber::registry()
+            .with(oct_llm_provider::wire::WireLogLayer)
+            .try_init();
+        control
+    })
+    .clone()
+}
+
 impl TestApp {
     pub async fn new() -> Self {
         let dir = tempfile::tempdir().expect("create temp dir");
@@ -454,6 +475,7 @@ impl TestApp {
             sessions,
             mcp: mcp.clone(),
             oauth_flows: Arc::new(oct_agent::oauth::OAuthFlowStore::default()),
+            wire_log: wire_test_setup(),
         };
         let app = oct_agent::api::build_router(state);
 

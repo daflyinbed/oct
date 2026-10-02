@@ -10,6 +10,7 @@ pub mod mcp;
 pub mod permissions;
 pub mod projects;
 pub mod providers;
+pub mod settings;
 pub mod subagents;
 
 use axum::Router;
@@ -44,6 +45,9 @@ pub struct AppState {
     /// bridging `oauth/start` and the callback. Memory-only by design; see
     /// `crate::oauth`.
     pub oauth_flows: Arc<OAuthFlowStore>,
+    /// Live handle onto the LLM wire-log sink (the `settings` API flips
+    /// it). Installed by `main` before the subscriber is assembled.
+    pub wire_log: oct_llm_provider::wire::WireLogControl,
 }
 
 #[derive(OpenApi)]
@@ -73,6 +77,8 @@ pub struct AppState {
         mcp::McpResourceSummary,
         mcp::McpServerOauthSummary,
         mcp::OAuthStartResponse,
+        settings::AppSettings,
+        settings::UpdateAppSettings,
         mcp::RenderPromptRequest,
         mcp::RenderPromptResponse,
         mcp::PromptMessageResponse,
@@ -175,6 +181,9 @@ fn api_routes(state: AppState) -> OpenApiRouter<AppState> {
         // Tool approvals: pending list + decide
         .routes(utoipa_axum::routes!(approvals::list_pending_approvals))
         .routes(utoipa_axum::routes!(approvals::decide_approval))
+        // Application settings (LLM wire log switch)
+        .routes(utoipa_axum::routes!(settings::get_settings))
+        .routes(utoipa_axum::routes!(settings::update_settings))
         // Permission rules: project scope + global scope + delete
         .routes(utoipa_axum::routes!(
             permissions::list_project_permission_rules

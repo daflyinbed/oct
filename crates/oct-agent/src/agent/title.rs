@@ -97,10 +97,21 @@ async fn call_model(job: &TitleJob) -> anyhow::Result<String> {
         },
     };
 
-    let response = tokio::time::timeout(MODEL_TIMEOUT, job.model.generate(request))
-        .await
-        .map_err(|_| anyhow::anyhow!("title model call timed out"))?
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    // Title generation runs as its own background task, outside any run's
+    // with_tags scope — so this call carries the conversation explicitly
+    // (no run_id) plus purpose=title for the wire log.
+    let title_tags = oct_llm_provider::wire::Tags {
+        conversation_id: Some(job.conversation_id.clone()),
+        purpose: Some("title".to_string()),
+        ..Default::default()
+    };
+    let response = tokio::time::timeout(
+        MODEL_TIMEOUT,
+        oct_llm_provider::wire::with_tags(title_tags, job.model.generate(request)),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("title model call timed out"))?
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     Ok(response
         .message

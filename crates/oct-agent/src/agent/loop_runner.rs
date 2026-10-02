@@ -203,8 +203,12 @@ pub async fn run_agent_loop(
         // The request-establishment await must respond to cancellation too:
         // a cancelled run must not hang inside connection
         // setup waiting for a stream that may never open.
+        // The with_tags scope covers the stream() call itself, where the
+        // wire ctx captures purpose=chat for every log line of this request.
+        let mut chat_tags = oct_llm_provider::wire::current_tags();
+        chat_tags.purpose = Some("chat".to_string());
         let stream_result = tokio::select! {
-            result = ctx.model.stream(request) => result,
+            result = oct_llm_provider::wire::with_tags(chat_tags, ctx.model.stream(request)) => result,
             _ = handle.cancel.cancelled() => {
                 info!("Agent loop cancelled while establishing the LLM stream");
                 handle.hub.publish(AgentEvent::Cancelled);

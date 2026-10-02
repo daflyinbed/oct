@@ -8,6 +8,7 @@ pub mod permissions;
 pub mod projects;
 pub mod providers;
 pub mod runs;
+pub mod settings;
 
 use anyhow::Result;
 use sqlx::SqlitePool;

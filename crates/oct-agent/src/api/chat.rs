@@ -487,24 +487,31 @@ async fn run_manual_compact(
 
     // The shared compaction transaction (same cut/tail/summary/persist rules
     // as the in-run auto trigger); no hub (no SSE stream here) and no
-    // cancellation token — a synchronous request.
-    let outcome = match compact::run_compaction(
-        chat_model.as_ref(),
-        &state.pool,
-        id,
-        compact::CompactRequest {
-            entries: &entries,
-            est_before,
-            system_prompt: None,
-            tool_specs: &[],
-            window,
-            trigger: CompactionTrigger::Manual,
-            hub: None,
-            cancel: None,
+    // cancellation token — a synchronous request. Tagged with the
+    // conversation so the manual path's wire lines land in the right
+    // per-conversation file (the run path inherits them from the supervisor).
+    let compaction = oct_llm_provider::wire::with_tags(
+        oct_llm_provider::wire::Tags {
+            conversation_id: Some(id.to_string()),
+            ..Default::default()
         },
-    )
-    .await
-    {
+        compact::run_compaction(
+            chat_model.as_ref(),
+            &state.pool,
+            id,
+            compact::CompactRequest {
+                entries: &entries,
+                est_before,
+                system_prompt: None,
+                tool_specs: &[],
+                window,
+                trigger: CompactionTrigger::Manual,
+                hub: None,
+                cancel: None,
+            },
+        ),
+    );
+    let outcome = match compaction.await {
         Ok(outcome) => outcome,
         Err(compact::CompactFailure::Nothing) => {
             return Err(AppError::BadRequest(

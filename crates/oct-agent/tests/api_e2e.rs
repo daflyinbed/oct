@@ -3980,3 +3980,130 @@ async fn patch_permission_mode_accept_edits_and_validation() {
     assert_eq!(conv["title"], "renamed");
     assert_eq!(conv["permission_mode"], "default");
 }
+
+// --- LLM wire log settings toggle --------------------------------------------
+
+/// Every wire line across the (process-shared) sink dir that belongs to the
+/// given conversation — the sink splits files by conversation id, but the
+/// test only needs the lines, not the exact file name.
+fn wire_lines_for(conversation_id: &str) -> Vec<Value> {
+    let dir = oct_llm_provider::wire::testing::sink_dir().expect("wire sink installed");
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("read sink dir") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().is_none_or(|ext| ext != "jsonl") {
+            continue;
+        }
+        for line in std::fs::read_to_string(&path)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+        {
+            let parsed: Value = serde_json::from_str(line).expect("valid JSONL line");
+            if parsed["conversation_id"].as_str() == Some(conversation_id) {
+                out.push(parsed);
+            }
+        }
+    }
+    out
+}
+
+/// Bounded poll for the writer thread (a plain std thread — no event to
+/// await). The handoff is fast; this only guards scheduling.
+fn wait_for_wire_lines(conversation_id: &str, pred: impl Fn(&[Value]) -> bool) -> Vec<Value> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let lines = wire_lines_for(conversation_id);
+        if pred(&lines) {
+            return lines;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "wire lines for {conversation_id} never arrived"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// The settings switch flips the wire sink LIVE (same request, no restart)
+/// and persists: with the switch off a full mock conversation produces zero
+/// wire lines; turning it back on records the next conversation with the
+/// full correlation envelope (run_kind=root, purpose=chat). Causality makes
+/// the "zero lines while off" assertion sleep-free: the OFF run's events
+/// were emitted BEFORE the ON run's, and the ON run's all arrived — so any
+/// strayed OFF event would have arrived before them.
+#[tokio::test]
+async fn llm_wire_log_settings_toggle_controls_sink_live() {
+    let app = TestApp::new().await;
+    let llm_server = llm::spawn_llm_mock(vec![
+        LlmTurn::Complete(vec![text_chunk("while off"), finish_chunk("stop")]),
+        LlmTurn::Complete(vec![text_chunk("while on"), finish_chunk("stop")]),
+    ])
+    .await;
+    app.register_llm_provider(&llm_server).await;
+    let project_id = app.create_project().await;
+    let conv_off = app.create_conversation(&project_id).await;
+    let conv_on = app.create_conversation(&project_id).await;
+
+    // Default is on; PUT flips live and persists.
+    let current = app.get_json("/api/settings").await.json::<Value>().await.unwrap();
+    assert_eq!(current["llm_wire_log"], true);
+    let updated = app
+        .put_json("/api/settings", serde_json::json!({ "llm_wire_log": false }))
+        .await;
+    assert_eq!(updated.status(), 200);
+    assert_eq!(
+        updated.json::<Value>().await.unwrap()["llm_wire_log"],
+        false
+    );
+    assert_eq!(
+        app.get_json("/api/settings").await.json::<Value>().await.unwrap()["llm_wire_log"],
+        false
+    );
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'llm_wire_log'")
+            .fetch_optional(&app.pool)
+            .await
+            .unwrap();
+    assert_eq!(stored.as_deref(), Some("off"));
+
+    // A full conversation while OFF: runs to completion…
+    let resp = app.send_message(&conv_off, "hi").await;
+    let events = app.read_sse(resp).await;
+    assert_eq!(*event_types(&events).last().unwrap(), "finish");
+
+    // …back ON, another full conversation…
+    app.put_json("/api/settings", serde_json::json!({ "llm_wire_log": true }))
+        .await;
+    let resp = app.send_message(&conv_on, "hi").await;
+    let events = app.read_sse(resp).await;
+    assert_eq!(*event_types(&events).last().unwrap(), "finish");
+
+    // …whose wire lines all arrive (writer alive and prompt)…
+    let lines = wait_for_wire_lines(&conv_on, |ls| {
+        ls.iter().any(|l| l["kind"] == "llm_stream_end")
+    });
+
+    // …which proves the OFF conversation produced nothing.
+    assert!(
+        wire_lines_for(&conv_off).is_empty(),
+        "no wire lines may exist while the switch is off"
+    );
+
+    // The ON lines carry the full correlation envelope from the run tags.
+    let request = lines
+        .iter()
+        .find(|l| l["kind"] == "llm_request")
+        .expect("llm_request line");
+    assert_eq!(request["stream"], true);
+    assert_eq!(request["run_kind"], "root");
+    assert_eq!(request["purpose"], "chat");
+    assert!(request["run_id"].as_str().is_some_and(|id| !id.is_empty()));
+    assert!(request["provider"].as_str().is_some_and(|p| !p.is_empty()));
+    assert!(
+        lines.iter().any(|l| l["kind"] == "llm_sse_event" && l["seq"].is_u64()),
+        "SSE events recorded with seq"
+    );
+    let end = lines.iter().find(|l| l["kind"] == "llm_stream_end").unwrap();
+    assert_eq!(end["outcome"], "eof");
+}

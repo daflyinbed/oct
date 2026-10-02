@@ -51,6 +51,7 @@ use tokio_util::sync::CancellationToken;
 
 use oct_llm_provider::model::ChatModel;
 use oct_llm_provider::provider::ProviderRegistry;
+use oct_llm_provider::wire;
 
 use crate::agent::loop_runner::run_agent_loop;
 use crate::agent::prompt::{system_prompt, worker_system_prompt};
@@ -812,7 +813,17 @@ async fn supervise(
     // occupancy release. The hub is cloned out first — the approval sweep
     // below publishes on it after the loop (and with it `handle`) is gone.
     let hub = handle.hub.clone();
-    let outcome = match tokio::spawn(run_agent_loop(ctx, conv_id.clone(), view, handle)).await {
+    let outcome = match tokio::spawn(wire::with_tags(
+        wire::Tags {
+            conversation_id: Some(conv_id.clone()),
+            run_id: Some(run_id.clone()),
+            run_kind: Some("root".to_string()),
+            purpose: None,
+        },
+        run_agent_loop(ctx, conv_id.clone(), view, handle),
+    ))
+    .await
+    {
         Ok(outcome) => outcome,
         Err(join_err) => RunOutcome {
             status: RunStatus::Failed,
@@ -892,7 +903,17 @@ async fn supervise_child(
     done_tx: watch::Sender<bool>,
 ) {
     let outcome =
-        match tokio::spawn(run_agent_loop(ctx, conv_id.clone(), view, handle.clone())).await {
+        match tokio::spawn(wire::with_tags(
+            wire::Tags {
+                conversation_id: Some(conv_id.clone()),
+                run_id: Some(run_id.clone()),
+                run_kind: Some("subagent".to_string()),
+                purpose: None,
+            },
+            run_agent_loop(ctx, conv_id.clone(), view, handle.clone()),
+        ))
+        .await
+        {
             Ok(outcome) => outcome,
             Err(join_err) => RunOutcome {
                 status: RunStatus::Failed,

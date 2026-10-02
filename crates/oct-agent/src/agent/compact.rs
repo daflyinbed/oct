@@ -271,10 +271,17 @@ pub async fn generate_summary(
         },
     };
 
-    let response = tokio::time::timeout(SUMMARY_TIMEOUT, model.generate(request))
-        .await
-        .map_err(|_| anyhow::anyhow!("summary model call timed out"))?
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    // The with_tags scope covers the generate() call, where the wire ctx
+    // captures purpose=compact (on top of the run's conversation tags).
+    let mut compact_tags = oct_llm_provider::wire::current_tags();
+    compact_tags.purpose = Some("compact".to_string());
+    let response = tokio::time::timeout(
+        SUMMARY_TIMEOUT,
+        oct_llm_provider::wire::with_tags(compact_tags, model.generate(request)),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("summary model call timed out"))?
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let text: String = response
         .message
