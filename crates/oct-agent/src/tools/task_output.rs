@@ -134,6 +134,19 @@ impl AgentTool for TaskOutputTool {
             }
         }
 
+        // A missing exit code does not identify a signal: running and lost
+        // tasks also have no exit status recorded.
+        let exit_code = task
+            .exit_code
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| {
+                if task.status == "running" {
+                    "pending (still running)".into()
+                } else {
+                    "unknown".into()
+                }
+            });
+
         let max_bytes = args
             .max_bytes
             .unwrap_or(DEFAULT_READ_BYTES)
@@ -151,23 +164,14 @@ impl AgentTool for TaskOutputTool {
             Err(e) => {
                 return Ok(ToolOutput::success(format!(
                     "task_id: {}\nstatus: {}\nexit_code: {}\noutput unavailable: {e}",
-                    task.id,
-                    task.status,
-                    task.exit_code
-                        .map(|c| c.to_string())
-                        .unwrap_or_else(|| "unknown".into()),
+                    task.id, task.status, exit_code,
                 )));
             }
         };
 
         let mut content = format!(
             "task_id: {}\nstatus: {}\nexit_code: {}\noutput_bytes: {}\n",
-            task.id,
-            task.status,
-            task.exit_code
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "unknown (killed by a signal)".into()),
-            chunk.total_bytes,
+            task.id, task.status, exit_code, chunk.total_bytes,
         );
         if let Some(error) = &task.error {
             content.push_str(&format!("error: {error}\n"));

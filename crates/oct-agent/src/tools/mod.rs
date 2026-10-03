@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
-use std::time::Instant;
+use tokio::time::Instant;
 use utoipa::ToSchema;
 
 use crate::agent::AgentEvent;
@@ -121,7 +121,7 @@ pub enum OutputStream {
 /// Flush a stream's buffer as one delta event once it reaches this size.
 const SMOOTHER_FLUSH_BYTES: usize = 8192;
 /// Or once this much time has passed since the stream's last flush. The time
-/// condition is only evaluated when new output arrives (no background timers).
+/// condition is evaluated on output and by waiting process-pipe readers.
 const SMOOTHER_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 /// Hard cap on delta events per tool call. Further output is dropped
 /// silently; the final ToolResult content is authoritative anyway.
@@ -250,6 +250,21 @@ impl ToolContext {
                 .is_some_and(|t| t.elapsed() >= SMOOTHER_FLUSH_INTERVAL);
         if due {
             state.flush_stream(&self.inner.call_id, &self.inner.hub, stream);
+        }
+    }
+
+    /// Pipe readers call this while waiting for more bytes, so a short burst
+    /// does not remain buffered until another write or process exit.
+    fn flush_due(&self) {
+        let mut state = self.inner.state.lock().unwrap_or_else(|p| p.into_inner());
+        for stream in [OutputStream::Stdout, OutputStream::Stderr] {
+            if state
+                .buffer_mut(stream)
+                .last_flush
+                .is_some_and(|t| t.elapsed() >= SMOOTHER_FLUSH_INTERVAL)
+            {
+                state.flush_stream(&self.inner.call_id, &self.inner.hub, stream);
+            }
         }
     }
 
@@ -461,7 +476,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn smoother_flushes_slow_output_after_interval() {
         let (ctx, hub, stream) = ctx_with_sub();
 
@@ -469,7 +484,7 @@ mod tests {
 
         // Simulate a slow producer: the next emit arrives after the flush
         // interval, so the time condition holds at emit time.
-        std::thread::sleep(SMOOTHER_FLUSH_INTERVAL + Duration::from_millis(20));
+        tokio::time::advance(SMOOTHER_FLUSH_INTERVAL + Duration::from_millis(20)).await;
         ctx.emit_output_delta(OutputStream::Stdout, "second");
         drop(ctx);
         drop(hub);

@@ -9,3 +9,6 @@ packages/oct-design
 .vitest/
 # docs/ 整体不入库：调查报告与 backlog 是本地工作文档
 docs/
+# Local backend output and LLM wire logs (next to the default database).
+/exec/
+/llm-wire/

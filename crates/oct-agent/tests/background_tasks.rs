@@ -521,6 +521,12 @@ async fn task_output_pages_and_blocks_and_the_gate_closes() {
         .unwrap();
     assert!(!out.is_error);
     assert!(out.content.contains("status: running"), "{}", out.content);
+    assert!(
+        out.content.contains("exit_code: pending (still running)"),
+        "{}",
+        out.content
+    );
+    assert!(!out.content.contains("killed by a signal"));
 
     // Blocking read waits for the settlement and shows the tail.
     let out = output_tool
@@ -584,6 +590,14 @@ async fn task_output_pages_and_blocks_and_the_gate_closes() {
         "{}",
         out.content
     );
+
+    let out = output_tool
+        .execute(json!({"task_id": live.id}), &ctx)
+        .await
+        .unwrap();
+    assert!(out.content.contains("status: cancelled"));
+    assert!(out.content.contains("exit_code: unknown\n"));
+    assert!(!out.content.contains("killed by a signal"));
 
     // Unknown id: the error lists the conversation's known ids.
     let out = output_tool

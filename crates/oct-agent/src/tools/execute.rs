@@ -175,7 +175,19 @@ where
         // UTF-8 char split across chunk boundaries.
         let mut pending: Vec<u8> = Vec::new();
         loop {
-            match stream.read(&mut chunk).await {
+            // The timer lives inside the reader task, so drain/abort also
+            // stops flushing before the final ToolResult is published.
+            let read =
+                match tokio::time::timeout(super::SMOOTHER_FLUSH_INTERVAL, stream.read(&mut chunk))
+                    .await
+                {
+                    Ok(read) => read,
+                    Err(_) => {
+                        ctx.flush_due();
+                        continue;
+                    }
+                };
+            match read {
                 Ok(0) => break, // EOF
                 Ok(n) => {
                     {
@@ -796,6 +808,36 @@ mod tests {
         }
         assert_eq!(stdout, "live-output\n");
         assert_eq!(stderr, "");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn short_output_flushes_while_pipe_remains_open() {
+        use tokio::io::AsyncWriteExt;
+        let test_ctx = TestCtx::new();
+        let events = test_ctx.hub.subscribe();
+        futures_util::pin_mut!(events);
+        for stream in [OutputStream::Stdout, OutputStream::Stderr] {
+            let (mut writer, reader) = tokio::io::duplex(64);
+            let handle = spawn_reader(reader, stream, test_ctx.ctx.clone());
+            writer.write_all("ready 中文🍎".as_bytes()).await.unwrap();
+            // Waiting for the event auto-advances the paused clock. The pipe
+            // stays open and no second write or completion flush can help.
+            let event = tokio::time::timeout(Duration::from_secs(1), events.next())
+                .await
+                .expect("short output must arrive before EOF")
+                .unwrap();
+            assert!(matches!(event, crate::agent::AgentEvent::ToolOutputDelta {
+                stream: actual, delta, ..
+            } if actual == stream && delta == "ready 中文🍎"));
+            assert!(!handle.1.is_finished());
+            drop(writer);
+            assert_eq!(drain_reader(Some(handle)).await, "ready 中文🍎".as_bytes());
+        }
+        test_ctx.ctx.flush();
+        let TestCtx { ctx, hub } = test_ctx;
+        drop(ctx);
+        drop(hub);
+        assert!(events.next().await.is_none(), "no duplicate or late deltas");
     }
 
     #[test]
