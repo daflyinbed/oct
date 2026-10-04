@@ -205,12 +205,13 @@ async fn recover_one(job: &RecoveryJob, run: AgentRun) -> Result<()> {
         .unwrap_or_else(|| job.provider_id.clone());
     let model_id = run.model_id.clone().unwrap_or_else(|| job.model_id.clone());
     let spec = format!("{provider_id}:{model_id}");
-    let (model, provider_id, model_id) = job.runs.resolve_model(&spec).await.map_err(|e| {
-        anyhow!("resolving the child model {spec} (run {}): {e}", run.id)
-    })?;
+    let (model, provider_id, model_id) = job
+        .runs
+        .resolve_model(&spec)
+        .await
+        .map_err(|e| anyhow!("resolving the child model {spec} (run {}): {e}", run.id))?;
 
-    let child_dangling =
-        msg_db::find_dangling_tool_calls(pool, &run.conversation_id).await?;
+    let child_dangling = msg_db::find_dangling_tool_calls(pool, &run.conversation_id).await?;
     let child_messages = msg_db::list_messages(pool, &run.conversation_id).await?;
 
     // "Child effectively completed" shortcut: the crash
@@ -222,11 +223,7 @@ async fn recover_one(job: &RecoveryJob, run: AgentRun) -> Result<()> {
             .last()
             .is_some_and(|m| m.role == "assistant" && !parts_carry_tool_call(&m.parts_json));
     if effectively_completed {
-        let final_id = child_messages
-            .last()
-            .expect("checked above")
-            .id
-            .clone();
+        let final_id = child_messages.last().expect("checked above").id.clone();
         run_db::finish_run(
             pool,
             &run.id,
@@ -281,6 +278,9 @@ async fn recover_one(job: &RecoveryJob, run: AgentRun) -> Result<()> {
             model_id,
             view,
             context_window: run.context_window.and_then(|v| u32::try_from(v).ok()),
+            agent_config: crate::agent_settings::WorkerSnapshot::decode(
+                run.agent_config_json.as_deref(),
+            )?,
             cancel,
             parent_hub: job.hub.clone(),
             parent_call_id: call_id.clone(),
@@ -343,10 +343,7 @@ fn publish_settled(hub: &Arc<EventHub>, run: &AgentRun, epoch: i64, status: &str
     hub.publish(AgentEvent::SubagentUpdated {
         run_id: run.id.clone(),
         agent_id: run.conversation_id.clone(),
-        parent_call_id: run
-            .parent_tool_call_id
-            .clone()
-            .unwrap_or_default(),
+        parent_call_id: run.parent_tool_call_id.clone().unwrap_or_default(),
         status: SubagentRunStatus::from_run_status(status),
         execution_epoch: u64::try_from(epoch).unwrap_or(u64::MAX),
         description: run.description.clone().unwrap_or_default(),
@@ -357,10 +354,6 @@ fn publish_settled(hub: &Arc<EventHub>, run: &AgentRun, epoch: i64, status: &str
 /// Whether a serialized `Vec<ContentPart>` carries any ToolCall part.
 fn parts_carry_tool_call(parts_json: &str) -> bool {
     serde_json::from_str::<Vec<ContentPart>>(parts_json)
-        .map(|parts| {
-            parts
-                .iter()
-                .any(|p| matches!(p, ContentPart::ToolCall(_)))
-        })
+        .map(|parts| parts.iter().any(|p| matches!(p, ContentPart::ToolCall(_))))
         .unwrap_or(false)
 }

@@ -119,6 +119,13 @@ export interface Scenario {
   >;
   /** GET /api/providers 的返回体(ProviderResponse[])。 */
   providers?: unknown[];
+  /** Agent editor read snapshots and explicit save replies, keyed by global/project id. */
+  agentSettings?: Record<string, components["schemas"]["AgentSettingsView"][]>;
+  agentTools?: components["schemas"]["AgentToolOption"][];
+  agentPatchReplies?: Record<
+    string,
+    components["schemas"]["AgentSettingsView"] | { error: string }
+  >;
   /** MCP server 初始行(McpServerResponse[]);POST/PATCH/DELETE 就地增删改。 */
   mcpServers?: unknown[];
   /**
@@ -273,6 +280,9 @@ const RE_MCP_RESOURCE_READ = /^\/api\/mcp\/servers\/([^/]+)\/resources\/read$/;
 const RE_MCP_OAUTH_START = /^\/api\/mcp\/servers\/([^/]+)\/oauth\/start$/;
 const RE_MCP_OAUTH_DELETE = /^\/api\/mcp\/servers\/([^/]+)\/oauth$/;
 const RE_GATE_OPEN = /^\/__mock\/gates\/([^/]+)\/open$/;
+const RE_AGENT_SETTINGS =
+  /^\/api\/(?:projects\/([^/]+)\/)?settings\/agents(?:\/([^/]+))?$/;
+const RE_AGENT_TOOLS = /^\/api\/(?:projects\/[^/]+\/)?settings\/agent-tools$/;
 
 function resetState() {
   state.scenario = {};
@@ -467,6 +477,28 @@ async function handleApi(
   searchParams: URLSearchParams,
 ): Promise<void> {
   const s = state.scenario;
+
+  const agents = pathname.match(RE_AGENT_SETTINGS);
+  if (agents) {
+    const scope = agents[1] ? decodeURIComponent(agents[1]) : "global";
+    const key = agents[2] ? decodeURIComponent(agents[2]) : undefined;
+    const views = s.agentSettings?.[scope] ?? [];
+    if (req.method === "GET")
+      return sendJson(res, 200, key ? views.find((v) => v.key === key) : views);
+    if (req.method === "PATCH" && key) {
+      const reply = s.agentPatchReplies?.[`${scope}/${key}`];
+      if (!reply)
+        return sendJson(res, 500, {
+          error: "Missing scripted agent save reply",
+        });
+      if ("error" in reply) return sendJson(res, 400, reply);
+      const index = views.findIndex((v) => v.key === key);
+      if (index >= 0) views[index] = reply;
+      return sendJson(res, 200, reply);
+    }
+  }
+  if (RE_AGENT_TOOLS.test(pathname) && req.method === "GET")
+    return sendJson(res, 200, s.agentTools ?? []);
 
   // Deterministic Git responses and index mutations for Changes UI tests.
   if (pathname.includes("/git/")) {

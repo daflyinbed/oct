@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE agent_runs SET agent_config_json = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "c90f9104d79996355d27b3e3a8b87a92fbfdd8752796a5781bf0cd1739694e73"
+}

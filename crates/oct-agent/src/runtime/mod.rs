@@ -39,6 +39,7 @@ use supervision::{derive_child_toolset, supervise, supervise_child};
 pub mod background;
 pub mod lifecycle;
 pub mod preparation;
+pub(crate) mod worker_config;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
@@ -626,6 +627,7 @@ impl RunService {
             start_message_id,
             view,
             context_window,
+            agent_config,
             cancel,
             parent_hub,
             parent_call_id,
@@ -677,6 +679,26 @@ impl RunService {
                 rebuilt
             }
         };
+        let child_tools = match &agent_config {
+            Some(snapshot) => match worker_config::restore_tools(child_tools, &snapshot.tools) {
+                Ok(tools) => tools,
+                Err(error) => {
+                    run_db::finish_run(
+                        &self.pool,
+                        &run_id,
+                        run_db::RunFinalStatus::Failed,
+                        None,
+                        Some(&error.to_string()),
+                        None,
+                        None,
+                        Some(epoch),
+                    )
+                    .await?;
+                    return Err(error.into());
+                }
+            },
+            None => child_tools,
+        };
         let child_tools = Arc::new(child_tools);
 
         // The child's permission gate: rules load like
@@ -718,15 +740,22 @@ impl RunService {
         };
 
         let (_, additional) = workspace_roots(&project);
+        let mut prompt = worker_system_prompt(
+            &PathBuf::from(&project.working_dir),
+            &additional,
+            &child_tools,
+        );
+        if let Some(snapshot) = &agent_config
+            && !snapshot.instructions.is_empty()
+        {
+            prompt.push_str("\nAdditional worker instructions:\n");
+            prompt.push_str(&snapshot.instructions);
+        }
         let ctx = AgentContext {
             model: Arc::from(model),
             tools: child_tools.clone(),
             pool: self.pool.clone(),
-            system_prompt: worker_system_prompt(
-                &PathBuf::from(&project.working_dir),
-                &additional,
-                &child_tools,
-            ),
+            system_prompt: prompt,
             context_window,
             idle: None,
             permission: gate,

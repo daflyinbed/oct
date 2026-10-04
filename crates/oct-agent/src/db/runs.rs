@@ -30,6 +30,7 @@ pub struct AgentRun {
     pub provider_id: Option<String>,
     pub model_id: Option<String>,
     pub context_window: Option<i64>,
+    pub agent_config_json: Option<String>,
     pub error: Option<String>,
     /// The run's final persisted assistant message row.
     pub final_message_id: Option<String>,
@@ -125,6 +126,7 @@ pub async fn create_run_in_tx(tx: &mut SqliteConnection, new: NewRun) -> Result<
         provider_id: new.provider_id,
         model_id: new.model_id,
         context_window: new.context_window,
+        agent_config_json: None,
         error: None,
         final_message_id: None,
         input_tokens: None,
@@ -243,7 +245,7 @@ pub async fn mark_stale_runs_lost(pool: &SqlitePool) -> Result<Vec<AgentRun>> {
     let now = chrono::Utc::now().naive_utc();
     let rows = sqlx::query_as!(
         AgentRun,
-        "UPDATE agent_runs SET status = 'lost', finished_at = $1 WHERE status = 'running' RETURNING id, conversation_id, kind, parent_run_id, root_run_id, parent_tool_call_id, status, execution_epoch, history_epoch, provider_id, model_id, context_window, error, final_message_id, input_tokens, output_tokens, description, started_at, finished_at",
+        "UPDATE agent_runs SET status = 'lost', finished_at = $1 WHERE status = 'running' RETURNING id, conversation_id, kind, parent_run_id, root_run_id, parent_tool_call_id, status, execution_epoch, history_epoch, provider_id, model_id, context_window, agent_config_json, error, final_message_id, input_tokens, output_tokens, description, started_at, finished_at",
         now,
     )
     .fetch_all(pool)
@@ -254,7 +256,7 @@ pub async fn mark_stale_runs_lost(pool: &SqlitePool) -> Result<Vec<AgentRun>> {
 pub async fn get_run(pool: &SqlitePool, run_id: &str) -> Result<Option<AgentRun>> {
     let row = sqlx::query_as!(
         AgentRun,
-        "SELECT id, conversation_id, kind, parent_run_id, root_run_id, parent_tool_call_id, status, execution_epoch, history_epoch, provider_id, model_id, context_window, error, final_message_id, input_tokens, output_tokens, description, started_at, finished_at FROM agent_runs WHERE id = $1",
+        "SELECT id, conversation_id, kind, parent_run_id, root_run_id, parent_tool_call_id, status, execution_epoch, history_epoch, provider_id, model_id, context_window, agent_config_json, error, final_message_id, input_tokens, output_tokens, description, started_at, finished_at FROM agent_runs WHERE id = $1",
         run_id,
     )
     .fetch_optional(pool)
@@ -271,7 +273,7 @@ pub async fn latest_run_for_conversation(
 ) -> Result<Option<AgentRun>> {
     let row = sqlx::query_as!(
         AgentRun,
-        "SELECT id, conversation_id, kind, parent_run_id, root_run_id, parent_tool_call_id, status, execution_epoch, history_epoch, provider_id, model_id, context_window, error, final_message_id, input_tokens, output_tokens, description, started_at, finished_at FROM agent_runs WHERE conversation_id = $1 AND (kind = 'subagent' OR history_epoch = (SELECT history_epoch FROM conversations WHERE id = $1)) ORDER BY started_at DESC, rowid DESC LIMIT 1",
+        "SELECT id, conversation_id, kind, parent_run_id, root_run_id, parent_tool_call_id, status, execution_epoch, history_epoch, provider_id, model_id, context_window, agent_config_json, error, final_message_id, input_tokens, output_tokens, description, started_at, finished_at FROM agent_runs WHERE conversation_id = $1 AND (kind = 'subagent' OR history_epoch = (SELECT history_epoch FROM conversations WHERE id = $1)) ORDER BY started_at DESC, rowid DESC LIMIT 1",
         conversation_id,
     )
     .fetch_optional(pool)
@@ -290,7 +292,7 @@ pub async fn find_run_by_parent_call(
 ) -> Result<Option<AgentRun>> {
     let row = sqlx::query_as!(
         AgentRun,
-        "SELECT id, conversation_id, kind, parent_run_id, root_run_id, parent_tool_call_id, status, execution_epoch, history_epoch, provider_id, model_id, context_window, error, final_message_id, input_tokens, output_tokens, description, started_at, finished_at FROM agent_runs WHERE parent_run_id = $1 AND parent_tool_call_id = $2",
+        "SELECT id, conversation_id, kind, parent_run_id, root_run_id, parent_tool_call_id, status, execution_epoch, history_epoch, provider_id, model_id, context_window, agent_config_json, error, final_message_id, input_tokens, output_tokens, description, started_at, finished_at FROM agent_runs WHERE parent_run_id = $1 AND parent_tool_call_id = $2",
         parent_run_id,
         parent_tool_call_id,
     )
@@ -314,7 +316,7 @@ pub async fn runs_for_parent_calls(
     let ids_json = serde_json::to_string(call_ids)?;
     let rows = sqlx::query_as!(
         AgentRun,
-        "SELECT r.id, r.conversation_id, r.kind, r.parent_run_id, r.root_run_id, r.parent_tool_call_id, r.status, r.execution_epoch, r.history_epoch, r.provider_id, r.model_id, r.context_window, r.error, r.final_message_id, r.input_tokens, r.output_tokens, r.description, r.started_at, r.finished_at FROM agent_runs r JOIN agent_runs p ON r.parent_run_id = p.id AND p.conversation_id = $1 AND p.history_epoch = (SELECT history_epoch FROM conversations WHERE id = $1) WHERE r.parent_tool_call_id IN (SELECT value FROM json_each($2))",
+        "SELECT r.id, r.conversation_id, r.kind, r.parent_run_id, r.root_run_id, r.parent_tool_call_id, r.status, r.execution_epoch, r.history_epoch, r.provider_id, r.model_id, r.context_window, r.agent_config_json, r.error, r.final_message_id, r.input_tokens, r.output_tokens, r.description, r.started_at, r.finished_at FROM agent_runs r JOIN agent_runs p ON r.parent_run_id = p.id AND p.conversation_id = $1 AND p.history_epoch = (SELECT history_epoch FROM conversations WHERE id = $1) WHERE r.parent_tool_call_id IN (SELECT value FROM json_each($2))",
         parent_conversation_id,
         ids_json,
     )
@@ -340,6 +342,7 @@ pub struct SubagentRunRow {
     pub provider_id: Option<String>,
     pub model_id: Option<String>,
     pub context_window: Option<i64>,
+    pub agent_config_json: Option<String>,
     pub error: Option<String>,
     pub final_message_id: Option<String>,
     pub input_tokens: Option<i64>,
@@ -366,6 +369,7 @@ impl SubagentRunRow {
             provider_id: self.provider_id,
             model_id: self.model_id,
             context_window: self.context_window,
+            agent_config_json: self.agent_config_json,
             error: self.error,
             final_message_id: self.final_message_id,
             input_tokens: self.input_tokens,
@@ -386,7 +390,7 @@ pub async fn list_subagent_runs(
 ) -> Result<Vec<SubagentRunRow>> {
     let rows = sqlx::query_as!(
         SubagentRunRow,
-        "SELECT r.id, r.conversation_id, r.kind, r.parent_run_id, r.root_run_id, r.parent_tool_call_id, r.status, r.execution_epoch, r.history_epoch, r.provider_id, r.model_id, r.context_window, r.error, r.final_message_id, r.input_tokens, r.output_tokens, r.description, r.started_at, r.finished_at, c.title AS title FROM agent_runs r JOIN conversations c ON c.id = r.conversation_id AND c.root_conversation_id = $1 ORDER BY CASE WHEN r.status = 'running' THEN 0 ELSE 1 END, r.started_at ASC",
+        "SELECT r.id, r.conversation_id, r.kind, r.parent_run_id, r.root_run_id, r.parent_tool_call_id, r.status, r.execution_epoch, r.history_epoch, r.provider_id, r.model_id, r.context_window, r.agent_config_json, r.error, r.final_message_id, r.input_tokens, r.output_tokens, r.description, r.started_at, r.finished_at, c.title AS title FROM agent_runs r JOIN conversations c ON c.id = r.conversation_id AND c.root_conversation_id = $1 ORDER BY CASE WHEN r.status = 'running' THEN 0 ELSE 1 END, r.started_at ASC",
         root_conversation_id,
     )
     .fetch_all(pool)

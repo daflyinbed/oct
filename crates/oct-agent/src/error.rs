@@ -62,4 +62,10 @@ impl From<ModelError> for AppError {
     }
 }
 
+impl From<sqlx::Error> for AppError {
+    fn from(error: sqlx::Error) -> Self {
+        Self::Internal(error.into())
+    }
+}
+
 pub type AppResult<T> = std::result::Result<T, AppError>;

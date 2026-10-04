@@ -46,6 +46,9 @@ pub struct SubagentTaskDto {
     pub title: String,
     /// Whether an in-memory execution instance is live right now.
     pub running: bool,
+    /// The configuration actually sealed for this task; absent on legacy runs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_config: Option<crate::agent_settings::WorkerSnapshot>,
 }
 
 #[utoipa::path(
@@ -98,6 +101,10 @@ pub async fn list_subagents(
                 final_message_id: row.final_message_id,
                 title: row.title,
                 running,
+                agent_config: row
+                    .agent_config_json
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok()),
             }
         })
         .collect();

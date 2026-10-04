@@ -287,6 +287,14 @@ impl ToolContext {
 /// Trait that all agent tools implement.
 #[async_trait]
 pub trait AgentTool: Send + Sync {
+    /// Stable configuration identity; MCP tools override this with the server
+    /// id and original name, independent of the model-visible alias.
+    fn selector(&self) -> crate::agent_settings::ToolSelector {
+        crate::agent_settings::ToolSelector::Builtin {
+            name: self.name().to_string(),
+        }
+    }
+
     /// Tool name as used by the LLM.
     fn name(&self) -> &str;
 

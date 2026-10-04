@@ -80,6 +80,7 @@ pub struct ChildRunRequest {
     pub model_id: String,
     pub view: LlmView,
     pub context_window: Option<u32>,
+    pub agent_config: Option<crate::agent_settings::WorkerSnapshot>,
     /// The child's cancellation token: a `child_token()` of the parent's, so
     /// cancelling the parent cascades; cancelling it directly stops only
     /// this child.
@@ -124,6 +125,9 @@ pub struct SubagentManager {
     children: DashMap<String, Arc<ChildRun>>,
     /// key = agent (child conversation) id → run id — ACTIVE children only.
     by_agent: DashMap<String, String>,
+    /// Protect registration through publishing the live handle. Released
+    /// before waiting for execution, so independent children remain parallel.
+    registration: tokio::sync::Mutex<()>,
 }
 
 impl Default for SubagentManager {
@@ -132,6 +136,7 @@ impl Default for SubagentManager {
             service: std::sync::OnceLock::new(),
             children: DashMap::new(),
             by_agent: DashMap::new(),
+            registration: tokio::sync::Mutex::new(()),
         }
     }
 }
@@ -212,6 +217,7 @@ impl SubagentManager {
             });
         }
 
+        let registration = self.registration.lock().await;
         // Registration idempotency: one child run per (parent_run_id,
         // parent_tool_call_id) — existing rows are awaited or continued,
         // never duplicated.
@@ -228,6 +234,7 @@ impl SubagentManager {
                 // Running in memory: attach to the wait (concurrent re-entry
                 // of the same call id shares one execution).
                 let mut done = child.done.clone();
+                drop(registration);
                 let _ = done.wait_for(|d| *d).await;
                 return run_db::get_run(&pool, &existing.id)
                     .await
@@ -260,38 +267,96 @@ impl SubagentManager {
                     agent_id: Some(existing.conversation_id.clone()),
                     run_id: Some(existing.id.clone()),
                 })?;
-            return self.launch(&service, spawn, existing, epoch, start).await;
+            return self
+                .launch(&service, spawn, existing, epoch, start, registration)
+                .await;
         }
 
         // Atomic registration: child conversation + delegation message + run
         // row in ONE transaction (the registration boundary). A concurrent
         // re-entry loses the (parent_run_id, parent_tool_call_id) UNIQUE
         // index race and re-reads the winner's row.
-        let (run, start_message_id) =
-            match register_child_tx(&pool, spawn, parent_call_id, description, prompt).await {
-                Ok(pair) => pair,
-                Err(e) if is_unique_violation(&e) => {
-                    let existing = run_db::find_run_by_parent_call(
-                        &pool,
-                        &spawn.parent_run_id,
-                        parent_call_id,
-                    )
-                    .await
-                    .map_err(task_err)?
-                    .ok_or_else(|| TaskError {
-                        message: format!("registration raced but no row found: {e:#}"),
-                        agent_id: None,
-                        run_id: None,
-                    })?;
-                    let start = delegation_message_of(&pool, &existing)
+        let settings =
+            crate::agent_settings::read_for_run(&pool, "worker", Some(&spawn.project.id))
+                .await
+                .map_err(|e| task_err(e.into()))?;
+        let parent_tools = spawn
+            .parent_toolset
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .ok_or_else(|| task_err(anyhow!("Parent toolset no longer exists")))?;
+        let selected =
+            crate::runtime::worker_config::select_tools(&parent_tools, &settings.effective.tools)
+                .map_err(task_err)?;
+        let (provider_id, model_id) = settings
+            .effective
+            .model
+            .identity(&spawn.provider_id, &spawn.model_id);
+        let spec = format!("{provider_id}:{model_id}");
+        let (model, _, _) = service
+            .resolve_model(&spec)
+            .await
+            .map_err(|e| task_err(e.into()))?;
+        if !selected.is_empty()
+            && let Some(row) = crate::db::models::get_model(&pool, &provider_id, &model_id)
+                .await
+                .map_err(task_err)?
+            && !row.tool_call
+        {
+            return Err(task_err(anyhow!(
+                "Worker model does not support tool calls"
+            )));
+        }
+        let context_window = service
+            .resolve_context_window(model.as_ref(), &provider_id, &model_id)
+            .await;
+        let snapshot = crate::agent_settings::WorkerSnapshot {
+            version: 1,
+            agent_type: "worker".into(),
+            instructions: settings.effective.instructions,
+            prompt_template_version: 1,
+            tools: selected,
+            sources: settings.sources,
+        };
+        let (run, start_message_id) = match register_child_tx(
+            &pool,
+            spawn,
+            parent_call_id,
+            description,
+            prompt,
+            WorkerRegistration {
+                provider_id: &provider_id,
+                model_id: &model_id,
+                context_window,
+                snapshot: &snapshot,
+            },
+        )
+        .await
+        {
+            Ok(pair) => pair,
+            Err(e) if is_unique_violation(&e) => {
+                let existing =
+                    run_db::find_run_by_parent_call(&pool, &spawn.parent_run_id, parent_call_id)
                         .await
-                        .map_err(task_err)?;
-                    return self.launch(&service, spawn, existing, 1, start).await;
-                }
-                Err(e) => return Err(task_err(e)),
-            };
+                        .map_err(task_err)?
+                        .ok_or_else(|| TaskError {
+                            message: format!("registration raced but no row found: {e:#}"),
+                            agent_id: None,
+                            run_id: None,
+                        })?;
+                let start = delegation_message_of(&pool, &existing)
+                    .await
+                    .map_err(task_err)?;
+                let epoch = existing.execution_epoch;
+                return self
+                    .launch(&service, spawn, existing, epoch, start, registration)
+                    .await;
+            }
+            Err(e) => return Err(task_err(e)),
+        };
 
-        self.launch(&service, spawn, run, 1, start_message_id).await
+        self.launch(&service, spawn, run, 1, start_message_id, registration)
+            .await
     }
 
     /// Resolve the child model from the run row's snapshot, occupy the child
@@ -305,6 +370,7 @@ impl SubagentManager {
         run: run_db::AgentRun,
         epoch: i64,
         start_message_id: String,
+        registration: tokio::sync::MutexGuard<'_, ()>,
     ) -> std::result::Result<run_db::AgentRun, TaskError> {
         let pool = service.pool.clone();
         let prepared: Result<ChildHandle, TaskError> = async {
@@ -323,10 +389,17 @@ impl SubagentManager {
                     agent_id: Some(run.conversation_id.clone()),
                     run_id: Some(run.id.clone()),
                 })?;
-            let context_window = service
-                .resolve_context_window(model.as_ref(), &provider_id, &model_id)
-                .await
-                .or_else(|| run.context_window.and_then(|v| u32::try_from(v).ok()));
+            let agent_config =
+                crate::agent_settings::WorkerSnapshot::decode(run.agent_config_json.as_deref())
+                    .map_err(|e| task_err_ctx(&run, e))?;
+            let context_window = if agent_config.is_some() {
+                run.context_window.and_then(|v| u32::try_from(v).ok())
+            } else {
+                service
+                    .resolve_context_window(model.as_ref(), &provider_id, &model_id)
+                    .await
+                    .or_else(|| run.context_window.and_then(|v| u32::try_from(v).ok()))
+            };
 
             let view = msg_db::load_llm_view(&pool, &run.conversation_id)
                 .await
@@ -359,6 +432,7 @@ impl SubagentManager {
                     model_id,
                     view,
                     context_window,
+                    agent_config,
                     cancel,
                     parent_hub: spawn.parent_hub.clone(),
                     parent_call_id,
@@ -402,6 +476,7 @@ impl SubagentManager {
             }
         };
 
+        drop(registration);
         // Wait for settlement: DB row is the single source of truth for the
         // envelope. Cancellation of the parent cancels the child through the
         // token chain; settlement itself never depends on this await.
@@ -553,6 +628,13 @@ fn is_unique_violation(e: &anyhow::Error) -> bool {
 // Registration transaction
 // ---------------------------------------------------------------------------
 
+struct WorkerRegistration<'a> {
+    provider_id: &'a str,
+    model_id: &'a str,
+    context_window: Option<u32>,
+    snapshot: &'a crate::agent_settings::WorkerSnapshot,
+}
+
 /// Create the child conversation, the delegation user message and the
 /// `agent_runs` row in ONE transaction. The provider/model
 /// are stamped on the delegation message so the child history records its
@@ -563,8 +645,15 @@ async fn register_child_tx(
     parent_call_id: &str,
     description: &str,
     prompt: &str,
+    worker: WorkerRegistration<'_>,
 ) -> Result<(run_db::AgentRun, String)> {
-    let mut tx = pool.begin().await?;
+    let WorkerRegistration {
+        provider_id,
+        model_id,
+        context_window,
+        snapshot,
+    } = worker;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let conversation = conv_db::create_subagent_conversation_in_tx(
         &mut tx,
         conv_db::NewSubagentConversation {
@@ -581,12 +670,12 @@ async fn register_child_tx(
         &mut tx,
         &conversation.id,
         &delegation,
-        Some(&spawn.provider_id),
-        Some(&spawn.model_id),
+        Some(provider_id),
+        Some(model_id),
         None,
     )
     .await?;
-    let run = run_db::create_run_in_tx(
+    let mut run = run_db::create_run_in_tx(
         &mut tx,
         run_db::NewRun {
             conversation_id: conversation.id.clone(),
@@ -594,13 +683,22 @@ async fn register_child_tx(
             parent_run_id: Some(spawn.parent_run_id.clone()),
             root_run_id: Some(spawn.root_run_id.clone()),
             parent_tool_call_id: Some(parent_call_id.to_string()),
-            provider_id: Some(spawn.provider_id.clone()),
-            model_id: Some(spawn.model_id.clone()),
-            context_window: spawn.context_window.map(i64::from),
+            provider_id: Some(provider_id.to_string()),
+            model_id: Some(model_id.to_string()),
+            context_window: context_window.map(i64::from),
             description: Some(description.to_string()),
         },
     )
     .await?;
+    let json = serde_json::to_string(snapshot)?;
+    sqlx::query!(
+        "UPDATE agent_runs SET agent_config_json = ? WHERE id = ?",
+        json,
+        run.id
+    )
+    .execute(&mut *tx)
+    .await?;
+    run.agent_config_json = Some(json);
     tx.commit().await?;
     Ok((run, stored.id))
 }

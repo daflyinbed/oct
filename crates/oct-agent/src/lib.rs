@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod agent_settings;
 pub mod api;
 pub mod context;
 pub mod db;

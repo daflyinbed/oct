@@ -213,8 +213,14 @@ async fn parallel_tasks_run_concurrently_and_settle_once() {
 
     // Overlap proof: A is still parked behind the closed gate, yet B settled.
     let tasks = subagent_list(&app, &conv).await;
-    let a = tasks.iter().find(|t| t["description"] == "A").expect("task A");
-    let b = tasks.iter().find(|t| t["description"] == "B").expect("task B");
+    let a = tasks
+        .iter()
+        .find(|t| t["description"] == "A")
+        .expect("task A");
+    let b = tasks
+        .iter()
+        .find(|t| t["description"] == "B")
+        .expect("task B");
     assert_eq!(a["status"], "running");
     assert!(a["running"].as_bool().unwrap(), "A live in memory");
     assert_eq!(b["status"], "completed");
@@ -229,12 +235,10 @@ async fn parallel_tasks_run_concurrently_and_settle_once() {
     // non-error envelopes carrying status completed.
     let messages = history(&app, &conv).await;
     for call in ["call-a", "call-b"] {
-        let (content, is_error) =
-            tool_result_of(&messages, call).expect("task result row");
+        let (content, is_error) = tool_result_of(&messages, call).expect("task result row");
         assert!(!is_error, "{call} must not be an error result");
-        let envelope: Value =
-            serde_json::from_str(content.as_str().expect("envelope is a string"))
-                .expect("envelope json");
+        let envelope: Value = serde_json::from_str(content.as_str().expect("envelope is a string"))
+            .expect("envelope json");
         assert_eq!(envelope["status"], "completed");
     }
 
@@ -251,7 +255,8 @@ async fn parallel_tasks_run_concurrently_and_settle_once() {
         .expect("B row");
     let child_messages = history(&app, &agent_b).await;
     assert_eq!(
-        child_messages.first().expect("delegation")["role"], "user",
+        child_messages.first().expect("delegation")["role"],
+        "user",
         "the child conversation starts with the delegation prompt"
     );
 }
@@ -335,7 +340,10 @@ async fn parent_cancel_cascades_to_children() {
     // the loop's synthetic cancel result.
     let messages = history(&app, &conv).await;
     let (_, is_error) = tool_result_of(&messages, "call-a").expect("call-a answered");
-    assert!(is_error, "the cancelled delegation reads as an error result");
+    assert!(
+        is_error,
+        "the cancelled delegation reads as an error result"
+    );
 }
 
 // --- 3. One child failing does not block the sibling -------------------------
@@ -375,8 +383,7 @@ async fn child_failure_does_not_block_sibling() {
     let (content, is_error) =
         tool_result_of(&messages, "call-a").expect("failed task still answers");
     assert!(is_error, "a failed child surfaces as a task error");
-    let envelope: Value =
-        serde_json::from_str(content.as_str().unwrap()).expect("envelope");
+    let envelope: Value = serde_json::from_str(content.as_str().unwrap()).expect("envelope");
     assert_eq!(envelope["status"], "failed");
 
     let (_, b_error) = tool_result_of(&messages, "call-b").expect("B answered");
@@ -429,8 +436,7 @@ async fn cancel_single_child_only() {
     let by_agent = |agent: &str| rows.iter().find(|r| r.3 == agent).expect("row");
     assert_eq!(by_agent(&agent_a).1, "cancelled");
     let messages = history(&app, &conv).await;
-    let (content, is_error) =
-        tool_result_of(&messages, "call-a").expect("cancelled task answers");
+    let (content, is_error) = tool_result_of(&messages, "call-a").expect("cancelled task answers");
     assert!(is_error);
     let envelope: Value = serde_json::from_str(content.as_str().unwrap()).unwrap();
     assert_eq!(envelope["status"], "cancelled");
@@ -479,8 +485,7 @@ async fn child_edit_without_own_read_errors() {
 
     let rows = subagent_rows(&app.pool, &conv).await;
     let child_messages = history(&app, &rows[0].3).await;
-    let (content, is_error) =
-        tool_result_of(&child_messages, "ca1").expect("edit result");
+    let (content, is_error) = tool_result_of(&child_messages, "ca1").expect("edit result");
     assert!(is_error, "edit without the agent's own read must fail");
     let text = content.as_str().unwrap();
     assert!(
@@ -512,8 +517,7 @@ async fn sibling_write_makes_earlier_read_stale() {
                     tool_call_chunk(
                         "wa1",
                         "write_file",
-                        &json!({"path": "f.txt", "content": "v1-from-a"})
-                            .to_string(),
+                        &json!({"path": "f.txt", "content": "v1-from-a"}).to_string(),
                     ),
                     finish_chunk("tool_calls"),
                 ],
@@ -580,8 +584,7 @@ async fn sibling_write_makes_earlier_read_stale() {
             .write(true)
             .open(app.dir.path().join("f.txt"))
             .unwrap();
-        let later =
-            std::time::SystemTime::now() + std::time::Duration::from_secs(2);
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(2);
         file.set_times(std::fs::FileTimes::new().set_modified(later))
             .unwrap();
     }
@@ -598,8 +601,7 @@ async fn sibling_write_makes_earlier_read_stale() {
         .map(|r| r.3.clone())
         .expect("B row");
     let child_messages = history(&app, &agent_b).await;
-    let (content, is_error) =
-        tool_result_of(&child_messages, "eb1").expect("B edit result");
+    let (content, is_error) = tool_result_of(&child_messages, "eb1").expect("B edit result");
     assert!(is_error, "B's pre-A read must be stale after A's write");
     let text = content.as_str().unwrap();
     assert!(
@@ -742,7 +744,22 @@ async fn restart_recovery_resumes_child_then_parent() {
             post: vec![finish_chunk("stop")],
         }],
     );
-    let (app, _project, conv) = wired_app(&llm).await;
+    let (app, project, conv) = wired_app(&llm).await;
+    assert_eq!(app.post_json("/api/providers/mock-llm/models", json!({"model_id":"snapshot-model","name":"snapshot-model","tool_call":false,"limit_context":54321})).await.status(), 201);
+    let config_path = format!("/api/projects/{project}/settings/agents/worker");
+    assert_eq!(
+        app.patch_json(
+            &config_path,
+            json!({
+                "model":{"mode":"fixed","provider_id":"mock-llm","model_id":"snapshot-model"},
+                "instructions":"ORIGINAL-SNAPSHOT-INSTRUCTIONS",
+                "tools":{"mode":"allowlist","items":[]}
+            })
+        )
+        .await
+        .status(),
+        200
+    );
 
     let mut events = sse_payloads(app.send_message(&conv, "please research").await);
     next_event(&mut events, updated("A", "running")).await;
@@ -757,6 +774,18 @@ async fn restart_recovery_resumes_child_then_parent() {
     let dir2 = tempfile::tempdir().unwrap();
     std::fs::copy(app.dir.path().join("test.db"), dir2.path().join("test.db")).unwrap();
     let app2 = TestApp::new_with_dir(dir2).await;
+    assert_eq!(
+        app2.patch_json(
+            &config_path,
+            json!({
+                "model":{"mode":"parent"}, "instructions":"CHANGED-AFTER-CRASH",
+                "tools":{"mode":"parent"}
+            })
+        )
+        .await
+        .status(),
+        200
+    );
 
     // A plain send must refuse to append past the unsettled delegation.
     let resp = app2.send_message(&conv, "hello again").await;
@@ -786,7 +815,11 @@ async fn restart_recovery_resumes_child_then_parent() {
     drain_to_end(&mut events2).await;
 
     let rows = subagent_rows(&app2.pool, &conv).await;
-    assert_eq!(rows.len(), 1, "the SAME run row is continued, not duplicated");
+    assert_eq!(
+        rows.len(),
+        1,
+        "the SAME run row is continued, not duplicated"
+    );
     assert_eq!(rows[0].1, "completed");
     assert_eq!(rows[0].2, 2, "execution_epoch bumped by the recovery");
 
@@ -808,7 +841,23 @@ async fn restart_recovery_resumes_child_then_parent() {
     let envelope: Value = serde_json::from_str(content.as_str().unwrap()).unwrap();
     assert_eq!(envelope["output"], "done-a-recovered");
 
+    let resumed = oct_agent::db::runs::get_run(&app2.pool, &rows[0].0)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(resumed.model_id.as_deref(), Some("snapshot-model"));
+    assert_eq!(resumed.context_window, Some(54321));
     let requests = llm.requests();
+    let recovered_child = requests
+        .iter()
+        .rev()
+        .find(|r| user_role_text(r).contains("TASKA-7f3a"))
+        .unwrap();
+    assert_eq!(recovered_child["model"], "snapshot-model");
+    assert!(recovered_child["tools"].is_null() || recovered_child["tools"] == json!([]));
+    let system = recovered_child["messages"][0]["content"].as_str().unwrap();
+    assert!(system.contains("ORIGINAL-SNAPSHOT-INSTRUCTIONS"));
+    assert!(!system.contains("CHANGED-AFTER-CRASH"));
     let parent_final = requests
         .iter()
         .filter(|r| r["tools"].is_array())

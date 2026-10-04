@@ -11,6 +11,7 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    AgentSettingsPage: typeof import('./components/settings/agents/AgentSettingsPage.vue')['default']
     ApprovalBanner: typeof import('./components/chat/ApprovalBanner.vue')['default']
     AppSelect: typeof import('./components/ui/AppSelect.vue')['default']
     BashTaskCard: typeof import('./components/chat/BashTaskCard.vue')['default']

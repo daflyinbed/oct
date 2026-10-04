@@ -497,6 +497,54 @@ export interface paths {
         patch: operations["update_project"];
         trace?: never;
     };
+    "/api/projects/{id}/settings/agent-tools": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["project_tools"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{id}/settings/agents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_project"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{id}/settings/agents/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_project"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["update_project"];
+        trace?: never;
+    };
     "/api/projects/{projectId}/conversations": {
         parameters: {
             query?: never;
@@ -764,6 +812,54 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/settings/agent-tools": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["global_tools"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings/agents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_global"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings/agents/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_global"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["update_global"];
         trace?: never;
     };
     "/api/subagents/{agentId}/cancel": {
@@ -1083,6 +1179,38 @@ export interface components {
             };
             /** @enum {string} */
             type: "approval_resolved";
+        };
+        AgentOverride: {
+            instructions?: string | null;
+            model?: null | components["schemas"]["ModelChoice"];
+            tools?: null | components["schemas"]["ToolChoice"];
+        };
+        AgentPatch: {
+            instructions?: string | null;
+            model?: null | components["schemas"]["ModelChoice"];
+            tools?: null | components["schemas"]["ToolChoice"];
+        };
+        AgentSettings: {
+            instructions: string;
+            model: components["schemas"]["ModelChoice"];
+            tools: components["schemas"]["ToolChoice"];
+        };
+        AgentSettingsView: {
+            delegatable: boolean;
+            description: string;
+            effective: components["schemas"]["AgentSettings"];
+            global_effective: components["schemas"]["AgentSettings"];
+            key: string;
+            name: string;
+            overrides: components["schemas"]["AgentOverride"];
+            sources: components["schemas"]["SettingSources"];
+            tools_editable: boolean;
+        };
+        AgentToolOption: {
+            available: boolean;
+            group: string;
+            label: string;
+            selector: components["schemas"]["ToolSelector"];
         };
         AppSettings: {
             /**
@@ -1659,6 +1787,15 @@ export interface components {
             temperature: boolean;
             tool_call: boolean;
         };
+        ModelChoice: {
+            /** @enum {string} */
+            mode: "parent";
+        } | {
+            /** @enum {string} */
+            mode: "fixed";
+            model_id: string;
+            provider_id: string;
+        };
         ModelSummary: {
             attachment: boolean;
             /** Format: double */
@@ -1840,6 +1977,15 @@ export interface components {
             expected_revision?: number | null;
             provider_spec: string;
         };
+        SettingSources: {
+            instructions: string;
+            model: string;
+            tools: string;
+        };
+        SnapshotTool: {
+            exposed_name: string;
+            selector: components["schemas"]["ToolSelector"];
+        };
         /**
          * @description One stored message as seen from a conversation: the pure content row
          *     (`messages`) joined with its timeline slot (`conversation_messages`).
@@ -1901,6 +2047,7 @@ export interface components {
          *     live in-memory activity. Field names are the fixed frontend contract.
          */
         SubagentTaskDto: {
+            agent_config?: null | components["schemas"]["WorkerSnapshot"];
             /** @description The child conversation id (== agent id in v1). */
             agent_id: string;
             /** Format: date-time */
@@ -1965,6 +2112,14 @@ export interface components {
              */
             offset?: number | null;
         };
+        ToolChoice: {
+            /** @enum {string} */
+            mode: "parent";
+        } | {
+            items: components["schemas"]["ToolSelector"][];
+            /** @enum {string} */
+            mode: "allowlist";
+        };
         /**
          * @description One image attached to a tool result (e.g. an MCP server's image content
          *     block), passed through to the model alongside the text content.
@@ -1979,6 +2134,16 @@ export interface components {
         ToolResultImage: {
             data: string;
             mime_type: string;
+        };
+        ToolSelector: {
+            /** @enum {string} */
+            kind: "builtin";
+            name: string;
+        } | {
+            /** @enum {string} */
+            kind: "mcp";
+            server_id: string;
+            tool: string;
         };
         UpdateAppSettings: {
             /** @description Omitted keys are left untouched (the PUT is a partial update). */
@@ -2056,6 +2221,16 @@ export interface components {
             base_url?: string | null;
             doc_url?: string | null;
             name?: string | null;
+        };
+        WorkerSnapshot: {
+            agent_type: string;
+            instructions: string;
+            /** Format: int32 */
+            prompt_template_version: number;
+            sources: components["schemas"]["SettingSources"];
+            tools: components["schemas"]["SnapshotTool"][];
+            /** Format: int32 */
+            version: number;
         };
     };
     responses: never;
@@ -3240,6 +3415,192 @@ export interface operations {
             };
         };
     };
+    project_tools: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentToolOption"][];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_project: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentSettingsView"][];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_project: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentSettingsView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_project: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentPatch"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentSettingsView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     list_conversations: {
         parameters: {
             query?: never;
@@ -3965,6 +4326,186 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AppSettings"];
+                };
+            };
+        };
+    };
+    global_tools: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentToolOption"][];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_global: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentSettingsView"][];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_global: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentSettingsView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_global: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentPatch"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentSettingsView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
         };

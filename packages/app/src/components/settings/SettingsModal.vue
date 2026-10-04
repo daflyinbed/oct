@@ -7,7 +7,7 @@
       >
         <!-- 左侧：搜索 + 分类导航（provider 设置是 AI 分类下的子项） -->
         <div
-          class="w-[216px] flex flex-none flex-col border-r border-line-soft bg-titlebar"
+          class="w-[216px] flex flex-none flex-col border-r border-line-soft bg-titlebar max-sm:w-[140px]"
         >
           <div class="flex-none p-3 pb-2">
             <!-- 配置作用域：全局或某个项目；provider 系配置只在全局存在 -->
@@ -34,7 +34,7 @@
             <button
               class="h-7 w-full flex items-center gap-2 rounded-md px-2 text-left text-[12.5px] text-neutral-10 transition-colors"
               :class="view.name !== 'ai' ? 'bg-neutral-1 font-semibold' : ''"
-              @click="view = { name: 'ai' }"
+              @click="goAi"
             >
               <i-lucide-chevron-right
                 class="h-2.5 w-2.5 flex-none text-faint"
@@ -59,7 +59,7 @@
               </button>
               <button
                 class="text-[12.5px] text-dim transition-colors hover:text-neutral-10"
-                @click="view = { name: 'ai' }"
+                @click="goAi"
               >
                 AI
               </button>
@@ -100,10 +100,15 @@
                   }}</span>
                 </template>
               </template>
+              <template v-else-if="view.name === 'agents'">
+                <span class="text-[12.5px] text-neutral-10 font-semibold"
+                  >Agents</span
+                >
+              </template>
               <template v-else-if="view.name === 'permissions'">
                 <button
                   class="text-[12.5px] text-dim transition-colors hover:text-neutral-10"
-                  @click="view = { name: 'ai' }"
+                  @click="goAi"
                 >
                   AI
                 </button>
@@ -141,7 +146,7 @@
             </DialogClose>
           </div>
 
-          <div class="flex-1 overflow-y-auto px-7 pb-12 pt-[18px]">
+          <div class="flex-1 overflow-y-auto px-7 pb-12 pt-[18px] max-sm:px-4">
             <!-- ============ AI 根页：按作用域列出配置入口 ============ -->
             <template v-if="view.name === 'ai'">
               <DialogTitle class="text-[16.5px] text-strong font-semibold">
@@ -235,6 +240,26 @@
                   <i-lucide-chevron-right class="h-3 w-3 text-dim" />
                 </button>
               </div>
+              <div
+                class="flex items-center gap-[18px] border-b border-line-soft border-dashed py-3"
+              >
+                <div class="min-w-0 flex-1">
+                  <div class="text-[13px] text-strong font-semibold">
+                    Agents
+                  </div>
+                  <div class="mt-0.5 text-[12px] text-dim">
+                    配置 Worker 子代理的模型、角色指令与工具，以及 Title
+                    标题生成。
+                  </div>
+                </div>
+                <button
+                  class="h-[26px] inline-flex flex-none items-center gap-1.5 control-surface rounded-md px-2.5 text-[12px] font-medium control-focus"
+                  title="配置 Agents"
+                  @click="view = { name: 'agents' }"
+                >
+                  Configure <i-lucide-chevron-right class="h-3 w-3 text-dim" />
+                </button>
+              </div>
               <!-- 权限规则：项目作用域看 本项目+全局 两组，
                    全局作用域只看全局组；两个作用域都提供入口 -->
               <div
@@ -272,6 +297,11 @@
             </template>
 
             <!-- ============ 子页：表单状态归各子页所有 ============ -->
+            <AgentSettingsPage
+              v-if="view.name === 'agents'"
+              ref="agentPage"
+              :project-id="inProjectScope ? scopeId : null"
+            />
             <ProviderListPage
               v-else-if="view.name === 'providers'"
               :query="query"
@@ -341,6 +371,7 @@ import {
   SwitchThumb,
 } from "reka-ui";
 import { computed, ref, watch } from "vue";
+import AgentSettingsPage from "@/components/settings/agents/AgentSettingsPage.vue";
 import McpEditPage from "@/components/settings/mcp/McpEditPage.vue";
 import McpListPage from "@/components/settings/mcp/McpListPage.vue";
 import PermissionRulesPage from "@/components/settings/permissions/PermissionRulesPage.vue";
@@ -405,9 +436,21 @@ type View =
   | { name: "connect-provider" }
   | { name: "mcp" }
   | { name: "mcp-edit"; id: string | null }
-  | { name: "permissions" };
+  | { name: "permissions" }
+  | { name: "agents" };
 
 const view = ref<View>({ name: "ai" });
+const agentPage = ref<InstanceType<typeof AgentSettingsPage> | null>(null);
+function leaveAgent(action: () => void) {
+  if (view.value.name === "agents" && agentPage.value)
+    agentPage.value.requestLeave(action);
+  else action();
+}
+function goAi() {
+  leaveAgent(() => {
+    view.value = { name: "ai" };
+  });
+}
 const query = ref("");
 
 /* ---------- 配置作用域：单个 select，值为哨兵（全局）或项目 id。 ---------- */
@@ -449,6 +492,11 @@ const projectScopeOptions = computed(() => [
 
 function selectScope(value: string) {
   if (value === scopeId.value) return;
+  leaveAgent(() => applyScope(value));
+}
+
+function applyScope(value: string) {
+  if (value === scopeId.value) return;
   scopeId.value = value;
   const name = view.value.name;
   if (
@@ -487,6 +535,10 @@ const editingServerName = computed(() => {
 });
 
 function goBack() {
+  if (view.value.name === "agents") {
+    goAi();
+    return;
+  }
   if (view.value.name === "ai") {
     view.value = { name: "ai" };
   } else if (view.value.name === "mcp" || view.value.name === "mcp-edit") {
@@ -553,6 +605,6 @@ const editFormKey = computed(() => {
 });
 
 function handleUpdateOpen(open: boolean) {
-  if (!open) emit("close");
+  if (!open) leaveAgent(() => emit("close"));
 }
 </script>

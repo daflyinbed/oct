@@ -1,3 +1,4 @@
+pub mod agent_settings;
 pub mod approvals;
 pub mod background;
 pub mod chat;
@@ -190,6 +191,14 @@ fn api_routes(state: AppState) -> OpenApiRouter<AppState> {
         // Application settings (LLM wire log switch)
         .routes(utoipa_axum::routes!(settings::get_settings))
         .routes(utoipa_axum::routes!(settings::update_settings))
+        .routes(utoipa_axum::routes!(agent_settings::list_global))
+        .routes(utoipa_axum::routes!(agent_settings::get_global))
+        .routes(utoipa_axum::routes!(agent_settings::update_global))
+        .routes(utoipa_axum::routes!(agent_settings::list_project))
+        .routes(utoipa_axum::routes!(agent_settings::get_project))
+        .routes(utoipa_axum::routes!(agent_settings::update_project))
+        .routes(utoipa_axum::routes!(agent_settings::global_tools))
+        .routes(utoipa_axum::routes!(agent_settings::project_tools))
         // Permission rules: project scope + global scope + delete
         .routes(utoipa_axum::routes!(
             permissions::list_project_permission_rules

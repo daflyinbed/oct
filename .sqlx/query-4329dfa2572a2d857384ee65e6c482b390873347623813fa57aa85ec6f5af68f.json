@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, conversation_id, kind, parent_run_id, root_run_id, parent_tool_call_id, status, execution_epoch, history_epoch, provider_id, model_id, context_window, error, final_message_id, input_tokens, output_tokens, description, started_at, finished_at FROM agent_runs WHERE conversation_id = $1 AND (kind = 'subagent' OR history_epoch = (SELECT history_epoch FROM conversations WHERE id = $1)) ORDER BY started_at DESC, rowid DESC LIMIT 1",
+  "query": "UPDATE agent_runs SET status = 'lost', finished_at = $1 WHERE status = 'running' RETURNING id, conversation_id, kind, parent_run_id, root_run_id, parent_tool_call_id, status, execution_epoch, history_epoch, provider_id, model_id, context_window, agent_config_json, error, final_message_id, input_tokens, output_tokens, description, started_at, finished_at",
   "describe": {
     "columns": [
       {
@@ -64,38 +64,43 @@
         "type_info": "Integer"
       },
       {
-        "name": "error",
+        "name": "agent_config_json",
         "ordinal": 12,
         "type_info": "Text"
       },
       {
-        "name": "final_message_id",
+        "name": "error",
         "ordinal": 13,
         "type_info": "Text"
       },
       {
-        "name": "input_tokens",
+        "name": "final_message_id",
         "ordinal": 14,
-        "type_info": "Integer"
+        "type_info": "Text"
       },
       {
-        "name": "output_tokens",
+        "name": "input_tokens",
         "ordinal": 15,
         "type_info": "Integer"
       },
       {
-        "name": "description",
+        "name": "output_tokens",
         "ordinal": 16,
+        "type_info": "Integer"
+      },
+      {
+        "name": "description",
+        "ordinal": 17,
         "type_info": "Text"
       },
       {
         "name": "started_at",
-        "ordinal": 17,
+        "ordinal": 18,
         "type_info": "Datetime"
       },
       {
         "name": "finished_at",
-        "ordinal": 18,
+        "ordinal": 19,
         "type_info": "Datetime"
       }
     ],
@@ -120,9 +125,10 @@
       true,
       true,
       true,
+      true,
       false,
       true
     ]
   },
-  "hash": "cfd804791b619153cbf83e16d1c8afb14420d7da7c9093ed1b55323221bd2819"
+  "hash": "4329dfa2572a2d857384ee65e6c482b390873347623813fa57aa85ec6f5af68f"
 }

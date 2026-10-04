@@ -43,6 +43,24 @@
       </button>
     </header>
 
+    <details
+      v-if="task?.agent_config"
+      class="flex-none border-b border-line-soft px-7 py-2 text-[11.5px] text-dim"
+    >
+      <summary class="cursor-pointer">
+        任务配置 · {{ task.agent_config.tools.length }} 个工具
+      </summary>
+      <p class="mt-2 whitespace-pre-wrap">
+        {{ task.agent_config.instructions || "无额外角色指令" }}
+      </p>
+      <p class="mt-1 break-all font-mono">
+        {{
+          task.agent_config.tools.map((tool) => tool.exposed_name).join(", ") ||
+          "无工具"
+        }}
+      </p>
+    </details>
+
     <ChatMessageList
       :messages="messages"
       :conversation-id="agentId"

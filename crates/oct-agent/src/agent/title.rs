@@ -14,7 +14,7 @@ use std::time::Duration;
 use tracing::debug;
 
 use oct_llm_provider::core::{ContentPart, GenerateOptions, Message, Role};
-use oct_llm_provider::model::{ChatModel, ChatRequest};
+use oct_llm_provider::model::ChatRequest;
 
 use super::{AgentEvent, EventHub};
 use crate::db::conversations as conv_db;
@@ -41,7 +41,10 @@ Generate a short title for the conversation the user message below starts.\n\
 /// is already gone when the title lands, publishing is skipped — the DB has
 /// the title and the next conversation-list fetch picks it up.
 pub struct TitleJob {
-    pub model: Box<dyn ChatModel>,
+    pub runs: std::sync::Arc<crate::runtime::RunService>,
+    pub project_id: String,
+    pub parent_provider_id: String,
+    pub parent_model_id: String,
     pub pool: sqlx::SqlitePool,
     pub conversation_id: String,
     pub first_user_content: String,
@@ -56,7 +59,11 @@ pub fn spawn(job: TitleJob) {
 }
 
 async fn run(job: TitleJob) {
-    let generated = call_model(&job).await;
+    // Include configuration/model preparation in the independent title deadline.
+    let generated = tokio::time::timeout(MODEL_TIMEOUT, call_model(&job))
+        .await
+        .map_err(|_| anyhow::anyhow!("title model call timed out"))
+        .and_then(|result| result);
     let title = match &generated {
         Ok(text) => normalize_title(text).or_else(|| fallback_title(&job.first_user_content)),
         Err(e) => {
@@ -84,10 +91,28 @@ async fn run(job: TitleJob) {
 }
 
 async fn call_model(job: &TitleJob) -> anyhow::Result<String> {
+    let settings =
+        crate::agent_settings::read_for_run(&job.pool, "title", Some(&job.project_id)).await?;
+    let (provider_id, model_id) = settings
+        .effective
+        .model
+        .identity(&job.parent_provider_id, &job.parent_model_id);
+    let (model, _, _) = job
+        .runs
+        .resolve_model(&format!("{provider_id}:{model_id}"))
+        .await?;
+    let prompt = if settings.effective.instructions.is_empty() {
+        TITLE_PROMPT.to_string()
+    } else {
+        format!(
+            "{TITLE_PROMPT}\nAdditional title instructions:\n{}",
+            settings.effective.instructions
+        )
+    };
     let input = truncate_chars(&job.first_user_content, INPUT_MAX_CHARS);
     let request = ChatRequest {
         messages: vec![
-            Message::text(Role::System, TITLE_PROMPT),
+            Message::text(Role::System, prompt),
             Message::text(Role::User, input),
         ],
         tools: Vec::new(),
@@ -105,13 +130,15 @@ async fn call_model(job: &TitleJob) -> anyhow::Result<String> {
         purpose: Some("title".to_string()),
         ..Default::default()
     };
-    let response = tokio::time::timeout(
-        MODEL_TIMEOUT,
-        oct_llm_provider::wire::with_tags(title_tags, job.model.generate(request)),
-    )
-    .await
-    .map_err(|_| anyhow::anyhow!("title model call timed out"))?
-    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let response = oct_llm_provider::wire::with_tags(title_tags, model.generate(request)).await?;
+    anyhow::ensure!(
+        !response
+            .message
+            .parts
+            .iter()
+            .any(|part| matches!(part, ContentPart::ToolCall(_))),
+        "Title response contains a tool call"
+    );
 
     Ok(response
         .message

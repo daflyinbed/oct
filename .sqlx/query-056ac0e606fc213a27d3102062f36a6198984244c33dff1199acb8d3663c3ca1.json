@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT project_id FROM mcp_servers WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "project_id",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "056ac0e606fc213a27d3102062f36a6198984244c33dff1199acb8d3663c3ca1"
+}

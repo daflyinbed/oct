@@ -2,7 +2,6 @@ use std::collections::HashSet;
 use std::time::Instant;
 
 use futures_util::StreamExt;
-use futures_util::stream::FuturesUnordered;
 use serde_json::{Value, json};
 use tracing::{error, info};
 
@@ -495,7 +494,11 @@ pub async fn run_agent_loop(
             pending_tool_calls.into_iter().enumerate().collect();
         let total = indexed_calls.len();
 
-        let mut futures = FuturesUnordered::new();
+        // A completed result is persisted while siblings are still running.
+        // Poll siblings independently: a sibling may own a SQLite write
+        // transaction that must keep progressing while this loop writes.
+        // JoinSet aborts unfinished tool futures when this run is dropped.
+        let mut futures = tokio::task::JoinSet::new();
         // ToolContext per call, parallel to `indexed_calls` (same idx). Kept
         // here so the completion branch can flush the smoother's remainder
         // before the final ToolResult event.
@@ -540,24 +543,29 @@ pub async fn run_agent_loop(
             let gate_hub = handle.hub.clone();
             let gate_cancel = handle.cancel.clone();
 
-            futures.push(async move {
+            futures.spawn(async move {
                 let tool = tools.iter().find(|t| t.name() == tc.name);
-                let output = match permission
-                    .check(&tc.name, &args, &tc.id, &gate_hub, &gate_cancel)
-                    .await
-                {
-                    crate::permissions::gate::GateVerdict::Denied(output) => output,
-                    crate::permissions::gate::GateVerdict::Proceed => match tool {
-                        Some(t) => match t.execute(args, &tool_ctx).await {
-                            Ok(o) => o,
-                            Err(e) => crate::tools::ToolOutput::error(format!(
-                                "Tool execution error: {e}"
+                let output = if tool.is_none() {
+                    crate::tools::ToolOutput::error(format!("Unknown tool: {}", tc.name))
+                } else {
+                    match permission
+                        .check(&tc.name, &args, &tc.id, &gate_hub, &gate_cancel)
+                        .await
+                    {
+                        crate::permissions::gate::GateVerdict::Denied(output) => output,
+                        crate::permissions::gate::GateVerdict::Proceed => match tool {
+                            Some(t) => match t.execute(args, &tool_ctx).await {
+                                Ok(o) => o,
+                                Err(e) => crate::tools::ToolOutput::error(format!(
+                                    "Tool execution error: {e}"
+                                )),
+                            },
+                            None => crate::tools::ToolOutput::error(format!(
+                                "Unknown tool: {}",
+                                tc.name
                             )),
                         },
-                        None => {
-                            crate::tools::ToolOutput::error(format!("Unknown tool: {}", tc.name))
-                        }
-                    },
+                    }
                 };
                 (idx, tc, output)
             });
@@ -567,9 +575,10 @@ pub async fn run_agent_loop(
 
         loop {
             tokio::select! {
-                result = futures.next() => {
+                result = futures.join_next() => {
                     match result {
-                        Some((idx, tc, output)) => {
+                        Some(result) => {
+                            let (idx, tc, output) = result.expect("tool execution task panicked");
                             // Flush the smoother's buffered remainder first so
                             // the frontend has seen all streamed output when
                             // the closing ToolResult arrives.
@@ -633,6 +642,9 @@ pub async fn run_agent_loop(
                         completed.len(),
                         total
                     );
+                    // Drop in-flight transactions before persisting cancelled
+                    // results, and preserve the run's ownership of tool work.
+                    futures.shutdown().await;
                     break;
                 }
             }

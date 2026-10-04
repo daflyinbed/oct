@@ -10,7 +10,6 @@ use std::sync::Arc;
 use utoipa::ToSchema;
 
 use oct_llm_provider::core::{Message, Role};
-use tracing::debug;
 
 use super::AppState;
 use super::dto;
@@ -193,21 +192,17 @@ pub async fn send_message(
             .sessions
             .get(&id)
             .map(|entry| Arc::downgrade(&entry.value().hub));
-        match resolve_model(&state, &req.provider_spec).await {
-            Ok((model, _, _)) => {
-                if let Some(hub) = hub {
-                    title::spawn(title::TitleJob {
-                        model,
-                        pool: state.pool.clone(),
-                        conversation_id: id.clone(),
-                        first_user_content: req.content.clone(),
-                        hub,
-                    });
-                }
-            }
-            // The run's own resolution succeeded above, so this is exotic
-            // (e.g. the provider row vanished between calls) — skip quietly.
-            Err(e) => debug!("skipping title generation: {e}"),
+        if let Some(hub) = hub {
+            title::spawn(title::TitleJob {
+                runs: state.runs.clone(),
+                project_id: project.id.clone(),
+                parent_provider_id: provider_id.clone(),
+                parent_model_id: model_id.clone(),
+                pool: state.pool.clone(),
+                conversation_id: id.clone(),
+                first_user_content: req.content.clone(),
+                hub,
+            });
         }
     }
 

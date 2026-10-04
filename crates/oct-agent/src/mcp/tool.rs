@@ -75,6 +75,7 @@ pub(crate) fn result_content(result: &McpCallResult) -> String {
 /// addresses it by the deduplicated exposed name; `execute` dispatches over
 /// `connection` under the original server-side name, bounded by `timeout`.
 pub struct McpTool {
+    server_id: String,
     exposed_name: String,
     original_name: String,
     server_name: String,
@@ -94,6 +95,7 @@ impl McpTool {
     ) -> Self {
         let description = tool_description(&server_name, info.description.as_deref());
         Self {
+            server_id: String::new(),
             exposed_name,
             original_name: info.name,
             server_name,
@@ -103,10 +105,23 @@ impl McpTool {
             input_schema: info.input_schema,
         }
     }
+
+    /// Attach the DB identity without changing the existing test/adapter constructor.
+    pub fn with_server_id(mut self, server_id: String) -> Self {
+        self.server_id = server_id;
+        self
+    }
 }
 
 #[async_trait]
 impl crate::tools::AgentTool for McpTool {
+    fn selector(&self) -> crate::agent_settings::ToolSelector {
+        crate::agent_settings::ToolSelector::Mcp {
+            server_id: self.server_id.clone(),
+            tool: self.original_name.clone(),
+        }
+    }
+
     fn name(&self) -> &str {
         &self.exposed_name
     }

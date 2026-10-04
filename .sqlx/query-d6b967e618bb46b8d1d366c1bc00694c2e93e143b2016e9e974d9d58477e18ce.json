@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT tool_call FROM models WHERE provider_id = ? AND model_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "tool_call",
+        "ordinal": 0,
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d6b967e618bb46b8d1d366c1bc00694c2e93e143b2016e9e974d9d58477e18ce"
+}

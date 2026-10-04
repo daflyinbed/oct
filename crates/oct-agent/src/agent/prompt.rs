@@ -90,10 +90,7 @@ fn tool_lines(tools: &[Arc<dyn AgentTool>]) -> Vec<String> {
             // tool-list line.
             continue;
         }
-        lines.push(format!(
-            "- {name}: {}",
-            first_sentence(tool.description())
-        ));
+        lines.push(format!("- {name}: {}", first_sentence(tool.description())));
     }
     lines
 }
@@ -113,18 +110,46 @@ You have access to the following tools:
 {tool_list}
 
 Guidelines:
-- Always read files before modifying them to understand the current state.
-- Use grep to search file contents and glob to find files by name before reading files.
-- Use edit_file for targeted changes; you must read_file a file before editing it. Use write_file only for new files or full rewrites.
-- When using write_file, provide the complete file content.
-- Use list_dir to explore the project structure before making changes.
-- Use execute_command for running builds, tests, and other shell operations.
 - Explain your reasoning and what you're doing at each step.
 - If you encounter an error, try to diagnose and fix it.
 "#,
         working_dir = working_dir.display(),
         tool_list = lines.join("\n"),
     );
+
+    // Guidance must describe only capabilities in this run's actual toolset.
+    let has = |name: &str| tools.iter().any(|t| t.name() == name);
+    for (name, guidance) in [
+        (
+            "read_file",
+            "Always read files before modifying them to understand the current state.",
+        ),
+        (
+            "grep",
+            "Use grep to search file contents before reading files.",
+        ),
+        ("glob", "Use glob to find files by name."),
+        (
+            "edit_file",
+            "Use edit_file for targeted changes; read_file the file before editing it.",
+        ),
+        (
+            "write_file",
+            "Use write_file for new files or full rewrites; provide the complete file content.",
+        ),
+        (
+            "list_dir",
+            "Use list_dir to explore the project structure before making changes.",
+        ),
+        (
+            "execute_command",
+            "Use execute_command for running builds, tests, and other shell operations.",
+        ),
+    ] {
+        if has(name) {
+            prompt.push_str(&format!("- {guidance}\n"));
+        }
+    }
 
     if tools.iter().any(|t| t.name() == "task") {
         prompt.push('\n');
@@ -263,6 +288,9 @@ mod tests {
             &[std::path::PathBuf::from("/extra")],
             &tools,
         );
-        assert!(prompt.contains("Additional working directories you may also read and write:\n- /extra"));
+        assert!(
+            prompt
+                .contains("Additional working directories you may also read and write:\n- /extra")
+        );
     }
 }

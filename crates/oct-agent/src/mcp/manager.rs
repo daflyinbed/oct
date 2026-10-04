@@ -505,6 +505,7 @@ impl McpManager {
             .map(|entry| {
                 let managed = entry.value();
                 (
+                    entry.key().clone(),
                     managed.name.clone(),
                     managed
                         .connection
@@ -515,20 +516,17 @@ impl McpManager {
                 )
             })
             .collect();
-        connected.sort_by(|a, b| a.0.cmp(&b.0));
+        connected.sort_by(|a, b| a.1.cmp(&b.1));
 
         let mut names = ToolNameMap::new();
         let mut tools = Vec::new();
-        for (server, connection, infos, timeout) in connected {
+        for (server_id, server, connection, infos, timeout) in connected {
             for info in infos {
                 let exposed = names.insert(&server, &info.name);
-                tools.push(Box::new(McpTool::new(
-                    exposed,
-                    info,
-                    server.clone(),
-                    connection.clone(),
-                    timeout,
-                )) as Box<dyn AgentTool>);
+                tools.push(Box::new(
+                    McpTool::new(exposed, info, server.clone(), connection.clone(), timeout)
+                        .with_server_id(server_id.clone()),
+                ) as Box<dyn AgentTool>);
             }
         }
         tools
