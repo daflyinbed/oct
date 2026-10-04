@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT DISTINCT conversation_id FROM background_tasks WHERE notified = 0 AND status != 'running' UNION SELECT conversation_id FROM wake_intents",
+  "describe": {
+    "columns": [
+      {
+        "name": "conversation_id",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "b7abff10a338f2b4aaac7d806a690776799e48e0bb4aee4fbd1681d3967d91fd"
+}

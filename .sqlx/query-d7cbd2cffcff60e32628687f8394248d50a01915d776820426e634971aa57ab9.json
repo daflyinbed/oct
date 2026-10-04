@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE mcp_server_tokens SET\n            client_id = $2, client_secret = $3, access_token = $4,\n            refresh_token = $5, token_type = $6, scope = $7,\n            expires_at = $8, obtained_at = $9, updated_at = $9\n         WHERE server_id = $1 AND access_token = $10 AND obtained_at = $11",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 11
+    },
+    "nullable": []
+  },
+  "hash": "d7cbd2cffcff60e32628687f8394248d50a01915d776820426e634971aa57ab9"
+}

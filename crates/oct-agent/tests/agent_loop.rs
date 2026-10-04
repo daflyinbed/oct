@@ -949,6 +949,106 @@ async fn mcp_tool_round_trip_translates_names_and_feeds_result_back() {
 }
 
 #[tokio::test]
+async fn tool_event_overflow_stops_before_compaction_or_another_model_request() {
+    use oct_agent::agent::loop_runner::run_agent_loop;
+    use oct_agent::agent::{AgentContext, RunStatus};
+
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+    for message in compact_history(4) {
+        db::messages::insert_message(&env.pool, &conv_id, &message, None, None, None)
+            .await
+            .unwrap();
+    }
+    let view = db::messages::load_llm_view(&env.pool, &conv_id)
+        .await
+        .unwrap();
+
+    // Eight permitted 4 MiB base64 images plus event metadata exceed the
+    // 32 MiB event budget. The usage anchor would also trigger compaction
+    // at the next turn top if the loop continued past the overflow.
+    let listing = vec![fake_tool("shot", Some("takes screenshots"))];
+    let fake = Arc::new(
+        FakeMcpConnection::new(listing.clone()).with_result(
+            "shot",
+            McpCallResult {
+                text: "screenshots captured".into(),
+                images: (0..8)
+                    .map(|_| McpImage {
+                        mime_type: "image/png".into(),
+                        data: "A".repeat(4 * 1024 * 1024),
+                    })
+                    .collect(),
+                structured_json: None,
+                is_error: false,
+            },
+        ),
+    );
+    let manager = McpManager::default();
+    manager.insert_connection_for_test("srv-fake", "fake", None, fake, listing);
+    let model = ScriptedModel::new(vec![
+        Turn::Stream(vec![
+            text("Capturing screenshots"),
+            tool_call("call-1", "mcp__fake__shot", json!({})),
+            usage(20_000, 5),
+            finish(FinishReason::ToolCalls),
+        ]),
+        Turn::StreamThenHang(vec![]),
+    ]);
+    let observer = model.observer();
+    let handle = RunHandle {
+        hub: Arc::new(oct_agent::agent::EventHub::new()),
+        cancel: tokio_util::sync::CancellationToken::new(),
+        start_message_id: None,
+    };
+    let ctx = AgentContext {
+        model: Arc::new(model),
+        tools: Arc::new(
+            manager
+                .tools_for_run(None)
+                .into_iter()
+                .map(Arc::from)
+                .collect(),
+        ),
+        pool: env.pool.clone(),
+        system_prompt: "test system prompt".into(),
+        context_window: Some(8192),
+        idle: None,
+        permission: oct_agent::permissions::gate::PermissionGate::permissive(),
+    };
+
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(30),
+        run_agent_loop(ctx, conv_id.clone(), view, handle.clone()),
+    )
+    .await
+    .expect("overflow must settle the run");
+
+    assert!(handle.hub.is_overflowed());
+    assert_eq!(outcome.status, RunStatus::Failed);
+    assert_eq!(outcome.error.as_deref(), Some("Run event budget exceeded"));
+    assert!(outcome.partial);
+    assert_eq!(outcome.final_text.as_deref(), Some("Capturing screenshots"));
+    assert_eq!(outcome.usage.unwrap().input_tokens, 20_000);
+    assert_eq!(observer.requests().len(), 1, "no second chat request");
+    assert!(
+        observer.generate_requests().is_empty(),
+        "no compaction request"
+    );
+
+    let stored = db::messages::list_messages(&env.pool, &conv_id)
+        .await
+        .unwrap();
+    match &parts_of(stored.last().unwrap())[0] {
+        ContentPart::ToolResult(result) => {
+            assert_eq!(result.call_id, "call-1");
+            assert_eq!(result.images.len(), 8, "overflowing result is persisted");
+        }
+        other => panic!("expected persisted tool result, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn mcp_tool_image_result_flows_through_to_the_model_and_persistence() {
     let env = TestEnv::new().await;
     let conv_id = new_conversation(&env.pool, env.dir.path()).await;

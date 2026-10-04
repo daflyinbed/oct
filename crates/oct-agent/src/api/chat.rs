@@ -15,14 +15,13 @@ use tracing::debug;
 use super::AppState;
 use super::dto;
 use super::error::{ApiResult, AppError};
+use super::sse::sse_event;
 use crate::agent::compact;
 use crate::agent::title;
 use crate::agent::{AgentEvent, CompactionTrigger};
 use crate::context::{self, LlmView};
-use crate::db::{
-    conversations as conv_db, messages as msg_db, projects as project_db, runs as run_db,
-};
-use crate::runtime::{RootRunRequest, sse_event};
+use crate::db::{conversations as conv_db, messages as msg_db, projects as project_db};
+use crate::runtime::RootRunRequest;
 use crate::subagent::{RecoveryJob, orchestrate};
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -35,6 +34,7 @@ pub struct SendMessageRequest {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RunningStatus {
     pub running: bool,
+    pub resumable: bool,
 }
 
 /// Thin delegates over the RunService's resolvers (moved there so subagents
@@ -71,28 +71,8 @@ fn ensure_not_managed(conversation: &conv_db::Conversation) -> Result<(), AppErr
     Ok(())
 }
 
-/// 409 when the conversation has dangling `task` delegations awaiting
-/// recovery: a plain send would repair them into error placeholders (or
-/// wedge behind a missing wait). The message guides to 恢复此轮.
-async fn ensure_no_pending_recovery(state: &AppState, id: &str) -> Result<(), AppError> {
-    let dangling = msg_db::find_dangling_tool_calls(&state.pool, id)
-        .await
-        .map_err(AppError::from)?;
-    if dangling.is_empty() {
-        return Ok(());
-    }
-    let managed = run_db::runs_for_parent_calls(&state.pool, id, &dangling)
-        .await
-        .map_err(AppError::from)?;
-    if managed.is_empty() {
-        return Ok(());
-    }
-    Err(AppError::PendingRecovery(
-        "This turn has unfinished subagent tasks waiting for recovery; use 恢复此轮 (resume) to continue it"
-            .into(),
-    ))
-}
-
+// Send preparation rejects dangling managed delegations before repairing
+// ordinary tool calls; the application preparation module owns that rule.
 #[utoipa::path(
     post,
     path = "/conversations/{id}/messages",
@@ -136,7 +116,7 @@ pub async fn send_message(
     // A turn with unfinished (crashed) subagent tasks must be recovered, not
     // appended to: the repair below would otherwise turn the pending task
     // calls into error placeholders.
-    ensure_no_pending_recovery(&state, &id).await?;
+    crate::runtime::preparation::ensure_no_pending_recovery(&state.pool, &id).await?;
 
     // Idle for the microcompact trigger: captured BEFORE the repair and the
     // new user message below — anything later would always look "just
@@ -245,7 +225,11 @@ pub async fn send_message(
             attach_task_tool: conversation.kind == "chat",
         })
         .await?;
-    Ok(started.response)
+    Ok(
+        Sse::new(started.events.map(|e| Ok::<_, Infallible>(sse_event(&e))))
+            .keep_alive(KeepAlive::default())
+            .into_response(),
+    )
 }
 
 /// How long the conversation sat idle before this request, per the stored
@@ -304,16 +288,7 @@ pub async fn resume_turn(
     let dangling = msg_db::find_dangling_tool_calls(&state.pool, &id)
         .await
         .map_err(AppError::from)?;
-    let last_is_user = msg_db::last_message_is_user(&state.pool, &id)
-        .await
-        .map_err(AppError::from)?;
-    let lost_with_tool_tail = match run_db::latest_run_for_conversation(&state.pool, &id).await? {
-        Some(run) if run.status == "lost" => {
-            msg_db::last_message_role(&state.pool, &id).await? == Some("tool".to_string())
-        }
-        _ => false,
-    };
-    if dangling.is_empty() && !last_is_user && !lost_with_tool_tail {
+    if !crate::runtime::preparation::can_resume(&state.pool, &id).await? {
         return Err(AppError::NothingToResume("Nothing to resume".into()));
     }
 
@@ -439,7 +414,7 @@ pub async fn compact_conversation(
     // A root conversation with crashed subagent tasks must recover first:
     // compacting would summarize past the very calls whose results are still
     // owed.
-    ensure_no_pending_recovery(&state, &id).await?;
+    crate::runtime::preparation::ensure_no_pending_recovery(&state.pool, &id).await?;
 
     run_manual_compact(&state, &id, query.provider_spec.as_deref()).await
 }
@@ -584,6 +559,7 @@ pub async fn get_run_status(
 ) -> ApiResult<Json<RunningStatus>> {
     Ok(Json(RunningStatus {
         running: state.sessions.contains_key(&id),
+        resumable: crate::runtime::preparation::can_resume(&state.pool, &id).await?,
     }))
 }
 

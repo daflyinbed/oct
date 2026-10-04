@@ -18,10 +18,9 @@ use utoipa::ToSchema;
 use super::AppState;
 use super::dto;
 use super::error::{ApiResult, AppError};
+use super::sse::sse_event;
 use crate::agent::AgentEvent;
 use crate::db::{conversations as conv_db, messages as msg_db, runs as run_db};
-use crate::runtime::sse_event;
-use crate::subagent::await_done;
 
 /// One row of the subagent task list: the persisted run row merged with the
 /// live in-memory activity. Field names are the fixed frontend contract.
@@ -127,7 +126,9 @@ pub async fn get_subagent_messages(
     require_subagent_conversation(&state, &agent_id).await?;
 
     let messages = msg_db::list_messages(&state.pool, &agent_id).await?;
-    Ok(Json(messages.iter().map(dto::MessageDto::from_stored).collect()))
+    Ok(Json(
+        messages.iter().map(dto::MessageDto::from_stored).collect(),
+    ))
 }
 
 #[utoipa::path(
@@ -166,8 +167,7 @@ pub async fn stream_subagent_events(
         .sessions
         .get(&agent_id)
         .and_then(|entry| entry.value().start_message_id.clone());
-    let meta =
-        start_message_id.map(|start_message_id| AgentEvent::RunMeta { start_message_id });
+    let meta = start_message_id.map(|start_message_id| AgentEvent::RunMeta { start_message_id });
 
     let stream = futures_util::stream::iter(meta)
         .chain(hub.subscribe())
@@ -225,31 +225,4 @@ pub async fn cancel_subagent(
     Err(AppError::NotFound(
         "No active or recoverable run for this subagent".into(),
     ))
-}
-
-/// Used by the conversation-delete flow: cancel every ACTIVE child of the
-/// root conversation and wait for their settlement (bounded — a stuck child
-/// must not hang the DELETE; the timeout is logged, never silent).
-pub(crate) async fn cancel_children_of_root(
-    state: &AppState,
-    root_conversation_id: &str,
-) -> Result<(), AppError> {
-    let children = state
-        .runs
-        .subagents
-        .active_children_of_root(&state.pool, root_conversation_id)
-        .await
-        .map_err(AppError::from)?;
-    for child in &children {
-        child.cancel.cancel();
-    }
-    for child in &children {
-        if !await_done(child, std::time::Duration::from_secs(10)).await {
-            tracing::warn!(
-                run_id = %child.run_id,
-                "timed out waiting for an active subagent to settle during conversation deletion"
-            );
-        }
-    }
-    Ok(())
 }

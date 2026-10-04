@@ -108,6 +108,18 @@ pub async fn run_agent_loop(
             );
         }
 
+        // Tool execution can exhaust the event budget between model turns.
+        // Stop before maintenance can request a summary or open another stream.
+        if handle.hub.is_overflowed() {
+            return interrupted_outcome(
+                RunStatus::Failed,
+                last_assistant.is_some(),
+                Some("Run event budget exceeded".into()),
+                last_assistant,
+                usage_opt(usage_seen, &usage_total),
+            );
+        }
+
         // Turn-top maintenance — BEFORE the request, so both the first turn
         // of an over-long conversation and every tool round in between are
         // covered. Usage arriving during a stream only refreshes the anchor:
@@ -246,7 +258,7 @@ pub async fn run_agent_loop(
         let mut reasoning_started_at: Option<Instant> = None;
         let mut reasoning_ended_at: Option<Instant> = None;
         let mut pending_tool_calls: Vec<ToolCall> = Vec::new();
-        let mut finish_reason = FinishReason::Stop;
+        let mut finish_reason = None;
         let mut last_usage: Option<(Option<u32>, Option<u32>, Option<u32>)> = None;
         // input+output of the request currently streaming; committed as the
         // usage anchor once the assistant message lands in full_messages.
@@ -258,6 +270,15 @@ pub async fn run_agent_loop(
         let mut round_assistant: Option<(String, String)> = None;
 
         loop {
+            if handle.hub.is_overflowed() {
+                return interrupted_outcome(
+                    RunStatus::Failed,
+                    last_assistant.is_some(),
+                    Some("Run event budget exceeded".into()),
+                    last_assistant,
+                    usage_opt(usage_seen, &usage_total),
+                );
+            }
             tokio::select! {
                 event = event_stream.next() => {
                     let Some(event) = event else { break };
@@ -326,7 +347,7 @@ pub async fn run_agent_loop(
                             });
                         }
                         Ok(StreamEvent::Finish(reason)) => {
-                            finish_reason = reason;
+                            finish_reason = Some(reason);
                         }
                         Ok(StreamEvent::ToolResult(_)) => {}
                         Err(e) => {
@@ -361,6 +382,18 @@ pub async fn run_agent_loop(
             }
         }
 
+        if finish_reason.is_none() {
+            let message = "Model stream ended before a completion event".to_string();
+            handle.hub.publish(AgentEvent::Error(message.clone()));
+            return interrupted_outcome(
+                RunStatus::Failed,
+                last_assistant.is_some(),
+                Some(message),
+                last_assistant,
+                usage_opt(usage_seen, &usage_total),
+            );
+        }
+
         let mut assistant_parts: Vec<ContentPart> = Vec::new();
         let reasoning_details = reasoning_started_at
             .filter(|_| !reasoning_text.is_empty())
@@ -386,8 +419,8 @@ pub async fn run_agent_loop(
         }
 
         let has_content = !assistant_parts.is_empty();
-        let has_tool_calls =
-            !pending_tool_calls.is_empty() && matches!(finish_reason, FinishReason::ToolCalls);
+        let has_tool_calls = !pending_tool_calls.is_empty()
+            && matches!(finish_reason, Some(FinishReason::ToolCalls));
 
         if has_content {
             let assistant_msg = Message {
@@ -395,9 +428,7 @@ pub async fn run_agent_loop(
                 parts: assistant_parts,
             };
             // On success the entry lands at the ordering the insert returned;
-            // on failure re-read the DB's true MAX(ordering)+1 — a fabricated
-            // last+1 could desync a later compaction marker's slot. Degraded,
-            // like the history itself.
+            // a failed durable append stops the run before any new side effect.
             let ordering = match msg_db::insert_message(
                 &ctx.pool,
                 &conv_id,
@@ -423,10 +454,15 @@ pub async fn run_agent_loop(
                     stored.ordering
                 }
                 Err(e) => {
-                    error!("Failed to persist assistant message: {e}");
-                    msg_db::next_ordering(&ctx.pool, &conv_id)
-                        .await
-                        .unwrap_or_else(|_| context.next_ordering_fallback())
+                    let message = format!("Failed to persist assistant message: {e}");
+                    handle.hub.publish(AgentEvent::Error(message.clone()));
+                    return interrupted_outcome(
+                        RunStatus::Failed,
+                        last_assistant.is_some(),
+                        Some(message),
+                        last_assistant,
+                        usage_opt(usage_seen, &usage_total),
+                    );
                 }
             };
             context.append(assistant_msg, ordering);
@@ -514,11 +550,13 @@ pub async fn run_agent_loop(
                     crate::permissions::gate::GateVerdict::Proceed => match tool {
                         Some(t) => match t.execute(args, &tool_ctx).await {
                             Ok(o) => o,
-                            Err(e) => {
-                                crate::tools::ToolOutput::error(format!("Tool execution error: {e}"))
-                            }
+                            Err(e) => crate::tools::ToolOutput::error(format!(
+                                "Tool execution error: {e}"
+                            )),
                         },
-                        None => crate::tools::ToolOutput::error(format!("Unknown tool: {}", tc.name)),
+                        None => {
+                            crate::tools::ToolOutput::error(format!("Unknown tool: {}", tc.name))
+                        }
                     },
                 };
                 (idx, tc, output)
@@ -537,13 +575,13 @@ pub async fn run_agent_loop(
                             // the closing ToolResult arrives.
                             contexts[idx].flush();
 
-                            handle.hub.publish(AgentEvent::ToolResult {
+                            let result_event = AgentEvent::ToolResult {
                                 call_id: tc.id.clone(),
                                 content: output.content.clone(),
                                 is_error: output.is_error,
                                 images: output.images.clone(),
                                 details: output.details.clone(),
-                            });
+                            };
 
                             let tool_msg = Message {
                                 role: Role::Tool,
@@ -564,24 +602,25 @@ pub async fn run_agent_loop(
                             };
                             // details are UI-only: persisted in their own
                             // column, never inside parts_json.
-                            let ordering = match msg_db::insert_message(
+                            let ordering = match crate::db::persist_critical(&ctx.pool, || msg_db::insert_message(
                                 &ctx.pool,
                                 &conv_id,
                                 &tool_msg,
                                 None,
                                 None,
                                 output.details.as_ref(),
-                            )
+                            ))
                             .await
                             {
                                 Ok(stored) => stored.ordering,
                                 Err(e) => {
-                                    error!("Failed to persist tool result: {e}");
-                                    msg_db::next_ordering(&ctx.pool, &conv_id)
-                                        .await
-                                        .unwrap_or_else(|_| context.next_ordering_fallback())
+                                    let message = format!("Failed to persist tool result: {e}");
+                                    handle.hub.publish(AgentEvent::Error(message.clone()));
+                                    return interrupted_outcome(RunStatus::Failed, last_assistant.is_some(),
+                                        Some(message), last_assistant, usage_opt(usage_seen, &usage_total));
                                 }
                             };
+                            handle.hub.publish(result_event);
                             context.append(tool_msg, ordering);
                             completed.insert(idx);
                         }

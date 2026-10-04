@@ -439,7 +439,9 @@ impl TestApp {
 
         // Same startup sequence as run_server: sweep interrupted runs
         // before the server accepts traffic.
-        oct_agent::runtime::bootstrap(&pool).await;
+        oct_agent::runtime::bootstrap(&pool)
+            .await
+            .expect("bootstrap");
 
         let mcp = Arc::new(oct_agent::mcp::McpManager::default());
         let sessions: Arc<dashmap::DashMap<String, oct_agent::agent::RunHandle>> =
@@ -454,6 +456,7 @@ impl TestApp {
             dir.path().join("exec"),
         ));
         let runs = Arc::new(oct_agent::runtime::RunService {
+            lifecycle: Default::default(),
             pool: pool.clone(),
             registry: Arc::new(default_registry()),
             mcp: mcp.clone(),

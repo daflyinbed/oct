@@ -23,7 +23,11 @@ impl WriteFileTool {
         locks: Arc<WorkspaceFileLocks>,
         reads: Arc<AgentReadState>,
     ) -> Self {
-        Self { roots, locks, reads }
+        Self {
+            roots,
+            locks,
+            reads,
+        }
     }
 }
 
@@ -92,7 +96,7 @@ impl AgentTool for WriteFileTool {
         // shared across the whole task tree, so another agent's edit/write on
         // the same path queues here too.
         let lock = self.locks.lock_for(&resolved);
-        let _guard = lock.lock().await;
+        let guard = lock.lock_owned().await;
 
         if args.create_dirs.unwrap_or(false) {
             if let Some(parent) = resolved.parent()
@@ -112,8 +116,8 @@ impl AgentTool for WriteFileTool {
         }
 
         let bytes = args.content.len();
-        match tokio::fs::write(&resolved, &args.content).await {
-            Ok(()) => {
+        match super::atomic_file::write(&resolved, &args.content, guard).await {
+            Ok(_guard) => {
                 // Record the post-write mtime so a subsequent edit_file by
                 // the SAME agent is not blocked as stale.
                 if let Some(mtime) = file_mtime(&resolved) {
@@ -311,11 +315,16 @@ mod tests {
             .unwrap();
         assert!(!out.is_error, "{}", out.content);
         // The real target was overwritten, through the still-intact link.
-        assert_eq!(std::fs::read_to_string(base.join("outside/f.txt")).unwrap(), "x");
-        assert!(std::fs::symlink_metadata(base.join("wd/f.txt"))
-            .unwrap()
-            .file_type()
-            .is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(base.join("outside/f.txt")).unwrap(),
+            "x"
+        );
+        assert!(
+            std::fs::symlink_metadata(base.join("wd/f.txt"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
 
         let _ = std::fs::remove_dir_all(&base);
     }

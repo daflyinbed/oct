@@ -38,7 +38,11 @@ impl EditFileTool {
         locks: Arc<WorkspaceFileLocks>,
         reads: Arc<AgentReadState>,
     ) -> Self {
-        Self { roots, locks, reads }
+        Self {
+            roots,
+            locks,
+            reads,
+        }
     }
 
     /// Create-new-file path (empty `old_string`). The whole exists-check and
@@ -69,7 +73,7 @@ impl EditFileTool {
         }
 
         let lock = self.locks.lock_for(&resolved);
-        let _guard = lock.lock().await;
+        let guard = lock.lock_owned().await;
 
         // Creating over an empty existing file is allowed; over content it is not.
         if resolved.exists() {
@@ -83,8 +87,8 @@ impl EditFileTool {
             }
         }
 
-        match tokio::fs::write(&resolved, &args.new_string).await {
-            Ok(()) => {
+        match super::atomic_file::write(&resolved, &args.new_string, guard).await {
+            Ok(_guard) => {
                 if let Some(mtime) = file_mtime(&resolved) {
                     self.reads.record_write(&resolved, mtime);
                 }
@@ -107,7 +111,12 @@ impl EditFileTool {
     /// Replace-match path for an existing file. Must be called while holding
     /// the per-file lock: the mtime check, the match, and the write form one
     /// read-modify-write critical section.
-    async fn edit_existing(&self, args: &EditFileArgs, resolved: &Path) -> Result<ToolOutput> {
+    async fn edit_existing(
+        &self,
+        args: &EditFileArgs,
+        resolved: &Path,
+        guard: tokio::sync::OwnedMutexGuard<()>,
+    ) -> Result<ToolOutput> {
         match self.reads.check_read(resolved) {
             ReadCheck::NotRead => {
                 return Ok(ToolOutput::error(
@@ -186,8 +195,8 @@ impl EditFileTool {
             updated = updated.replace('\n', "\r\n");
         }
 
-        match tokio::fs::write(resolved, updated).await {
-            Ok(()) => {
+        match super::atomic_file::write(resolved, updated, guard).await {
+            Ok(_guard) => {
                 // Record the post-write mtime so a follow-up edit in the same
                 // run is not blocked as stale.
                 if let Some(mtime) = file_mtime(resolved) {
@@ -321,8 +330,8 @@ impl AgentTool for EditFileTool {
         // Serialize read-modify-write on the same file: concurrent tool calls
         // from the agent loop cannot interleave the mtime check with the write.
         let lock = self.locks.lock_for(&resolved);
-        let _guard = lock.lock().await;
-        self.edit_existing(&args, &resolved).await
+        let guard = lock.lock_owned().await;
+        self.edit_existing(&args, &resolved, guard).await
     }
 }
 

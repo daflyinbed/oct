@@ -152,24 +152,35 @@ async fn refresh_token_if_needed(
                 created_at: token.created_at,
                 updated_at: token.updated_at,
             };
-            // Persist best-effort: a failed write only costs re-refreshing on
-            // the next connect (the in-memory value below is already fresh).
-            if let Err(error) = db::mcp_tokens::save_mcp_server_token(
-                pool,
-                &db::mcp_tokens::SaveTokenRequest {
-                    server_id: updated.server_id.clone(),
-                    client_id: updated.client_id.clone(),
-                    client_secret: updated.client_secret.clone(),
-                    access_token: updated.access_token.clone(),
-                    refresh_token: updated.refresh_token.clone(),
-                    token_type: updated.token_type.clone(),
-                    scope: updated.scope.clone(),
-                    expires_at: updated.expires_at,
-                },
-            )
-            .await
-            {
-                warn!("persisting the refreshed OAuth token failed: {error:#}");
+            // Rotation can revoke the old refresh token immediately. Retain
+            // the new credentials in an independent writer until durable;
+            // dropping a connection attempt must not drop the only copy.
+            // Removed/replaced credentials retire the writer instead of
+            // retrying forever or resurrecting a server's OAuth login.
+            let pool = pool.clone();
+            let request = db::mcp_tokens::SaveTokenRequest {
+                server_id: updated.server_id.clone(),
+                client_id: updated.client_id.clone(),
+                client_secret: updated.client_secret.clone(),
+                access_token: updated.access_token.clone(),
+                refresh_token: updated.refresh_token.clone(),
+                token_type: updated.token_type.clone(),
+                scope: updated.scope.clone(),
+                expires_at: updated.expires_at,
+            };
+            let writer = tokio::spawn(async move {
+                db::persist_critical(&pool, || {
+                    db::mcp_tokens::save_refreshed_mcp_server_token(&pool, &request, &token)
+                })
+                .await
+            });
+            match writer.await {
+                Ok(Ok(true)) => {}
+                Ok(Ok(false)) => {
+                    info!("refreshed credentials discarded after removal or replacement")
+                }
+                Ok(Err(error)) => warn!("credential persistence stopped: {error}"),
+                Err(error) => warn!("credential writer could not complete: {error}"),
             }
             updated
         }

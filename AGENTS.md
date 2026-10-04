@@ -53,7 +53,7 @@ pnpm -r exec eslint .                 # ESLint with @xwbx/eslint-config flat con
 
 ### LLM wire 日志
 
-- 每个 LLM HTTP 交互的原始 wire 记录（精确请求体 + 每个 framing SSE 事件块 + 流结束/错误），一条一事件的 JSONL，**按对话拆文件**：`{db目录}/llm-wire/{conversation_id}.jsonl`（无会话上下文落 `_orphan.jsonl`；0600；**无总量上限/轮转**；单字段默认 1 MiB 截断标 `truncated`，`OCT_LLM_WIRE_FIELD_MAX=0` 关闭）。
+- 每个 LLM HTTP 交互的原始 wire 记录（精确请求体 + 每个 framing SSE 事件块 + 流结束/错误），一条一事件的 JSONL，**按对话拆文件**：`{db目录}/llm-wire/{conversation_id}.jsonl`（无会话上下文落 `_orphan.jsonl`；0600；单文件 16 MiB 轮转（保留一份 .1），目录总量 256 MiB，超限淘汰最旧诊断记录；单字段默认 1 MiB 截断标 `truncated`，`OCT_LLM_WIRE_FIELD_MAX=0` 关闭）。
 - 开关：设置弹窗 AI 根页（`GET/PUT /api/settings` 的 `llm_wire_log`，持久化在 `settings` 表、运行时即时生效，默认开）；`OCT_LLM_WIRE_LOG=off` 进程级硬关；`OCT_LLM_WIRE_DIR` 改目录。stderr 镜像：`RUST_LOG="oct_llm_provider::wire=trace"`。
 - 埋点在 `oct-llm-provider/src/wire.rs`（target `oct_llm_provider::wire`；相关性字段用 task-local tags——host 侧 `wire::with_tags` 包住模型调用，`try_stream!` 生成器由消费方 poll、不在 scope 内，故 `stream()` 入口捕获进 `WireCtx`）。注意 `Layer::register_callsite` 必须返回 `Interest::sometimes()`：默认实现会在开关关闭时缓存 `never`，毒化 callsite 导致再开也不记录。
 
@@ -120,6 +120,7 @@ pnpm -r exec eslint .                 # ESLint with @xwbx/eslint-config flat con
 - `conversation_messages`: 会话归属时间线——conversation_id (FK cascade), message_id (FK cascade), ordering (UNIQUE per conversation), appended_at_revision (插入时盖章、永不变；回滚/fork 切点与 anchor 资格判定的时点), swapped_at_revision (COW 换指针时盖章；NULL=未替换)。fork=复制行共享内容行，回滚=截断，microcompact COW=拨 message_id 指针（`db::messages::apply_cow_swaps`）
 - `mcp_servers`: id, name (UNIQUE), transport (`stdio`/`http`), command, args_json, env_json, url, headers_json (http 侧静态 headers/bearer), enabled, tool_timeout_ms, project_id (NULL=全局；非 NULL=仅该项目，FK cascade 随项目删除), timestamps
 - `mcp_server_tokens`: server_id (PK=UNIQUE, FK cascade → mcp_servers), client_id, client_secret, access_token, refresh_token, token_type, scope, expires_at, obtained_at, timestamps（OAuth 凭据，永不经 API 返回）
+- `wake_intents`: conversation_id（PK/FK）, message_id, run_id——与通知落库同事务提交，启动时重扫，模型处理完成或用户取消后清除。
 - `background_tasks`: id（调用方生成,`bg_{uuid}`——注册表键=输出文件名=行 id）, conversation_id (FK cascade), parent_run_id (FK cascade → agent_runs), parent_call_id, command, working_dir, status (`running`/`completed`/`failed`/`cancelled`/`lost`), exit_code, output_path, output_bytes, error, notified（0/1,与通知消息插入同事务置位）, created_at, finished_at（内存只存活动任务）
 - `settings`: key (PK), value, updated_at——进程级开关的持久侧（KV 存储,已知键归 API 层的类型化 DTO 管;v1 键 `llm_wire_log`='on'/'off'）
 

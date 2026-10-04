@@ -44,3 +44,25 @@ pub fn is_busy(e: &sqlx::Error) -> bool {
         .and_then(|db| db.code())
         .is_some_and(|code| matches!(code.as_ref(), "5" | "517"))
 }
+
+/// Retain the owner and its result until a critical write commits. This is
+/// for already-executed side effects/settlement, not arbitrary reads or user
+/// requests. Closing the pool is the explicit shutdown escape hatch.
+pub async fn persist_critical<T, F, Fut>(pool: &SqlitePool, mut write: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let mut delay = Duration::from_millis(50);
+    loop {
+        match write().await {
+            Ok(value) => return Ok(value),
+            Err(error) if pool.is_closed() => return Err(error),
+            Err(error) => {
+                tracing::error!(%error, "critical persistence pending; retaining execution ownership")
+            }
+        }
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(Duration::from_secs(5));
+    }
+}

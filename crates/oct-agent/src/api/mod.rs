@@ -221,3 +221,5 @@ fn api_routes(state: AppState) -> OpenApiRouter<AppState> {
         .routes(utoipa_axum::routes!(subagents::cancel_subagent))
         .with_state(state)
 }
+
+mod sse;

@@ -1605,7 +1605,7 @@ describe("attachSubagent", () => {
       error: undefined,
     } as never);
     GET.mockResolvedValue({ data: undefined, error: {} } as never);
-    stubFetch(
+    const fetchMock = stubFetch(
       sse([runMeta("u1"), textDelta("重建的"), textDelta("回答"), finishEvent]),
     );
 
@@ -1619,6 +1619,119 @@ describe("attachSubagent", () => {
     expect(rebuilt.parts).toEqual([{ kind: "text", text: "重建的回答" }]);
     expect(rebuilt.isStreaming).toBe(false);
     expect(session.sending.value).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("reattaches after incomplete EOF and keeps showing live child output without duplicates", async () => {
+    const session = createChatSession({ contextUsage: false });
+    GET.mockResolvedValueOnce({ data: subagentHistory() } as never);
+    GET.mockResolvedValue({ error: {} } as never);
+    const encoder = new TextEncoder();
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const live = new ReadableStream<Uint8Array>({
+      start(c) {
+        controller = c;
+        c.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify(runMeta("u1"))}\n\n` +
+              `data: ${JSON.stringify(textDelta("partial and continuing"))}\n\n`,
+          ),
+        );
+      },
+    });
+    const fetchMock = stubFetch(
+      sse([runMeta("u1"), textDelta("partial")]),
+      new Response(live, { status: 200 }),
+    );
+
+    const attached = session.attachSubagent("agent-1");
+    try {
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() =>
+        expect(session.messages.value[1]?.parts).toEqual([
+          { kind: "text", text: "partial and continuing" },
+        ]),
+      );
+      expect(session.sending.value).toBe(true);
+      expect(session.messages.value).toHaveLength(2);
+      expect(fetchMock.mock.calls[1]?.[0]).toBe(
+        "/api/subagents/agent-1/events",
+      );
+    } finally {
+      controller.enqueue(
+        encoder.encode(`data: ${JSON.stringify(finishEvent)}\n\n`),
+      );
+      controller.close();
+      await attached;
+      session.dispose();
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(session.sending.value).toBe(false);
+  });
+
+  it("reattaches after a stream read fails", async () => {
+    const session = createChatSession({ contextUsage: false });
+    GET.mockResolvedValueOnce({ data: subagentHistory() } as never);
+    GET.mockResolvedValue({ error: {} } as never);
+    const broken = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new TypeError("connection reset"));
+      },
+    });
+    const fetchMock = stubFetch(
+      new Response(broken, { status: 200 }),
+      sse([runMeta("u1"), textDelta("recovered child output"), finishEvent]),
+    );
+
+    await session.attachSubagent("agent-1");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(session.messages.value[1]?.parts).toEqual([
+      { kind: "text", text: "recovered child output" },
+    ]);
+    expect(session.sending.value).toBe(false);
+    session.dispose();
+  });
+
+  it("bounds retries when child subscriptions repeatedly end without a terminal event", async () => {
+    const session = createChatSession({ contextUsage: false });
+    GET.mockResolvedValue({ data: subagentHistory() } as never);
+    const fetchMock = stubFetch(
+      sse([runMeta("u1"), textDelta("partial")]),
+      sse([runMeta("u1"), textDelta("partial")]),
+      sse([runMeta("u1"), textDelta("partial")]),
+    );
+
+    await session.attachSubagent("agent-1");
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(session.sending.value).toBe(false);
+    session.dispose();
+  });
+
+  it("refreshes final history when the child finishes before reconnection", async () => {
+    const session = createChatSession({ contextUsage: false });
+    const completed = [
+      subagentHistory()[0]!,
+      storedMessage("assistant", [
+        { type: "text", text: "finished child output" },
+      ]),
+    ];
+    GET.mockResolvedValueOnce({ data: subagentHistory() } as never);
+    GET.mockResolvedValue({ data: completed } as never);
+    const fetchMock = stubFetch(
+      sse([runMeta("u1"), textDelta("partial")]),
+      new Response(null, { status: 404 }),
+    );
+
+    await session.attachSubagent("agent-1");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(session.messages.value[1]?.parts).toEqual([
+      { kind: "text", text: "finished child output" },
+    ]);
+    expect(session.sending.value).toBe(false);
+    session.dispose();
   });
 
   it("usage 只进实例本地快照（播种自历史，usage 事件覆盖）", async () => {
@@ -1686,6 +1799,7 @@ describe("attachSubagent", () => {
 
     // 迟到事件不进视图；dispose 后没有额外的收尾刷新
     expect(GET.mock.calls.length).toBe(callsAfterDispose);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(
       session.messages.value.some((m) =>
         m.parts.some((p) => p.kind === "text" && p.text.includes("迟到事件")),
@@ -2109,4 +2223,131 @@ describe("审批", () => {
     await fetchMessages(nextConvId());
     expect(toolCards()[0]!.denied).toBe(true);
   });
+});
+
+describe("history request ownership", () => {
+  it("a late response from the previous conversation cannot replace the current history", async () => {
+    const session = createChatSession({ contextUsage: false });
+    let finishOld!: (value: unknown) => void;
+    GET.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishOld = resolve;
+        }) as never,
+    );
+    GET.mockResolvedValueOnce({
+      data: [storedMessage("user", "new conversation")],
+    } as never);
+    const old = session.fetchMessages("old-history");
+    await session.fetchMessages("new-history");
+    finishOld({ data: [storedMessage("user", "stale conversation")] });
+    await old;
+    expect(JSON.stringify(session.messages.value)).toContain(
+      "new conversation",
+    );
+    expect(JSON.stringify(session.messages.value)).not.toContain(
+      "stale conversation",
+    );
+    session.dispose();
+  });
+
+  it("disposing a subagent while history is loading prevents a late update", async () => {
+    const session = createChatSession({ contextUsage: false });
+    let finish!: (value: unknown) => void;
+    GET.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }) as never,
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(null, { status: 404 })),
+    );
+    const loading = session.attachSubagent("disposed-agent");
+    session.dispose();
+    finish({ data: [storedMessage("user", "late child history")] });
+    await loading;
+    expect(session.messages.value).toEqual([]);
+  });
+});
+
+describe("stream failure recovery", () => {
+  it("reattaches after incomplete EOF without repeating the side-effecting POST", async () => {
+    const session = createChatSession({ contextUsage: false });
+    const request = vi.fn().mockResolvedValue(sse([textDelta("partial")]));
+    vi.stubGlobal("fetch", request);
+    GET.mockImplementation(async (path) => {
+      if (path === "/api/conversations/{id}/run") {
+        return { data: { running: false, resumable: true } } as never;
+      }
+      return { data: [storedMessage("user", "original request")] } as never;
+    });
+    await session.sendMessage("interrupted", "original request");
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(
+      GET.mock.calls.some((call) => call[0] === "/api/conversations/{id}/run"),
+    ).toBe(true);
+    expect(session.resumable.value).toBe(true);
+    session.dispose();
+  });
+
+  it("uses server recovery eligibility after a failed tool-tail turn", async () => {
+    const session = createChatSession({ contextUsage: false });
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          sse([
+            toolCallStart("call", "list_dir", "list", "{}"),
+            toolResult("call", "done"),
+            errorEvent("provider disconnected"),
+          ]),
+        ),
+    );
+    GET.mockResolvedValue({
+      data: { running: false, resumable: true },
+    } as never);
+    await session.sendMessage("failed-tool-tail", "list files");
+    expect(session.resumable.value).toBe(true);
+    session.dispose();
+  });
+
+  it.each([true, false])(
+    "clears recovery eligibility after a successful resume (history available: %s)",
+    async (historyAvailable) => {
+      const session = createChatSession({ contextUsage: false });
+      const conv = nextConvId();
+      const original = storedMessage("user", "original request");
+      const completed = storedMessage("assistant", "recovered reply");
+      GET.mockResolvedValue({ data: [original] } as never);
+      await session.fetchMessages(conv);
+      GET.mockResolvedValueOnce({
+        data: { running: false, resumable: true },
+      } as never);
+      await session.attachRun(conv);
+      expect(session.resumable.value).toBe(true);
+
+      GET.mockResolvedValueOnce({ data: [original] } as never);
+      GET.mockResolvedValueOnce(
+        historyAvailable
+          ? ({ data: [original, completed] } as never)
+          : ({ error: { message: "history unavailable" } } as never),
+      );
+      vi.stubGlobal(
+        "fetch",
+        vi
+          .fn()
+          .mockResolvedValue(sse([textDelta("recovered reply"), finishEvent])),
+      );
+      await session.resumeTurn(conv);
+
+      expect(JSON.stringify(session.messages.value)).toContain(
+        "recovered reply",
+      );
+      expect(session.resumable.value).toBe(false);
+      session.dispose();
+    },
+  );
 });

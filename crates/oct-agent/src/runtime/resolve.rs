@@ -24,8 +24,8 @@
 use oct_llm_provider::model::ChatModel;
 use oct_llm_provider::provider::{ConnectionConfig, ProviderRegistry};
 
-use crate::api::error::AppError;
 use crate::db::providers as provider_db;
+use crate::error::AppError;
 
 /// Registry key of the built-in Anthropic family: provider rows with
 /// `adapter_type = 'anthropic'` resolve through it, the row's own
@@ -51,11 +51,11 @@ pub(super) fn resolve_chat_model(
         // environment also carries one, so the settings page stays the
         // single source of truth at runtime.
         "anthropic" => {
-            let defaults = registry.provider_default_connection(ANTHROPIC_FAMILY).ok_or(
-                AppError::Internal(anyhow::anyhow!(
+            let defaults = registry
+                .provider_default_connection(ANTHROPIC_FAMILY)
+                .ok_or(AppError::Internal(anyhow::anyhow!(
                     "the '{ANTHROPIC_FAMILY}' provider family is not registered"
-                )),
-            )?;
+                )))?;
             // Same fallback chain the adapter applies when building: keep
             // the resolution-time 400 (instead of a mid-run auth failure)
             // when NEITHER the row nor the env default supplies a key.

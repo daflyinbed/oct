@@ -3,8 +3,8 @@
 //!
 //! - [`WorkspaceFileLocks`]: per-file async mutexes serializing
 //!   read-modify-write cycles on the same path. Shared across EVERY agent of
-//!   a project's task tree (root + subagents): a run service hands the same
-//!   `Arc` to parent and children, so cross-agent writes to one file cannot
+//!   every project's task tree (root + subagents): a run service hands the same
+//!   `Arc` to all projects, so writes through overlapping workspaces cannot
 //!   interleave.
 //! - [`AgentReadState`]: the mtime of each file at the moment THIS agent last
 //!   read or wrote it. One per agent: A having read a file never authorizes

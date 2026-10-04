@@ -285,3 +285,29 @@ pub async fn set_auto_title(pool: &SqlitePool, id: &str, title: &str) -> Result<
 
     Ok(result.rows_affected() > 0)
 }
+
+/// Validate all fields at the boundary, then change them atomically.
+pub async fn update_conversation(
+    pool: &SqlitePool,
+    id: &str,
+    title: Option<&str>,
+    mode: Option<&str>,
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    let now = chrono::Utc::now().naive_utc();
+    if let Some(title) = title {
+        sqlx::query!("UPDATE conversations SET title = $1, title_source = 'user', updated_at = $2 WHERE id = $3", title, now, id).execute(&mut *tx).await?;
+    }
+    if let Some(mode) = mode {
+        sqlx::query!(
+            "UPDATE conversations SET permission_mode = $1, updated_at = $2 WHERE id = $3",
+            mode,
+            now,
+            id
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}

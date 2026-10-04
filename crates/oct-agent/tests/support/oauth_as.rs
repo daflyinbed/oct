@@ -20,6 +20,7 @@ use base64::Engine;
 use serde_json::json;
 use sha2::Digest;
 use sha2::Sha256;
+use tokio_util::sync::CancellationToken;
 
 /// One token-endpoint call, as recorded for assertions.
 #[derive(Debug, Clone)]
@@ -44,6 +45,7 @@ struct AsState {
     fail_refresh: bool,
     reject_authorize: bool,
     access_counter: u32,
+    refresh_gate: Option<(CancellationToken, CancellationToken)>,
 }
 
 /// A running mock authorization server.
@@ -99,6 +101,15 @@ impl OAuthAsMock {
     /// Make every refresh grant fail with `invalid_grant` (until re-enabled).
     pub fn set_fail_refresh(&self, fail: bool) {
         self.with_state(|state| state.fail_refresh = fail);
+    }
+
+    /// Hold the next refresh response after rotating the credentials. The
+    /// first token signals arrival; cancelling the second releases it.
+    pub fn gate_next_refresh(&self) -> (CancellationToken, CancellationToken) {
+        let entered = CancellationToken::new();
+        let release = CancellationToken::new();
+        self.with_state(|state| state.refresh_gate = Some((entered.clone(), release.clone())));
+        (entered, release)
     }
 
     /// Make /authorize redirect back with `error=access_denied` instead of a
@@ -180,6 +191,31 @@ async fn token(
     State(shared): State<Arc<Mutex<AsState>>>,
     headers: axum::http::HeaderMap,
     axum::Form(form): axum::Form<HashMap<String, String>>,
+) -> Response {
+    let gate = if form
+        .get("grant_type")
+        .is_some_and(|grant| grant == "refresh_token")
+    {
+        shared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .refresh_gate
+            .take()
+    } else {
+        None
+    };
+    let response = token_response(&shared, headers, form);
+    if let Some((entered, release)) = gate {
+        entered.cancel();
+        release.cancelled().await;
+    }
+    response
+}
+
+fn token_response(
+    shared: &Arc<Mutex<AsState>>,
+    headers: axum::http::HeaderMap,
+    form: HashMap<String, String>,
 ) -> Response {
     let grant_type = form.get("grant_type").cloned().unwrap_or_default();
     let authorization = headers

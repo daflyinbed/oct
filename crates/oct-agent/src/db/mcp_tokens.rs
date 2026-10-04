@@ -110,6 +110,38 @@ pub async fn save_mcp_server_token(pool: &SqlitePool, req: &SaveTokenRequest) ->
     Ok(())
 }
 
+/// Commit a refresh only while the credentials it used are still current.
+/// Deletion/logout and a newer login retire the old refresh's write without
+/// resurrecting a removed row or replacing the new credentials.
+pub(crate) async fn save_refreshed_mcp_server_token(
+    pool: &SqlitePool,
+    req: &SaveTokenRequest,
+    previous: &McpServerToken,
+) -> Result<bool> {
+    let now = chrono::Utc::now().naive_utc();
+    let result = sqlx::query!(
+        "UPDATE mcp_server_tokens SET
+            client_id = $2, client_secret = $3, access_token = $4,
+            refresh_token = $5, token_type = $6, scope = $7,
+            expires_at = $8, obtained_at = $9, updated_at = $9
+         WHERE server_id = $1 AND access_token = $10 AND obtained_at = $11",
+        req.server_id,
+        req.client_id,
+        req.client_secret,
+        req.access_token,
+        req.refresh_token,
+        req.token_type,
+        req.scope,
+        req.expires_at,
+        now,
+        previous.access_token,
+        previous.obtained_at,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 /// Drop the credential row (OAuth logout). Returns whether a row existed.
 pub async fn delete_mcp_server_token(pool: &SqlitePool, server_id: &str) -> Result<bool> {
     let result: sqlx::sqlite::SqliteQueryResult = sqlx::query!(

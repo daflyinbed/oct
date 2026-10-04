@@ -61,10 +61,12 @@ async fn main() -> Result<()> {
     // the per-conversation files, gated by the runtime toggle.
     use tracing_subscriber::prelude::*;
     tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer().with_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "oct_agent=info,tower_http=debug".into()),
-        ))
+        .with(
+            tracing_subscriber::fmt::layer().with_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "oct_agent=info,tower_http=debug".into()),
+            ),
+        )
         .with(oct_llm_provider::wire::WireLogLayer)
         .init();
 
@@ -87,7 +89,7 @@ async fn run_server(
 
     // Crash recovery: agent_runs rows a previous process
     // left `running` become `lost` before this process accepts traffic.
-    oct_agent::runtime::bootstrap(&pool).await;
+    oct_agent::runtime::bootstrap(&pool).await?;
 
     // Two-phase wire: the RunService owns the SubagentManager and the
     // background task manager; each manager reaches back into the service
@@ -102,6 +104,7 @@ async fn run_server(
         exec_dir,
     ));
     let runs = Arc::new(oct_agent::runtime::RunService {
+        lifecycle: Default::default(),
         pool: pool.clone(),
         registry: registry.clone(),
         mcp: mcp.clone(),
@@ -114,6 +117,7 @@ async fn run_server(
     });
     subagents.set_service(runs.clone());
     background.set_service(runs.clone());
+    background.resume_notifications();
 
     let state = api::AppState {
         runs,

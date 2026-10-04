@@ -20,6 +20,8 @@ pub async fn list_conversations(
     State(state): State<AppState>,
     Path(project_id): Path<String>,
 ) -> ApiResult<Json<Vec<db::Conversation>>> {
+    let _admission = state.runs.lifecycle.admission.read().await;
+    state.runs.lifecycle.check("project", &project_id)?;
     if project_db::get_project(&state.pool, &project_id)
         .await?
         .is_none()
@@ -47,6 +49,8 @@ pub async fn create_conversation(
     Path(project_id): Path<String>,
     Json(req): Json<db::CreateConversationRequest>,
 ) -> ApiResult<(StatusCode, Json<db::Conversation>)> {
+    let _admission = state.runs.lifecycle.admission.read().await;
+    state.runs.lifecycle.check("project", &project_id)?;
     if project_db::get_project(&state.pool, &project_id)
         .await?
         .is_none()
@@ -75,11 +79,16 @@ pub async fn create_conversation(
 )]
 pub async fn get_conversation(
     State(state): State<AppState>,
-    Path((_project_id, id)): Path<(String, String)>,
+    Path((project_id, id)): Path<(String, String)>,
 ) -> ApiResult<Json<db::Conversation>> {
     let conversation = db::get_conversation(&state.pool, &id)
         .await?
         .ok_or_else(|| AppError::NotFound("Conversation not found".into()))?;
+    if conversation.project_id != project_id {
+        return Err(AppError::NotFound(
+            "Conversation not found in project".into(),
+        ));
+    }
     Ok(Json(conversation))
 }
 
@@ -98,22 +107,18 @@ pub async fn get_conversation(
 )]
 pub async fn delete_conversation(
     State(state): State<AppState>,
-    Path((_project_id, id)): Path<(String, String)>,
+    Path((project_id, id)): Path<(String, String)>,
 ) -> ApiResult<StatusCode> {
-    // A root conversation's task tree must not outlive it:
-    // stop every ACTIVE subagent first and wait for their settlement
-    // (bounded), so the cascading row deletion below never races a live
-    // child's persistence. Background bash tasks get the same treatment
-    // — plus their output directory, which the DB cascade
-    // cannot reach.
-    super::subagents::cancel_children_of_root(&state, &id).await?;
-    state
-        .runs
-        .background
-        .cancel_tasks_for_conversation(&id)
-        .await;
-
-    let deleted = db::delete_conversation(&state.pool, &id).await?;
+    let conversation = db::get_conversation(&state.pool, &id)
+        .await?
+        .filter(|c| c.project_id == project_id)
+        .ok_or_else(|| AppError::NotFound("Conversation not found in project".into()))?;
+    if conversation.kind != "chat" {
+        return Err(AppError::ManagedConversation(
+            "Delete managed conversations through their parent".into(),
+        ));
+    }
+    let deleted = state.runs.delete_conversation(&id).await?;
     if deleted {
         Ok(StatusCode::NO_CONTENT)
     } else {
@@ -138,46 +143,33 @@ pub async fn delete_conversation(
 )]
 pub async fn update_conversation(
     State(state): State<AppState>,
-    Path((_project_id, id)): Path<(String, String)>,
+    Path((project_id, id)): Path<(String, String)>,
     Json(req): Json<db::UpdateConversationRequest>,
 ) -> ApiResult<StatusCode> {
-    // Either field may be updated, both at once included. A mode change is
-    // allowed while a run is active BY DESIGN (per-call immediate effect)
-    // — the live gates of the conversation are flipped
-    // below so the very next tool call of the running turn sees it.
-    let mut updated = false;
-    let mut found = true;
-
-    if let Some(title) = req.title.as_deref() {
-        if db::update_conversation_title(&state.pool, &id, title).await? {
-            updated = true;
-        } else {
-            found = false;
-        }
+    db::get_conversation(&state.pool, &id)
+        .await?
+        .filter(|c| c.project_id == project_id)
+        .ok_or_else(|| AppError::NotFound("Conversation not found in project".into()))?;
+    let mode = req
+        .permission_mode
+        .as_deref()
+        .map(|value| {
+            crate::permissions::evaluator::PermissionMode::from_str_opt(value)
+                .ok_or_else(|| AppError::BadRequest(format!("Invalid permission_mode: '{value}'")))
+        })
+        .transpose()?;
+    if req.title.is_none() && mode.is_none() {
+        return Err(AppError::BadRequest("Nothing to update".into()));
     }
-
-    if let Some(mode_str) = req.permission_mode.as_deref() {
-        let mode = crate::permissions::evaluator::PermissionMode::from_str_opt(mode_str)
-            .ok_or_else(|| {
-                AppError::BadRequest(format!(
-                    "Invalid permission_mode: '{mode_str}' (expected one of: default, accept_edits, bypass)"
-                ))
-            })?;
-        if db::update_conversation_permission_mode(&state.pool, &id, mode.as_str()).await? {
-            updated = true;
-            state.runs.set_conversation_permission_mode(&id, mode);
-        } else {
-            found = false;
-        }
-    }
-
-    if !updated {
-        if found {
-            return Err(AppError::BadRequest(
-                "Nothing to update: provide title and/or permission_mode".into(),
-            ));
-        }
-        return Err(AppError::NotFound("Conversation not found".into()));
+    db::update_conversation(
+        &state.pool,
+        &id,
+        req.title.as_deref(),
+        mode.map(|m| m.as_str()),
+    )
+    .await?;
+    if let Some(mode) = mode {
+        state.runs.set_conversation_permission_mode(&id, mode);
     }
     Ok(StatusCode::OK)
 }

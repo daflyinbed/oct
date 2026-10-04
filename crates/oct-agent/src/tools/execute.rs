@@ -292,7 +292,7 @@ fn kill_process_group(_pgid: Option<u32>, child: &mut tokio::process::Child) {
 /// group and would otherwise survive a dropped future (agent cancelled
 /// mid-execution) or a parent that exited before them. ESRCH when the group is
 /// already gone is harmless.
-struct GroupKillOnDrop(Option<u32>);
+pub(crate) struct GroupKillOnDrop(pub(crate) Option<u32>);
 
 impl Drop for GroupKillOnDrop {
     fn drop(&mut self) {
@@ -383,12 +383,9 @@ impl AgentTool for ExecuteCommandTool {
             .clamp(1, MAX_TIMEOUT_SECS);
         let timeout = Duration::from_secs(timeout_secs);
 
-        let mut command = tokio::process::Command::new("sh");
+        let mut command = super::process::shell(&args.command);
         command
-            .arg("-c")
-            .arg(&args.command)
             .current_dir(&cwd)
-            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
@@ -423,6 +420,7 @@ impl AgentTool for ExecuteCommandTool {
         // Capture the pgid before anything else; the child leads its own process
         // group, so pgid == child.id().
         let pgid = child.id();
+        let _process_lease = child.stdin.take();
 
         // Take down the whole group when this scope ends (covers cancellation
         // and lingering background children; kill_on_drop only covers `sh`).

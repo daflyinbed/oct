@@ -119,6 +119,7 @@ pub async fn finish_task(
 ) -> Result<bool> {
     let now = chrono::Utc::now().naive_utc();
     let status = status.as_str();
+    super::persist_critical(pool, || async {
     let result = sqlx::query!(
         "UPDATE background_tasks SET status = $1, finished_at = $2, exit_code = $3, error = $4, output_bytes = $5 WHERE id = $6 AND status = 'running'",
         status,
@@ -131,6 +132,7 @@ pub async fn finish_task(
     .execute(pool)
     .await?;
     Ok(result.rows_affected() > 0)
+    }).await
 }
 
 /// Crash recovery (mirrors `runs::mark_stale_runs_lost`): task
@@ -213,11 +215,11 @@ pub async fn list_pending_notifications(
 /// surfaces them so logs can name the affected conversations.
 pub async fn conversations_with_pending_notifications(pool: &SqlitePool) -> Result<Vec<String>> {
     let rows = sqlx::query_scalar!(
-        "SELECT DISTINCT conversation_id FROM background_tasks WHERE notified = 0 AND status != 'running'"
+        "SELECT DISTINCT conversation_id FROM background_tasks WHERE notified = 0 AND status != 'running' UNION SELECT conversation_id FROM wake_intents"
     )
     .fetch_all(pool)
     .await?;
-    Ok(rows)
+    Ok(rows.into_iter().flatten().collect())
 }
 
 /// Insert the notification message and mark every task it covers as
@@ -252,6 +254,8 @@ pub async fn insert_notification_marking_tasks(
     .execute(&mut *tx)
     .await?;
 
+    sqlx::query!("INSERT INTO wake_intents (conversation_id, message_id) VALUES ($1, $2) ON CONFLICT(conversation_id) DO UPDATE SET message_id = excluded.message_id, run_id = NULL", conversation_id, stored.id)
+        .execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(stored.id)
 }
@@ -400,4 +404,16 @@ mod tests {
         assert_eq!(listed[0].id, live.id);
         assert_eq!(listed.len(), 3);
     }
+}
+
+/// Read the durable intent, retiring it once its consuming run completed or was explicitly cancelled.
+/// Caller owns conversation occupancy, so no newer run can race this check.
+pub async fn pending_wake(pool: &SqlitePool, id: &str) -> Result<Option<String>> {
+    sqlx::query!("DELETE FROM wake_intents WHERE conversation_id = $1 AND run_id IN (SELECT id FROM agent_runs WHERE status IN ('completed', 'cancelled'))", id).execute(pool).await?;
+    Ok(sqlx::query_scalar!(
+        "SELECT message_id FROM wake_intents WHERE conversation_id = $1",
+        id
+    )
+    .fetch_optional(pool)
+    .await?)
 }

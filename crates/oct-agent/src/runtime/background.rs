@@ -28,8 +28,10 @@
 //!   model a notification, and the task's own token (task_stop /
 //!   conversation deletion) is the only thing that kills it.
 
+mod notifications;
+
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 
 use dashmap::DashMap;
@@ -50,6 +52,7 @@ const DEFAULT_OUTPUT_LIMIT_BYTES: u64 = 1024 * 1024 * 1024; // 1 GiB
 const WATCHDOG_INTERVAL: Duration = Duration::from_secs(5);
 /// Wall-clock cap on one background task (the anti-`yes`-forever backstop;
 /// the output cap is the primary bound).
+const TOTAL_OUTPUT_LIMIT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_RUNTIME: Duration = Duration::from_secs(24 * 60 * 60);
 /// Grace between the SIGTERM and the SIGKILL of a deliberate group kill.
 const TERM_GRACE: Duration = Duration::from_millis(1500);
@@ -105,7 +108,7 @@ pub struct BackgroundTaskManager {
     /// sandboxed `read` tool must not reach it; the model reads output
     /// through `task_output` instead.
     exec_dir: PathBuf,
-    service: OnceLock<Arc<crate::runtime::RunService>>,
+    service: OnceLock<Weak<crate::runtime::RunService>>,
     tasks: DashMap<String, ActiveTask>,
     /// Conversations with a live notification drainer (the kick-once
     /// marker): prevents stacking drainers for one conversation.
@@ -171,11 +174,11 @@ impl BackgroundTaskManager {
     /// Two-phase wire (see the type comment); called right after the
     /// RunService is constructed.
     pub fn set_service(&self, service: Arc<crate::runtime::RunService>) {
-        let _ = self.service.set(service);
+        let _ = self.service.set(Arc::downgrade(&service));
     }
 
     fn service_handle(&self) -> Option<Arc<crate::runtime::RunService>> {
-        self.service.get().cloned()
+        self.service.get().and_then(Weak::upgrade)
     }
 
     /// The pool the task rows live in (shared with the tools and the API).
@@ -217,6 +220,10 @@ impl BackgroundTaskManager {
     /// register the active task and hand it to the supervisor. Returns the
     /// persisted row for the tool's envelope.
     pub async fn start_bash(self: &Arc<Self>, req: BashStart) -> anyhow::Result<BackgroundTask> {
+        anyhow::ensure!(
+            directory_bytes(&self.exec_dir).await < TOTAL_OUTPUT_LIMIT_BYTES,
+            "Background output storage is full; delete old conversations before starting another task"
+        );
         let task_dir = self.exec_dir.join(&req.conversation_id);
         tokio::fs::create_dir_all(&task_dir).await?;
 
@@ -226,12 +233,10 @@ impl BackgroundTaskManager {
         let file = open_output_file(&output_path)?;
         let stderr_file = file.try_clone()?;
 
-        let mut command = tokio::process::Command::new("sh");
+        let mut command = crate::tools::process::shell(&req.command);
         command
-            .arg("-c")
-            .arg(&req.command)
             .current_dir(&req.cwd)
-            .stdin(std::process::Stdio::null())
+            .kill_on_drop(true)
             .stdout(std::process::Stdio::from(file))
             .stderr(std::process::Stdio::from(stderr_file));
         // Same group semantics as the foreground path: the child leads its
@@ -252,6 +257,8 @@ impl BackgroundTaskManager {
 
         let mut child = command.spawn()?;
         let pgid = child.id();
+        let process_lease = child.stdin.take();
+        let mut startup_guard = crate::tools::execute::GroupKillOnDrop(pgid);
 
         let task = match task_db::create_task(
             &self.pool,
@@ -282,6 +289,7 @@ impl BackgroundTaskManager {
             }
         };
 
+        startup_guard.0 = None; // ownership transfers without an await to the supervisor below
         let (done_tx, done_rx) = watch::channel(false);
         let cancel = CancellationToken::new();
         self.tasks.insert(
@@ -303,6 +311,7 @@ impl BackgroundTaskManager {
                 id,
                 conversation_id,
                 child,
+                process_lease,
                 pgid,
                 output_path,
                 done_tx,
@@ -332,7 +341,7 @@ impl BackgroundTaskManager {
     /// Stop every active task of a conversation and wait (bounded) for
     /// their settlement — the conversation-deletion cascade. Also removes
     /// the conversation's output directory (best effort).
-    pub async fn cancel_tasks_for_conversation(&self, conversation_id: &str) {
+    pub async fn cancel_tasks_for_conversation(&self, conversation_id: &str) -> anyhow::Result<()> {
         let mut waiters = Vec::new();
         for entry in self.tasks.iter() {
             if entry.value().conversation_id == conversation_id {
@@ -340,173 +349,23 @@ impl BackgroundTaskManager {
                 waiters.push(entry.value().done.clone());
             }
         }
-        let _ = tokio::time::timeout(CANCEL_SETTLE_WAIT, async move {
+        tokio::time::timeout(CANCEL_SETTLE_WAIT, async move {
             for mut done in waiters {
-                let _ = done.wait_for(|v| *v).await;
+                done.wait_for(|v| *v)
+                    .await
+                    .map_err(|_| anyhow::anyhow!("task settlement channel closed"))?;
             }
+            Ok::<_, anyhow::Error>(())
         })
-        .await;
-        let _ = tokio::fs::remove_dir_all(self.exec_dir.join(conversation_id)).await;
-    }
-
-    /// Kick the notification drainer for a conversation (no-op when one is
-    /// already running): it re-reads the pending list from the DB, so the
-    /// kick carries no data and a task settling right after a drainer's
-    /// last query is still picked up by the next iteration.
-    pub fn kick_notification(self: &Arc<Self>, conversation_id: &str) {
-        if self.delivering.contains_key(conversation_id) {
-            return;
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!("background tasks have not settled; deletion was not performed")
+        })??;
+        match tokio::fs::remove_dir_all(self.exec_dir.join(conversation_id)).await {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
         }
-        self.delivering.insert(conversation_id.to_string(), ());
-        let manager = Arc::clone(self);
-        let conv = conversation_id.to_string();
-        tokio::spawn(async move {
-            manager.run_delivery_loop(&conv).await;
-            manager.delivering.remove(&conv);
-        });
-    }
-
-    /// The delivery loop: deliver pending notifications until none remain,
-    /// then let the kick marker go. Busy conversations are retried — the
-    /// drainer parks while any run (the user's or a previous wake's) holds
-    /// the occupancy.
-    async fn run_delivery_loop(&self, conversation_id: &str) {
-        loop {
-            let pending =
-                match task_db::list_pending_notifications(&self.pool, conversation_id).await {
-                    Ok(pending) => pending,
-                    Err(e) => {
-                        tracing::error!(
-                            conversation_id = conversation_id,
-                            "background notification query failed: {e}"
-                        );
-                        return;
-                    }
-                };
-            if pending.is_empty() {
-                return;
-            }
-            if let Err(e) = self.deliver_pending(conversation_id).await {
-                // Leave the rows `notified = 0`: the send/resume catch-up
-                // owns them from here.
-                tracing::error!(
-                    conversation_id = conversation_id,
-                    "background notification delivery failed: {e}"
-                );
-                return;
-            }
-        }
-    }
-
-    /// Deliver EVERY pending notification of the conversation as one batched
-    /// synthetic user message and start the wake run over it. Takes the
-    /// occupancy first (retrying while busy) so the message insert and the
-    /// run start are serialized against send/resume/compact exactly like a
-    /// user turn.
-    async fn deliver_pending(&self, conversation_id: &str) -> anyhow::Result<()> {
-        let service = self
-            .service_handle()
-            .ok_or_else(|| anyhow::anyhow!("run service is not wired"))?;
-
-        // The conversation must still exist (deletion cascades the task
-        // rows away — a stale pending list simply yields nothing below).
-        let conversation = crate::db::conversations::get_conversation(&self.pool, conversation_id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("conversation is gone"))?;
-        if conversation.kind != "chat" {
-            // Background tasks are gated to root chat runs; defensive.
-            anyhow::bail!("not a chat conversation");
-        }
-
-        // Wait for the conversation to go idle, then hold the occupancy for
-        // the whole insert + run start.
-        let cancel = CancellationToken::new();
-        let guard = loop {
-            match service.occupy_with(conversation_id, cancel.clone()) {
-                Ok(guard) => break guard,
-                Err(crate::api::error::AppError::SessionBusy(_)) => {
-                    tokio::time::sleep(DELIVERY_IDLE_RETRY).await;
-                }
-                Err(e) => return Err(e.into()),
-            }
-        };
-
-        // Re-read under the guard: tasks settled while we were waiting join
-        // this batch (the loop's next query would catch them too, but one
-        // message per wake keeps the model turns cheap).
-        let pending = task_db::list_pending_notifications(&self.pool, conversation_id).await?;
-        if pending.is_empty() {
-            return Ok(()); // the guard drops here
-        }
-
-        let (content, details) = build_notification_content(&pending).await;
-        let message = Message::text(Role::User, &content);
-        let task_ids: Vec<String> = pending.iter().map(|t| t.id.clone()).collect();
-        let start_message_id = task_db::insert_notification_marking_tasks(
-            &self.pool,
-            conversation_id,
-            &message,
-            Some(&details),
-            &task_ids,
-        )
-        .await?;
-
-        // The wake run reuses the conversation's last provider/model — the
-        // same rule resume follows. Resolution failures leave the message
-        // delivered (it shows up on the next send); only the run is lost.
-        let Some((provider_id, model_id)) =
-            crate::db::messages::get_last_provider_spec(&self.pool, conversation_id).await?
-        else {
-            tracing::warn!(
-                conversation_id,
-                "background notification delivered without a wake run: no provider recorded"
-            );
-            return Ok(());
-        };
-        let spec = format!("{provider_id}:{model_id}");
-        let (model, provider_id, model_id) = match service.resolve_model(&spec).await {
-            Ok(resolved) => resolved,
-            Err(e) => {
-                tracing::warn!(
-                    conversation_id,
-                    "background notification delivered without a wake run: {e}"
-                );
-                return Ok(());
-            }
-        };
-        let context_window = service
-            .resolve_context_window(model.as_ref(), &provider_id, &model_id)
-            .await;
-
-        let project = crate::db::projects::get_project(&self.pool, &conversation.project_id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("project is gone"))?;
-
-        let view = crate::db::messages::load_llm_view(&self.pool, conversation_id).await?;
-
-        service.set_start_message_id(conversation_id, &start_message_id);
-        // Same pre-run connection sync a user turn performs (best effort).
-        service
-            .mcp
-            .ensure_connections(&self.pool, Some(&project.id))
-            .await;
-
-        service
-            .run_root_with_guard(crate::runtime::RootRunRequest {
-                guard,
-                conversation_id: conversation_id.to_string(),
-                project,
-                model,
-                provider_id,
-                model_id,
-                view,
-                context_window,
-                // The notification itself is the activity; the idle
-                // microcompact trigger is meaningless here.
-                idle: None,
-                attach_task_tool: true,
-            })
-            .await?;
         Ok(())
     }
 }
@@ -520,10 +379,12 @@ async fn supervise_task(
     task_id: String,
     conversation_id: String,
     mut child: tokio::process::Child,
+    _process_lease: Option<tokio::process::ChildStdin>,
     pgid: Option<u32>,
     output_path: PathBuf,
     done_tx: watch::Sender<bool>,
 ) {
+    let _group_guard = crate::tools::execute::GroupKillOnDrop(pgid);
     enum KillReason {
         None,
         Cancelled,
@@ -554,7 +415,7 @@ async fn supervise_task(
                     .await
                     .map(|m| m.len() >= manager.output_limit())
                     .unwrap_or(false);
-                if over {
+                if over || directory_bytes(&manager.exec_dir).await >= TOTAL_OUTPUT_LIMIT_BYTES {
                     kill_reason = KillReason::OutputLimit;
                     break None;
                 }
@@ -637,15 +498,23 @@ async fn kill_group_graceful(
     #[cfg(not(unix))]
     let _ = child.start_kill();
 
-    if let Ok(Ok(status)) = tokio::time::timeout(TERM_GRACE, child.wait()).await {
-        return Some(status);
-    }
+    let deadline = tokio::time::Instant::now() + TERM_GRACE;
+    let reaped = tokio::time::timeout_at(deadline, child.wait())
+        .await
+        .ok()
+        .and_then(Result::ok);
+    // Reaping the leader does not prove its descendants exited. Preserve the
+    // grace period, then kill the remaining group even when sh exited early.
+    tokio::time::sleep_until(deadline).await;
 
     #[cfg(unix)]
     {
         if let Some(pgid) = pgid {
             unsafe { libc::killpg(pgid as libc::pid_t, libc::SIGKILL) };
         }
+    }
+    if reaped.is_some() {
+        return reaped;
     }
     let _ = child.start_kill();
     match tokio::time::timeout(REAP_TIMEOUT, child.wait()).await {
@@ -733,7 +602,7 @@ pub(crate) async fn read_tail(path: &str, max: u64) -> (bool, String) {
     let mut buf = Vec::with_capacity((len - start) as usize);
     // Reading past EOF simply ends early; the file may keep growing while
     // we read (the command can still be flushing).
-    let _ = file.read_to_end(&mut buf).await;
+    let _ = file.take(max).read_to_end(&mut buf).await;
     (start > 0, String::from_utf8_lossy(&buf).into_owned())
 }
 
@@ -802,4 +671,27 @@ pub async fn catch_up_notifications(
 /// previous process left `running` become `lost`.
 pub async fn task_sweep(pool: &SqlitePool) -> anyhow::Result<Vec<BackgroundTask>> {
     task_db::mark_stale_tasks_lost(pool).await
+}
+
+/// Include finished outputs in the budget: a per-process cap alone cannot
+/// bound disk consumption across a long-lived application.
+async fn directory_bytes(root: &Path) -> u64 {
+    let mut directories = vec![root.to_path_buf()];
+    let mut total = 0u64;
+    while let Some(dir) = directories.pop() {
+        let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
+            continue;
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let Ok(kind) = entry.file_type().await else {
+                continue;
+            };
+            if kind.is_dir() {
+                directories.push(entry.path());
+            } else if kind.is_file() {
+                total = total.saturating_add(entry.metadata().await.map_or(0, |m| m.len()));
+            }
+        }
+    }
+    total
 }

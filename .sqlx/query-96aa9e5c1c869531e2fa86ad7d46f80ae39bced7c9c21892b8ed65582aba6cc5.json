@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO wake_intents (conversation_id, message_id) VALUES ($1, $2) ON CONFLICT(conversation_id) DO UPDATE SET message_id = excluded.message_id, run_id = NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "96aa9e5c1c869531e2fa86ad7d46f80ae39bced7c9c21892b8ed65582aba6cc5"
+}

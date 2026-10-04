@@ -1741,6 +1741,7 @@ export interface components {
         };
         /** @description Whether an agent run is currently active for a conversation. */
         RunningStatus: {
+            resumable: boolean;
             running: boolean;
         };
         SendMessageRequest: {

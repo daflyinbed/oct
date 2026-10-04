@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE wake_intents SET run_id = $1 WHERE conversation_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "83d3d5dcf8a61cc1eeeb075f72f3f1c0db59ae58f472ae69b73be36f4de6bb79"
+}

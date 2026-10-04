@@ -248,6 +248,11 @@ pub fn tool_list_changed_channel() -> (ToolListNotifier, ToolListChanged) {
 /// guarantee a graceful server shutdown — call [`McpConnection::shutdown`].
 #[async_trait]
 pub trait McpConnection: Send + Sync {
+    /// Transport liveness; tool-level errors do not close a connection.
+    fn is_closed(&self) -> bool {
+        false
+    }
+
     /// List every tool the server exposes, following cursor pagination to
     /// exhaustion.
     async fn list_tools(&self) -> Result<Vec<McpToolInfo>>;
@@ -489,6 +494,15 @@ struct RmcpConnection {
 
 #[async_trait]
 impl McpConnection for RmcpConnection {
+    fn is_closed(&self) -> bool {
+        self.peer.is_transport_closed()
+            || self
+                .service
+                .try_lock()
+                .map(|s| s.as_ref().is_none_or(|s| s.is_closed()))
+                .unwrap_or(false)
+    }
+
     async fn list_tools(&self) -> Result<Vec<McpToolInfo>> {
         let mut tools = Vec::new();
         let mut cursor: Option<String> = None;
@@ -1586,6 +1600,26 @@ mod tests {
             .await
             .expect("changed() must resolve after the feed closes");
         assert!(!closed, "feed must report closed after shutdown");
+    }
+
+    #[tokio::test]
+    async fn transport_eof_is_detected_without_local_shutdown() {
+        let (client_side, server_side) = duplex(64 * 1024);
+        let server = tokio::spawn(run_scripted_server(server_side, Arc::default(), false));
+        let connection = connect_transport(client_side, Duration::from_secs(10))
+            .await
+            .unwrap();
+        assert!(!connection.is_closed());
+        server.abort();
+        let _ = server.await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !connection.is_closed() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("remote EOF must invalidate the cached connection");
+        connection.shutdown().await;
     }
 
     #[tokio::test]

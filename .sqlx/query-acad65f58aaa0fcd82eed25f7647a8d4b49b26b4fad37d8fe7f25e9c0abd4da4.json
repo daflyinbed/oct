@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM wake_intents WHERE conversation_id = $1 AND run_id IN (SELECT id FROM agent_runs WHERE status IN ('completed', 'cancelled'))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "acad65f58aaa0fcd82eed25f7647a8d4b49b26b4fad37d8fe7f25e9c0abd4da4"
+}

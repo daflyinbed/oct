@@ -61,6 +61,15 @@ pub struct NewRun {
 pub async fn create_run(pool: &SqlitePool, new: NewRun) -> Result<AgentRun> {
     let mut tx = pool.begin().await?;
     let run = create_run_in_tx(&mut tx, new).await?;
+    if run.kind == "root" {
+        sqlx::query!(
+            "UPDATE wake_intents SET run_id = $1 WHERE conversation_id = $2",
+            run.id,
+            run.conversation_id
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
     tx.commit().await?;
     Ok(run)
 }
@@ -155,6 +164,7 @@ pub async fn finish_run(
     // Bound first: the query! macro's generated argument borrows outlive the
     // statement, so the &str from as_str() must not be a temporary here.
     let status = status.as_str();
+    super::persist_critical(pool, || async {
     let result: sqlx::sqlite::SqliteQueryResult = sqlx::query!(
         "UPDATE agent_runs SET status = $1, finished_at = $2, final_message_id = $3, error = $4, input_tokens = $5, output_tokens = $6 WHERE id = $7 AND status IN ('running', 'lost') AND ($8 IS NULL OR execution_epoch = $8)",
         status,
@@ -170,6 +180,7 @@ pub async fn finish_run(
     .await?;
 
     Ok(result.rows_affected() > 0)
+    }).await
 }
 
 /// Persist a `lost` run as cancelled WITHOUT taking any epoch — used by the

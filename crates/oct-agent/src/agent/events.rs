@@ -18,7 +18,7 @@ use std::sync::Mutex;
 use futures_util::StreamExt;
 use futures_util::stream;
 use tokio::sync::mpsc;
-use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio_stream::wrappers::ReceiverStream;
 
 use super::AgentEvent;
 
@@ -30,19 +30,19 @@ const REPLAY_TOOL_OUTPUT_MAX_CHARS: usize = 32_768;
 
 /// The stream returned by [`EventHub::subscribe`]: the log snapshot at
 /// subscribe time, chained with this subscriber's live events.
-pub type SubscribeStream = stream::Chain<
-    stream::Iter<std::vec::IntoIter<AgentEvent>>,
-    UnboundedReceiverStream<AgentEvent>,
->;
+pub type SubscribeStream =
+    stream::Chain<stream::Iter<std::vec::IntoIter<AgentEvent>>, ReceiverStream<AgentEvent>>;
 
 struct HubInner {
     /// Replay log of this run; deltas are merged into the tail to bound its
     /// size (live subscribers still receive every event individually).
     log: Vec<AgentEvent>,
+    bytes_seen: usize,
+    overflowed: bool,
     /// Live subscribers. A sender whose receiver is gone is dropped on the
     /// next publish (mpsc send failure), so disconnected SSE streams get
     /// garbage-collected for free.
-    subs: Vec<mpsc::UnboundedSender<AgentEvent>>,
+    subs: Vec<mpsc::Sender<AgentEvent>>,
 }
 
 pub struct EventHub {
@@ -60,6 +60,8 @@ impl EventHub {
         Self {
             inner: Mutex::new(HubInner {
                 log: Vec::new(),
+                bytes_seen: 0,
+                overflowed: false,
                 subs: Vec::new(),
             }),
         }
@@ -74,10 +76,33 @@ impl EventHub {
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if inner.overflowed {
+            return;
+        }
+        inner.bytes_seen = inner
+            .bytes_seen
+            .saturating_add(serde_json::to_vec(&ev).map_or(0, |v| v.len()));
+        if inner.bytes_seen > 32 * 1024 * 1024 {
+            inner.overflowed = true;
+            let error = AgentEvent::Error(
+                "Run event budget exceeded; resume from persisted history".into(),
+            );
+            inner.log.push(error.clone());
+            inner.subs.retain(|tx| tx.try_send(error.clone()).is_ok());
+            return;
+        }
         Self::merge_into_log(&mut inner.log, &ev);
         // Fan out to live subscribers; a failed send means the receiver was
-        // dropped (disconnected client) — remove it.
-        inner.subs.retain(|tx| tx.send(ev.clone()).is_ok());
+        // disconnected or exceeded its bounded queue. Drop that subscriber;
+        // it can reconnect from the replay log without slowing the run.
+        inner.subs.retain(|tx| tx.try_send(ev.clone()).is_ok());
+    }
+
+    pub fn is_overflowed(&self) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .overflowed
     }
 
     /// Append `ev` to the replay log, merging consecutive same-type deltas so
@@ -157,14 +182,14 @@ impl EventHub {
     /// The returned stream does NOT keep the hub alive: when the run ends and
     /// the last hub reference drops, the stream reaches EOF.
     pub fn subscribe(&self) -> SubscribeStream {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(4096);
         let mut inner = self
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let snapshot = inner.log.clone();
         inner.subs.push(tx);
-        stream::iter(snapshot).chain(UnboundedReceiverStream::new(rx))
+        stream::iter(snapshot).chain(ReceiverStream::new(rx))
     }
 }
 
@@ -421,5 +446,32 @@ mod tests {
         ];
         assert_eq!(early, expected);
         assert_eq!(late, expected);
+    }
+    #[tokio::test]
+    async fn slow_subscriber_disconnects_and_can_replay_without_losing_history() {
+        let hub = EventHub::new();
+        let slow = hub.subscribe();
+        for _ in 0..4097 {
+            hub.publish(AgentEvent::TextDelta("a".into()));
+        }
+        let live: Vec<_> =
+            tokio::time::timeout(std::time::Duration::from_secs(1), slow.collect::<Vec<_>>())
+                .await
+                .expect("overflow must close the subscriber, even while the hub is alive");
+        assert_eq!(live.len(), 4096);
+        assert_eq!(
+            hub.snapshot(),
+            vec![AgentEvent::TextDelta("a".repeat(4097))]
+        );
+    }
+
+    #[test]
+    fn exceeding_event_budget_preserves_a_terminal_error_for_replay() {
+        let hub = EventHub::new();
+        hub.publish(AgentEvent::TextDelta("a".repeat(33 * 1024 * 1024)));
+        assert!(hub.is_overflowed());
+        assert!(matches!(hub.snapshot().as_slice(), [AgentEvent::Error(_)]));
+        hub.publish(AgentEvent::Finish);
+        assert!(matches!(hub.snapshot().as_slice(), [AgentEvent::Error(_)]));
     }
 }

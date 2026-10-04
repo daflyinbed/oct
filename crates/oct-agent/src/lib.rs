@@ -9,3 +9,5 @@ pub mod runtime;
 pub mod seed;
 pub mod subagent;
 pub mod tools;
+
+pub mod error;

@@ -19,8 +19,8 @@
 //!   `_orphan.jsonl` when no conversation tag is present. Emission is
 //!   gated by a runtime toggle ([`WireLogControl`]) so a settings switch
 //!   can flip it live; `OCT_LLM_WIRE_LOG=off` hard-disables it.
-//! * **Fidelity**: no total size cap, no rotation; the only valve is a
-//!   per-field byte cap (`OCT_LLM_WIRE_FIELD_MAX`, default 1 MiB, `0`
+//! * **Retention**: 16 MiB per file with one rotated backup; a 256 MiB
+//!   directory budget evicts oldest diagnostic records. A per-field byte cap (`OCT_LLM_WIRE_FIELD_MAX`, default 1 MiB, `0`
 //!   disables) because serializing/escaping an embedded base64 payload
 //!   happens on the emitting task. Auth headers are never logged.
 //!
@@ -30,6 +30,8 @@
 //! response), `llm_response` (non-streaming body), `llm_stream_end`
 //! (`outcome` eof|error|dropped), `llm_error` (staged failure details).
 //! Consumers must tolerate unknown fields and unknown kinds.
+
+mod retention;
 
 use std::borrow::Cow;
 use std::cell::Cell;
@@ -74,7 +76,10 @@ tokio::task_local! {
 }
 
 /// Run `fut` with these tags visible to wire logging (see [`Tags`]).
-pub fn with_tags<F: std::future::Future>(tags: Tags, fut: F) -> impl std::future::Future<Output = F::Output> {
+pub fn with_tags<F: std::future::Future>(
+    tags: Tags,
+    fut: F,
+) -> impl std::future::Future<Output = F::Output> {
     TAGS.scope(tags, fut)
 }
 
@@ -205,8 +210,13 @@ pub(crate) fn log_stream_end(ctx: &WireCtx, outcome: &'static str, events: u64) 
     if !enabled() {
         return;
     }
-    wire_event!(ctx, kind = "llm_stream_end",
-        outcome = outcome, events = events, duration_ms = ctx.elapsed_ms());
+    wire_event!(
+        ctx,
+        kind = "llm_stream_end",
+        outcome = outcome,
+        events = events,
+        duration_ms = ctx.elapsed_ms()
+    );
 }
 
 pub(crate) fn log_error(
@@ -413,7 +423,8 @@ impl<S: Subscriber> tracing_subscriber::Layer<S> for WireLogLayer {
 }
 
 fn wire_sink_enabled() -> bool {
-    SINK.get().is_some_and(|sink| sink.enabled.load(Ordering::Relaxed))
+    SINK.get()
+        .is_some_and(|sink| sink.enabled.load(Ordering::Relaxed))
 }
 
 // `body`/`raw` arrive via record_str as pre-serialized strings; serde_json
@@ -451,10 +462,7 @@ impl Visit for WireVisitor {
     }
 
     fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
-        self.push(
-            field,
-            serde_json::Value::String(format!("{value:?}")),
-        );
+        self.push(field, serde_json::Value::String(format!("{value:?}")));
     }
 }
 
@@ -552,11 +560,39 @@ fn spawn_writer(sink: Arc<Sink>, rx: Receiver<(Option<String>, String)>) {
                     eprintln!("llm wire log: {label}: {err}");
                 }
             };
+            let mut total_bytes = retention::size(&sink.dir);
             while let Ok((conversation_id, line)) = rx.recv() {
+                let next_bytes = line.len() as u64 + 1;
+                if next_bytes > retention::FILE {
+                    sink.dropped.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+                if retention::over_budget(total_bytes, next_bytes) {
+                    files.clear(); // never keep writing through evicted descriptors
+                    retention::prune(&sink.dir);
+                    total_bytes = retention::size(&sink.dir);
+                    if retention::over_budget(total_bytes, next_bytes) {
+                        sink.dropped.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+                }
                 let name = conversation_id
                     .as_deref()
                     .map(conversation_file_name)
                     .unwrap_or_else(|| "_orphan".to_string());
+                let path = sink.dir.join(format!("{name}.jsonl"));
+                if std::fs::metadata(&path)
+                    .is_ok_and(|m| m.len().saturating_add(next_bytes) > retention::FILE)
+                {
+                    files.remove(&name);
+                    let previous = sink.dir.join(format!("{name}.jsonl.1"));
+                    let _ = std::fs::remove_file(&previous);
+                    let _ = std::fs::rename(&path, previous);
+                    total_bytes = retention::size(&sink.dir);
+                }
+                if files.len() >= 64 && !files.contains_key(&name) {
+                    files.clear();
+                }
                 let file = match files.get_mut(&name) {
                     Some(file) => file,
                     None => {
@@ -576,6 +612,7 @@ fn spawn_writer(sink: Arc<Sink>, rx: Receiver<(Option<String>, String)>) {
                         files.get_mut(&name).expect("just inserted")
                     }
                 };
+                total_bytes = total_bytes.saturating_add(next_bytes);
                 if let Err(err) = writeln!(file, "{line}") {
                     sink.dropped.fetch_add(1, Ordering::Relaxed);
                     report_once(&mut reported, &format!("cannot write {name}.jsonl"), &err);
@@ -584,10 +621,7 @@ fn spawn_writer(sink: Arc<Sink>, rx: Receiver<(Option<String>, String)>) {
             let dropped = sink.dropped.load(Ordering::Relaxed);
             if dropped > 0 {
                 if let Ok(mut meta) = open_append(&sink.dir.join("_meta.jsonl")) {
-                    let _ = writeln!(
-                        meta,
-                        "{{\"kind\":\"llm_wire_drop\",\"dropped\":{dropped}}}"
-                    );
+                    let _ = writeln!(meta, "{{\"kind\":\"llm_wire_drop\",\"dropped\":{dropped}}}");
                 }
             }
         })

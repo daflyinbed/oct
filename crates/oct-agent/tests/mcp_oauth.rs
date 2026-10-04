@@ -360,6 +360,64 @@ async fn oauth_expired_token_refreshes_before_connect() {
     assert_eq!(row.1.as_deref(), Some("oauth-refresh-2"));
 }
 
+/// Server deletion retires an in-flight refresh writer.
+#[tokio::test]
+async fn oauth_server_deleted_during_refresh_does_not_block_reconciliation() {
+    remove_credentials_during_refresh(true).await;
+}
+
+#[tokio::test]
+async fn oauth_logout_during_refresh_does_not_restore_credentials() {
+    remove_credentials_during_refresh(false).await;
+}
+
+async fn remove_credentials_during_refresh(delete_server: bool) {
+    let app = TestApp::new().await;
+    let as_mock = OAuthAsMock::spawn().await;
+    let mcp_mock = support::mcp_http::McpHttpMock::spawn_with_oauth(
+        "Bearer oauth-access-1",
+        &as_mock.base_url,
+    )
+    .await;
+    let project_id = app.create_project().await;
+    let (id, _, response) = login(&app, &as_mock, &mcp_mock.url, "oauth-access-1").await;
+    assert_eq!(response.status(), 200);
+    expire_stored_token(&app.pool, &id).await;
+    app.mcp.invalidate(&id).await;
+
+    let (entered, release) = as_mock.gate_next_refresh();
+    let manager = app.mcp.clone();
+    let pool = app.pool.clone();
+    let reconciliation = tokio::spawn(async move {
+        manager.ensure_connections(&pool, Some(&project_id)).await;
+    });
+    tokio::time::timeout(Duration::from_secs(10), entered.cancelled())
+        .await
+        .expect("refresh reached the authorization server");
+    let path = if delete_server {
+        format!("/api/mcp/servers/{id}")
+    } else {
+        format!("/api/mcp/servers/{id}/oauth")
+    };
+    assert_eq!(app.http_delete(&path).await.status(), 204);
+    release.cancel();
+
+    tokio::time::timeout(Duration::from_secs(10), reconciliation)
+        .await
+        .expect("removed credentials must stop persistence retries")
+        .unwrap();
+    assert!(
+        oct_agent::db::mcp_tokens::get_mcp_server_token(&app.pool, &id)
+            .await
+            .unwrap()
+            .is_none(),
+        "the late refresh must not restore removed credentials"
+    );
+    if !delete_server {
+        assert!(app.mcp.status_of(&id).is_none());
+    }
+}
+
 /// A failing refresh keeps the stored row (transient AS trouble) and the
 /// connect proceeds with the old token; when that token is no longer
 /// accepted either, the server lands in `failed` with the re-login hint.

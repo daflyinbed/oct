@@ -118,7 +118,7 @@ pub async fn delete_project(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
-    let deleted = db::delete_project(&state.pool, &id).await?;
+    let deleted = state.runs.delete_project(&id).await?;
     if deleted {
         Ok(StatusCode::NO_CONTENT)
     } else {

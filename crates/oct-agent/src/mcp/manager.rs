@@ -40,8 +40,7 @@ use tracing::{info, warn};
 
 use oct_mcp::ToolNameMap;
 use oct_mcp::{
-    McpConnection, McpPromptInfo, McpPromptResult, McpResourceContent, McpResourceInfo,
-    McpToolInfo,
+    McpConnection, McpPromptInfo, McpPromptResult, McpResourceContent, McpResourceInfo, McpToolInfo,
 };
 
 use crate::db;
@@ -140,10 +139,7 @@ pub(crate) struct ManagedServer {
 /// The connect pipeline's signature (owned args so the returned future is
 /// `'static` and boxable).
 pub(crate) type ConnectOutcome = (ServerStatus, Option<Arc<dyn McpConnection>>, ServerCatalog);
-type Connector = dyn Fn(
-        sqlx::SqlitePool,
-        McpServer,
-    ) -> futures_util::future::BoxFuture<'static, ConnectOutcome>
+type Connector = dyn Fn(sqlx::SqlitePool, McpServer) -> futures_util::future::BoxFuture<'static, ConnectOutcome>
     + Send
     + Sync;
 
@@ -323,6 +319,11 @@ impl McpManager {
             None => false,
             Some(seen) => {
                 seen != fingerprint_of(row)
+                    || entry
+                        .value()
+                        .connection
+                        .as_ref()
+                        .is_some_and(|c| c.is_closed())
                     || matches!(entry.value().status, ServerStatus::Failed { .. })
             }
         }
@@ -682,12 +683,12 @@ impl McpManager {
     pub fn set_connector_for_test(
         &self,
         connector: impl Fn(
-                sqlx::SqlitePool,
-                McpServer,
-            ) -> futures_util::future::BoxFuture<'static, ConnectOutcome>
-            + Send
-            + Sync
-            + 'static,
+            sqlx::SqlitePool,
+            McpServer,
+        ) -> futures_util::future::BoxFuture<'static, ConnectOutcome>
+        + Send
+        + Sync
+        + 'static,
     ) {
         *self
             .connector
@@ -779,7 +780,6 @@ pub(crate) fn tool_timeout_of(server: &McpServer) -> Duration {
         .unwrap_or(DEFAULT_TOOL_TIMEOUT)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -795,10 +795,10 @@ mod tests {
     use crate::mcp::tool::MAX_DESCRIPTION_CHARS;
     use crate::mcp::tool::MAX_IMAGE_BASE64_CHARS;
     use crate::mcp::tool::MAX_RESULT_IMAGES;
-    use crate::mcp::tool::NO_CONTENT;
-    use crate::mcp::tool::tool_description;
-    use crate::mcp::tool::NO_DESCRIPTION;
     use crate::mcp::tool::McpTool;
+    use crate::mcp::tool::NO_CONTENT;
+    use crate::mcp::tool::NO_DESCRIPTION;
+    use crate::mcp::tool::tool_description;
     use crate::tools::truncate::MAX_TOOL_OUTPUT_BYTES;
     use crate::tools::{ToolContext, ToolImage, ToolOutput};
 
@@ -1760,7 +1760,9 @@ mod tests {
         let slow_manager = manager.clone();
         let slow_pool = pool.clone();
         let blocked = tokio::spawn(async move {
-            slow_manager.ensure_connections(&slow_pool, Some(&p1.id)).await
+            slow_manager
+                .ensure_connections(&slow_pool, Some(&p1.id))
+                .await
         });
         // Let p1's ensure enter the slow handshake (and connect `fast`).
         tokio::time::sleep(Duration::from_millis(100)).await;
