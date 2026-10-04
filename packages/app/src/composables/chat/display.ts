@@ -1,6 +1,7 @@
 import type { components } from "@/api/schema";
 
 export type ApiMessage = components["schemas"]["MessageDto"];
+export type ForkCut = components["schemas"]["ForkCut"];
 export type ApiMessagePart = components["schemas"]["MessagePart"];
 export type ApiMessageDetails = components["schemas"]["MessageDetails"];
 export type AgentEvent = components["schemas"]["AgentEvent"];
@@ -88,6 +89,8 @@ export interface ToolCallPart {
    * 来自 DTO details 的已知 kind（与 microcompact_cleared 同一判别位）。
    */
   denied: boolean;
+  /** Fork history carries results, never ownership of the source task. */
+  inherited?: boolean;
 }
 
 export interface ReasoningPart {
@@ -153,6 +156,7 @@ export interface DisplayMessage {
   role: "user" | "assistant" | "compaction" | "notification";
   parts: readonly DisplayPart[];
   isStreaming?: boolean;
+  forkCut?: ForkCut | null;
 }
 
 /** Internal mutable shape used while building/merging messages. */
@@ -161,6 +165,7 @@ export interface BuildableMessage {
   role: "user" | "assistant" | "compaction" | "notification";
   parts: DisplayPart[];
   isStreaming?: boolean;
+  forkCut?: ForkCut | null;
 }
 
 /** Tail cap per tool call for live output kept in the DOM. */
@@ -476,7 +481,12 @@ export function storedToDisplayList(stored: ApiMessage[]): DisplayMessage[] {
         lastAssistant = null;
         continue;
       }
-      const msg: BuildableMessage = { id: m.id, role: "user", parts: [] };
+      const msg: BuildableMessage = {
+        id: m.id,
+        role: "user",
+        parts: [],
+        forkCut: m.fork_cut,
+      };
       for (const part of m.parts) {
         if (part.type === "text") pushText(msg, part.text);
       }
@@ -486,7 +496,12 @@ export function storedToDisplayList(stored: ApiMessage[]): DisplayMessage[] {
     }
 
     if (m.role === "assistant") {
-      const msg: BuildableMessage = { id: m.id, role: "assistant", parts: [] };
+      const msg: BuildableMessage = {
+        id: m.id,
+        role: "assistant",
+        parts: [],
+        forkCut: m.fork_cut,
+      };
       // Thinking duration is UI metadata (DTO details), not a message part.
       const storedDurationMs = m.details?.reasoning_duration_ms ?? null;
       for (const part of m.parts) {
@@ -502,6 +517,7 @@ export function storedToDisplayList(stored: ApiMessage[]): DisplayMessage[] {
           });
         } else if (part.type === "tool_call") {
           const card = newToolCard(part.id, part.name);
+          card.inherited = m.inherited ?? false;
           card.arguments = part.arguments ?? "";
           // Stored calls have finished executing; the matching tool message
           // (if any) fills in content/details below.
@@ -530,11 +546,15 @@ export function storedToDisplayList(stored: ApiMessage[]): DisplayMessage[] {
             out.push(lastAssistant);
           }
           const orphan = newToolCard(part.call_id, "unknown");
+          orphan.inherited = m.inherited ?? false;
           orphan.status = "done";
           lastAssistant.parts.push(orphan);
           fillCard(orphan, part, m.details, m.id);
         }
       }
+      // A server-authorized tool cut includes the whole closed tool batch.
+      // Keep its persisted result id even though results render on the assistant.
+      if (m.fork_cut && lastAssistant) lastAssistant.forkCut = m.fork_cut;
     }
   }
 

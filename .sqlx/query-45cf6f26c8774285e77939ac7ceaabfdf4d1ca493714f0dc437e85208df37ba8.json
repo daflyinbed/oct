@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE conversations SET origin_kind = 'revert_backup', permission_mode = $1, context_revision = $2, backup_of_conversation_id = $3, backup_at_revision = $2 WHERE id = $4",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "45cf6f26c8774285e77939ac7ceaabfdf4d1ca493714f0dc437e85208df37ba8"
+}

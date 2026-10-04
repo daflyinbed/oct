@@ -1,5 +1,6 @@
 pub mod background;
 pub mod conversations;
+pub mod history;
 pub mod mcp;
 pub mod mcp_tokens;
 pub mod messages;

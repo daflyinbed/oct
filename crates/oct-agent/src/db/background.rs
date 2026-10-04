@@ -193,6 +193,36 @@ pub async fn get_task(pool: &SqlitePool, task_id: &str) -> Result<Option<Backgro
     Ok(row)
 }
 
+/// Queries exposed to callers honor the active history after a revert. The
+/// settlement/drainer paths keep using raw rows so diagnostics remain intact.
+pub async fn list_visible_tasks(pool: &SqlitePool, id: &str) -> Result<Vec<BackgroundTask>> {
+    let mut tasks = list_tasks_for_conversation(pool, id).await?;
+    if super::conversations::get_conversation(pool, id)
+        .await?
+        .is_some_and(|c| c.history_epoch > 0)
+    {
+        let calls = super::history::visible_call_ids(pool, id).await?;
+        tasks.retain(|task| calls.contains(&task.parent_call_id));
+    }
+    Ok(tasks)
+}
+
+pub async fn get_visible_task(pool: &SqlitePool, id: &str) -> Result<Option<BackgroundTask>> {
+    let Some(task) = get_task(pool, id).await? else {
+        return Ok(None);
+    };
+    if super::conversations::get_conversation(pool, &task.conversation_id)
+        .await?
+        .is_some_and(|c| c.history_epoch > 0)
+        && !super::history::visible_call_ids(pool, &task.conversation_id)
+            .await?
+            .contains(&task.parent_call_id)
+    {
+        return Ok(None);
+    }
+    Ok(Some(task))
+}
+
 /// The settled tasks of a conversation whose notification has not been
 /// delivered yet (`notified = 0`), oldest first — the wake drainer's and the
 /// send/resume catch-up's work list. Includes `lost` rows (crash leftovers

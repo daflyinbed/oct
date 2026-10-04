@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT EXISTS(SELECT 1 FROM background_tasks WHERE conversation_id = $1 AND (status = 'running' OR notified = 0)) OR EXISTS(SELECT 1 FROM wake_intents w LEFT JOIN agent_runs r ON r.id = w.run_id WHERE w.conversation_id = $1 AND (r.status IS NULL OR r.status NOT IN ('completed', 'cancelled'))) AS \"pending!: bool\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "pending!: bool",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "2433b69aabe07a52421679d5691e8287fe630dd973877e692d6c26cdca66e9e7"
+}

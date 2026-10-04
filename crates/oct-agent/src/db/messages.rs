@@ -450,12 +450,20 @@ pub async fn apply_cow_swaps(
 // ======================================================================
 
 pub async fn list_messages(pool: &SqlitePool, conversation_id: &str) -> Result<Vec<StoredMessage>> {
+    let mut connection = pool.acquire().await?;
+    list_messages_in_tx(&mut connection, conversation_id).await
+}
+
+pub async fn list_messages_in_tx(
+    connection: &mut SqliteConnection,
+    conversation_id: &str,
+) -> Result<Vec<StoredMessage>> {
     let rows = sqlx::query_as!(
         StoredMessage,
         "SELECT m.id, cm.conversation_id, m.role, m.parts_json, m.details_json, cm.ordering, m.provider_id, m.model_id, m.input_tokens, m.output_tokens, m.reasoning_tokens, m.supersedes_message_id, cm.appended_at_revision, cm.swapped_at_revision, m.created_at FROM conversation_messages cm JOIN messages m ON m.id = cm.message_id WHERE cm.conversation_id = $1 ORDER BY cm.ordering ASC",
         conversation_id,
     )
-    .fetch_all(pool)
+    .fetch_all(connection)
     .await?;
 
     Ok(rows)
@@ -785,4 +793,4 @@ pub async fn update_message_usage(
 
 mod view;
 use view::is_compaction_marker;
-pub use view::{load_llm_view, load_messages_for_llm};
+pub use view::{load_llm_view, load_messages_for_llm, view_from_snapshot};

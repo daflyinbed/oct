@@ -13,6 +13,7 @@ vi.mock("@/api/client", () => ({
 const GET = vi.mocked(client.GET);
 const POST = vi.mocked(client.POST);
 const PATCH = vi.mocked(client.PATCH);
+const DELETE = vi.mocked(client.DELETE);
 
 const {
   projects,
@@ -20,6 +21,7 @@ const {
   fetchConversations,
   createProject,
   updateProject,
+  deleteConversation,
   updateConversationTitle,
   renameConversation,
   setConversationPermissionMode,
@@ -68,6 +70,7 @@ beforeEach(() => {
   GET.mockReset();
   POST.mockReset();
   PATCH.mockReset();
+  DELETE.mockReset();
 });
 
 describe("createProject / updateProject（附加目录）", () => {
@@ -146,6 +149,54 @@ describe("createProject / updateProject（附加目录）", () => {
     expect(ok).toBe(false);
     expect(projects.value.find((p) => p.id === "p-fail")?.name).toBe("keep");
     expect(GET).not.toHaveBeenCalled();
+  });
+});
+
+describe("deleteConversation（分支来源）", () => {
+  const source = conversation("source", "Source");
+  const fork = {
+    ...conversation("fork", "Fork"),
+    forked_from_conversation_id: "source",
+    forked_at_message_id: "cut-message",
+    forked_at_revision: 4,
+  };
+
+  it("删除来源后清除所有直属分支的链接，保留分支标识及其他来源", async () => {
+    const sibling = { ...fork, id: "sibling" };
+    const nested = {
+      ...fork,
+      id: "nested",
+      forked_from_conversation_id: "fork",
+    };
+    stubList([source, fork, sibling, nested]);
+    await fetchConversations("p1");
+    DELETE.mockResolvedValue({ error: undefined } as never);
+    const before = conversations.value;
+
+    await deleteConversation("p1", "source");
+
+    expect(DELETE).toHaveBeenCalledWith(
+      "/api/projects/{projectId}/conversations/{id}",
+      { params: { path: { projectId: "p1", id: "source" } } },
+    );
+    expect(conversations.value).not.toBe(before);
+    expect(conversations.value.get("p1")).toEqual([
+      { ...fork, forked_from_conversation_id: null },
+      { ...sibling, forked_from_conversation_id: null },
+      nested,
+    ]);
+  });
+
+  it("删除失败时保留来源及分支链接", async () => {
+    stubList([source, fork]);
+    await fetchConversations("p1");
+    DELETE.mockResolvedValue({ error: {} } as never);
+    const before = conversations.value;
+
+    await deleteConversation("p1", "source");
+
+    expect(conversations.value).toBe(before);
+    expect(conversations.value.get("p1")).toEqual([source, fork]);
   });
 });
 
@@ -276,4 +327,36 @@ describe("权限模式", () => {
     expect(permissionModeBadge("accept_edits")?.label).toBe("自动编辑");
     expect(permissionModeBadge("bypass")?.label).toBe("全放行");
   });
+});
+
+it("回退响应插入备份后，较早开始的会话列表请求不能覆盖新元数据", async () => {
+  const store = useProjects();
+  let resolveOld!: (value: unknown) => void;
+  GET.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        resolveOld = resolve;
+      }) as never,
+  );
+  const request = store.fetchConversations("p-revert-race");
+  const original = {
+    id: "source-race",
+    project_id: "p-revert-race",
+    title: "current",
+    history_epoch: 1,
+  };
+  const backup = {
+    id: "backup-race",
+    project_id: "p-revert-race",
+    title: "backup",
+    origin_kind: "revert_backup",
+  };
+  store.upsertConversation(original as never);
+  store.upsertConversation(backup as never);
+  resolveOld({ data: [{ ...original, history_epoch: 0 }] });
+  await request;
+  expect(store.conversations.value.get("p-revert-race")).toEqual([
+    backup,
+    original,
+  ]);
 });

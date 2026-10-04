@@ -11,6 +11,8 @@ pub use crate::error::{AppError, AppResult as ApiResult};
 /// "already_running", "nothing_to_resume", "managed_conversation",
 /// "pending_recovery", "bad_gateway", "internal") — clients branch on it
 /// and show `error` verbatim.
+/// Forks additionally use `invalid_cut`, `stale_revision` and
+/// `operation_conflict` to distinguish invalid boundaries from stale views.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ErrorBody {
     pub code: String,
@@ -23,6 +25,17 @@ impl IntoResponse for AppError {
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, "not_found", msg.clone()),
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "bad_request", msg.clone()),
             AppError::Conflict(msg) => (StatusCode::CONFLICT, "conflict", msg.clone()),
+            AppError::InvalidCut(msg) => (StatusCode::BAD_REQUEST, "invalid_cut", msg.clone()),
+            AppError::StaleRevision(msg) => (StatusCode::CONFLICT, "stale_revision", msg.clone()),
+            AppError::OperationConflict(msg) => {
+                (StatusCode::CONFLICT, "operation_conflict", msg.clone())
+            }
+            AppError::ReadOnlyConversation(msg) => {
+                (StatusCode::CONFLICT, "read_only_conversation", msg.clone())
+            }
+            AppError::BackgroundPending(msg) => {
+                (StatusCode::CONFLICT, "background_pending", msg.clone())
+            }
             AppError::SessionBusy(msg) => (StatusCode::CONFLICT, "already_running", msg.clone()),
             AppError::NothingToResume(msg) => {
                 (StatusCode::CONFLICT, "nothing_to_resume", msg.clone())

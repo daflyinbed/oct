@@ -62,7 +62,7 @@ impl AgentTool for TaskStopTool {
 
         // Scope check BEFORE any cancel: a task id from another conversation
         // must not be stopped from here.
-        let Some(row) = task_db::get_task(&self.manager.pool(), &args.task_id)
+        let Some(row) = task_db::get_visible_task(&self.manager.pool(), &args.task_id)
             .await
             .map_err(anyhow::Error::from)?
             .filter(|t| t.conversation_id == self.conversation_id)
@@ -112,7 +112,7 @@ async fn unknown_task(
     conversation_id: &str,
     task_id: &str,
 ) -> ToolOutput {
-    let known = task_db::list_tasks_for_conversation(&manager.pool(), conversation_id)
+    let known = task_db::list_visible_tasks(&manager.pool(), conversation_id)
         .await
         .unwrap_or_default();
     let ids: Vec<String> = known.iter().map(|t| t.id.clone()).collect();

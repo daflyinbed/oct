@@ -66,6 +66,8 @@ export async function sendFailureText(res: Response): Promise<string> {
       code?: unknown;
       error?: unknown;
     };
+    if (body?.code === "stale_revision")
+      return "会话历史已变化，请刷新后重新发送。";
     if (body && typeof body === "object" && body.code === "pending_recovery") {
       const message =
         typeof body.error === "string" && body.error
@@ -122,6 +124,7 @@ function clonePart(part: DisplayPart): DisplayPart {
 }
 
 const FLUSH_INTERVAL_MS = 50;
+const CONTEXT_REVISION_PATTERN = /^\d+$/;
 
 /**
  * 创建一个独立的聊天会话实例：消息/流式/usage 状态都在实例闭包内，
@@ -133,6 +136,7 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
 
   const messages = ref<DisplayMessage[]>([]);
   const sending = ref(false);
+  let historyChanging = false;
   const serverResumable = ref(false);
 
   /**
@@ -153,6 +157,10 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
 
   /** 实例本地的上下文占用快照（usage 事件 + 历史播种）。 */
   const usageInputTokens = ref<number | null>(null);
+  const contextRevision = ref<number | null>(null);
+  // Failed sends invalidate history actions while keeping their temporary
+  // output visible. Retain the snapshot revision separately to guard retries.
+  let sendRevision: number | null = null;
   const usageWindowTokens = ref<number | null>(null);
   const usageCompacting = ref(false);
 
@@ -669,15 +677,31 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
   // -------------------------------------------------------------------------
 
   /** 实际拉取并重建 messages（绕过 fetchMessages 的 200ms 去重守卫）。 */
-  const loadMessages = async (conversationId: string) => {
+  const loadMessages = async (
+    conversationId: string,
+    requireRevision = false,
+  ) => {
+    if (historyChanging) return;
     const generation = ++historyGeneration;
-    if (activeConversationId !== conversationId) serverResumable.value = false;
+    contextRevision.value = null;
+    if (activeConversationId !== conversationId) {
+      serverResumable.value = false;
+      sendRevision = null;
+    }
     activeConversationId = conversationId;
     lastFetch = { id: conversationId, at: Date.now() };
-    const { data, error } = await client.GET(
+    const { data, error, response } = await client.GET(
       "/api/conversations/{id}/messages",
       { params: { path: { id: conversationId } } },
     );
+    const revisionHeader = response?.headers.get("X-Context-Revision");
+    const revision =
+      revisionHeader != null && CONTEXT_REVISION_PATTERN.test(revisionHeader)
+        ? Number(revisionHeader)
+        : null;
+    // Older servers do not offer versioned fork snapshots. Preserve live
+    // output during the optional terminal refresh in that case.
+    if (requireRevision && revision == null) return;
     if (
       !error &&
       data &&
@@ -685,9 +709,19 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
       activeConversationId === conversationId
     ) {
       messages.value = storedToDisplayList(data);
+      contextRevision.value = revision;
+      sendRevision = revision;
       activeConversationId = conversationId;
-      usageInputTokens.value = lastAssistantInputTokens(data);
-      if (trackContextUsage) seedContextUsage(data);
+      const tokensHeader = response?.headers.get("X-Context-Tokens");
+      const tokens =
+        tokensHeader != null && CONTEXT_REVISION_PATTERN.test(tokensHeader)
+          ? Number(tokensHeader)
+          : null;
+      usageInputTokens.value = tokens ?? lastAssistantInputTokens(data);
+      if (trackContextUsage) {
+        seedContextUsage(data);
+        if (tokens != null) recordUsageEvent({ input_tokens: tokens });
+      }
     }
   };
 
@@ -708,13 +742,16 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
     content: string,
     providerSpec?: string | null,
   ) => {
-    if (!content.trim() || sending.value) return;
+    if (!content.trim() || sending.value || historyChanging) return;
+    const expectedRevision = contextRevision.value ?? sendRevision;
     sending.value = true;
     let accepted = false;
     let reconnect = false;
+    let failed = false;
     activeConversationId = conversationId;
     serverResumable.value = false;
-    ++historyGeneration;
+    contextRevision.value = null;
+    const generation = ++historyGeneration;
 
     // 后端在 send 时会顺带修复悬空调用并落占位行：发送前若存在中断卡片，
     // 结束后需刷新一次历史让占位结果回填，否则 interrupted/resumable
@@ -744,7 +781,12 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
     // 网络层异常仍走通用 fallback。
     let failureText: string | null = null;
     try {
-      const body: { content: string; provider_spec?: string } = { content };
+      const body: {
+        content: string;
+        provider_spec?: string;
+        expected_revision?: number;
+      } = { content };
+      if (expectedRevision != null) body.expected_revision = expectedRevision;
       if (providerSpec) body.provider_spec = providerSpec;
       const res = await fetch(`/api/conversations/${conversationId}/messages`, {
         method: "POST",
@@ -758,8 +800,18 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
       }
 
       accepted = true;
-      reconnect = !(await consumeSseStream(res, conversationId));
+      if (
+        generation === historyGeneration &&
+        activeConversationId === conversationId
+      ) {
+        sendRevision = null;
+      }
+      reconnect = !(await consumeSseStream(res, conversationId, (event) => {
+        if (event.type === "error") failed = true;
+        applyStreamEvent(event);
+      }));
     } catch {
+      failed = true;
       reconnect = accepted;
       if (streamState) {
         streamState.parts.push({
@@ -777,9 +829,11 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
         streamState = null;
       }
       // 刷新失败不影响流式终态（下次 fetch 自会收敛），静默即可。
-      if (hadInterruptedCards && activeConversationId === conversationId) {
+      // Rejected prompts and stream errors are not persisted; keep their live
+      // output visible instead of replacing it with the success-path snapshot.
+      if (!failed && activeConversationId === conversationId) {
         try {
-          await loadMessages(conversationId);
+          await loadMessages(conversationId, !hadInterruptedCards);
         } catch {
           // ignore: cosmetic refresh
         }
@@ -795,7 +849,7 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
    * 直接以现有历史续跑 agent loop。发送中（sending）时忽略。
    */
   const resumeTurn = async (conversationId: string) => {
-    if (sending.value) return;
+    if (sending.value || historyChanging) return;
     sending.value = true;
     activeConversationId = conversationId;
     let accepted = false;
@@ -870,7 +924,7 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
    * 覆盖全部事件。终态/EOF/失败统一走 finally 的静默刷新收敛。
    */
   async function attachRun(conversationId: string, retries = 2): Promise<void> {
-    if (sending.value) return;
+    if (sending.value || historyChanging) return;
     sending.value = true;
     let accepted = false;
     let reconnect = false;
@@ -983,7 +1037,7 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
     agentId: string,
     retries = 2,
   ): Promise<void> => {
-    if (sending.value) return;
+    if (sending.value || historyChanging) return;
     sending.value = true;
     disposed = false;
     activeConversationId = agentId;
@@ -1126,7 +1180,7 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
    * 条未出现」为可见信号。
    */
   const compactConversation = async (conversationId: string) => {
-    if (sending.value) return;
+    if (sending.value || historyChanging) return;
     sending.value = true;
     usageCompacting.value = true;
     if (trackContextUsage) setCompacting(true);
@@ -1157,10 +1211,42 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
     messages.value = [];
     activeConversationId = null;
     usageInputTokens.value = null;
+    contextRevision.value = null;
+    sendRevision = null;
     usageWindowTokens.value = null;
     usageCompacting.value = false;
     pendingApprovals.value = new Map();
     if (trackContextUsage) clearContextUsage();
+  };
+
+  // Revert can begin only with no stream owner. Invalidate older GETs and
+  // prevent background wake probes or route refreshes from attaching while
+  // the history transaction is in flight. A failed operation keeps the view.
+  const beginHistoryChange = () => {
+    if (sending.value || historyChanging) return false;
+    historyChanging = true;
+    ++historyGeneration;
+    return true;
+  };
+  const endHistoryChange = async (conversationId: string, reload: boolean) => {
+    historyChanging = false;
+    if (!reload) return;
+    clearMessages();
+    lastFetch = null;
+    await loadMessages(conversationId);
+    const generation = historyGeneration;
+    const { data } = await client.GET("/api/conversations/{id}/run", {
+      params: { path: { id: conversationId } },
+    });
+    if (
+      generation === historyGeneration &&
+      activeConversationId === conversationId
+    ) {
+      serverResumable.value = data?.resumable ?? false;
+      // Navigation may have skipped attachment while the change was pending.
+      // Release the history action while the normal attachment consumes SSE.
+      if (data?.running) void attachRun(conversationId);
+    }
   };
 
   /** 存在被中断的轮次可恢复：悬空工具卡片，或最后一条消息是 user
@@ -1181,6 +1267,7 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
   return {
     messages: readonly(messages),
     sending: readonly(sending),
+    contextRevision: readonly(contextRevision),
     resumable,
     usage: {
       inputTokens: readonly(usageInputTokens),
@@ -1190,6 +1277,7 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
     /** 会话 id → 待决审批列表（ApprovalBanner 的数据源，按当前会话取桶）。 */
     pendingApprovals: readonly(pendingApprovals),
     fetchMessages,
+    refreshMessages: loadMessages,
     sendMessage,
     resumeTurn,
     attachRun,
@@ -1199,6 +1287,8 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
     decideApproval,
     refreshApprovals,
     clearMessages,
+    beginHistoryChange,
+    endHistoryChange,
     dispose,
   };
 }

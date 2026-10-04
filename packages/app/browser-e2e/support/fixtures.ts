@@ -40,6 +40,8 @@ export function conversationFixture(
     project_id: projectId,
     title,
     title_source: "default",
+    origin_kind: "normal",
+    history_epoch: 0,
     created_at: T0,
     updated_at: T0,
   };

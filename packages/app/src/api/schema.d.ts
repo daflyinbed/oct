@@ -165,6 +165,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/conversations/{id}/fork": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["fork_conversation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/conversations/{id}/messages": {
         parameters: {
             query?: never;
@@ -214,6 +230,22 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["resume_turn"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/conversations/{id}/revert": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["revert_conversation"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1129,8 +1161,17 @@ export interface components {
         Conversation: {
             /** @description For `subagent` rows: the worker role (`worker` in v1). */
             agent_type?: string | null;
+            /** Format: int64 */
+            backup_at_revision?: number | null;
+            backup_of_conversation_id?: string | null;
             /** Format: date-time */
             created_at: string;
+            forked_at_message_id?: string | null;
+            /** Format: int64 */
+            forked_at_revision?: number | null;
+            forked_from_conversation_id?: string | null;
+            /** Format: int64 */
+            history_epoch: number;
             id: string;
             /**
              * @description `chat` (a normal sidebar conversation) or `subagent` (a managed
@@ -1138,6 +1179,7 @@ export interface components {
              *     to directly).
              */
             kind: string;
+            origin_kind: string;
             /** @description For `subagent` rows: the conversation whose run delegated this task. */
             parent_conversation_id?: string | null;
             /**
@@ -1258,6 +1300,8 @@ export interface components {
          *     "already_running", "nothing_to_resume", "managed_conversation",
          *     "pending_recovery", "bad_gateway", "internal") — clients branch on it
          *     and show `error` verbatim.
+         *     Forks additionally use `invalid_cut`, `stale_revision` and
+         *     `operation_conflict` to distinguish invalid boundaries from stale views.
          */
         ErrorBody: {
             code: string;
@@ -1290,6 +1334,31 @@ export interface components {
         };
         /** @enum {string} */
         FileEntryKind: "dir" | "file";
+        ForkCut: {
+            /** @enum {string} */
+            kind: "head";
+        } | {
+            /** @enum {string} */
+            kind: "message";
+            message_id: string;
+            side: components["schemas"]["ForkSide"];
+        };
+        ForkRequest: {
+            cut: components["schemas"]["ForkCut"];
+            /** Format: int64 */
+            expected_revision: number;
+            operation_id: string;
+            title?: string | null;
+        };
+        ForkResponse: {
+            /** Format: int64 */
+            context_revision: number;
+            conversation: components["schemas"]["Conversation"];
+            cut: components["schemas"]["ForkCut"];
+            draft?: string | null;
+        };
+        /** @enum {string} */
+        ForkSide: "before" | "after";
         /** @enum {string} */
         GitAction: "stage" | "unstage" | "restore" | "discard_tracked" | "trash_untracked" | "stash_all" | "stash_tracked" | "stash_pop" | "fetch" | "pull" | "pull_rebase" | "push" | "force_push";
         GitActionRequest: {
@@ -1478,7 +1547,10 @@ export interface components {
             /** Format: date-time */
             created_at: string;
             details?: null | components["schemas"]["MessageDetails"];
+            fork_cut?: null | components["schemas"]["ForkCut"];
             id: string;
+            /** @description Shared history has no runtime ownership in the fork. */
+            inherited?: boolean | null;
             /** Format: int64 */
             input_tokens?: number | null;
             model_id?: string | null;
@@ -1739,6 +1811,21 @@ export interface components {
         RenderPromptResponse: {
             messages: components["schemas"]["PromptMessageResponse"][];
         };
+        RevertRequest: {
+            cut: components["schemas"]["ForkCut"];
+            /** Format: int64 */
+            expected_revision: number;
+            operation_id: string;
+        };
+        RevertResponse: {
+            backup: components["schemas"]["Conversation"];
+            backup_conversation_id: string;
+            /** Format: int64 */
+            context_revision: number;
+            conversation: components["schemas"]["Conversation"];
+            cut: components["schemas"]["ForkCut"];
+            draft?: string | null;
+        };
         /** @description Whether an agent run is currently active for a conversation. */
         RunningStatus: {
             resumable: boolean;
@@ -1746,6 +1833,8 @@ export interface components {
         };
         SendMessageRequest: {
             content: string;
+            /** Format: int64 */
+            expected_revision?: number | null;
             provider_spec: string;
         };
         /**
@@ -2245,6 +2334,60 @@ export interface operations {
             };
         };
     };
+    fork_conversation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Source conversation ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ForkRequest"];
+            };
+        };
+        responses: {
+            /** @description Fork created (or replayed) */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ForkResponse"];
+                };
+            };
+            /** @description Invalid cut or request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Source or cut not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Busy, stale revision or operation conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     get_messages: {
         parameters: {
             query?: never;
@@ -2385,6 +2528,60 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    revert_conversation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Conversation ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RevertRequest"];
+            };
+        };
+        responses: {
+            /** @description History reverted with a read-only backup */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevertResponse"];
+                };
+            };
+            /** @description Invalid cut or no change */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Conversation or cut not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Busy, pending work, read-only, stale revision or operation conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
             };
         };
     };

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE conversations SET context_revision = context_revision + 1, history_epoch = history_epoch + 1, updated_at = $1 WHERE id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "4c3c16d87c7ffb99e47fef555324a9a578293b6674e2656bc408144c78d2879f"
+}

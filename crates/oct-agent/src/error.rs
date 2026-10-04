@@ -12,6 +12,17 @@ pub enum AppError {
     #[error("{0}")]
     Conflict(String),
 
+    #[error("{0}")]
+    InvalidCut(String),
+    #[error("{0}")]
+    StaleRevision(String),
+    #[error("{0}")]
+    OperationConflict(String),
+    #[error("{0}")]
+    ReadOnlyConversation(String),
+    #[error("{0}")]
+    BackgroundPending(String),
+
     /// 409: the conversation's session mutex is already held by an active
     /// run or a manual compaction (send / resume / compact share the entry).
     /// A distinct code so clients can tell it from [`AppError::NothingToResume`]

@@ -22,7 +22,18 @@ pub(super) fn is_compaction_marker(m: &StoredMessage) -> bool {
 ///   Provider usage itself is never rewritten; the adjustment is recomputed
 ///   from persisted state on every load, so it survives crashes.
 pub async fn load_llm_view(pool: &SqlitePool, conversation_id: &str) -> Result<LlmView> {
-    let stored = list_messages(pool, conversation_id).await?;
+    let mut tx = pool.begin().await?;
+    let stored = list_messages_in_tx(&mut tx, conversation_id).await?;
+    let view = view_from_snapshot(&mut tx, &stored).await?;
+    tx.commit().await?;
+    Ok(view)
+}
+
+/// A history response and its context estimate share the same read snapshot.
+pub async fn view_from_snapshot(
+    tx: &mut SqliteConnection,
+    stored: &[StoredMessage],
+) -> Result<LlmView> {
     // The view starts AT the last marker (inclusive): the marker IS the
     // summary message the model sees. Older markers are inside the excluded
     // prefix and simply stop mattering.
@@ -75,7 +86,7 @@ pub async fn load_llm_view(pool: &SqlitePool, conversation_id: &str) -> Result<L
 
     let anchor = match anchor {
         Some((mi, row)) => {
-            let tokens = cow_adjusted_anchor_tokens(pool, &kept, &messages, row).await?;
+            let tokens = cow_adjusted_anchor_tokens(tx, &kept, &messages, row).await?;
             Some(UsageAnchor {
                 tokens,
                 message_index: mi,
@@ -97,7 +108,7 @@ pub async fn load_llm_view(pool: &SqlitePool, conversation_id: &str) -> Result<L
 /// pure function), never stored; a missing or unparsable original is skipped
 /// — over-estimating is the safe direction for a trigger.
 async fn cow_adjusted_anchor_tokens(
-    pool: &SqlitePool,
+    tx: &mut SqliteConnection,
     kept: &[&StoredMessage],
     messages: &[Message],
     anchor_row: &StoredMessage,
@@ -124,7 +135,7 @@ async fn cow_adjusted_anchor_tokens(
         "SELECT id, parts_json FROM messages WHERE id IN (SELECT value FROM json_each($1))",
         ids_json,
     )
-    .fetch_all(pool)
+    .fetch_all(tx)
     .await?;
     let mut savings = 0u64;
     for (r, current) in kept.iter().zip(messages) {

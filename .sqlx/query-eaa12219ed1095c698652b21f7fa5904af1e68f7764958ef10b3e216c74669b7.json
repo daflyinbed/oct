@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, conversation_id, kind, parent_run_id, root_run_id, parent_tool_call_id, status, execution_epoch, provider_id, model_id, context_window, error, final_message_id, input_tokens, output_tokens, description, started_at, finished_at FROM agent_runs WHERE parent_run_id = $1 AND parent_tool_call_id = $2",
+  "query": "SELECT id, project_id, title, title_source, kind, parent_conversation_id, root_conversation_id, agent_type, permission_mode, origin_kind, history_epoch, backup_of_conversation_id, backup_at_revision, forked_from_conversation_id, forked_at_message_id, forked_at_revision, created_at, updated_at FROM conversations WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -9,114 +9,114 @@
         "type_info": "Text"
       },
       {
-        "name": "conversation_id",
+        "name": "project_id",
         "ordinal": 1,
         "type_info": "Text"
       },
       {
-        "name": "kind",
+        "name": "title",
         "ordinal": 2,
         "type_info": "Text"
       },
       {
-        "name": "parent_run_id",
+        "name": "title_source",
         "ordinal": 3,
         "type_info": "Text"
       },
       {
-        "name": "root_run_id",
+        "name": "kind",
         "ordinal": 4,
         "type_info": "Text"
       },
       {
-        "name": "parent_tool_call_id",
+        "name": "parent_conversation_id",
         "ordinal": 5,
         "type_info": "Text"
       },
       {
-        "name": "status",
+        "name": "root_conversation_id",
         "ordinal": 6,
         "type_info": "Text"
       },
       {
-        "name": "execution_epoch",
+        "name": "agent_type",
         "ordinal": 7,
-        "type_info": "Integer"
+        "type_info": "Text"
       },
       {
-        "name": "provider_id",
+        "name": "permission_mode",
         "ordinal": 8,
         "type_info": "Text"
       },
       {
-        "name": "model_id",
+        "name": "origin_kind",
         "ordinal": 9,
         "type_info": "Text"
       },
       {
-        "name": "context_window",
+        "name": "history_epoch",
         "ordinal": 10,
         "type_info": "Integer"
       },
       {
-        "name": "error",
+        "name": "backup_of_conversation_id",
         "ordinal": 11,
         "type_info": "Text"
       },
       {
-        "name": "final_message_id",
+        "name": "backup_at_revision",
         "ordinal": 12,
-        "type_info": "Text"
+        "type_info": "Integer"
       },
       {
-        "name": "input_tokens",
+        "name": "forked_from_conversation_id",
         "ordinal": 13,
-        "type_info": "Integer"
-      },
-      {
-        "name": "output_tokens",
-        "ordinal": 14,
-        "type_info": "Integer"
-      },
-      {
-        "name": "description",
-        "ordinal": 15,
         "type_info": "Text"
       },
       {
-        "name": "started_at",
+        "name": "forked_at_message_id",
+        "ordinal": 14,
+        "type_info": "Text"
+      },
+      {
+        "name": "forked_at_revision",
+        "ordinal": 15,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at",
         "ordinal": 16,
         "type_info": "Datetime"
       },
       {
-        "name": "finished_at",
+        "name": "updated_at",
         "ordinal": 17,
         "type_info": "Datetime"
       }
     ],
     "parameters": {
-      "Right": 2
+      "Right": 1
     },
     "nullable": [
       false,
       false,
       false,
-      true,
-      true,
-      true,
       false,
       false,
       true,
       true,
       true,
+      false,
+      false,
+      false,
       true,
       true,
       true,
       true,
       true,
       false,
-      true
+      false
     ]
   },
-  "hash": "47ce956c43717246dd01a174ac17342436ca532fad4ebabc9558afd49a88c821"
+  "hash": "eaa12219ed1095c698652b21f7fa5904af1e68f7764958ef10b3e216c74669b7"
 }

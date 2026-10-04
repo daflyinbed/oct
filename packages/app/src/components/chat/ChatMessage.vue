@@ -55,9 +55,69 @@
       <span class="animate-pulse">▌</span>
     </div>
   </div>
+  <div
+    v-if="
+      (forkEnabled || revertEnabled) && message.forkCut && !message.isStreaming
+    "
+    class="flex justify-end"
+  >
+    <DropdownMenuRoot>
+      <DropdownMenuTrigger
+        class="h-6 w-6 flex items-center justify-center rounded text-faint control-focus hover:bg-neutral-2"
+        title="消息操作"
+      >
+        <i-lucide-ellipsis class="h-3.5 w-3.5" />
+      </DropdownMenuTrigger>
+      <DropdownMenuPortal>
+        <DropdownMenuContent
+          align="end"
+          :side-offset="4"
+          class="z-50 min-w-[160px] border border-neutral-5 rounded-lg bg-surface p-1 shadow-[var(--oct-shadow)]"
+        >
+          <DropdownMenuItem
+            v-if="forkEnabled"
+            class="h-7 flex cursor-pointer items-center gap-2 rounded px-2 text-[12px] text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
+            @select="$emit('fork', message.forkCut!)"
+          >
+            <i-lucide-git-branch class="h-3.5 w-3.5" />
+            {{
+              message.role === "user"
+                ? "从这条消息前分支"
+                : message.forkCut.kind === "message" &&
+                    message.forkCut.message_id !== message.id
+                  ? "从这一步后分支"
+                  : "从这条回复后分支"
+            }}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            v-if="revertEnabled"
+            class="h-7 flex cursor-pointer items-center gap-2 rounded px-2 text-[12px] text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
+            @select="$emit('revert', message.forkCut!)"
+          >
+            <i-lucide-undo-2 class="h-3.5 w-3.5" />
+            {{
+              message.role === "user"
+                ? "回退并编辑"
+                : message.forkCut.kind === "message" &&
+                    message.forkCut.message_id !== message.id
+                  ? "回退到这一步"
+                  : "回退到这条回复"
+            }}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenuPortal>
+    </DropdownMenuRoot>
+  </div>
 </template>
 
 <script setup lang="ts">
+import {
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuPortal,
+  DropdownMenuRoot,
+  DropdownMenuTrigger,
+} from "reka-ui";
 import CompactionDivider from "./CompactionDivider.vue";
 import TaskCard from "./TaskCard.vue";
 import TaskNotificationDivider from "./TaskNotificationDivider.vue";
@@ -74,6 +134,12 @@ defineProps<{
   message: DisplayMessage;
   /** 「查看原文」（microcompact 副本回查）需要会话作用域。 */
   conversationId: string | null;
+  forkEnabled?: boolean;
+  revertEnabled?: boolean;
+}>();
+defineEmits<{
+  fork: [cut: import("@/composables/chat/display").ForkCut];
+  revert: [cut: import("@/composables/chat/display").ForkCut];
 }>();
 
 function partKey(part: DisplayPart, index: number): string {

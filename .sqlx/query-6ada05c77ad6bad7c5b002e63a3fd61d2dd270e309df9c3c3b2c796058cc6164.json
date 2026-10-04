@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, project_id, title, title_source, kind, parent_conversation_id, root_conversation_id, agent_type, permission_mode, created_at, updated_at FROM conversations WHERE id = $1",
+  "query": "SELECT id, role, parts_json, details_json, provider_id, model_id, input_tokens, output_tokens, reasoning_tokens, supersedes_message_id, created_at FROM messages WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -9,52 +9,52 @@
         "type_info": "Text"
       },
       {
-        "name": "project_id",
+        "name": "role",
         "ordinal": 1,
         "type_info": "Text"
       },
       {
-        "name": "title",
+        "name": "parts_json",
         "ordinal": 2,
         "type_info": "Text"
       },
       {
-        "name": "title_source",
+        "name": "details_json",
         "ordinal": 3,
         "type_info": "Text"
       },
       {
-        "name": "kind",
+        "name": "provider_id",
         "ordinal": 4,
         "type_info": "Text"
       },
       {
-        "name": "parent_conversation_id",
+        "name": "model_id",
         "ordinal": 5,
         "type_info": "Text"
       },
       {
-        "name": "root_conversation_id",
+        "name": "input_tokens",
         "ordinal": 6,
-        "type_info": "Text"
+        "type_info": "Integer"
       },
       {
-        "name": "agent_type",
+        "name": "output_tokens",
         "ordinal": 7,
-        "type_info": "Text"
+        "type_info": "Integer"
       },
       {
-        "name": "permission_mode",
+        "name": "reasoning_tokens",
         "ordinal": 8,
+        "type_info": "Integer"
+      },
+      {
+        "name": "supersedes_message_id",
+        "ordinal": 9,
         "type_info": "Text"
       },
       {
         "name": "created_at",
-        "ordinal": 9,
-        "type_info": "Datetime"
-      },
-      {
-        "name": "updated_at",
         "ordinal": 10,
         "type_info": "Datetime"
       }
@@ -66,15 +66,15 @@
       false,
       false,
       false,
-      false,
-      false,
       true,
       true,
       true,
-      false,
-      false,
+      true,
+      true,
+      true,
+      true,
       false
     ]
   },
-  "hash": "dccde7fb99fb0b13d68f87539a5ef04e8ad087066b14ca48bd177273de7e3414"
+  "hash": "6ada05c77ad6bad7c5b002e63a3fd61d2dd270e309df9c3c3b2c796058cc6164"
 }

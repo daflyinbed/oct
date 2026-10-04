@@ -30,6 +30,13 @@ pub struct Conversation {
     /// outside-read all ask), `accept_edits` (in-workspace writes auto-
     /// allowed), `bypass` (everything allowed — deny rules still win).
     pub permission_mode: String,
+    pub origin_kind: String,
+    pub history_epoch: i64,
+    pub backup_of_conversation_id: Option<String>,
+    pub backup_at_revision: Option<i64>,
+    pub forked_from_conversation_id: Option<String>,
+    pub forked_at_message_id: Option<String>,
+    pub forked_at_revision: Option<i64>,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
 }
@@ -56,7 +63,7 @@ pub async fn list_conversations_by_project(
         Conversation,
         // Only kind='chat' rows: subagent sessions are managed children of a
         // chat conversation and must never appear in the sidebar list.
-        "SELECT id, project_id, title, title_source, kind, parent_conversation_id, root_conversation_id, agent_type, permission_mode, created_at, updated_at FROM conversations WHERE project_id = $1 AND kind = 'chat' ORDER BY updated_at DESC",
+        "SELECT id, project_id, title, title_source, kind, parent_conversation_id, root_conversation_id, agent_type, permission_mode, origin_kind, history_epoch, backup_of_conversation_id, backup_at_revision, forked_from_conversation_id, forked_at_message_id, forked_at_revision, created_at, updated_at FROM conversations WHERE project_id = $1 AND kind = 'chat' ORDER BY updated_at DESC",
         project_id,
     )
     .fetch_all(pool)
@@ -114,6 +121,13 @@ pub async fn create_conversation_in_tx(
         agent_type: None,
         // The INSERT above leaves the column at its DEFAULT.
         permission_mode: "default".to_string(),
+        origin_kind: "normal".into(),
+        history_epoch: 0,
+        backup_of_conversation_id: None,
+        backup_at_revision: None,
+        forked_from_conversation_id: None,
+        forked_at_message_id: None,
+        forked_at_revision: None,
         created_at: now,
         updated_at: now,
     })
@@ -171,6 +185,13 @@ pub async fn create_subagent_conversation_in_tx(
         // inherit their parent conversation's mode at evaluation time, not
         // here.
         permission_mode: "default".to_string(),
+        origin_kind: "normal".into(),
+        history_epoch: 0,
+        backup_of_conversation_id: None,
+        backup_at_revision: None,
+        forked_from_conversation_id: None,
+        forked_at_message_id: None,
+        forked_at_revision: None,
         created_at: now,
         updated_at: now,
     })
@@ -179,10 +200,26 @@ pub async fn create_subagent_conversation_in_tx(
 pub async fn get_conversation(pool: &SqlitePool, id: &str) -> Result<Option<Conversation>> {
     let row = sqlx::query_as!(
         Conversation,
-        "SELECT id, project_id, title, title_source, kind, parent_conversation_id, root_conversation_id, agent_type, permission_mode, created_at, updated_at FROM conversations WHERE id = $1",
+        "SELECT id, project_id, title, title_source, kind, parent_conversation_id, root_conversation_id, agent_type, permission_mode, origin_kind, history_epoch, backup_of_conversation_id, backup_at_revision, forked_from_conversation_id, forked_at_message_id, forked_at_revision, created_at, updated_at FROM conversations WHERE id = $1",
         id,
     )
     .fetch_optional(pool)
+    .await?;
+
+    Ok(row)
+}
+
+/// Read fresh metadata in a history operation's write snapshot.
+pub async fn get_conversation_in_tx(
+    tx: &mut SqliteConnection,
+    id: &str,
+) -> Result<Option<Conversation>> {
+    let row = sqlx::query_as!(
+        Conversation,
+        "SELECT id, project_id, title, title_source, kind, parent_conversation_id, root_conversation_id, agent_type, permission_mode, origin_kind, history_epoch, backup_of_conversation_id, backup_at_revision, forked_from_conversation_id, forked_at_message_id, forked_at_revision, created_at, updated_at FROM conversations WHERE id = $1",
+        id,
+    )
+    .fetch_optional(tx)
     .await?;
 
     Ok(row)
@@ -310,4 +347,15 @@ pub async fn update_conversation(
     }
     tx.commit().await?;
     Ok(())
+}
+
+impl Conversation {
+    pub fn ensure_writable(&self) -> crate::error::AppResult<()> {
+        if self.origin_kind == "revert_backup" {
+            return Err(crate::error::AppError::ReadOnlyConversation(
+                "回退前备份为只读；请先创建分支再继续对话。".into(),
+            ));
+        }
+        Ok(())
+    }
 }

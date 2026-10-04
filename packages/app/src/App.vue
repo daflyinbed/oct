@@ -29,6 +29,7 @@
           :selected-conversation-id="selectedConversationId"
           @select-conversation="handleSelectConversation"
           @create-conversation="handleCreateConversation"
+          @delete-backup="handleDeleteBackup"
         />
       </SplitterPanel>
       <SplitterResizeHandle
@@ -214,6 +215,7 @@ const {
   conversations,
   fetchProjects,
   createConversation,
+  deleteConversation,
   updateConversationTitle,
 } = useProjects();
 const { fetchProviders } = useProviders();
@@ -369,6 +371,17 @@ const displayTabs = computed(() =>
 
 function handleSelectConversation(conversationId: string) {
   router.push(`/conversation/${conversationId}`);
+}
+
+async function handleDeleteBackup(projectId: string, id: string) {
+  if (
+    conversations.value.get(projectId)?.find((c) => c.id === id)
+      ?.origin_kind !== "revert_backup"
+  )
+    return;
+  await deleteConversation(projectId, id);
+  if (!conversations.value.get(projectId)?.some((c) => c.id === id))
+    closeTab(`chat:${id}`);
 }
 
 function handleTabAction(action: TabAction) {

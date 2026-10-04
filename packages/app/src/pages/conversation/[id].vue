@@ -9,6 +9,22 @@
     :selected-model-id="selectedModelId"
     :approvals="approvals"
     :permission-mode="permissionMode"
+    :fork-enabled="
+      !sending && !historyBusy && !revertSelection && contextRevision != null
+    "
+    :revert-enabled="
+      !readOnly &&
+      !sending &&
+      !historyBusy &&
+      !revertSelection &&
+      contextRevision != null
+    "
+    :read-only="readOnly"
+    :fork-busy="historyBusy"
+    :fork-error="historyLoadError || forkError || revertError"
+    :forked-from="conversation?.forked_from_conversation_id"
+    :forked-at-revision="conversation?.forked_at_revision"
+    :draft="forkDraft"
     @send="handleSendMessage"
     @stop="handleStop"
     @resume="handleResume"
@@ -17,23 +33,58 @@
     @select-model="selectModel"
     @decide-approval="handleDecideApproval"
     @set-permission-mode="handleSetPermissionMode"
+    @fork="handleFork"
+    @revert="handleRevert"
+    @refresh-history="handleRefreshHistory"
+  />
+  <HistoryRevertDialog
+    v-if="revertSelection"
+    :before-user="
+      revertSelection.cut.kind === 'message' &&
+      revertSelection.cut.side === 'before'
+    "
+    :removed-count="revertSelection.removedCount"
+    :preview="revertSelection.preview"
+    :submitting="revertApplying"
+    :error="revertError"
+    @confirm="confirmRevert"
+    @cancel="revertSelection = null"
   />
 </template>
 
 <script setup lang="ts">
-import { computed, watch } from "vue";
-import { useRoute } from "vue-router";
+import { computed, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import ChatPanel from "@/components/chat/ChatPanel.vue";
+import HistoryRevertDialog from "@/components/chat/HistoryRevertDialog.vue";
+import { refreshBackgroundTasks } from "@/composables/useBackgroundTasks";
 import { useChat } from "@/composables/useChat";
+import { useConversationFork } from "@/composables/useConversationFork";
+import { useConversationRevert } from "@/composables/useConversationRevert";
 import {
   normalizePermissionMode,
   useProjects,
 } from "@/composables/useProjects";
 import { useProviders } from "@/composables/useProviders";
 import { refreshSubagents } from "@/composables/useSubagents";
+import type { ForkCut } from "@/composables/chat/display";
 import type { ApprovalDecision } from "@/composables/useChat";
 
 const route = useRoute();
+const router = useRouter();
+const { busy: forkBusy, error: forkError, fork } = useConversationFork();
+const { error: revertError, revert } = useConversationRevert();
+const revertApplying = ref(false);
+const historyLoadError = ref<string | null>(null);
+const historyBusy = computed(() => forkBusy.value || revertApplying.value);
+const revertSelection = ref<{
+  source: string;
+  revision: number;
+  cut: ForkCut;
+  removedCount: number;
+  preview: string;
+} | null>(null);
+const forkDraft = ref<{ conversationId: string; text: string } | null>(null);
 const conversationId = computed(
   () => (route.params as { id?: string }).id ?? "",
 );
@@ -41,15 +92,19 @@ const conversationId = computed(
 const {
   messages,
   sending,
+  contextRevision,
   resumable,
   pendingApprovals,
   fetchMessages,
+  refreshMessages,
   sendMessage,
   resumeTurn,
   attachRun,
   cancelConversation,
   compactConversation,
   decideApproval,
+  beginHistoryChange,
+  endHistoryChange,
 } = useChat();
 const {
   providers,
@@ -89,12 +144,16 @@ const conversation = computed(() => {
   return null;
 });
 
+const readOnly = computed(
+  () => conversation.value?.origin_kind === "revert_backup",
+);
+
 const permissionMode = computed(
   () => conversation.value?.permission_mode ?? "default",
 );
 
 function handleSetPermissionMode(mode: string) {
-  if (!conversationId.value) return;
+  if (!conversationId.value || readOnly.value || historyBusy.value) return;
   // 归一化防御异常值；PATCH 成功后 useProjects 同步本地列表，档位标即时更新。
   void setConversationPermissionMode(
     conversationId.value,
@@ -118,12 +177,45 @@ watch(
 );
 
 async function handleSendMessage(content: string) {
-  if (!conversationId.value) return;
+  if (
+    !conversationId.value ||
+    historyBusy.value ||
+    readOnly.value ||
+    revertSelection.value
+  )
+    return;
   await sendMessage(conversationId.value, content, getProviderSpec());
 }
 
+async function handleFork(cut: ForkCut) {
+  const source = conversationId.value;
+  const revision = contextRevision.value;
+  if (
+    !source ||
+    revision == null ||
+    sending.value ||
+    historyBusy.value ||
+    revertSelection.value
+  )
+    return;
+  const result = await fork(source, revision, cut);
+  // Finishing an old request must not move a view the user has switched.
+  if (!result || conversationId.value !== source) return;
+  await router.push(`/conversation/${result.conversation.id}`);
+  forkDraft.value = {
+    conversationId: result.conversation.id,
+    text: result.draft ?? "",
+  };
+}
+
 async function handleResume() {
-  if (!conversationId.value) return;
+  if (
+    !conversationId.value ||
+    historyBusy.value ||
+    readOnly.value ||
+    revertSelection.value
+  )
+    return;
   await resumeTurn(conversationId.value);
 }
 
@@ -132,7 +224,114 @@ function handleStop() {
 }
 
 async function handleCompact() {
-  if (!conversationId.value) return;
+  if (
+    !conversationId.value ||
+    historyBusy.value ||
+    readOnly.value ||
+    revertSelection.value
+  )
+    return;
   await compactConversation(conversationId.value);
 }
+
+function handleRevert(cut: ForkCut) {
+  const source = conversationId.value;
+  const revision = contextRevision.value;
+  if (
+    !source ||
+    revision == null ||
+    sending.value ||
+    historyBusy.value ||
+    readOnly.value ||
+    cut.kind !== "message"
+  )
+    return;
+  const index = messages.value.findIndex(
+    (message) => JSON.stringify(message.forkCut) === JSON.stringify(cut),
+  );
+  if (index < 0) return;
+  const message = messages.value[index]!;
+  historyLoadError.value = null;
+  revertSelection.value = {
+    source,
+    revision,
+    cut,
+    removedCount:
+      messages.value.length - index - (cut.side === "after" ? 1 : 0),
+    preview: message.parts
+      .map((part) =>
+        part.kind === "text"
+          ? part.text
+          : part.kind === "tool_call"
+            ? part.title || part.name
+            : "",
+      )
+      .join("\n"),
+  };
+}
+
+async function confirmRevert() {
+  const selection = revertSelection.value;
+  if (
+    !selection ||
+    selection.source !== conversationId.value ||
+    historyBusy.value ||
+    !beginHistoryChange()
+  )
+    return;
+  revertApplying.value = true;
+  let committed = false;
+  try {
+    const result = await revert(
+      selection.source,
+      selection.revision,
+      selection.cut,
+    );
+    committed = !!result;
+    if (!result) return;
+    revertSelection.value = null;
+    if (conversationId.value === selection.source)
+      forkDraft.value = {
+        conversationId: selection.source,
+        text: result.draft ?? "",
+      };
+  } finally {
+    const current = conversationId.value;
+    const reload = committed || current !== selection.source;
+    try {
+      if (reload) {
+        await Promise.all([
+          refreshSubagents(null),
+          refreshBackgroundTasks(null),
+        ]);
+      }
+      await endHistoryChange(current, reload);
+      if (
+        committed &&
+        current === conversationId.value &&
+        contextRevision.value == null
+      )
+        historyLoadError.value = "回退已完成，历史加载失败，请刷新历史。";
+      if (reload && current === conversationId.value) {
+        await Promise.all([
+          refreshSubagents(current),
+          refreshBackgroundTasks(current),
+        ]);
+      }
+    } catch {
+      if (committed)
+        historyLoadError.value = "回退已完成，历史加载失败，请刷新历史。";
+    } finally {
+      revertApplying.value = false;
+    }
+  }
+}
+async function handleRefreshHistory() {
+  await refreshMessages(conversationId.value);
+  if (contextRevision.value != null) historyLoadError.value = null;
+}
+
+watch(conversationId, () => {
+  if (!revertApplying.value) revertSelection.value = null;
+});
 </script>

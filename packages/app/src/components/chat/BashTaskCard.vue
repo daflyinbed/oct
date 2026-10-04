@@ -43,8 +43,11 @@
       >
 
       <!-- 状态 chip -->
+      <span v-if="part.inherited" class="text-[11px] text-faint"
+        >来源会话历史任务</span
+      >
       <span
-        v-if="state.status === 'running'"
+        v-else-if="state.status === 'running'"
         class="flex flex-none items-center gap-1"
       >
         <i-lucide-loader-circle
@@ -87,7 +90,7 @@
 
       <!-- 停止：仅运行中可用（click 不冒泡展开） -->
       <button
-        v-if="state.status === 'running'"
+        v-if="!part.inherited && state.status === 'running'"
         type="button"
         class="h-[22px] inline-flex flex-none items-center gap-1 border border-line-soft rounded-[6px] px-1.5 text-[11px] text-dim control-focus transition-colors hover:bg-danger-1 hover:text-danger-10 disabled:opacity-50"
         :disabled="stopping"
@@ -100,6 +103,7 @@
 
       <!-- 查看输出：懒加载（首次点击才请求尾部），Dialog 展示 -->
       <button
+        v-if="!part.inherited"
         type="button"
         class="h-[22px] inline-flex flex-none items-center gap-1 border border-line-soft rounded-[6px] px-1.5 text-[11px] text-dim control-focus transition-colors hover:bg-neutral-1 hover:text-neutral-10"
         title="查看输出文件"
@@ -161,7 +165,9 @@ const taskId = computed(() => {
 // --- 数据源：任务快照 store（live 权威）→ 信封兜底（恒 running） ------------
 
 const task = computed(() =>
-  taskId.value ? backgroundTaskById(taskId.value) : null,
+  !props.part.inherited && taskId.value
+    ? backgroundTaskById(taskId.value)
+    : null,
 );
 
 const state = computed(() => {
@@ -229,7 +235,7 @@ const stopping = ref(false);
 const showOutput = ref(false);
 
 async function stop(): Promise<void> {
-  if (!taskId.value || stopping.value) return;
+  if (props.part.inherited || !taskId.value || stopping.value) return;
   stopping.value = true;
   try {
     // 终态行就地 upsert，卡片/指示器立即收敛；404（已结束）忽略即可。
@@ -244,6 +250,7 @@ async function stop(): Promise<void> {
 // 每实例一次，避免响应性循环。
 let ensured = false;
 onMounted(() => {
+  if (props.part.inherited) return;
   if (ensured) return;
   ensured = true;
   if (

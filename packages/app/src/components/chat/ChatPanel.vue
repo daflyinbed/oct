@@ -1,10 +1,62 @@
 <template>
   <main class="workspace-panel min-w-0 flex-1 bg-background">
+    <div
+      v-if="conversationId"
+      class="flex flex-none items-center justify-between gap-2 border-b border-line-soft px-7 py-1.5 text-[11.5px] text-faint"
+    >
+      <span v-if="readOnly">回退前备份 · 只读</span>
+      <span v-else-if="forkedAtRevision != null">
+        <RouterLink
+          v-if="forkedFrom"
+          :to="`/conversation/${forkedFrom}`"
+          class="text-accent-10 hover:underline"
+          >查看来源会话</RouterLink
+        >
+        <span v-else>分支会话</span> · 与来源共用工作区文件
+      </span>
+      <span v-else />
+      <button
+        type="button"
+        class="flex items-center gap-1 rounded px-2 py-1 text-dim control-focus hover:bg-neutral-2 disabled:opacity-40"
+        :disabled="!forkEnabled"
+        title="分支当前会话"
+        @click="$emit('fork', { kind: 'head' })"
+      >
+        <i-lucide-git-branch class="h-3.5 w-3.5" />{{
+          forkBusy ? "处理中…" : "分支当前会话"
+        }}
+      </button>
+    </div>
+    <div
+      v-if="forkError"
+      role="alert"
+      class="flex flex-none items-center gap-2 px-7 py-2 text-[12px] text-danger-10"
+    >
+      <span>{{ forkError }}</span>
+      <button
+        type="button"
+        class="underline"
+        :disabled="sending || forkBusy"
+        @click="$emit('refreshHistory')"
+      >
+        刷新历史
+      </button>
+    </div>
     <!-- 消息展示链路与子代理 panel 共用（ChatMessageList） -->
-    <ChatMessageList :messages="messages" :conversation-id="conversationId" />
+    <ChatMessageList
+      :messages="messages"
+      :conversation-id="conversationId"
+      :fork-enabled="forkEnabled"
+      :revert-enabled="revertEnabled"
+      @fork="(cut) => $emit('fork', cut)"
+      @revert="(cut) => $emit('revert', cut)"
+    />
 
     <!-- 中断轮次的恢复提示条：悬空工具卡片 / 未获回答的 user 消息时出现 -->
-    <div v-if="resumable && !sending" class="flex-none px-7 pt-2.5">
+    <div
+      v-if="resumable && !sending && !readOnly"
+      class="flex-none px-7 pt-2.5"
+    >
       <div
         class="mx-auto max-w-[760px] flex items-center gap-2 border border-warning-6 rounded-[10px] bg-warning-1 px-3 py-2"
       >
@@ -14,7 +66,17 @@
         </span>
         <button
           type="button"
-          class="h-7 flex-none rounded-[7px] bg-warning-7 px-2.5 text-[12px] text-warning-10 font-medium control-focus transition-[filter] hover:brightness-110"
+          class="h-7 flex-none border border-line-soft rounded-[7px] px-2.5 text-[12px] text-dim control-focus hover:bg-warning-2 disabled:opacity-40"
+          :disabled="!forkEnabled"
+          title="从中断处分支"
+          @click="$emit('fork', { kind: 'head' })"
+        >
+          <i-lucide-git-branch class="mr-1 inline h-3 w-3" />从中断处分支
+        </button>
+        <button
+          type="button"
+          class="h-7 flex-none rounded-[7px] bg-warning-7 px-2.5 text-[12px] text-warning-10 font-medium control-focus transition-[filter] disabled:opacity-40 hover:brightness-110"
+          :disabled="forkBusy"
           title="修复中断的工具调用并继续此轮"
           @click="$emit('resume')"
         >
@@ -35,7 +97,10 @@
     />
 
     <!-- 输入区：模型选择器内嵌在输入框内（Zed agent 面板的做法） -->
-    <div class="flex-none px-7 pb-3.5 pt-2.5">
+    <div v-if="readOnly" class="flex-none px-7 py-4 text-[13px] text-dim">
+      此会话是只读备份。可通过「分支当前会话」创建分支后继续。
+    </div>
+    <div v-else class="flex-none px-7 pb-3.5 pt-2.5">
       <div
         class="relative mx-auto max-w-[760px] border border-neutral-5 rounded-[10px] bg-surface transition-colors focus-within:border-accent-6"
       >
@@ -56,7 +121,7 @@
               ? 'Ask Oct to do something...'
               : 'Select a conversation first...'
           "
-          :disabled="!conversationId || sending"
+          :disabled="!conversationId || sending || forkBusy"
           class="block w-full resize-none border-none bg-transparent px-3.5 pb-1.5 pt-3 text-[13.5px] text-neutral-10 leading-[1.5] outline-none placeholder:text-faint"
           @keydown="handleInputKeydown"
         />
@@ -126,7 +191,7 @@
           <button
             v-else
             class="ml-1 h-7 w-7 flex items-center justify-center rounded-[7px] bg-accent-7 text-white transition-[filter] disabled:opacity-50 hover:brightness-110"
-            :disabled="!conversationId"
+            :disabled="!conversationId || forkBusy"
             title="发送（Enter）"
             @click="handleSend"
           >
@@ -204,6 +269,14 @@ const props = defineProps<{
   approvals: readonly PendingApproval[];
   /** 会话当前的工具权限模式（default/accept_edits/bypass）。 */
   permissionMode: string | null;
+  forkEnabled?: boolean;
+  revertEnabled?: boolean;
+  readOnly?: boolean;
+  forkBusy?: boolean;
+  forkError?: string | null;
+  forkedFrom?: string | null;
+  forkedAtRevision?: number | null;
+  draft?: { conversationId: string; text: string } | null;
 }>();
 const emit = defineEmits<{
   send: [content: string];
@@ -221,10 +294,29 @@ const emit = defineEmits<{
   ];
   /** 权限模式切换：交页面层 PATCH conversations。 */
   setPermissionMode: [mode: string];
+  fork: [cut: components["schemas"]["ForkCut"]];
+  revert: [cut: components["schemas"]["ForkCut"]];
+  refreshHistory: [];
 }>();
 
 const inputMessage = ref("");
 const inputEl = ref<HTMLTextAreaElement | null>(null);
+watch(
+  () => props.conversationId,
+  () => {
+    inputMessage.value = "";
+  },
+);
+watch(
+  () => props.draft,
+  async (draft) => {
+    if (!draft || draft.conversationId !== props.conversationId) return;
+    inputMessage.value = draft.text;
+    await nextTick();
+    inputEl.value?.focus();
+  },
+  { immediate: true },
+);
 
 const providersWithKey = computed(() =>
   props.providers.filter((p) => p.api_key_set),
@@ -248,7 +340,13 @@ const modelOptions = computed(() =>
 );
 
 function handleSend() {
-  if (!inputMessage.value.trim() || !props.conversationId || props.sending)
+  if (
+    !inputMessage.value.trim() ||
+    !props.conversationId ||
+    props.sending ||
+    props.forkBusy ||
+    props.readOnly
+  )
     return;
   // 斜杠命令拦截（v1 精确匹配）：/compact 不作为消息发送。
   if (inputMessage.value.trim() === "/compact") {
@@ -281,7 +379,13 @@ const compactCommand: BuiltinSlashCommand = {
   label: "compact",
   description: "手动压缩当前会话的上下文",
   run: async () => {
-    if (props.conversationId && !props.sending) emit("compact");
+    if (
+      props.conversationId &&
+      !props.sending &&
+      !props.forkBusy &&
+      !props.readOnly
+    )
+      emit("compact");
     return null;
   },
 };

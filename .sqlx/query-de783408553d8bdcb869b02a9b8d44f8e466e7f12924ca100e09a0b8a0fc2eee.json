@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO conversation_revert_operations (id, source_conversation_id, backup_conversation_id, request_json, response_json) VALUES ($1, $2, $3, $4, $5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "de783408553d8bdcb869b02a9b8d44f8e466e7f12924ca100e09a0b8a0fc2eee"
+}

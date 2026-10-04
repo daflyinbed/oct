@@ -9,6 +9,10 @@
         :key="msg.id"
         :message="msg"
         :conversation-id="conversationId"
+        :fork-enabled="forkEnabled"
+        :revert-enabled="revertEnabled"
+        @fork="(cut) => $emit('fork', cut)"
+        @revert="(cut) => $emit('revert', cut)"
       />
       <div v-if="messages.length === 0" class="pt-20 text-center text-faint">
         <p class="mb-1.5 text-[15px] text-dim font-medium">
@@ -32,12 +36,19 @@ const props = withDefaults(
     conversationId: string | null;
     emptyTitle?: string;
     emptyHint?: string;
+    forkEnabled?: boolean;
+    revertEnabled?: boolean;
   }>(),
   {
     emptyTitle: "Start a conversation",
     emptyHint: "Select a chat or create a new one",
   },
 );
+
+defineEmits<{
+  fork: [cut: import("@/composables/chat/display").ForkCut];
+  revert: [cut: import("@/composables/chat/display").ForkCut];
+}>();
 
 const scrollContainer = ref<HTMLElement | null>(null);
 

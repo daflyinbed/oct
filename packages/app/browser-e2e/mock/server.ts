@@ -87,6 +87,36 @@ export interface Scenario {
   conversations?: unknown[];
   /** GET /api/conversations/:id/messages 的返回体(MessageDto[])。 */
   messages?: Record<string, unknown[]>;
+  /** Versioned history / fork replies are explicit scripts, not a DB emulator. */
+  contextRevisions?: Record<string, number>;
+  /** Explicit resumability, independent of whether a scripted stream is open. */
+  resumable?: Record<string, boolean>;
+  /** Persisted terminal snapshots installed before scripted SSE EOF. */
+  afterStreamHistory?: Record<
+    string,
+    { messages: MessageDto[]; revision: number; resumable?: boolean }
+  >;
+  revertReplies?: Record<
+    string,
+    {
+      status?: number;
+      code?: string;
+      error?: string;
+      response?: components["schemas"]["RevertResponse"];
+      messages?: MessageDto[];
+      backupMessages?: MessageDto[];
+    }
+  >;
+  forkReplies?: Record<
+    string,
+    {
+      status?: number;
+      code?: string;
+      error?: string;
+      response?: components["schemas"]["ForkResponse"];
+      messages?: MessageDto[];
+    }
+  >;
   /** GET /api/providers 的返回体(ProviderResponse[])。 */
   providers?: unknown[];
   /** MCP server 初始行(McpServerResponse[]);POST/PATCH/DELETE 就地增删改。 */
@@ -222,7 +252,10 @@ const RE_PROJECT_CONVERSATIONS = /^\/api\/projects\/([^/]+)\/conversations$/;
 const RE_CONVERSATION_DELETE =
   /^\/api\/projects\/([^/]+)\/conversations\/([^/]+)$/;
 const RE_CONVERSATION_MESSAGES = /^\/api\/conversations\/([^/]+)\/messages$/;
+const RE_CONVERSATION_REVERT = /^\/api\/conversations\/([^/]+)\/revert$/;
+const RE_CONVERSATION_FORK = /^\/api\/conversations\/([^/]+)\/fork$/;
 const RE_CONVERSATION_CANCEL = /^\/api\/conversations\/([^/]+)\/cancel$/;
+const RE_CONVERSATION_RESUME = /^\/api\/conversations\/([^/]+)\/resume$/;
 const RE_CONVERSATION_COMPACT = /^\/api\/conversations\/([^/]+)\/compact$/;
 const RE_CONVERSATION_RUN = /^\/api\/conversations\/([^/]+)\/run$/;
 const RE_MCP_SERVER = /^\/api\/mcp\/servers\/([^/]+)$/;
@@ -348,6 +381,16 @@ function nowIso() {
   return "2026-09-20T00:00:00";
 }
 
+function installTerminalHistory(convId: string) {
+  const snapshot = state.scenario.afterStreamHistory?.[convId];
+  if (!snapshot) return;
+  (state.scenario.messages ??= {})[convId] = snapshot.messages;
+  (state.scenario.contextRevisions ??= {})[convId] = snapshot.revision;
+  if (snapshot.resumable != null) {
+    (state.scenario.resumable ??= {})[convId] = snapshot.resumable;
+  }
+}
+
 async function handleSse(
   req: IncomingMessage,
   res: ServerResponse,
@@ -403,7 +446,10 @@ async function handleSse(
         break;
     }
   }
-  if (!stream.closed) res.end();
+  if (!stream.closed) {
+    installTerminalHistory(convId);
+    res.end();
+  }
 }
 
 async function handleApi(
@@ -518,11 +564,54 @@ async function handleApi(
     return;
   }
 
+  m = pathname.match(RE_CONVERSATION_FORK);
+  if (m && req.method === "POST") {
+    const id = decodeURIComponent(m[1]);
+    const reply = s.forkReplies?.[id];
+    if (!reply?.response || (reply.status ?? 201) !== 201) {
+      return sendJson(res, reply?.status ?? 400, {
+        code: reply?.code ?? "invalid_cut",
+        error: reply?.error ?? "No fork script",
+      });
+    }
+    const result = reply.response;
+    (s.conversations ??= []).push(result.conversation);
+    (s.messages ??= {})[result.conversation.id] = reply.messages ?? [];
+    (s.contextRevisions ??= {})[result.conversation.id] =
+      result.context_revision;
+    return sendJson(res, 201, result);
+  }
+
+  m = pathname.match(RE_CONVERSATION_REVERT);
+  if (m && req.method === "POST") {
+    const id = decodeURIComponent(m[1]);
+    const reply = s.revertReplies?.[id];
+    if (!reply?.response || (reply.status ?? 200) !== 200)
+      return sendJson(res, reply?.status ?? 400, {
+        code: reply?.code ?? "invalid_cut",
+        error: reply?.error ?? "No revert script",
+      });
+    const result = reply.response;
+    s.conversations = (s.conversations ?? []).filter(
+      (c) => (c as { id: string }).id !== id,
+    );
+    s.conversations.push(result.conversation, result.backup);
+    (s.messages ??= {})[id] = reply.messages ?? [];
+    s.messages[result.backup_conversation_id] = reply.backupMessages ?? [];
+    (s.contextRevisions ??= {})[id] = result.context_revision;
+    s.contextRevisions[result.backup_conversation_id] =
+      result.backup.backup_at_revision ?? 0;
+    (s.resumable ??= {})[id] = false;
+    return sendJson(res, 200, result);
+  }
+
   // GET|POST /api/conversations/:id/messages
   m = pathname.match(RE_CONVERSATION_MESSAGES);
   if (m) {
     const id = decodeURIComponent(m[1]);
     if (req.method === "GET") {
+      if (s.contextRevisions?.[id] != null)
+        res.setHeader("X-Context-Revision", String(s.contextRevisions[id]));
       return sendJson(res, 200, s.messages?.[id] ?? []);
     }
     if (req.method === "POST") {
@@ -535,6 +624,7 @@ async function handleApi(
   m = pathname.match(RE_CONVERSATION_CANCEL);
   if (m && req.method === "POST") {
     const id = decodeURIComponent(m[1]);
+    installTerminalHistory(id);
     for (const stream of state.streams.get(id) ?? []) {
       if (!stream.closed) {
         stream.res.write(`data: ${JSON.stringify({ type: "cancelled" })}\n\n`);
@@ -592,7 +682,15 @@ async function handleApi(
   if (m && req.method === "GET") {
     const id = decodeURIComponent(m[1]);
     const running = (state.streams.get(id) ?? []).size > 0;
-    return sendJson(res, 200, { running });
+    return sendJson(res, 200, {
+      running,
+      resumable: s.resumable?.[id] ?? false,
+    });
+  }
+
+  m = pathname.match(RE_CONVERSATION_RESUME);
+  if (m && req.method === "POST") {
+    return handleSse(req, res, decodeURIComponent(m[1]));
   }
 
   // GET /api/providers

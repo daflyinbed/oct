@@ -107,7 +107,7 @@ pub async fn list_background_tasks(
         .await?
         .ok_or_else(|| AppError::NotFound("Conversation not found".into()))?;
 
-    let tasks = task_db::list_tasks_for_conversation(&state.pool, &id).await?;
+    let tasks = task_db::list_visible_tasks(&state.pool, &id).await?;
     let mut dtos = Vec::with_capacity(tasks.len());
     for task in tasks {
         dtos.push(BackgroundTaskDto::from_row(task).await);
@@ -135,7 +135,7 @@ pub async fn read_background_task_output(
     Path(id): Path<String>,
     Query(query): Query<TaskOutputQuery>,
 ) -> ApiResult<Json<TaskOutputChunkDto>> {
-    let task = task_db::get_task(&state.pool, &id)
+    let task = task_db::get_visible_task(&state.pool, &id)
         .await?
         .ok_or_else(|| AppError::NotFound("Background task not found".into()))?;
 
@@ -171,7 +171,7 @@ pub async fn cancel_background_task(
 ) -> ApiResult<Json<BackgroundTaskDto>> {
     // Scope check before any cancel: an id from another conversation is a
     // plain 404 from here.
-    let row = task_db::get_task(&state.pool, &id)
+    let row = task_db::get_visible_task(&state.pool, &id)
         .await?
         .ok_or_else(|| AppError::NotFound("Background task not found".into()))?;
 
@@ -179,7 +179,7 @@ pub async fn cancel_background_task(
         state.runs.background.cancel_and_wait(&id).await
     } else if row.status == "lost" {
         task_db::cancel_lost_task(&state.pool, &id).await?;
-        task_db::get_task(&state.pool, &id).await?
+        task_db::get_visible_task(&state.pool, &id).await?
     } else {
         Some(row)
     };

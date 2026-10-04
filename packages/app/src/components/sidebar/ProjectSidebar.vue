@@ -76,6 +76,11 @@
                 <span class="min-w-0 flex-1 truncate">{{
                   conv.title || "New Chat"
                 }}</span>
+                <span
+                  v-if="conv.origin_kind === 'revert_backup'"
+                  class="ml-1 text-[10px] text-faint"
+                  >只读</span
+                >
                 <!-- 权限模式档位：非 default 时显示短标 -->
                 <span
                   v-if="permissionModeBadge(conv.permission_mode)"
@@ -101,6 +106,13 @@
                 >
                   <i-lucide-pencil class="h-3.5 w-3.5 text-dim" />
                   重命名
+                </ContextMenuItem>
+                <ContextMenuItem
+                  v-if="conv.origin_kind === 'revert_backup'"
+                  class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-[12.5px] text-danger-10 outline-none data-[highlighted]:bg-neutral-1"
+                  @select="$emit('deleteBackup', project.id, conv.id)"
+                >
+                  <i-lucide-trash-2 class="h-3.5 w-3.5" />删除备份
                 </ContextMenuItem>
               </ContextMenuContent>
             </ContextMenuPortal>
@@ -151,6 +163,7 @@ const props = defineProps<{
 defineEmits<{
   selectConversation: [conversationId: string, projectId: string];
   createConversation: [projectId: string];
+  deleteBackup: [projectId: string, conversationId: string];
 }>();
 
 const expandedProjects = ref<Set<string>>(new Set());

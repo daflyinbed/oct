@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT context_revision FROM conversations WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "name": "context_revision",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "24c56b6da3619ffde3ef376828021156e32b63c0bf2d1e4ad42aaec4d07ac31d"
+}

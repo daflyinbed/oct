@@ -51,14 +51,34 @@ export function permissionModeBadge(
 const projects = ref<Project[]>([]);
 const conversations = ref<Map<string, Conversation[]>>(new Map());
 const loading = ref(false);
+const conversationGenerations = new Map<string, number>();
 
 export function useProjects() {
+  const upsertConversation = (conversation: Conversation) => {
+    // A list request started before a history operation must not discard its
+    // new backup or overwrite the original conversation's epoch/metadata.
+    conversationGenerations.set(
+      conversation.project_id,
+      (conversationGenerations.get(conversation.project_id) ?? 0) + 1,
+    );
+    const existing = conversations.value.get(conversation.project_id) ?? [];
+    conversations.value = new Map(conversations.value).set(
+      conversation.project_id,
+      [conversation, ...existing.filter((item) => item.id !== conversation.id)],
+    );
+  };
   const fetchConversations = async (projectId: string) => {
+    const generation = (conversationGenerations.get(projectId) ?? 0) + 1;
+    conversationGenerations.set(projectId, generation);
     const { data, error } = await client.GET(
       "/api/projects/{projectId}/conversations",
       { params: { path: { projectId } } },
     );
-    if (!error && data) {
+    if (
+      !error &&
+      data &&
+      conversationGenerations.get(projectId) === generation
+    ) {
       conversations.value = new Map(conversations.value).set(projectId, data);
     }
   };
@@ -155,7 +175,18 @@ export function useProjects() {
       const existing = conversations.value.get(projectId) ?? [];
       conversations.value = new Map(conversations.value).set(
         projectId,
-        existing.filter((c) => c.id !== id),
+        existing
+          .filter((c) => c.id !== id)
+          // Mirror source FKs' ON DELETE SET NULL in forks and backups.
+          .map((c) => ({
+            ...c,
+            ...(c.forked_from_conversation_id === id
+              ? { forked_from_conversation_id: null }
+              : {}),
+            ...(c.backup_of_conversation_id === id
+              ? { backup_of_conversation_id: null }
+              : {}),
+          })),
       );
     }
   };
@@ -249,6 +280,7 @@ export function useProjects() {
     createProject,
     updateProject,
     createConversation,
+    upsertConversation,
     deleteConversation,
     updateConversationTitle,
     renameConversation,

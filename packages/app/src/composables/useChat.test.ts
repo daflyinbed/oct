@@ -1143,8 +1143,8 @@ it("视图停留在其他会话时派发不受影响（侧栏更新不依赖当�
   await sendMessage("conv-a", "hi");
 
   expect(seen).toEqual([["conv-a", "A 的新标题"]]);
-  // 视图仍停留在 B：A 的历史从未被拉取（GET 只有加载 B 那一次）。
-  expect(GET).toHaveBeenCalledTimes(1);
+  // sendMessage 将活动会话切到 A；流结束后刷新持久化消息与 fork revision。
+  expect(GET).toHaveBeenCalledTimes(2);
 
   unsubscribe();
 });
@@ -2174,6 +2174,7 @@ describe("审批", () => {
     expect(pendingOf(conv)).toBe(1);
 
     // 重连：/run 探测 running → GET approvals 返回空 → 重放流无审批事件
+    GET.mockClear(); // 排除首次 send 的终态历史刷新。
     GET.mockResolvedValueOnce({ data: { running: true } } as never);
     GET.mockResolvedValueOnce({ data: [] } as never); // approvals 快照
     GET.mockResolvedValueOnce({ data: undefined, error: {} } as never); // 终态刷新失败：保留视图
@@ -2350,4 +2351,401 @@ describe("stream failure recovery", () => {
       session.dispose();
     },
   );
+});
+
+describe("failed sends with versioned history", () => {
+  it.each(["http", "pending_recovery", "network"] as const)(
+    "preserves the rejected prompt and failure explanation (%s)",
+    async (failure) => {
+      const session = createChatSession({ contextUsage: false });
+      const history = [storedMessage("assistant", "previous reply")];
+      GET.mockResolvedValue({
+        data: history,
+        response: new Response(null, {
+          headers: { "X-Context-Revision": "1" },
+        }),
+      } as never);
+      await session.fetchMessages("rejected-send");
+      const request = vi.fn();
+      if (failure === "network") {
+        request.mockRejectedValue(new TypeError("network unavailable"));
+      } else {
+        request.mockResolvedValue(
+          failure === "pending_recovery"
+            ? new Response(
+                JSON.stringify({
+                  code: "pending_recovery",
+                  error: "存在未结算的子代理任务",
+                }),
+                { status: 409 },
+              )
+            : new Response("boom", { status: 500 }),
+        );
+      }
+      vi.stubGlobal("fetch", request);
+
+      await session.sendMessage("rejected-send", "rejected prompt");
+
+      expect(session.messages.value).toHaveLength(3);
+      expect(session.messages.value[0]?.id).toBe(history[0]?.id);
+      expect(session.messages.value[1]?.parts).toEqual([
+        { kind: "text", text: "rejected prompt" },
+      ]);
+      expect(JSON.stringify(session.messages.value[2]?.parts)).toContain(
+        "Failed to send message.",
+      );
+      if (failure === "pending_recovery") {
+        expect(JSON.stringify(session.messages.value[2]?.parts)).toContain(
+          "恢复此轮",
+        );
+      }
+      expect(session.messages.value[2]?.isStreaming).toBe(false);
+      expect(session.sending.value).toBe(false);
+      expect(session.contextRevision.value).toBeNull();
+      session.dispose();
+    },
+  );
+
+  it("keeps stale-send retries revision-checked until history is refreshed", async () => {
+    const session = createChatSession({ contextUsage: false });
+    GET.mockResolvedValue({
+      data: [storedMessage("assistant", "old branch")],
+      response: new Response(null, { headers: { "X-Context-Revision": "4" } }),
+    } as never);
+    await session.fetchMessages("stale-send");
+    const request = vi.fn<typeof fetch>(
+      async () =>
+        new Response(JSON.stringify({ code: "stale_revision" }), {
+          status: 409,
+        }),
+    );
+    vi.stubGlobal("fetch", request);
+
+    await session.sendMessage("stale-send", "first attempt");
+    expect(JSON.stringify(session.messages.value)).toContain("会话历史已变化");
+    expect(session.sending.value).toBe(false);
+    await session.sendMessage("stale-send", "retry");
+
+    expect(request).toHaveBeenCalledTimes(2);
+    for (const call of request.mock.calls) {
+      const init = call[1] as RequestInit;
+      expect(JSON.parse(init.body as string)).toMatchObject({
+        expected_revision: 4,
+      });
+    }
+    expect(GET).toHaveBeenCalledTimes(1);
+
+    GET.mockResolvedValue({
+      data: [storedMessage("assistant", "reverted branch")],
+      response: new Response(null, { headers: { "X-Context-Revision": "5" } }),
+    } as never);
+    await session.refreshMessages("stale-send");
+    await session.sendMessage("stale-send", "refreshed attempt");
+    const init = request.mock.calls[2]?.[1] as RequestInit;
+    expect(JSON.parse(init.body as string)).toMatchObject({
+      expected_revision: 5,
+    });
+    session.dispose();
+  });
+
+  it.each(["original", "other"])(
+    "a late send rejection preserves the newer snapshot revision (%s)",
+    async (current) => {
+      const session = createChatSession({ contextUsage: false });
+      GET.mockResolvedValueOnce({
+        data: [],
+        response: new Response(null, {
+          headers: { "X-Context-Revision": "4" },
+        }),
+      } as never);
+      await session.fetchMessages("original");
+      let rejectSend!: (response: Response) => void;
+      const request = vi.fn<typeof fetch>(
+        () =>
+          new Promise<Response>((resolve) => {
+            rejectSend = resolve;
+          }),
+      );
+      vi.stubGlobal("fetch", request);
+      const sending = session.sendMessage("original", "rejected prompt");
+      GET.mockResolvedValueOnce({
+        data: [storedMessage("assistant", "current history")],
+        response: new Response(null, {
+          headers: { "X-Context-Revision": "8" },
+        }),
+      } as never);
+      await session.refreshMessages(current);
+      rejectSend(
+        new Response(JSON.stringify({ code: "stale_revision" }), {
+          status: 409,
+        }),
+      );
+      await sending;
+
+      expect(session.contextRevision.value).toBe(8);
+      expect(session.messages.value[0]?.parts).toEqual([
+        { kind: "text", text: "current history" },
+      ]);
+      request.mockResolvedValueOnce(new Response("rejected", { status: 409 }));
+      await session.sendMessage(current, "current attempt");
+      const init = request.mock.calls[1]?.[1] as RequestInit;
+      expect(JSON.parse(init.body as string)).toMatchObject({
+        expected_revision: 8,
+      });
+      session.dispose();
+    },
+  );
+
+  it.each(["", "partial reply"])(
+    "preserves SSE errors and partial output (%s)",
+    async (partial) => {
+      const session = createChatSession({ contextUsage: false });
+      const history = [storedMessage("assistant", "previous reply")];
+      const persisted = [
+        ...history,
+        storedMessage("user", "accepted prompt"),
+        ...(partial ? [storedMessage("assistant", partial)] : []),
+      ];
+      let sent = false;
+      GET.mockImplementation(async (path) => {
+        if (path === "/api/conversations/{id}/run") {
+          return { data: { running: false, resumable: true } } as never;
+        }
+        return {
+          data: sent ? persisted : history,
+          response: new Response(null, {
+            headers: { "X-Context-Revision": sent ? "3" : "1" },
+          }),
+        } as never;
+      });
+      await session.fetchMessages("failed-stream");
+      sent = true;
+      vi.stubGlobal(
+        "fetch",
+        vi
+          .fn()
+          .mockResolvedValue(
+            sse([
+              ...(partial ? [textDelta(partial)] : []),
+              errorEvent("provider disconnected"),
+            ]),
+          ),
+      );
+
+      await session.sendMessage("failed-stream", "accepted prompt");
+
+      expect(session.messages.value).toHaveLength(3);
+      expect(session.messages.value[1]?.parts).toEqual([
+        { kind: "text", text: "accepted prompt" },
+      ]);
+      expect(session.messages.value[2]?.parts).toEqual([
+        {
+          kind: "text",
+          text: `${partial ? `${partial}\n\n` : ""}Error: provider disconnected`,
+        },
+      ]);
+      expect(session.messages.value[2]?.isStreaming).toBe(false);
+      expect(session.sending.value).toBe(false);
+      expect(session.resumable.value).toBe(true);
+      expect(session.contextRevision.value).toBeNull();
+      session.dispose();
+    },
+  );
+});
+
+it("fork 快照使用响应版本；流结束后动作换成真实持久化消息 id", async () => {
+  const session = createChatSession({ contextUsage: false });
+  GET.mockResolvedValueOnce({
+    data: [
+      storedMessage("user", [{ type: "text", text: "old" }], {
+        id: "persisted-user",
+        fork_cut: {
+          kind: "message",
+          message_id: "persisted-user",
+          side: "before",
+        },
+      }),
+    ],
+    response: new Response(null, { headers: { "X-Context-Revision": "1" } }),
+  } as never);
+  await session.fetchMessages("fork-versioned");
+  expect(session.contextRevision.value).toBe(1);
+  expect(session.messages.value[0]?.forkCut).toMatchObject({
+    message_id: "persisted-user",
+  });
+  GET.mockResolvedValueOnce({
+    data: [
+      storedMessage("assistant", [{ type: "text", text: "reply" }], {
+        id: "persisted-reply",
+        fork_cut: {
+          kind: "message",
+          message_id: "persisted-reply",
+          side: "after",
+        },
+      }),
+    ],
+    response: new Response(null, { headers: { "X-Context-Revision": "3" } }),
+  } as never);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValueOnce(sse([textDelta("reply"), finishEvent])),
+  );
+  await session.sendMessage("fork-versioned", "new question");
+  expect(session.contextRevision.value).toBe(3);
+  expect(session.messages.value[0]?.id).toBe("persisted-reply");
+  expect(session.messages.value[0]?.forkCut).toMatchObject({
+    message_id: "persisted-reply",
+    side: "after",
+  });
+  session.dispose();
+});
+
+it("回退时阻止新发送/重连，并忽略回退前的迟到历史响应", async () => {
+  const session = createChatSession();
+  let resolveOld!: (value: unknown) => void;
+  GET.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        resolveOld = resolve;
+      }) as never,
+  );
+  const oldLoad = session.refreshMessages("c1");
+  expect(session.beginHistoryChange()).toBe(true);
+  const fetch = vi.fn();
+  vi.stubGlobal("fetch", fetch);
+  await session.sendMessage("c1", "blocked", "mock:model");
+  await session.attachRun("c1");
+  expect(fetch).not.toHaveBeenCalled();
+  resolveOld({
+    data: [storedMessage("assistant", [{ type: "text", text: "old suffix" }])],
+    response: new Response(null, { headers: { "X-Context-Revision": "4" } }),
+  });
+  await oldLoad;
+  expect(session.messages.value).toHaveLength(0);
+  GET.mockResolvedValueOnce({
+    data: [storedMessage("assistant", [{ type: "text", text: "kept prefix" }])],
+    response: new Response(null, {
+      headers: { "X-Context-Revision": "5", "X-Context-Tokens": "123" },
+    }),
+  } as never);
+  GET.mockResolvedValueOnce({
+    data: { running: false, resumable: false },
+  } as never);
+  await session.endHistoryChange("c1", true);
+  expect(session.messages.value[0]?.parts).toEqual([
+    { kind: "text", text: "kept prefix" },
+  ]);
+  expect(session.contextRevision.value).toBe(5);
+  expect(session.usage.inputTokens.value).toBe(123);
+  expect(session.resumable.value).toBe(false);
+});
+
+it("reattaches the running conversation selected during a history change", async () => {
+  const session = createChatSession({ contextUsage: false });
+  const anchor = storedMessage("user", "running request", {
+    id: "running-user",
+  });
+  let finished = false;
+  GET.mockImplementation(async (path, init) => {
+    const id = (init as { params: { path: { id: string } } }).params.path.id;
+    if (path === "/api/conversations/{id}/run") {
+      expect(id).toBe("running");
+      return { data: { running: true, resumable: false } } as never;
+    }
+    if (path === "/api/conversations/{id}/approvals") {
+      expect(id).toBe("running");
+      return { data: [] } as never;
+    }
+    return {
+      data:
+        id === "original"
+          ? [storedMessage("assistant", "original history")]
+          : [
+              anchor,
+              ...(finished ? [storedMessage("assistant", "live reply")] : []),
+            ],
+      response: new Response(null, { headers: { "X-Context-Revision": "5" } }),
+    } as never;
+  });
+  const encoder = new TextEncoder();
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const stream = new ReadableStream<Uint8Array>({
+    start(c) {
+      controller = c;
+    },
+  });
+  const request = vi.fn().mockResolvedValueOnce(
+    new Response(stream, {
+      headers: { "Content-Type": "text/event-stream" },
+    }),
+  );
+  vi.stubGlobal("fetch", request);
+  const send = (...events: unknown[]) =>
+    controller.enqueue(
+      encoder.encode(
+        `${events.map((event) => `data: ${JSON.stringify(event)}`).join("\n\n")}\n\n`,
+      ),
+    );
+
+  try {
+    await session.fetchMessages("original");
+    expect(session.beginHistoryChange()).toBe(true);
+    await session.fetchMessages("running");
+    await session.attachRun("running");
+    expect(GET).toHaveBeenCalledTimes(1);
+    expect(request).not.toHaveBeenCalled();
+
+    // Completion must release the history action while the live run continues.
+    await session.endHistoryChange("running", true);
+    await vi.waitFor(() =>
+      expect(request).toHaveBeenCalledWith("/api/conversations/running/events"),
+    );
+    expect(session.sending.value).toBe(true);
+    send(runMeta(anchor.id), textDelta("live reply"), {
+      type: "approval_requested",
+      data: {
+        approval_id: "live-approval",
+        call_id: "live-call",
+        tool: "write_file",
+        kind: "write",
+        title: "output.txt",
+      },
+    });
+    await vi.waitFor(() => {
+      expect(session.messages.value.at(-1)?.parts).toEqual([
+        { kind: "text", text: "live reply" },
+      ]);
+      expect(session.pendingApprovals.value.get("running")).toMatchObject([
+        { approvalId: "live-approval" },
+      ]);
+    });
+    finished = true;
+    send(finishEvent);
+  } finally {
+    controller.close();
+    await vi.waitFor(() => expect(session.sending.value).toBe(false));
+    session.dispose();
+  }
+  expect(session.messages.value.at(-1)?.parts).toEqual([
+    { kind: "text", text: "live reply" },
+  ]);
+});
+
+it("发送携带展示历史的版本，防止旧窗口回退后追加旧分支输入", async () => {
+  const session = createChatSession();
+  GET.mockResolvedValue({
+    data: [],
+    response: new Response(null, { headers: { "X-Context-Revision": "8" } }),
+  } as never);
+  await session.refreshMessages("c1");
+  const fetch = vi
+    .fn()
+    .mockResolvedValue(sse([{ type: "finish", data: { message: "done" } }]));
+  vi.stubGlobal("fetch", fetch);
+  await session.sendMessage("c1", "new", "mock:model");
+  const init = fetch.mock.calls[0]?.[1] as RequestInit;
+  expect(JSON.parse(init.body as string)).toMatchObject({
+    content: "new",
+    expected_revision: 8,
+  });
 });

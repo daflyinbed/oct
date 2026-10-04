@@ -27,8 +27,11 @@
         >{{ elapsed }}</span
       >
       <!-- 状态 chip：运行中 spinner / 完成 ✓ / 失败 ✗ / 取消 / 待恢复 -->
+      <span v-if="part.inherited" class="text-[11px] text-faint"
+        >来源会话历史任务</span
+      >
       <span
-        v-if="state.status === 'running'"
+        v-else-if="state.status === 'running'"
         class="flex flex-none items-center gap-1"
       >
         <i-lucide-loader-circle
@@ -58,6 +61,7 @@
       >
       <!-- 打开子代理：持久入口（agent_id 未知前禁用） -->
       <button
+        v-if="!part.inherited"
         type="button"
         class="h-[22px] inline-flex flex-none items-center gap-1 border border-line-soft rounded-[6px] px-1.5 text-[11px] text-dim control-focus transition-colors hover:bg-neutral-1 hover:text-neutral-10 disabled:opacity-50"
         :disabled="state.agentId == null"
@@ -117,7 +121,9 @@ const now = useNow({ interval: 1000 });
 
 // 任务 store 命中（live）：subagent_updated 事件落地后即可拿到
 // agent_id / 状态 / 活动；历史回放则由 details 兜底（resolveTaskCard 内）。
-const task = computed(() => taskByCallId(props.part.callId));
+const task = computed(() =>
+  props.part.inherited ? null : taskByCallId(props.part.callId),
+);
 
 const state = computed(() => resolveTaskCard(props.part, task.value));
 const statusClass = computed(() => subagentStatusClass(state.value.status));
@@ -143,6 +149,7 @@ const frameClass = computed(() => {
 });
 
 function open() {
+  if (props.part.inherited) return;
   const agentId = state.value.agentId;
   if (!agentId) return;
   openSubagentPanel(agentId, state.value.description, props.conversationId);

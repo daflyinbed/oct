@@ -28,6 +28,7 @@ use crate::subagent::{RecoveryJob, orchestrate};
 pub struct SendMessageRequest {
     pub content: String,
     pub provider_spec: String,
+    pub expected_revision: Option<i64>,
 }
 
 /// Whether an agent run is currently active for a conversation.
@@ -103,6 +104,22 @@ pub async fn send_message(
     // Managed subagent sessions are driven by their parent's `task` calls —
     // never by a direct send.
     ensure_not_managed(&conversation)?;
+    conversation.ensure_writable()?;
+
+    if let Some(expected) = req.expected_revision {
+        let revision = sqlx::query_scalar!(
+            "SELECT context_revision FROM conversations WHERE id = $1",
+            id
+        )
+        .fetch_one(&state.pool)
+        .await
+        .map_err(anyhow::Error::from)?;
+        if revision != expected {
+            return Err(AppError::StaleRevision(
+                "会话历史已变化，请刷新后重新发送。".into(),
+            ));
+        }
+    }
 
     let project = project_db::get_project(&state.pool, &conversation.project_id)
         .await
@@ -273,6 +290,7 @@ pub async fn resume_turn(
 
     // Managed subagent sessions recover through their parent conversation.
     ensure_not_managed(&conversation)?;
+    conversation.ensure_writable()?;
 
     let project = project_db::get_project(&state.pool, &conversation.project_id)
         .await
@@ -411,6 +429,7 @@ pub async fn compact_conversation(
     // Managed subagent sessions compact with their parent's history — the
     // wait for their pending tasks would be lost otherwise.
     ensure_not_managed(&conversation)?;
+    conversation.ensure_writable()?;
     // A root conversation with crashed subagent tasks must recover first:
     // compacting would summarize past the very calls whose results are still
     // owed.
@@ -619,16 +638,66 @@ pub async fn stream_run_events(
 pub async fn get_messages(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> ApiResult<Json<Vec<dto::MessageDto>>> {
-    conv_db::get_conversation(&state.pool, &id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Conversation not found".into()))?;
-
-    let messages = msg_db::list_messages(&state.pool, &id).await?;
-
-    Ok(Json(
-        messages.iter().map(dto::MessageDto::from_stored).collect(),
-    ))
+) -> ApiResult<Response> {
+    let mut tx = state.pool.begin().await.map_err(anyhow::Error::from)?;
+    let snapshot = sqlx::query!(
+        "SELECT context_revision, forked_at_revision, origin_kind FROM conversations WHERE id = $1",
+        id
+    )
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(anyhow::Error::from)?
+    .ok_or_else(|| AppError::NotFound("Conversation not found".into()))?;
+    let messages = msg_db::list_messages_in_tx(&mut tx, &id).await?;
+    let estimate = match msg_db::view_from_snapshot(&mut tx, &messages).await {
+        Ok(view) => {
+            let entries = view
+                .messages
+                .into_iter()
+                .zip(view.orderings)
+                .map(|(message, ordering)| context::ContextEntry { message, ordering })
+                .collect::<Vec<_>>();
+            Some(context::estimate_view(
+                &entries,
+                None,
+                &[],
+                view.anchor.as_ref(),
+            ))
+        }
+        Err(_) => None, // Preserve tolerant display of legacy/corrupt rows.
+    };
+    tx.commit().await.map_err(anyhow::Error::from)?;
+    let tool_cuts = crate::db::history::tool_cuts(&messages);
+    let data = messages
+        .iter()
+        .map(|row| {
+            let mut dto = dto::MessageDto::from_stored(row);
+            dto.fork_cut = dto.fork_cut.or_else(|| tool_cuts.get(&row.id).cloned());
+            dto.inherited = Some(
+                snapshot.origin_kind == "revert_backup"
+                    || snapshot
+                        .forked_at_revision
+                        .is_some_and(|revision| row.appended_at_revision <= revision),
+            );
+            dto
+        })
+        .collect::<Vec<_>>();
+    let mut response = Json(data).into_response();
+    response.headers_mut().insert(
+        "X-Context-Revision",
+        snapshot
+            .context_revision
+            .to_string()
+            .parse()
+            .expect("decimal header"),
+    );
+    if let Some(tokens) = estimate {
+        response.headers_mut().insert(
+            "X-Context-Tokens",
+            tokens.to_string().parse().expect("decimal header"),
+        );
+    }
+    Ok(response)
 }
 
 /// The original content a microcompact copy replaced. Scope-checked through

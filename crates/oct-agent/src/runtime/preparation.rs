@@ -30,13 +30,29 @@ pub async fn prepare_history(pool: &sqlx::SqlitePool, id: &str) -> Result<(), Ap
 }
 
 pub async fn can_resume(pool: &sqlx::SqlitePool, id: &str) -> Result<bool, AppError> {
+    let conversation = crate::db::conversations::get_conversation(pool, id).await?;
+    if conversation
+        .as_ref()
+        .is_some_and(|c| c.origin_kind == "revert_backup")
+    {
+        return Ok(false);
+    }
     if !msg_db::find_dangling_tool_calls(pool, id).await?.is_empty()
         || msg_db::last_message_is_user(pool, id).await?
     {
         return Ok(true);
     }
-    let interrupted = run_db::latest_run_for_conversation(pool, id)
-        .await?
-        .is_some_and(|r| matches!(r.status.as_str(), "lost" | "failed" | "cancelled"));
-    Ok(interrupted && msg_db::last_message_role(pool, id).await?.as_deref() == Some("tool"))
+    if msg_db::last_message_role(pool, id).await?.as_deref() != Some("tool") {
+        return Ok(false);
+    }
+    let run = run_db::latest_run_for_conversation(pool, id).await?;
+    if let Some(run) = run {
+        return Ok(matches!(
+            run.status.as_str(),
+            "lost" | "failed" | "cancelled"
+        ));
+    }
+    // A fork of a closed tool round still needs its assistant continuation.
+    // It owns no copied run; the inherited history is enough to resume it.
+    Ok(conversation.is_some_and(|c| c.forked_at_revision.is_some() || c.history_epoch > 0))
 }

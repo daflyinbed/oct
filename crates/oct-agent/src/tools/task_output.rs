@@ -57,10 +57,9 @@ impl TaskOutputTool {
     /// unknown (mirrors the subagent tool's known-ids trick: the model can
     /// self-correct instead of guessing).
     async fn not_found(&self, task_id: &str) -> ToolOutput {
-        let known =
-            task_db::list_tasks_for_conversation(self.manager.pool(), &self.conversation_id)
-                .await
-                .unwrap_or_default();
+        let known = task_db::list_visible_tasks(self.manager.pool(), &self.conversation_id)
+            .await
+            .unwrap_or_default();
         let ids: Vec<String> = known.iter().map(|t| t.id.clone()).collect();
         ToolOutput::error(format!(
             "Unknown background task '{task_id}' in this conversation. Known task ids: {}",
@@ -104,7 +103,7 @@ impl AgentTool for TaskOutputTool {
         let args: TaskOutputArgs =
             serde_json::from_value(args).context("Invalid arguments for task_output")?;
 
-        let Some(mut task) = task_db::get_task(&self.manager.pool(), &args.task_id)
+        let Some(mut task) = task_db::get_visible_task(&self.manager.pool(), &args.task_id)
             .await
             .map_err(anyhow::Error::from)?
             .filter(|t| t.conversation_id == self.conversation_id)
@@ -125,9 +124,10 @@ impl AgentTool for TaskOutputTool {
                     let _ = done.wait_for(|v| *v).await;
                 })
                 .await;
-                if let Some(refreshed) = task_db::get_task(&self.manager.pool(), &args.task_id)
-                    .await
-                    .map_err(anyhow::Error::from)?
+                if let Some(refreshed) =
+                    task_db::get_visible_task(&self.manager.pool(), &args.task_id)
+                        .await
+                        .map_err(anyhow::Error::from)?
                 {
                     task = refreshed;
                 }

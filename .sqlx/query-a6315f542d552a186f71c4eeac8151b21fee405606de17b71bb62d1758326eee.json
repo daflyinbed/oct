@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT context_revision, forked_at_revision, origin_kind FROM conversations WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "name": "context_revision",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "forked_at_revision",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "origin_kind",
+        "ordinal": 2,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "a6315f542d552a186f71c4eeac8151b21fee405606de17b71bb62d1758326eee"
+}

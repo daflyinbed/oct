@@ -66,7 +66,18 @@ pub async fn list_subagents(
         .await?
         .ok_or_else(|| AppError::NotFound("Conversation not found".into()))?;
 
-    let rows = run_db::list_subagent_runs(&state.pool, &id).await?;
+    let mut rows = run_db::list_subagent_runs(&state.pool, &id).await?;
+    if conv_db::get_conversation(&state.pool, &id)
+        .await?
+        .is_some_and(|c| c.history_epoch > 0)
+    {
+        let calls = crate::db::history::visible_call_ids(&state.pool, &id).await?;
+        rows.retain(|r| {
+            r.parent_tool_call_id
+                .as_ref()
+                .is_some_and(|call| calls.contains(call))
+        });
+    }
     let tasks = rows
         .into_iter()
         .map(|row| {
@@ -105,6 +116,22 @@ async fn require_subagent_conversation(
         return Err(AppError::NotFound(
             "Conversation is not a subagent session".into(),
         ));
+    }
+    if let Some(parent) = conversation.parent_conversation_id.as_deref()
+        && conv_db::get_conversation(&state.pool, parent)
+            .await?
+            .is_some_and(|c| c.history_epoch > 0)
+    {
+        let calls = crate::db::history::visible_call_ids(&state.pool, parent).await?;
+        let run = run_db::latest_run_for_conversation(&state.pool, agent_id).await?;
+        if !run
+            .and_then(|r| r.parent_tool_call_id)
+            .is_some_and(|call| calls.contains(&call))
+        {
+            return Err(AppError::NotFound(
+                "Subagent is no longer in the active conversation history".into(),
+            ));
+        }
     }
     Ok(conversation)
 }

@@ -147,7 +147,11 @@ pub struct CompactionMetadata {
 fn parse_parts(parts_json: &str) -> Vec<MessagePart> {
     serde_json::from_str::<Vec<ContentPart>>(parts_json)
         .map(|parts| parts.iter().map(MessagePart::from).collect())
-        .unwrap_or_else(|_| vec![MessagePart::Text { text: parts_json.to_string() }])
+        .unwrap_or_else(|_| {
+            vec![MessagePart::Text {
+                text: parts_json.to_string(),
+            }]
+        })
 }
 
 /// Recognize the stored metadata: known kinds land in their typed fields,
@@ -164,16 +168,23 @@ fn parse_details(details_json: Option<&str>) -> Option<MessageDetails> {
     let kind = match map.get("kind").and_then(Value::as_str) {
         Some("compaction") => {
             extra.remove("kind");
-            if let Some(compaction) = serde_json::from_value::<CompactionMetadata>(
-                serde_json::Value::Object(map.clone()),
-            )
-            .ok()
+            if let Some(compaction) =
+                serde_json::from_value::<CompactionMetadata>(serde_json::Value::Object(map.clone()))
+                    .ok()
             {
                 return Some(MessageDetails {
                     kind: Some(KnownDetailsKind::Compaction),
                     compaction: Some(compaction),
                     reasoning_duration_ms: None,
-                    extra: extra_without(&extra, &["triggered_by", "compacted_message_count", "estimated_tokens_before", "estimated_tokens_after"]),
+                    extra: extra_without(
+                        &extra,
+                        &[
+                            "triggered_by",
+                            "compacted_message_count",
+                            "estimated_tokens_before",
+                            "estimated_tokens_after",
+                        ],
+                    ),
                 });
             }
             None
@@ -254,6 +265,10 @@ pub struct MessageDto {
     /// Copy-on-write back-pointer: names the original content row this
     /// cleared copy superseded (exactly one hop).
     pub supersedes_message_id: Option<String>,
+    /// Authoritative persisted cut; streaming placeholders never have one.
+    pub fork_cut: Option<crate::db::history::ForkCut>,
+    /// Shared history has no runtime ownership in the fork.
+    pub inherited: Option<bool>,
     pub created_at: chrono::NaiveDateTime,
 }
 
@@ -274,6 +289,8 @@ impl MessageDto {
             output_tokens: row.output_tokens,
             reasoning_tokens: row.reasoning_tokens,
             supersedes_message_id: row.supersedes_message_id.clone(),
+            fork_cut: crate::db::history::message_cut(row),
+            inherited: None,
             created_at: row.created_at,
         }
     }
@@ -294,6 +311,8 @@ impl MessageDto {
             output_tokens: None,
             reasoning_tokens: None,
             supersedes_message_id: None,
+            fork_cut: None,
+            inherited: None,
             created_at: row.created_at,
         }
     }
@@ -387,11 +406,15 @@ mod tests {
         let dto = MessageDto::from_stored(&row);
         let details = dto.details.expect("details");
         assert_eq!(details.kind, Some(KnownDetailsKind::PermissionDenied));
-        assert!(details.extra.is_empty(), "kind consumed, nothing duplicated");
+        assert!(
+            details.extra.is_empty(),
+            "kind consumed, nothing duplicated"
+        );
     }
 
     #[test]
-    fn unknown_details_pass_through_and_corrupt_parts_degrade() {        let row = stored_row(
+    fn unknown_details_pass_through_and_corrupt_parts_degrade() {
+        let row = stored_row(
             "tool",
             r#"[{"ToolResult":{"call_id":"c1","content":"o","is_error":false,"images":[]}}]"#,
             Some(r#"{"title":"cat a.txt","truncated":true}"#),
