@@ -98,7 +98,7 @@ struct ExecuteCommandArgs {
     timeout_secs: Option<u64>,
     /// Run the command detached in the background and return immediately
     /// with a task id: output is written to a file you can read through the
-    /// `task_output` tool, `task_stop` stops the task, and you are notified
+    /// `read_file` or `grep` tool, `task_stop` stops the task, and you are notified
     /// automatically when it finishes (do not poll or sleep while waiting).
     /// Use this for long-running commands (dev servers, big builds, test
     /// suites). Ignored by subagent workers.
@@ -317,7 +317,7 @@ impl AgentTool for ExecuteCommandTool {
          Commands run via `sh -c` on Unix. Use timeout_secs to limit execution time. \
          For long-running commands (dev servers, big builds, test suites) pass \
          run_in_background: true — it returns a task id immediately, the output is \
-         readable via task_output, and you are notified when it finishes."
+         returned as output_file for read_file/grep, and you are notified when it finishes."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -562,21 +562,25 @@ impl AgentTool for ExecuteCommandTool {
 /// The tool result for a backgrounded command: the model-visible envelope
 /// plus the UI-only details that let the frontend render a live task card.
 fn background_envelope(task: &crate::db::background::BackgroundTask) -> ToolOutput {
+    let output_path =
+        crate::runtime::background::absolute_output_path(std::path::Path::new(&task.output_path));
     let content = format!(
         "Command started in the background.\n\
          task_id: {id}\n\
          status: running\n\
-         Use the task_output tool with this task_id to check status or read output, \
-         and task_stop to stop it. You will be notified automatically when it \
+         output_file: {path}\n\
+         Use read_file or grep on output_file to read or search output; \
+         use task_stop with task_id to stop it. You will be notified automatically when it \
          finishes — do not poll or sleep while waiting.",
         id = task.id,
+        path = output_path.display(),
     );
     let details = serde_json::json!({
         "kind": "background_task",
         "task_id": task.id,
         "command": task.command,
         "working_dir": task.working_dir,
-        "output_path": task.output_path,
+        "output_path": output_path,
         "status": "running",
     });
     ToolOutput::success_with_details(content, details)
@@ -590,6 +594,91 @@ mod tests {
     use serde_json::json;
 
     use crate::agent::events::EventHub;
+
+    #[tokio::test]
+    async fn relative_output_paths_are_absolute_in_envelopes_and_notifications() {
+        use crate::runtime::background::{
+            BackgroundTaskManager, build_notification_content, exec_output_root,
+        };
+        let backend = std::env::current_dir().unwrap();
+        assert_eq!(exec_output_root("sqlite://oct.db"), backend.join("exec"));
+        assert_eq!(
+            exec_output_root("sqlite://data/oct.db?mode=rwc"),
+            backend.join("data/exec")
+        );
+        let output_dir = tempfile::tempdir_in(&backend).unwrap();
+        let path = output_dir.path().join("output.log");
+        std::fs::write(&path, "command output\n").unwrap();
+        let relative = path.strip_prefix(&backend).unwrap();
+        let task = crate::db::background::BackgroundTask {
+            id: "bg-test".into(),
+            conversation_id: "conv".into(),
+            parent_run_id: None,
+            parent_call_id: "call".into(),
+            command: "echo command output".into(),
+            working_dir: None,
+            status: "completed".into(),
+            exit_code: Some(0),
+            output_path: relative.display().to_string(),
+            output_bytes: Some(15),
+            error: None,
+            notified: 0,
+            created_at: chrono::Utc::now().naive_utc(),
+            finished_at: None,
+        };
+        let envelope = background_envelope(&task);
+        let (notification, details) = build_notification_content(&[task]).await;
+        let advertised = format!("output_file: {}", path.display());
+        assert!(envelope.content.contains(&advertised));
+        assert!(notification.contains(&advertised));
+        assert_eq!(
+            envelope.details.unwrap()["output_path"],
+            path.to_str().unwrap()
+        );
+        assert_eq!(details["tasks"][0]["output_path"], path.to_str().unwrap());
+
+        let manager = BackgroundTaskManager::new(
+            sqlx::SqlitePool::connect_lazy("sqlite://unused.db").unwrap(),
+            output_dir
+                .path()
+                .strip_prefix(&backend)
+                .unwrap()
+                .to_path_buf(),
+        );
+        assert_eq!(manager.exec_dir(), output_dir.path());
+
+        // Both discovery tools must return a path usable by read_file from
+        // a different project, without changing its relative-path anchor.
+        let project = tempfile::tempdir().unwrap();
+        let roots = WorkspaceRoots::new(project.path().to_path_buf(), vec![])
+            .with_read_only_root(manager.exec_dir().to_path_buf());
+        let ctx = TestCtx::new();
+        let glob = crate::tools::glob::GlobTool::new(roots.clone())
+            .execute(
+                json!({"path":manager.exec_dir(),"pattern":"*.log"}),
+                &ctx.ctx,
+            )
+            .await
+            .unwrap();
+        assert!(glob.content.contains(path.to_str().unwrap()));
+        let grep = crate::tools::grep::GrepTool::new(roots.clone())
+            .execute(json!({"path":manager.exec_dir(),"pattern":"command","output_mode":"files_with_matches"}), &ctx.ctx)
+            .await
+            .unwrap();
+        assert!(grep.content.contains(path.to_str().unwrap()));
+        let read = crate::tools::read::ReadFileTool::new(
+            roots,
+            Arc::new(crate::tools::shared::AgentReadState::new()),
+        );
+        for found in [
+            glob.content.lines().nth(1).unwrap(),
+            grep.content.lines().nth(1).unwrap(),
+        ] {
+            let read = read.execute(json!({"path":found}), &ctx.ctx).await.unwrap();
+            assert!(!read.is_error, "{}", read.content);
+            assert_eq!(read.content, "1. command output");
+        }
+    }
 
     /// A ToolContext wired to a throwaway event hub so tests can observe the
     /// emitted live-delta events (publishing is synchronous, so subscribing

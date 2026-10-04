@@ -242,7 +242,7 @@ impl RunService {
     /// built-in exec-root deny anchored at the SAME directory the
     /// background manager writes to. Subagent runs pass their ROOT
     /// conversation's id as `mode_conversation_id` (child rows carry no
-    /// effective mode; Ask is downgraded to Deny) and `subagent = true`.
+    /// effective mode; approvals also reach the parent) and `subagent = true`.
     ///
     /// Best-effort by design: a rules/mode read failure degrades to an
     /// empty rule set / the default mode rather than failing the run — the
@@ -278,13 +278,25 @@ impl RunService {
             .and_then(|conv| PermissionMode::from_str_opt(&conv.permission_mode))
             .unwrap_or(PermissionMode::Default);
 
+        let parent = if subagent {
+            let handle = self
+                .sessions
+                .get(mode_conversation_id)
+                .ok_or_else(|| AppError::Conflict("Parent run is no longer active".into()))?;
+            Some(crate::permissions::gate::ApprovalParent {
+                conversation_id: mode_conversation_id.to_string(),
+                hub: Arc::downgrade(&handle.hub),
+            })
+        } else {
+            None
+        };
         let gate = PermissionGate::new(
             conversation_id.to_string(),
             run_id.to_string(),
             roots.clone(),
             rules,
             mode,
-            subagent,
+            parent,
             self.approvals.clone(),
         );
         self.register_gate(conversation_id, &gate);
@@ -446,6 +458,7 @@ impl RunService {
             .expect("the occupancy guard guarantees the session entry");
 
         let (roots, additional) = workspace_roots(&project);
+        let roots = roots.with_read_only_root(self.background.exec_dir().to_path_buf());
         let locks = self.file_locks_for(&project.id);
         let reads = Arc::new(AgentReadState::new());
 
@@ -482,10 +495,6 @@ impl RunService {
                 ));
             }
         }
-        run_tools.push(Arc::new(tools::task_output::TaskOutputTool::new(
-            self.background.clone(),
-            conversation_id.clone(),
-        )) as Arc<dyn tools::AgentTool>);
         run_tools.push(Arc::new(tools::task_stop::TaskStopTool::new(
             self.background.clone(),
             conversation_id.clone(),
@@ -639,6 +648,8 @@ impl RunService {
             .map(|entry| entry.value().clone())
             .expect("the occupancy guard guarantees the session entry");
 
+        let roots = roots.with_read_only_root(self.background.exec_dir().to_path_buf());
+
         // Effective toolset = parent set − task, with the three file tools
         // rebuilt over the shared locks and a FRESH read state (the child's
         // read records must be its own; stateless builtins and MCP tools are
@@ -649,7 +660,7 @@ impl RunService {
         let child_tools: Vec<Arc<dyn tools::AgentTool>> = match parent_toolset {
             Some(parent) => derive_child_toolset(&parent, roots.clone(), locks.clone()),
             None => {
-                let mut rebuilt: Vec<Arc<dyn tools::AgentTool>> = tools::file_tools_with(
+                let mut rebuilt: Vec<Arc<dyn tools::AgentTool>> = tools::default_tools_with(
                     roots.clone(),
                     locks.clone(),
                     Arc::new(AgentReadState::new()),
@@ -671,8 +682,8 @@ impl RunService {
         // The child's permission gate: rules load like
         // a root run's, the MODE inherits the root conversation (child rows
         // carry no effective mode — recovery included, since this assembly
-        // is the recovery path too), and Ask is downgraded to Deny because
-        // a worker has no interactive surface.
+        // is the recovery path too). Worker approvals are also delivered
+        // to the parent surface while keeping their own run identity.
         let root_conversation_id =
             crate::db::conversations::get_conversation(&self.pool, &conversation_id)
                 .await?

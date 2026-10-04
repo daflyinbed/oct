@@ -10,7 +10,7 @@ use super::*;
 /// `execute_command` is likewise rebuilt (background gate closed, schema
 /// identical): subagent workers must not detach commands — the wake-run
 /// semantics only hold in the root conversation. The background
-/// companions (`task_output`/`task_stop`) are scoped to the root
+/// companion (`task_stop`) are scoped to the root
 /// conversation and simply dropped.
 pub(crate) fn derive_child_toolset(
     parent: &[Arc<dyn tools::AgentTool>],
@@ -23,13 +23,12 @@ pub(crate) fn derive_child_toolset(
             .map(Arc::from)
             .collect();
     child.push(Arc::new(tools::execute::ExecuteCommandTool::new(roots)) as Arc<dyn tools::AgentTool>);
-    const NOT_REUSED: [&str; 7] = [
+    const NOT_REUSED: [&str; 6] = [
         "task",
         "read_file",
         "write_file",
         "edit_file",
         "execute_command",
-        "task_output",
         "task_stop",
     ];
     child.extend(
@@ -171,9 +170,8 @@ pub(super) async fn supervise_child(
         },
     };
 
-    // Same pending-approval sweep as the root supervisor — uniformity over
-    // the (currently unreachable) subagent Ask arm: children downgrade Ask
-    // to Deny, but the sweep is what makes that structurally guaranteed.
+    // Same sweep as the root supervisor; registry delivery also clears
+    // forwarded worker approvals on the parent surface.
     publish_cancelled_approvals(approvals.as_ref(), &run_id, &handle.hub);
 
     subagents

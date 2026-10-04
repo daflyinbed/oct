@@ -554,7 +554,7 @@ describe("sendMessage 实时流", () => {
     await new Promise((r) => setTimeout(r, 5));
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network")));
     await sendMessage(nextConvId(), "hi");
-    expect(messages.value[3]?.parts).toEqual([
+    expect(messages.value.at(-1)?.parts).toEqual([
       { kind: "text", text: "Failed to send message." },
     ]);
     expect(sending.value).toBe(false);
@@ -673,7 +673,10 @@ describe("中断恢复", () => {
     // POST 到 resume 端点，不携带请求体
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe(`/api/conversations/${conv}/resume`);
-    expect(init).toEqual({ method: "POST" });
+    expect(init).toMatchObject({
+      method: "POST",
+      signal: expect.any(AbortSignal),
+    });
 
     // 两次 GET：占位行拉取 + 终态刷新
     expect(GET).toHaveBeenCalledTimes(2);
@@ -725,14 +728,8 @@ describe("中断恢复", () => {
   });
 
   it("resumeTurn：流式进行中切走会话，收尾刷新不覆盖当前视图", async () => {
-    // 可暂停的 SSE：读取先挂起，等切换会话后再放行收尾
-    const encoder = new TextEncoder();
-    let streamController!: ReadableStreamDefaultController<Uint8Array>;
-    const stream = new ReadableStream<Uint8Array>({
-      start(c) {
-        streamController = c;
-      },
-    });
+    // 读取先挂起，切换会话会主动取消 reader 并收尾。
+    const stream = new ReadableStream<Uint8Array>();
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValueOnce(
@@ -761,14 +758,7 @@ describe("中断恢复", () => {
     } as never);
     await fetchMessages(convB);
 
-    // 放行 A 的流并结束
-    streamController.enqueue(
-      encoder.encode(`data: ${JSON.stringify(textDelta("续答"))}\n\n`),
-    );
-    streamController.enqueue(
-      encoder.encode(`data: ${JSON.stringify(finishEvent)}\n\n`),
-    );
-    streamController.close();
+    // 切换会话会取消 reader；无需等旧网络流自行结束。
     await resumePromise;
 
     // 视图仍是 B：收尾刷新被会话守卫拦下（A 的重拉由路由 watch 负责）
@@ -778,7 +768,7 @@ describe("中断恢复", () => {
     expect(sending.value).toBe(false);
   });
 
-  it("resumeTurn：409 等错误不追加消息、不悬挂 sending，仍刷新历史", async () => {
+  it("resumeTurn：409 显示失败反馈并释放 sending", async () => {
     stubFetch(new Response("conflict", { status: 409 }));
     GET.mockResolvedValue({ data: danglingHistory() } as never);
 
@@ -788,9 +778,14 @@ describe("中断恢复", () => {
     await fetchMessages(conv);
     await resumeTurn(conv);
 
-    // 初始加载 + 失败路径的终态刷新共两次 GET；不追加 streaming 消息
-    expect(GET).toHaveBeenCalledTimes(2);
-    expect(messages.value.map((m) => m.role)).toEqual(["user", "assistant"]);
+    // 失败反馈不被历史刷新擦掉，原中断卡仍可恢复。
+    expect(GET).toHaveBeenCalledTimes(1);
+    expect(messages.value.map((m) => m.role)).toEqual([
+      "user",
+      "assistant",
+      "assistant",
+    ]);
+    expect(JSON.stringify(messages.value)).toContain("Failed to resume turn.");
     expect(toolCards()[0]!.status).toBe("interrupted");
     expect(sending.value).toBe(false);
   });
@@ -923,6 +918,7 @@ describe("attachRun 重连重放", () => {
     stubGetQueue(
       { data: [storedMessage("user", '[{"Text":"问"}]', { id: "u1" })] },
       { data: { running: false } },
+      emptyApprovals,
       {
         data: [
           storedMessage("user", '[{"Text":"问"}]', { id: "u1" }),
@@ -936,7 +932,7 @@ describe("attachRun 重连重放", () => {
     await attachRun(conv);
 
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(GET).toHaveBeenCalledTimes(3); // 初始 + 探测 + 静默刷新
+    expect(GET).toHaveBeenCalledTimes(4); // 初始 + 探测 + 审批快照 + 静默刷新
     expect(messages.value.at(-1)?.parts).toEqual([
       { kind: "text", text: "答" },
     ]);
@@ -1048,9 +1044,8 @@ describe("attachRun 重连重放", () => {
     });
     await fetchMessages(convB);
 
-    // 放行 A 的余下事件：截断/追加绝不能改写 B 的视图
-    sse.send(textDelta("A 的重放"), finishEvent);
-    sse.end();
+    // reader 取消后旧流自行收尾，不能刷新 B 或清除它的忙碌状态。
+    expect(sse.fetchMock.mock.calls[0]?.[1].signal.aborted).toBe(true);
     await attachPromise;
 
     expect(messages.value.map((m) => m.id)).toEqual(["b1"]);
@@ -1786,15 +1781,10 @@ describe("attachSubagent", () => {
       ).toBe(true),
     );
 
-    // 关闭标签：dispose 中断订阅（只退订，不取消任务）。mock Response 不
-    // 模拟真实 fetch 的 abort 语义，这里手动放行一段"dispose 后到达的
-    // 迟到事件 + EOF"，验证 disposed 守卫拦下它们。
+    // reader 被主动取消，dispose 仅退订，不请求后台 cancel。
     session.dispose();
     const callsAfterDispose = GET.mock.calls.length;
-    streamController.enqueue(
-      encoder.encode(`data: ${JSON.stringify(textDelta("迟到事件"))}\n\n`),
-    );
-    streamController.close();
+    expect(fetchMock.mock.calls[0]?.[1].signal.aborted).toBe(true);
     await attachPromise;
 
     // 迟到事件不进视图；dispose 后没有额外的收尾刷新
@@ -2031,8 +2021,8 @@ describe("审批", () => {
     const conv = nextConvId();
     stubFetch(
       sse([
-        approvalRequested("a1"),
-        approvalRequested("a1"), // 重放/重复：同 id 覆盖，不产生第二张卡
+        approvalRequested("a1", { agent_id: "worker-a" }),
+        approvalRequested("a1", { agent_id: "worker-a" }), // 重放：同 id 覆盖
         approvalRequested("a2", {
           tool: "execute_command",
           kind: "command",
@@ -2053,6 +2043,7 @@ describe("审批", () => {
     expect(list).toHaveLength(2);
     expect(list[0]).toMatchObject({
       approvalId: "a1",
+      agentId: "worker-a",
       callId: "call-a1",
       tool: "write_file",
       kind: "write",
@@ -2190,6 +2181,49 @@ describe("审批", () => {
     });
     // 陈旧条目被快照清掉（以 GET 为准）
     expect(pendingOf(conv)).toBe(0);
+  });
+
+  it("切回空闲会话时对账已错过的审批决定", async () => {
+    const session = createChatSession({ contextUsage: false });
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(value) {
+          controller = value;
+        },
+      }),
+    );
+    const fetchMock = stubFetch(response);
+    GET.mockResolvedValue({ data: [] } as never);
+    try {
+      const run = session.sendMessage("A", "write");
+      controller.enqueue(
+        new TextEncoder().encode(
+          `data: ${JSON.stringify(approvalRequested("resolved-while-away"))}\n\n`,
+        ),
+      );
+      await vi.waitFor(() =>
+        expect(session.pendingApprovals.value.get("A")?.length).toBe(1),
+      );
+      await session.fetchMessages("B");
+      expect(fetchMock.mock.calls[0]?.[1].signal.aborted).toBe(true);
+      await run;
+      await session.fetchMessages("A");
+      GET.mockClear();
+      GET.mockResolvedValueOnce({ data: { running: false } } as never);
+      GET.mockResolvedValueOnce({ data: [] } as never);
+      GET.mockResolvedValueOnce({ data: [] } as never);
+      await session.attachRun("A");
+      expect(session.pendingApprovals.value.get("A")).toEqual([]);
+      expect(GET.mock.calls.map((call) => call[0])).toEqual([
+        "/api/conversations/{id}/run",
+        "/api/conversations/{id}/approvals",
+        "/api/conversations/{id}/messages",
+      ]);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      session.dispose();
+    }
   });
 
   it("permission_denied 工具卡：live 事件与历史行两路都标记 denied", async () => {
@@ -2698,7 +2732,10 @@ it("reattaches the running conversation selected during a history change", async
     // Completion must release the history action while the live run continues.
     await session.endHistoryChange("running", true);
     await vi.waitFor(() =>
-      expect(request).toHaveBeenCalledWith("/api/conversations/running/events"),
+      expect(request).toHaveBeenCalledWith(
+        "/api/conversations/running/events",
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ),
     );
     expect(session.sending.value).toBe(true);
     send(runMeta(anchor.id), textDelta("live reply"), {
@@ -2747,5 +2784,233 @@ it("发送携带展示历史的版本，防止旧窗口回退后追加旧分支�
   expect(JSON.parse(init.body as string)).toMatchObject({
     content: "new",
     expected_revision: 8,
+  });
+});
+
+// Drive public APIs with delayed network responses; even a fetch mock that
+// ignores AbortSignal must not give an obsolete subscription ownership again.
+describe("流所有权", () => {
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => {
+      resolve = done;
+    });
+    return { promise, resolve };
+  }
+
+  function openStream() {
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(c) {
+          controller = c;
+        },
+      }),
+    );
+    return {
+      response,
+      send(...events: unknown[]) {
+        controller.enqueue(
+          new TextEncoder().encode(
+            `${events.map((event) => `data: ${JSON.stringify(event)}`).join("\n\n")}\n\n`,
+          ),
+        );
+      },
+      close() {
+        controller.close();
+      },
+    };
+  }
+
+  const usageEvent = (input: number) => ({
+    type: "usage",
+    data: {
+      input_tokens: input,
+      output_tokens: 1,
+      context_window_tokens: 10000,
+    },
+  });
+
+  it("切到 B 后历史尚未返回就发送，不沿用 A 的消息", async () => {
+    const session = createChatSession({ contextUsage: false });
+    GET.mockResolvedValueOnce({
+      data: [storedMessage("assistant", "A history")],
+    } as never);
+    await session.refreshMessages("A");
+    const delayedHistory = deferred<unknown>();
+    GET.mockReturnValueOnce(delayedHistory.promise as never);
+    const loading = session.refreshMessages("B");
+    expect(session.messages.value).toEqual([]);
+    GET.mockResolvedValue({ data: [] } as never);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(sse([textDelta("B reply"), finishEvent])),
+    );
+    await session.sendMessage("B", "B question");
+    delayedHistory.resolve({
+      data: [storedMessage("assistant", "stale B history")],
+    });
+    await loading;
+    expect(session.messages.value.flatMap((message) => message.parts)).toEqual([
+      { kind: "text", text: "B question" },
+      { kind: "text", text: "B reply" },
+    ]);
+    session.dispose();
+  });
+
+  it("切换 A→B→A 后旧 fetch、事件和 finally 不影响新流的消息、usage、审批或 busy", async () => {
+    const session = createChatSession();
+    const oldResponse = deferred<Response>();
+    const current = openStream();
+    const fetch = vi
+      .fn()
+      .mockReturnValueOnce(oldResponse.promise)
+      .mockResolvedValueOnce(current.response);
+    vi.stubGlobal("fetch", fetch);
+    GET.mockResolvedValue({ data: [] } as never);
+    const titles: string[] = [];
+    const unsubscribe = onTitleUpdated((_id, title) => titles.push(title));
+    try {
+      await session.refreshMessages("A");
+      const oldRun = session.sendMessage("A", "old request");
+      await session.refreshMessages("B");
+      expect((fetch.mock.calls[0]?.[1] as RequestInit).signal?.aborted).toBe(
+        true,
+      );
+      await session.refreshMessages("A");
+      const newRun = session.sendMessage("A", "new request");
+      current.send(textDelta("new answer"), usageEvent(200), {
+        type: "compacting",
+        data: { triggered_by: "auto" },
+      });
+      await vi.waitFor(() =>
+        expect(session.messages.value.at(-1)?.parts).toEqual([
+          { kind: "text", text: "new answer" },
+        ]),
+      );
+      oldResponse.resolve(
+        sse([
+          textDelta("obsolete answer"),
+          usageEvent(9999),
+          { type: "title_updated", data: { title: "obsolete title" } },
+          {
+            type: "approval_requested",
+            data: { approval_id: "obsolete", tool: "write_file" },
+          },
+          cancelledEvent,
+        ]),
+      );
+      await oldRun;
+      expect(session.sending.value).toBe(true);
+      expect(session.usage.inputTokens.value).toBe(200);
+      expect(session.usage.compacting.value).toBe(true);
+      expect(useContextUsage().inputTokens.value).toBe(200);
+      expect(session.pendingApprovals.value.size).toBe(0);
+      expect(titles).toEqual([]);
+      expect(session.messages.value.at(-1)?.parts).toEqual([
+        { kind: "text", text: "new answer" },
+      ]);
+      current.send(finishEvent);
+      current.close();
+      await newRun;
+      expect(session.sending.value).toBe(false);
+      expect(session.usage.compacting.value).toBe(false);
+      expect(useContextUsage().compacting.value).toBe(false);
+      expect(
+        POST.mock.calls.some(
+          (call) => call[0] === "/api/conversations/{id}/cancel",
+        ),
+      ).toBe(false);
+    } finally {
+      unsubscribe();
+      session.dispose();
+    }
+  });
+
+  it("旧 finally 已开始的历史刷新迟到时，不能覆盖 B 的新流或解除其 busy", async () => {
+    const session = createChatSession({ contextUsage: false });
+    const oldHistory = deferred<unknown>();
+    GET.mockReturnValueOnce(oldHistory.promise as never);
+    const current = openStream();
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(sse([textDelta("A"), finishEvent]))
+        .mockResolvedValueOnce(current.response),
+    );
+    const oldRun = session.sendMessage("A", "old");
+    await vi.waitFor(() => expect(GET).toHaveBeenCalledTimes(1));
+    GET.mockResolvedValue({ data: [] } as never);
+    await session.refreshMessages("B");
+    const newRun = session.sendMessage("B", "new");
+    current.send(textDelta("B live"), usageEvent(222));
+    await vi.waitFor(() => expect(session.usage.inputTokens.value).toBe(222));
+    oldHistory.resolve({
+      data: [storedMessage("assistant", "obsolete stored A")],
+      response: new Response(null, {
+        headers: { "X-Context-Revision": "99", "X-Context-Tokens": "9999" },
+      }),
+    });
+    await oldRun;
+    expect(session.sending.value).toBe(true);
+    expect(session.contextRevision.value).toBeNull();
+    expect(session.usage.inputTokens.value).toBe(222);
+    expect(session.messages.value.at(-1)?.parts).toEqual([
+      { kind: "text", text: "B live" },
+    ]);
+    current.send(finishEvent);
+    current.close();
+    await newRun;
+    session.dispose();
+  });
+
+  it("迟到的审批快照不能恢复已决定的子审批，dispose 后也不能写入", async () => {
+    const session = createChatSession({ contextUsage: false });
+    const approval = {
+      approval_id: "worker-approval",
+      agent_id: "worker-a",
+      call_id: "write-a",
+      tool: "write_file",
+      kind: "write",
+      title: "out.txt",
+      run_id: "worker-run",
+      path: "out.txt",
+      outside: false,
+      rule_suggestion: "/tmp/**",
+      command: null,
+      created_at: "2026-10-04T00:00:00",
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          sse([{ type: "approval_requested", data: approval }, finishEvent]),
+        ),
+    );
+    GET.mockResolvedValue({ data: [] } as never);
+    await session.sendMessage("parent", "delegate");
+    expect(session.pendingApprovals.value.get("parent")?.[0]?.agentId).toBe(
+      "worker-a",
+    );
+    const snapshot = deferred<unknown>();
+    GET.mockReturnValueOnce(snapshot.promise as never);
+    const refresh = session.refreshApprovals("parent");
+    POST.mockResolvedValueOnce({
+      response: new Response(),
+      data: { resolved: true },
+    } as never);
+    await session.decideApproval("parent", approval.approval_id, "allow");
+    snapshot.resolve({ data: [approval] });
+    await refresh;
+    expect(session.pendingApprovals.value.get("parent")).toEqual([]);
+    const afterDispose = deferred<unknown>();
+    GET.mockReturnValueOnce(afterDispose.promise as never);
+    const disposedRefresh = session.refreshApprovals("parent");
+    session.dispose();
+    afterDispose.resolve({ data: [approval] });
+    await disposedRefresh;
+    expect(session.pendingApprovals.value.get("parent")).toEqual([]);
   });
 });

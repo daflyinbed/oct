@@ -21,7 +21,6 @@ pub mod listdir;
 pub mod read;
 pub mod search_common;
 pub mod shared;
-pub mod task_output;
 pub mod task_stop;
 pub mod truncate;
 pub mod workspace;

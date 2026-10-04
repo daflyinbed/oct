@@ -153,6 +153,10 @@ export interface Scenario {
   newConversationIds?: string[];
   /** 每个会话的 SSE 剧本,POST 消息时惰性取用。 */
   scripts?: Record<string, ScriptStep[]>;
+  approvals?: Record<string, components["schemas"]["PendingApprovalDto"][]>;
+  subagents?: Record<string, components["schemas"]["SubagentTaskDto"][]>;
+  /** Decide opens a scripted gate; the next event supplies its resolution. */
+  approvalGates?: Record<string, string>;
 }
 
 export interface CapturedRequest {
@@ -258,6 +262,10 @@ const RE_CONVERSATION_CANCEL = /^\/api\/conversations\/([^/]+)\/cancel$/;
 const RE_CONVERSATION_RESUME = /^\/api\/conversations\/([^/]+)\/resume$/;
 const RE_CONVERSATION_COMPACT = /^\/api\/conversations\/([^/]+)\/compact$/;
 const RE_CONVERSATION_RUN = /^\/api\/conversations\/([^/]+)\/run$/;
+const RE_APPROVALS = /^\/api\/conversations\/([^/]+)\/approvals$/;
+const RE_SUBAGENTS = /^\/api\/conversations\/([^/]+)\/subagents$/;
+const RE_APPROVAL_DECIDE =
+  /^\/api\/conversations\/([^/]+)\/approvals\/([^/]+)$/;
 const RE_MCP_SERVER = /^\/api\/mcp\/servers\/([^/]+)$/;
 const RE_MCP_ENSURE = /^\/api\/projects\/([^/]+)\/mcp\/ensure$/;
 const RE_MCP_PROMPT_RENDER = /^\/api\/mcp\/servers\/([^/]+)\/prompts\/([^/]+)$/;
@@ -603,6 +611,32 @@ async function handleApi(
       result.backup.backup_at_revision ?? 0;
     (s.resumable ??= {})[id] = false;
     return sendJson(res, 200, result);
+  }
+
+  // GET|POST /api/conversations/:id/messages
+  m = pathname.match(RE_APPROVALS);
+  if (m && req.method === "GET") {
+    return sendJson(res, 200, s.approvals?.[decodeURIComponent(m[1])] ?? []);
+  }
+  m = pathname.match(RE_SUBAGENTS);
+  if (m && req.method === "GET") {
+    return sendJson(res, 200, s.subagents?.[decodeURIComponent(m[1])] ?? []);
+  }
+  m = pathname.match(RE_APPROVAL_DECIDE);
+  if (m && req.method === "POST") {
+    const id = decodeURIComponent(m[1]);
+    const approval = decodeURIComponent(m[2]);
+    const pending = s.approvals?.[id] ?? [];
+    const gate = s.approvalGates?.[approval];
+    if (!gate || !pending.some((item) => item.approval_id === approval))
+      return sendJson(res, 404, { error: "Approval already resolved" });
+    const body = (await readBodyCached(req)) as { decision: string };
+    if (!["allow", "allow_always", "deny"].includes(body.decision))
+      return sendJson(res, 400, { error: "Invalid decision" });
+    s.approvals![id] = pending.filter((item) => item.approval_id !== approval);
+    sendJson(res, 200, { resolved: true });
+    openGate(gate);
+    return;
   }
 
   // GET|POST /api/conversations/:id/messages

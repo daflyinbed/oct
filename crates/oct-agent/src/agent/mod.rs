@@ -175,6 +175,8 @@ pub enum AgentEvent {
     #[serde(rename = "approval_requested")]
     ApprovalRequested {
         approval_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_id: Option<String>,
         /// The tool call id the approval parks.
         call_id: String,
         /// Tool name as the model sees it (e.g. `write_file`).
@@ -203,6 +205,8 @@ pub enum AgentEvent {
     #[serde(rename = "approval_resolved")]
     ApprovalResolved {
         approval_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_id: Option<String>,
         outcome: ApprovalOutcome,
         /// The persisted permission rule an `allow_always` created; `None`
         /// for every other outcome (and for plain `allow`).

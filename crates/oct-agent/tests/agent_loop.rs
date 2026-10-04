@@ -3192,7 +3192,7 @@ fn build_gate(
     env: &TestEnv,
     conv_id: &str,
     mode: PermissionMode,
-    subagent: bool,
+    _subagent: bool,
     rules: impl FnOnce(&mut RuleSet),
 ) -> (Arc<PermissionGate>, Arc<ApprovalRegistry>) {
     let registry = Arc::new(ApprovalRegistry::new());
@@ -3205,7 +3205,7 @@ fn build_gate(
         roots,
         set,
         mode,
-        subagent,
+        None,
         registry.clone(),
     );
     (gate, registry)
@@ -3238,10 +3238,16 @@ async fn permission_ask_allow_executes_outside_write() {
     ]);
     let observer = model.observer();
 
-    let (gate, registry) =
-        build_gate(&env, &conv_id, PermissionMode::Default, false, |_| {});
-    let (handle, mut rx) =
-        spawn_gated(model, env.pool.clone(), &env, &conv_id, "write outside", gate).await;
+    let (gate, registry) = build_gate(&env, &conv_id, PermissionMode::Default, false, |_| {});
+    let (handle, mut rx) = spawn_gated(
+        model,
+        env.pool.clone(),
+        &env,
+        &conv_id,
+        "write outside",
+        gate,
+    )
+    .await;
 
     let (approval_id, event) = wait_for_approval(&mut rx).await;
     match event {
@@ -3317,10 +3323,16 @@ async fn permission_ask_deny_returns_error_result_visible_to_model() {
     ]);
     let observer = model.observer();
 
-    let (gate, registry) =
-        build_gate(&env, &conv_id, PermissionMode::Default, false, |_| {});
-    let (_handle, mut rx) =
-        spawn_gated(model, env.pool.clone(), &env, &conv_id, "write outside", gate).await;
+    let (gate, registry) = build_gate(&env, &conv_id, PermissionMode::Default, false, |_| {});
+    let (_handle, mut rx) = spawn_gated(
+        model,
+        env.pool.clone(),
+        &env,
+        &conv_id,
+        "write outside",
+        gate,
+    )
+    .await;
 
     let (approval_id, _) = wait_for_approval(&mut rx).await;
     assert!(registry.resolve(&approval_id, ApprovalDecision::Deny).is_ok());
@@ -3382,10 +3394,16 @@ async fn permission_pending_cancel_resolves_cancelled() {
         finish(FinishReason::ToolCalls),
     ])]);
 
-    let (gate, registry) =
-        build_gate(&env, &conv_id, PermissionMode::Default, false, |_| {});
-    let (handle, mut rx) =
-        spawn_gated(model, env.pool.clone(), &env, &conv_id, "write outside", gate).await;
+    let (gate, registry) = build_gate(&env, &conv_id, PermissionMode::Default, false, |_| {});
+    let (handle, mut rx) = spawn_gated(
+        model,
+        env.pool.clone(),
+        &env,
+        &conv_id,
+        "write outside",
+        gate,
+    )
+    .await;
 
     let (approval_id, _) = wait_for_approval(&mut rx).await;
 
@@ -3451,10 +3469,16 @@ async fn permission_allow_always_injects_rule_and_skips_next_ask() {
         Turn::Stream(vec![text("done"), finish(FinishReason::Stop)]),
     ]);
 
-    let (gate, registry) =
-        build_gate(&env, &conv_id, PermissionMode::Default, false, |_| {});
-    let (handle, mut rx) =
-        spawn_gated(model, env.pool.clone(), &env, &conv_id, "write twice", gate.clone()).await;
+    let (gate, registry) = build_gate(&env, &conv_id, PermissionMode::Default, false, |_| {});
+    let (handle, mut rx) = spawn_gated(
+        model,
+        env.pool.clone(),
+        &env,
+        &conv_id,
+        "write twice",
+        gate.clone(),
+    )
+    .await;
 
     let (approval_id, event) = wait_for_approval(&mut rx).await;
     let AgentEvent::ApprovalRequested {
@@ -3555,10 +3579,16 @@ async fn permission_outside_read_asks_in_default_mode() {
         Turn::Stream(vec![text("done"), finish(FinishReason::Stop)]),
     ]);
 
-    let (gate, registry) =
-        build_gate(&env, &conv_id, PermissionMode::Default, false, |_| {});
-    let (handle, mut rx) =
-        spawn_gated(model, env.pool.clone(), &env, &conv_id, "read outside", gate).await;
+    let (gate, registry) = build_gate(&env, &conv_id, PermissionMode::Default, false, |_| {});
+    let (handle, mut rx) = spawn_gated(
+        model,
+        env.pool.clone(),
+        &env,
+        &conv_id,
+        "read outside",
+        gate,
+    )
+    .await;
 
     let (approval_id, event) = wait_for_approval(&mut rx).await;
     match event {
@@ -3594,12 +3624,9 @@ async fn permission_outside_read_asks_in_default_mode() {
 }
 
 #[tokio::test]
-async fn permission_subagent_ask_downgrades_to_deny_for_model() {
+async fn permission_worker_ask_waits_for_user_decision() {
     let env = TestEnv::new().await;
     let conv_id = new_conversation(&env.pool, env.dir.path()).await;
-
-    // An INSIDE-workspace write: Ask under default mode for a root run —
-    // but a worker's gate downgrades it to a refusal the child model sees.
     let model = ScriptedModel::new(vec![
         Turn::Stream(vec![
             tool_call(
@@ -3609,52 +3636,21 @@ async fn permission_subagent_ask_downgrades_to_deny_for_model() {
             ),
             finish(FinishReason::ToolCalls),
         ]),
-        Turn::Stream(vec![text("will ask the user"), finish(FinishReason::Stop)]),
+        Turn::Stream(vec![text("done"), finish(FinishReason::Stop)]),
     ]);
-    let observer = model.observer();
-
     let (gate, registry) = build_gate(&env, &conv_id, PermissionMode::Default, true, |_| {});
     let (handle, mut rx) =
         spawn_gated(model, env.pool.clone(), &env, &conv_id, "worker task", gate).await;
-
+    let (approval, _) = wait_for_approval(&mut rx).await;
+    assert!(!env.dir.path().join("inner.txt").exists());
+    registry
+        .resolve(&approval, ApprovalDecision::Allow)
+        .unwrap();
     let events = collect_events(&mut rx, is_terminal).await;
     assert_eq!(*events.last().unwrap(), AgentEvent::Finish);
-    match events.iter().find(|e| matches!(e, AgentEvent::ToolResult { .. })) {
-        Some(AgentEvent::ToolResult {
-            content,
-            is_error,
-            details,
-            ..
-        }) => {
-            assert!(*is_error);
-            assert!(
-                content.contains("subagents cannot trigger interactive approval"),
-                "the downgrade copy guides the worker: {content}"
-            );
-            assert_eq!(
-                details.as_ref().and_then(|d| d.get("kind")).and_then(|k| k.as_str()),
-                Some("permission_denied")
-            );
-        }
-        other => panic!("expected ToolResult, got {other:?}"),
-    }
-    // The refusal reached the child model's next request verbatim; nothing
-    // was ever parked or published.
-    match &observer.requests()[1].messages[3].parts[0] {
-        ContentPart::ToolResult(ToolResult { content, .. }) => assert!(
-            content
-                .as_str()
-                .is_some_and(|c| c.contains("subagents cannot trigger interactive approval")),
-            "the child model sees the downgrade: {content}"
-        ),
-        other => panic!("expected a ToolResult part, got {other:?}"),
-    }
-    assert!(registry.pending_for_conversation(&conv_id).is_empty());
-    assert!(
-        handle
-            .hub
-            .snapshot()
-            .iter()
-            .all(|e| !matches!(e, AgentEvent::ApprovalRequested { .. }))
+    assert_eq!(
+        std::fs::read_to_string(env.dir.path().join("inner.txt")).unwrap(),
+        "x"
     );
+    drop(handle);
 }

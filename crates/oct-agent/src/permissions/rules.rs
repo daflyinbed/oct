@@ -76,9 +76,7 @@ impl Rule {
             PermissionAction::Read { .. } => READ_CLASS_TOOLS.contains(&self.tool.as_str()),
             PermissionAction::Write { .. } => WRITE_CLASS_TOOLS.contains(&self.tool.as_str()),
             PermissionAction::Edit { .. } => EDIT_CLASS_TOOLS.contains(&self.tool.as_str()),
-            PermissionAction::Command { .. } => {
-                COMMAND_CLASS_TOOLS.contains(&self.tool.as_str())
-            }
+            PermissionAction::Command { .. } => COMMAND_CLASS_TOOLS.contains(&self.tool.as_str()),
         };
         if !tool_matches {
             return false;
@@ -154,13 +152,19 @@ impl RuleSet {
         // way; before the first background task the directory may not
         // exist yet, in which case CWD-anchoring is the best available
         // absolute form.
-        let exec_root = std::fs::canonicalize(&raw).unwrap_or_else(|_| {
-            if raw.is_absolute() {
-                raw
-            } else {
-                std::env::current_dir().unwrap_or_default().join(&raw)
-            }
-        });
+        let cwd = std::env::current_dir().unwrap_or_default();
+        // Resolve existing ancestors too: the DB directory may be a symlink
+        // while its exec child does not exist until the first command.
+        let exec_root = crate::tools::workspace::WorkspaceRoots::new(cwd.clone(), Vec::new())
+            .resolve_write_path(&raw.to_string_lossy())
+            .map(|resolved| resolved.path)
+            .unwrap_or_else(|_| {
+                if raw.is_absolute() {
+                    raw
+                } else {
+                    cwd.join(raw)
+                }
+            });
         Self {
             rules: Vec::new(),
             exec_root,
@@ -182,16 +186,23 @@ impl RuleSet {
         &self.exec_root
     }
 
-    /// The built-in, undeletable deny: file actions under the
-    /// background-task output root never pass — the model reads task
-    /// output through `task_output` only. Component-wise prefix, which is
-    /// exactly the `{exec_root}/**` glob without letting a sibling like
-    /// `/x/exec2` sneak under `/x/exec`.
+    /// Runtime output is readable, but cannot be modified even by bypass
+    /// or an allow rule. Canonical paths keep symlink aliases equivalent.
     pub(crate) fn denies_exec_root(&self, action: &PermissionAction) -> bool {
-        match action.file_path() {
-            Some(path) => path.starts_with(&self.exec_root),
-            None => false,
-        }
+        matches!(action, PermissionAction::Write { path, .. } | PermissionAction::Edit { path, .. }
+            if self.under_exec_root(path))
+    }
+
+    fn under_exec_root(&self, path: &Path) -> bool {
+        path.starts_with(&self.exec_root)
+            || self
+                .exec_root
+                .canonicalize()
+                .is_ok_and(|root| path.starts_with(root))
+    }
+
+    pub(crate) fn allows_exec_read(&self, action: &PermissionAction) -> bool {
+        matches!(action, PermissionAction::Read { path, .. } if self.under_exec_root(path))
     }
 }
 
@@ -326,7 +337,7 @@ mod tests {
     #[test]
     fn trusted_actions_match_no_rule() {
         assert!(!rule(Effect::Deny, "task", None).matches(&PermissionAction::Trusted));
-        assert!(!rule(Effect::Deny, "task_output", Some("**")).matches(&PermissionAction::Trusted));
+        assert!(!rule(Effect::Deny, "task_stop", Some("**")).matches(&PermissionAction::Trusted));
     }
 
     #[test]
@@ -344,9 +355,30 @@ mod tests {
             .unwrap()
             .join("some-exec-dir");
         assert_eq!(set.exec_root(), anchored);
-        assert!(set.denies_exec_root(&read(
+        assert!(set.allows_exec_read(&read(
             &anchored.join("conv/bg_1.log").display().to_string(),
             true,
         )));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nonexistent_exec_root_under_a_symlink_resolves_its_real_boundary() {
+        let parent = tempfile::tempdir().unwrap();
+        let real = tempfile::tempdir().unwrap();
+        let alias = parent.path().join("db");
+        std::os::unix::fs::symlink(real.path(), &alias).unwrap();
+        let rules = RuleSet::new(alias.join("exec"));
+        let path = real.path().join("exec/conv/output.log");
+        assert_eq!(rules.exec_root(), real.path().join("exec"));
+        assert!(rules.denies_exec_root(&PermissionAction::Write {
+            path: path.clone(),
+            outside: true
+        }));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        assert!(rules.allows_exec_read(&PermissionAction::Read {
+            path,
+            outside: true
+        }));
     }
 }

@@ -14,6 +14,7 @@ import {
   newToolCard,
   storedToDisplayList,
 } from "./chat/display";
+import { createRunController } from "./chat/run";
 import { readChatStream } from "./chat/transport";
 import type {
   AgentEvent,
@@ -25,6 +26,7 @@ import type {
   PendingApprovalDto,
   ToolCallPart,
 } from "./chat/display";
+import type { RunOwner } from "./chat/run";
 import type { SubagentUpdatedEventData } from "@/composables/useSubagents";
 
 export * from "./chat/display";
@@ -135,7 +137,8 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
   const trackContextUsage = options.contextUsage !== false;
 
   const messages = ref<DisplayMessage[]>([]);
-  const sending = ref(false);
+  const runs = createRunController();
+  const sending = runs.busy;
   let historyChanging = false;
   const serverResumable = ref(false);
 
@@ -164,6 +167,9 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
   const usageWindowTokens = ref<number | null>(null);
   const usageCompacting = ref(false);
 
+  /** dispose 后不再消费/落位任何事件（abort 传播到 read 拒绝前的缓冲事件兜底）。 */
+  let disposed = false;
+
   // --- 审批状态 ---------------------------------------------------------------
   // 按会话分桶的 pending 审批：事件（upsert/remove）与 pending 快照端点
   // （整表替换）两路维护；重放幂等由「requested 后必跟 resolved」的事件
@@ -171,6 +177,9 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
 
   /** 会话 id → 待决审批列表（审批卡的数据源）。 */
   const pendingApprovals = ref(new Map<string, PendingApproval[]>());
+  const approvalVersions = new Map<string, number>();
+  let approvalSnapshotGeneration = 0;
+  const approvalLoads = new Map<string, number>();
 
   /** approval_requested 事件负载 → 展示形状。 */
   function approvalFromEvent(
@@ -178,6 +187,7 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
   ): PendingApproval {
     return {
       approvalId: data.approval_id,
+      agentId: data.agent_id ?? null,
       callId: data.call_id,
       tool: data.tool,
       kind: data.kind,
@@ -193,6 +203,7 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
   function approvalFromDto(dto: PendingApprovalDto): PendingApproval {
     return {
       approvalId: dto.approval_id,
+      agentId: dto.agent_id ?? null,
       callId: dto.call_id,
       tool: dto.tool,
       kind: dto.kind,
@@ -206,6 +217,10 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
 
   /** 按 approvalId upsert（重放重复到达时原地覆盖，不产生重复卡片）。 */
   function upsertApproval(conversationId: string, approval: PendingApproval) {
+    approvalVersions.set(
+      conversationId,
+      (approvalVersions.get(conversationId) ?? 0) + 1,
+    );
     const list = pendingApprovals.value.get(conversationId) ?? [];
     const index = list.findIndex(
       (item) => item.approvalId === approval.approvalId,
@@ -220,6 +235,10 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
 
   /** 移除一条 pending（resolved 事件 / decide 落地；未命中时静默幂等）。 */
   function removeApproval(conversationId: string, approvalId: string) {
+    approvalVersions.set(
+      conversationId,
+      (approvalVersions.get(conversationId) ?? 0) + 1,
+    );
     const list = pendingApprovals.value.get(conversationId);
     if (!list?.some((item) => item.approvalId === approvalId)) return;
     pendingApprovals.value = new Map(pendingApprovals.value).set(
@@ -234,12 +253,21 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
    * 保留旧列表静默返回，绝不阻断 attachRun 的重连主流程。
    */
   const refreshApprovals = async (conversationId: string) => {
+    const generation = ++approvalSnapshotGeneration;
+    const version = approvalVersions.get(conversationId) ?? 0;
+    approvalLoads.set(conversationId, generation);
     try {
       const { data, error } = await client.GET(
         "/api/conversations/{id}/approvals",
         { params: { path: { id: conversationId } } },
       );
-      if (!error && data) {
+      if (
+        !disposed &&
+        !error &&
+        data &&
+        approvalLoads.get(conversationId) === generation &&
+        (approvalVersions.get(conversationId) ?? 0) === version
+      ) {
         pendingApprovals.value = new Map(pendingApprovals.value).set(
           conversationId,
           data.map(approvalFromDto),
@@ -280,11 +308,6 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
   /** Set by applyStreamEvent; avoids re-rendering unchanged state every tick. */
   let streamDirty = false;
 
-  /** 子代理 events 订阅的中止器（dispose 时中断在飞订阅）。 */
-  let attachAbort: AbortController | null = null;
-  /** dispose 后不再消费/落位任何事件（abort 传播到 read 拒绝前的缓冲事件兜底）。 */
-  let disposed = false;
-
   // -------------------------------------------------------------------------
   // Live streaming (non-reactive buffers flushed into `messages` on a timer)
   // -------------------------------------------------------------------------
@@ -314,6 +337,79 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
       clearInterval(flushTimer);
       flushTimer = null;
     }
+  }
+
+  function selectConversation(conversationId: string | null) {
+    if (runs.select(conversationId)) {
+      ++historyGeneration;
+      messages.value = [];
+      serverResumable.value = false;
+      sendRevision = null;
+      contextRevision.value = null;
+      stopFlushing();
+      streamState = null;
+      streamDirty = false;
+      usageInputTokens.value = null;
+      usageWindowTokens.value = null;
+      usageCompacting.value = false;
+      if (trackContextUsage) clearContextUsage();
+    }
+    activeConversationId = conversationId;
+  }
+
+  function beginRun(conversationId: string): RunOwner | null {
+    if (historyChanging || disposed) return null;
+    selectConversation(conversationId);
+    return runs.begin(conversationId);
+  }
+
+  async function finalizeRun(
+    owner: RunOwner,
+    refresh?: () => Promise<void>,
+    reconnect?: () => Promise<void>,
+  ) {
+    if (!runs.owns(owner)) return;
+    stopFlushing();
+    usageCompacting.value = false;
+    if (trackContextUsage) setCompacting(false);
+    if (streamState) {
+      finalizeUnconvergedCards();
+      streamState.isStreaming = false;
+      streamDirty = true;
+      flushStream();
+      streamState = null;
+    }
+    if (refresh) {
+      try {
+        await refresh();
+      } catch {
+        /* persisted history converges on the next load */
+      }
+    }
+    if (!runs.finish(owner)) return;
+    if (reconnect) await reconnect();
+  }
+
+  function showRunFailure(owner: RunOwner, text: string) {
+    if (!runs.owns(owner)) return;
+    if (streamState) {
+      if (
+        !messages.value.some((message) => message.id === streamState?.messageId)
+      )
+        return;
+      streamState.parts.push({ kind: "text", text });
+      streamDirty = true;
+    } else {
+      messages.value = [
+        ...messages.value,
+        {
+          id: `error-${owner.generation}`,
+          role: "assistant",
+          parts: [{ kind: "text", text }],
+        },
+      ];
+    }
+    contextRevision.value = null;
   }
 
   function findGeneratingCard(callId: string): ToolCallPart | null {
@@ -618,53 +714,60 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
    */
   async function consumeSseStream(
     res: Response,
-    conversationId: string,
+    owner: RunOwner,
     onEvent: (event: AgentEvent) => void = applyStreamEvent,
   ): Promise<boolean> {
+    const conversationId = owner.conversationId;
     let failed = false;
-    const terminal = await readChatStream(res, (event) => {
-      if (event.type === "error" || event.type === "cancelled") failed = true;
-      if (
-        event.type === "finish" &&
-        activeConversationId === conversationId &&
-        !disposed
-      ) {
-        serverResumable.value = false;
-      }
-      if (event.type === "title_updated") {
-        // 派发放在 parse 的 try 之外：监听器异常不该被当成坏帧吞掉，
-        // 也不该中断其余监听器收到本事件。
-        for (const listener of titleListeners) {
-          try {
-            listener(conversationId, event.data.title);
-          } catch {
-            /* isolate listeners */
-          }
+    const terminal = await readChatStream(
+      res,
+      (event) => {
+        if (!runs.owns(owner)) return;
+        if (event.type === "error" || event.type === "cancelled") failed = true;
+        if (
+          event.type === "finish" &&
+          activeConversationId === conversationId &&
+          !disposed
+        ) {
+          serverResumable.value = false;
         }
-        return;
-      }
-      if (event.type === "subagent_updated") {
-        options.onSubagentEvent?.(conversationId, event.data);
-        return;
-      }
-      // 审批事件是会话作用域状态而非消息内容：在此按流所属会话 upsert/
-      // remove（不依赖 activeConversationId），也不进消息 reducer。
-      if (event.type === "approval_requested") {
-        upsertApproval(conversationId, approvalFromEvent(event.data));
-        return;
-      }
-      if (event.type === "approval_resolved") {
-        removeApproval(conversationId, event.data.approval_id);
-        return;
-      }
-      if (!disposed && activeConversationId === conversationId) onEvent(event);
-    });
-    if (failed && activeConversationId === conversationId && !disposed) {
+        if (event.type === "title_updated") {
+          // 派发放在 parse 的 try 之外：监听器异常不该被当成坏帧吞掉，
+          // 也不该中断其余监听器收到本事件。
+          for (const listener of titleListeners) {
+            try {
+              listener(conversationId, event.data.title);
+            } catch {
+              /* isolate listeners */
+            }
+          }
+          return;
+        }
+        if (event.type === "subagent_updated") {
+          options.onSubagentEvent?.(conversationId, event.data);
+          return;
+        }
+        // 审批事件是会话作用域状态而非消息内容：在此按流所属会话 upsert/
+        // remove（不依赖 activeConversationId），也不进消息 reducer。
+        if (event.type === "approval_requested") {
+          upsertApproval(conversationId, approvalFromEvent(event.data));
+          return;
+        }
+        if (event.type === "approval_resolved") {
+          removeApproval(conversationId, event.data.approval_id);
+          return;
+        }
+        if (!disposed && activeConversationId === conversationId)
+          onEvent(event);
+      },
+      owner.signal,
+    );
+    if (failed && runs.owns(owner)) {
       try {
         const { data } = await client.GET("/api/conversations/{id}/run", {
           params: { path: { id: conversationId } },
         });
-        if (activeConversationId === conversationId && !disposed) {
+        if (runs.owns(owner)) {
           serverResumable.value = data?.resumable ?? false;
         }
       } catch {
@@ -682,13 +785,9 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
     requireRevision = false,
   ) => {
     if (historyChanging) return;
+    selectConversation(conversationId);
     const generation = ++historyGeneration;
     contextRevision.value = null;
-    if (activeConversationId !== conversationId) {
-      serverResumable.value = false;
-      sendRevision = null;
-    }
-    activeConversationId = conversationId;
     lastFetch = { id: conversationId, at: Date.now() };
     const { data, error, response } = await client.GET(
       "/api/conversations/{id}/messages",
@@ -742,9 +841,10 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
     content: string,
     providerSpec?: string | null,
   ) => {
-    if (!content.trim() || sending.value || historyChanging) return;
+    if (!content.trim()) return;
+    const owner = beginRun(conversationId);
+    if (!owner) return;
     const expectedRevision = contextRevision.value ?? sendRevision;
-    sending.value = true;
     let accepted = false;
     let reconnect = false;
     let failed = false;
@@ -792,7 +892,9 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
+        signal: owner.signal,
       });
+      if (!runs.owns(owner)) return;
 
       if (!res.ok || !res.body) {
         failureText = await sendFailureText(res);
@@ -806,41 +908,22 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
       ) {
         sendRevision = null;
       }
-      reconnect = !(await consumeSseStream(res, conversationId, (event) => {
+      reconnect = !(await consumeSseStream(res, owner, (event) => {
         if (event.type === "error") failed = true;
         applyStreamEvent(event);
       }));
     } catch {
       failed = true;
       reconnect = accepted;
-      if (streamState) {
-        streamState.parts.push({
-          kind: "text",
-          text: failureText ?? "Failed to send message.",
-        });
-        streamDirty = true;
-      }
+      showRunFailure(owner, failureText ?? "Failed to send message.");
     } finally {
-      stopFlushing();
-      if (streamState) {
-        finalizeUnconvergedCards();
-        streamState.isStreaming = false;
-        flushStream();
-        streamState = null;
-      }
-      // 刷新失败不影响流式终态（下次 fetch 自会收敛），静默即可。
-      // Rejected prompts and stream errors are not persisted; keep their live
-      // output visible instead of replacing it with the success-path snapshot.
-      if (!failed && activeConversationId === conversationId) {
-        try {
-          await loadMessages(conversationId, !hadInterruptedCards);
-        } catch {
-          // ignore: cosmetic refresh
-        }
-      }
-      sending.value = false;
-      if (reconnect && activeConversationId === conversationId)
-        await attachRun(conversationId);
+      await finalizeRun(
+        owner,
+        !failed
+          ? () => loadMessages(conversationId, !hadInterruptedCards)
+          : undefined,
+        reconnect ? () => attachRun(conversationId) : undefined,
+      );
     }
   };
 
@@ -849,16 +932,18 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
    * 直接以现有历史续跑 agent loop。发送中（sending）时忽略。
    */
   const resumeTurn = async (conversationId: string) => {
-    if (sending.value || historyChanging) return;
-    sending.value = true;
-    activeConversationId = conversationId;
+    const owner = beginRun(conversationId);
+    if (!owner) return;
     let accepted = false;
     let reconnect = false;
+    let failed = false;
 
     try {
       const res = await fetch(`/api/conversations/${conversationId}/resume`, {
         method: "POST",
+        signal: owner.signal,
       });
+      if (!runs.owns(owner)) return;
 
       if (!res.ok || !res.body) {
         throw new Error(`HTTP ${res.status}`);
@@ -867,9 +952,8 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
       // 后端已把占位 tool 行持久化：先拉取让悬空卡片落定，再开始消费
       // 事件（SSE 事件在开始读取前由浏览器缓冲，不会丢失）。
       accepted = true;
-      if (activeConversationId !== conversationId) return;
       await loadMessages(conversationId);
-      if (activeConversationId !== conversationId) return;
+      if (!runs.owns(owner)) return;
 
       const assistantId = `resumed-${Date.now()}`;
       messages.value = [
@@ -879,38 +963,17 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
       streamState = { messageId: assistantId, parts: [], isStreaming: true };
       startFlushing();
 
-      accepted = true;
-      reconnect = !(await consumeSseStream(res, conversationId));
+      reconnect = !(await consumeSseStream(res, owner));
     } catch {
+      failed = true;
       reconnect = accepted;
-      if (streamState) {
-        streamState.parts.push({
-          kind: "text",
-          text: "Failed to resume turn.",
-        });
-        streamDirty = true;
-      }
+      showRunFailure(owner, "Failed to resume turn.");
     } finally {
-      stopFlushing();
-      if (streamState) {
-        finalizeUnconvergedCards();
-        streamState.isStreaming = false;
-        flushStream();
-        streamState = null;
-      }
-      // 静默刷新：以服务端持久化的终态为准（也顺带清掉过期的可恢复标记）。
-      // 仅当视图仍停留在本会话：切走后由路由 watch 负责重新拉取，这里
-      // 不能用旧会话的历史覆盖当前视图。刷新失败不影响终态，静默即可。
-      if (activeConversationId === conversationId) {
-        try {
-          await loadMessages(conversationId);
-        } catch {
-          // ignore: cosmetic refresh
-        }
-      }
-      sending.value = false;
-      if (reconnect && activeConversationId === conversationId)
-        await attachRun(conversationId);
+      await finalizeRun(
+        owner,
+        !failed ? () => loadMessages(conversationId) : undefined,
+        reconnect ? () => attachRun(conversationId) : undefined,
+      );
     }
   };
 
@@ -924,8 +987,9 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
    * 覆盖全部事件。终态/EOF/失败统一走 finally 的静默刷新收敛。
    */
   async function attachRun(conversationId: string, retries = 2): Promise<void> {
-    if (sending.value || historyChanging) return;
-    sending.value = true;
+    if (activeConversationId !== conversationId) return;
+    const owner = beginRun(conversationId);
+    if (!owner) return;
     let accepted = false;
     let reconnect = false;
 
@@ -934,20 +998,23 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
       const { data, error } = await client.GET("/api/conversations/{id}/run", {
         params: { path: { id: conversationId } },
       });
-      if (activeConversationId === conversationId)
-        serverResumable.value = data?.resumable ?? false;
-      if (activeConversationId !== conversationId || error || !data?.running) {
+      if (!runs.owns(owner)) return;
+      serverResumable.value = data?.resumable ?? false;
+      // 切走时订阅已中止：即使 run 已空闲，也要对账可能错过的 resolved。
+      // 重放的 requested/resolved 事件在快照之后叠加。
+      await refreshApprovals(conversationId);
+      if (!runs.owns(owner)) return;
+      if (error || !data?.running) {
         // 空闲：静默刷新后解锁返回（也兜住"查状态与订阅之间刚好结束"
         // 的竞态——刷新拿到 DB 终态）。
         return;
       }
 
-      // 先拉一次 pending 审批快照（页面刷新后的真相源），
-      // 再订阅事件流——重放的 requested/resolved 事件在其后叠加，最终
-      // 状态与后端注册表一致。
-      await refreshApprovals(conversationId);
-
-      const res = await fetch(`/api/conversations/${conversationId}/events`);
+      // 快照已对账，再订阅事件流以重放并继续实时更新。
+      const res = await fetch(`/api/conversations/${conversationId}/events`, {
+        signal: owner.signal,
+      });
+      if (!runs.owns(owner)) return;
       if (!res.ok || !res.body) {
         // 404：探测与订阅之间 run 结束——回到 DB 历史（finally 刷新）。
         throw new Error(`HTTP ${res.status}`);
@@ -979,7 +1046,7 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
       };
 
       accepted = true;
-      reconnect = !(await consumeSseStream(res, conversationId, (event) => {
+      reconnect = !(await consumeSseStream(res, owner, (event) => {
         // 会话守卫：切走后（activeConversationId 已变）本流的事件不再进
         // 视图——尤其截断会改写 messages，绝不能落在别的会话头上。收尾
         // 刷新同样被守卫拦下，旧会话的重拉由路由 watch 负责。
@@ -1002,26 +1069,13 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
       reconnect = accepted;
       // 网络失败：静默（与 resumeTurn 一致的最小处理），finally 统一收敛。
     } finally {
-      stopFlushing();
-      if (streamState) {
-        finalizeUnconvergedCards();
-        streamState.isStreaming = false;
-        flushStream();
-        streamState = null;
-      }
-      // 静默刷新：以服务端持久化的终态为准。仅当视图仍停留在本会话——
-      // 切走后由路由 watch 负责重新拉取，这里不能用旧会话的历史覆盖
-      // 当前视图。刷新失败不影响终态，静默即可。
-      if (activeConversationId === conversationId) {
-        try {
-          await loadMessages(conversationId);
-        } catch {
-          // ignore: cosmetic refresh
-        }
-      }
-      sending.value = false;
-      if (reconnect && activeConversationId === conversationId && retries > 0)
-        await attachRun(conversationId, retries - 1);
+      await finalizeRun(
+        owner,
+        () => loadMessages(conversationId),
+        reconnect && retries > 0
+          ? () => attachRun(conversationId, retries - 1)
+          : undefined,
+      );
     }
   }
 
@@ -1037,13 +1091,8 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
     agentId: string,
     retries = 2,
   ): Promise<void> => {
-    if (sending.value || historyChanging) return;
-    sending.value = true;
-    disposed = false;
-    activeConversationId = agentId;
-    attachAbort?.abort();
-    const controller = new AbortController();
-    attachAbort = controller;
+    const owner = beginRun(agentId);
+    if (!owner) return;
     let accepted = false;
     let reconnect = false;
 
@@ -1053,7 +1102,7 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
         "/api/subagents/{agentId}/messages",
         { params: { path: { agentId } } },
       );
-      if (!disposed && activeConversationId === agentId && !error && data) {
+      if (runs.owns(owner) && !error && data) {
         messages.value = storedToDisplayList(data);
         activeConversationId = agentId;
         usageInputTokens.value = lastAssistantInputTokens(data);
@@ -1063,16 +1112,14 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
 
     try {
       await loadSubagentHistory();
-      if (
-        disposed ||
-        controller.signal.aborted ||
-        activeConversationId !== agentId
-      )
-        return;
+      if (!runs.owns(owner)) return;
+      await refreshApprovals(agentId);
+      if (!runs.owns(owner)) return;
 
       const res = await fetch(`/api/subagents/${agentId}/events`, {
-        signal: controller.signal,
+        signal: owner.signal,
       });
+      if (!runs.owns(owner)) return;
       if (res.status === 404) {
         // 无活动 run（已结束）：仅历史视图。
         return;
@@ -1102,7 +1149,7 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
       };
 
       accepted = true;
-      reconnect = !(await consumeSseStream(res, agentId, (event) => {
+      reconnect = !(await consumeSseStream(res, owner, (event) => {
         // 会话守卫 + dispose 守卫：关闭标签后（或切走后）本流的事件不再进
         // 视图——abort 传播到 read 拒绝前仍可能有已缓冲的事件到达。
         if (disposed || activeConversationId !== agentId) return;
@@ -1124,31 +1171,13 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
       reconnect = accepted;
       // 网络失败/主动中断：静默，finally 统一收敛（中断时跳过收尾刷新）。
     } finally {
-      if (attachAbort === controller) attachAbort = null;
-      stopFlushing();
-      if (streamState) {
-        finalizeUnconvergedCards();
-        streamState.isStreaming = false;
-        flushStream();
-        streamState = null;
-      }
-      if (!controller.signal.aborted && activeConversationId === agentId) {
-        try {
-          await loadSubagentHistory();
-        } catch {
-          // ignore: cosmetic refresh
-        }
-      }
-      sending.value = false;
-      if (
-        reconnect &&
-        !controller.signal.aborted &&
-        !disposed &&
-        activeConversationId === agentId &&
-        retries > 0
-      ) {
-        await attachSubagent(agentId, retries - 1);
-      }
+      await finalizeRun(
+        owner,
+        loadSubagentHistory,
+        reconnect && retries > 0
+          ? () => attachSubagent(agentId, retries - 1)
+          : undefined,
+      );
     }
   };
 
@@ -1159,9 +1188,10 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
   const dispose = () => {
     ++historyGeneration;
     disposed = true;
-    attachAbort?.abort();
-    attachAbort = null;
+    approvalLoads.clear();
+    runs.invalidate();
     stopFlushing();
+    streamState = null;
   };
 
   /**
@@ -1180,8 +1210,8 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
    * 条未出现」为可见信号。
    */
   const compactConversation = async (conversationId: string) => {
-    if (sending.value || historyChanging) return;
-    sending.value = true;
+    const owner = beginRun(conversationId);
+    if (!owner) return;
     usageCompacting.value = true;
     if (trackContextUsage) setCompacting(true);
     try {
@@ -1193,15 +1223,15 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
         console.error("compact failed", error ?? "no data");
         return;
       }
-      if (activeConversationId === conversationId) {
-        await loadMessages(conversationId);
-      }
+      if (runs.owns(owner)) await loadMessages(conversationId);
     } catch (error) {
       console.error("compact failed", error);
     } finally {
-      usageCompacting.value = false;
-      if (trackContextUsage) setCompacting(false);
-      sending.value = false;
+      if (runs.owns(owner)) {
+        usageCompacting.value = false;
+        if (trackContextUsage) setCompacting(false);
+      }
+      await finalizeRun(owner);
     }
   };
 
@@ -1209,13 +1239,16 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
     ++historyGeneration;
     serverResumable.value = false;
     messages.value = [];
-    activeConversationId = null;
+    lastFetch = null;
+    selectConversation(null);
     usageInputTokens.value = null;
     contextRevision.value = null;
     sendRevision = null;
     usageWindowTokens.value = null;
     usageCompacting.value = false;
     pendingApprovals.value = new Map();
+    approvalLoads.clear();
+    approvalVersions.clear();
     if (trackContextUsage) clearContextUsage();
   };
 

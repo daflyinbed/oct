@@ -1036,6 +1036,7 @@ export interface components {
              *     truth source for which approvals are still open.
              */
             data: {
+                agent_id?: string | null;
                 approval_id: string;
                 /** @description The tool call id the approval parks. */
                 call_id: string;
@@ -1071,6 +1072,7 @@ export interface components {
              *     eventually followed by exactly one of these.
              */
             data: {
+                agent_id?: string | null;
                 approval_id: string;
                 outcome: components["schemas"]["ApprovalOutcome"];
                 /**
@@ -1695,6 +1697,7 @@ export interface components {
          *     refresh recovers its open approval cards from.
          */
         PendingApprovalDto: {
+            agent_id?: string | null;
             approval_id: string;
             /** @description The tool call id the approval parks. */
             call_id: string;

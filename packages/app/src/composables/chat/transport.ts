@@ -1,28 +1,39 @@
 import type { ChatStreamEvent } from "./display";
 
+const LEADING_SPACE = /^ /;
+
 /** Incremental SSE framing, including CRLF and multi-line data fields. The
  * boolean distinguishes a model terminal event from a transport disconnect. */
 export async function readChatStream(
   response: Response,
   onEvent: (event: ChatStreamEvent) => void,
+  signal?: AbortSignal,
 ): Promise<boolean> {
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let data: string[] = [];
   let terminal = false;
+  const abort = () => {
+    void reader.cancel().catch(() => {});
+  };
+  signal?.addEventListener("abort", abort, { once: true });
   const dispatch = () => {
-    if (!data.length) return;
+    if (data.length === 0) return;
     const payload = data.join("\n");
     data = [];
     if (payload === "[DONE]") return;
     let event: ChatStreamEvent;
-    try { event = JSON.parse(payload) as ChatStreamEvent; } catch { return; }
+    try {
+      event = JSON.parse(payload) as ChatStreamEvent;
+    } catch {
+      return;
+    }
     if (["finish", "error", "cancelled"].includes(event.type)) terminal = true;
-    onEvent(event);
+    if (!signal?.aborted) onEvent(event);
   };
   try {
-    while (true) {
+    while (!signal?.aborted) {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
@@ -31,11 +42,14 @@ export async function readChatStream(
       for (let line of lines) {
         if (line.endsWith("\r")) line = line.slice(0, -1);
         if (!line) dispatch();
-        else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+        else if (line.startsWith("data:"))
+          data.push(line.slice(5).replace(LEADING_SPACE, ""));
       }
     }
     return terminal;
   } finally {
+    signal?.removeEventListener("abort", abort);
+    if (signal?.aborted) await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
 }

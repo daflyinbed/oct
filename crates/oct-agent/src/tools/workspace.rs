@@ -27,6 +27,7 @@ use super::ToolOutput;
 pub struct WorkspaceRoots {
     primary: PathBuf,
     additional: Vec<PathBuf>,
+    read_only: Vec<PathBuf>,
 }
 
 /// A resolved tool path plus its workspace classification.
@@ -47,7 +48,15 @@ impl WorkspaceRoots {
         Self {
             primary,
             additional,
+            read_only: Vec::new(),
         }
+    }
+
+    /// Add a runtime-owned directory readable through absolute paths. It
+    /// never changes write containment or the relative-path anchor.
+    pub fn with_read_only_root(mut self, root: PathBuf) -> Self {
+        self.read_only.push(root);
+        self
     }
 
     /// The primary working directory; the anchor for relative paths and the
@@ -69,7 +78,8 @@ impl WorkspaceRoots {
 
     /// Canonicalized roots for DISPLAY purposes, best effort: roots that
     /// cannot be canonicalized keep their raw form so relativize still works
-    /// for paths built on them. Primary first.
+    /// for paths built on them. Primary first. Runtime read-only roots are
+    /// excluded so their matches remain absolute and reusable as tool inputs.
     pub fn display_roots(&self) -> Vec<PathBuf> {
         std::iter::once(self.primary.clone())
             .chain(self.additional.iter().cloned())
@@ -95,7 +105,16 @@ impl WorkspaceRoots {
             .canonicalize()
             .map_err(|e| ToolOutput::error(format!("Path not found: {requested} ({e})")))?;
 
-        Ok(self.classify(path))
+        let mut resolved = self.classify(path);
+        if self
+            .read_only
+            .iter()
+            .filter_map(|root| root.canonicalize().ok())
+            .any(|root| resolved.path.starts_with(root))
+        {
+            resolved.outside = false;
+        }
+        Ok(resolved)
     }
 
     /// Resolve a request for WRITE-style use. Unlike [`Self::resolve_path`],
@@ -236,6 +255,23 @@ mod tests {
     }
 
     #[test]
+    fn read_only_roots_leave_write_containment_and_relative_paths_unchanged() {
+        let fx = Fixture::new();
+        let file = fx.outside.path().join("output.log");
+        std::fs::write(&file, "output").unwrap();
+        let roots = fx
+            .roots_empty()
+            .with_read_only_root(fx.outside.path().to_path_buf());
+        let absolute = file.to_str().unwrap();
+        assert!(!roots.resolve_path(absolute).unwrap().outside);
+        assert!(roots.resolve_write_path(absolute).unwrap().outside);
+        assert!(roots.resolve_path("output.log").is_err());
+        assert_eq!(roots.relativize(&file), file.display().to_string());
+        // REST callers construct roots without runtime read-only additions.
+        assert!(fx.roots_empty().validate_path(absolute).is_err());
+    }
+
+    #[test]
     fn read_inside_additional_root_is_allowed() {
         let fx = Fixture::new();
         let file = fx.additional.path().join("notes.txt");
@@ -263,19 +299,14 @@ mod tests {
         assert!(fx.roots().is_outside(&resolved.path));
 
         // Relative escape via `..` resolves to the same honest classification.
-        let escape = fx
-            .primary
-            .path()
-            .parent()
-            .unwrap()
-            .join(format!(
-                "oct-ws-outside-{}-{}.txt",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
+        let escape = fx.primary.path().parent().unwrap().join(format!(
+            "oct-ws-outside-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         std::fs::write(&escape, "x").unwrap();
         let rel = format!("../{}", escape.file_name().unwrap().to_string_lossy());
         let resolved = fx.roots().resolve_path(&rel).unwrap();

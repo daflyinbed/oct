@@ -36,7 +36,7 @@ pub fn describe(tool_name: &str, args: &Value, roots: &WorkspaceRoots) -> Permis
         name if name.starts_with("mcp__") => PermissionAction::Mcp {
             tool: name.to_string(),
         },
-        // task / task_output / task_stop (the free-pass class) and anything
+        // task / task_stop (the free-pass class) and anything
         // unknown (the loop's "Unknown tool" error is that call's outcome).
         _ => PermissionAction::Trusted,
     }
@@ -321,7 +321,7 @@ mod tests {
         );
 
         // The free-pass class and unknown tools.
-        for name in ["task", "task_output", "task_stop", "no_such_tool"] {
+        for name in ["task", "task_stop", "no_such_tool"] {
             assert_eq!(
                 describe(name, &serde_json::json!({"a": 1}), &roots),
                 PermissionAction::Trusted

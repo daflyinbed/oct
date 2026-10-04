@@ -458,15 +458,14 @@ async fn deleting_the_conversation_cancels_tasks_and_cleans_output() {
     .await;
 }
 
-// --- 7. Tool-level semantics: task_output paging/blocking, task_stop, gate --
+// --- 7. Generic output reading, task_stop and the worker background gate --
 
-/// Direct tool calls (no LLM): the task_output read model and the subagent
+/// Direct tool calls (no LLM): generic output reading and the subagent
 /// gate of execute_command.
 #[tokio::test]
-async fn task_output_pages_and_blocks_and_the_gate_closes() {
+async fn output_files_are_readable_with_generic_tools_and_stop_still_works() {
     use oct_agent::agent::EventHub;
     use oct_agent::tools::execute::{ExecuteBackground, ExecuteCommandTool};
-    use oct_agent::tools::task_output::TaskOutputTool;
     use oct_agent::tools::task_stop::TaskStopTool;
     use oct_agent::tools::{AgentTool, ToolContext};
     use tokio_util::sync::CancellationToken;
@@ -512,54 +511,39 @@ async fn task_output_pages_and_blocks_and_the_gate_closes() {
         .await
         .unwrap();
 
-    let output_tool = TaskOutputTool::new(app.background.clone(), conv.clone());
-
-    // Non-blocking snapshot of a running task.
-    let out = output_tool
-        .execute(json!({"task_id": task.id, "block": false}), &ctx)
+    if let Some((mut done, _)) = app.background.active_task(&task.id) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !*done.borrow_and_update() {
+                done.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+    }
+    let roots =
+        oct_agent::tools::workspace::WorkspaceRoots::new(app.dir.path().to_path_buf(), vec![])
+            .with_read_only_root(app.background.exec_dir().to_path_buf());
+    let read = oct_agent::tools::read::ReadFileTool::new(
+        roots.clone(),
+        Arc::new(oct_agent::tools::shared::AgentReadState::new()),
+    );
+    let out = read
+        .execute(
+            json!({"path": task.output_path, "start_line": 2, "end_line": 2}),
+            &ctx,
+        )
         .await
         .unwrap();
     assert!(!out.is_error);
-    assert!(out.content.contains("status: running"), "{}", out.content);
-    assert!(
-        out.content.contains("exit_code: pending (still running)"),
-        "{}",
-        out.content
-    );
-    assert!(!out.content.contains("killed by a signal"));
-
-    // Blocking read waits for the settlement and shows the tail.
-    let out = output_tool
-        .execute(
-            json!({"task_id": task.id, "block": true, "timeout_secs": 10}),
-            &ctx,
-        )
+    assert!(out.content.contains("omega"));
+    assert!(!out.content.contains("alpha"));
+    let grep = oct_agent::tools::grep::GrepTool::new(roots.clone());
+    let out = grep
+        .execute(json!({"path": task.output_path, "pattern": "alpha"}), &ctx)
         .await
         .unwrap();
-    assert!(out.content.contains("status: completed"), "{}", out.content);
-    assert!(out.content.contains("omega"), "tail: {}", out.content);
-
-    // Paging from the start: the first page is `alpha` and carries the
-    // next offset.
-    let out = output_tool
-        .execute(
-            json!({"task_id": task.id, "offset": 0, "max_bytes": 6}),
-            &ctx,
-        )
-        .await
-        .unwrap();
-    assert!(out.content.contains("alpha"), "{}", out.content);
-    assert!(
-        out.content.contains("more output follows"),
-        "paging hint: {}",
-        out.content
-    );
-    // First page starts at byte 0: no omission note.
-    assert!(
-        !out.content.contains("earlier output omitted"),
-        "{}",
-        out.content
-    );
+    assert!(!out.is_error);
+    assert!(out.content.contains("alpha"));
 
     // task_stop on a settled task reports the already-exited status.
     let stop_tool = TaskStopTool::new(app.background.clone(), conv.clone());
@@ -590,22 +574,6 @@ async fn task_output_pages_and_blocks_and_the_gate_closes() {
         "{}",
         out.content
     );
-
-    let out = output_tool
-        .execute(json!({"task_id": live.id}), &ctx)
-        .await
-        .unwrap();
-    assert!(out.content.contains("status: cancelled"));
-    assert!(out.content.contains("exit_code: unknown\n"));
-    assert!(!out.content.contains("killed by a signal"));
-
-    // Unknown id: the error lists the conversation's known ids.
-    let out = output_tool
-        .execute(json!({"task_id": "bg_nope"}), &ctx)
-        .await
-        .unwrap();
-    assert!(out.is_error);
-    assert!(out.content.contains(&task.id), "{}", out.content);
 
     // The subagent gate: a plain (background-less) execute tool refuses
     // run_in_background — the schema stays identical, dispatch is closed.
@@ -645,6 +613,8 @@ async fn task_output_pages_and_blocks_and_the_gate_closes() {
         .unwrap();
     assert!(!out.is_error, "{}", out.content);
     assert!(out.content.contains("task_id: bg_"), "{}", out.content);
+    assert!(out.content.contains("output_file: "), "{}", out.content);
+    assert!(!out.content.contains("task_output"));
 }
 
 // --- misc ---------------------------------------------------------------------
@@ -662,4 +632,153 @@ fn uuid_marker() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
     SEQ.fetch_add(1, Ordering::SeqCst).to_string()
+}
+
+#[tokio::test]
+async fn runtime_output_is_a_read_only_root_outside_the_project_workspace() {
+    let llm = spawn_llm_mock(vec![
+        bg_tool_turn("printf 'alpha\\nomega\\n'"),
+        text_turn("started"),
+        text_turn("notified"),
+    ])
+    .await;
+    let (app, project, conv) = wired_app(&llm).await;
+    let workspace = tempfile::tempdir().unwrap();
+    assert_eq!(
+        app.patch_json(
+            &format!("/api/projects/{project}"),
+            json!({"working_dir":workspace.path()})
+        )
+        .await
+        .status(),
+        200
+    );
+    let events = app.read_sse(app.send_message(&conv, "start").await).await;
+    let task = task_id_from_envelope(&events);
+    wait_until("wake run finished", || async {
+        let messages: Vec<Value> = app
+            .get_json(&format!("/api/conversations/{conv}/messages"))
+            .await
+            .json()
+            .await
+            .unwrap();
+        let run: Value = app
+            .get_json(&format!("/api/conversations/{conv}/run"))
+            .await
+            .json()
+            .await
+            .unwrap();
+        (messages.iter().any(|message| {
+            message["role"] == "assistant"
+                && message["parts"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|part| part["type"] == "text" && part["text"] == "notified")
+        }) && run["running"] == false)
+            .then_some(())
+    })
+    .await;
+    let tasks: Vec<Value> = app
+        .get_json(&format!("/api/conversations/{conv}/background-tasks"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    let path = tasks.iter().find(|row| row["id"] == task).unwrap()["output_path"]
+        .as_str()
+        .unwrap();
+    assert!(!std::path::Path::new(path).starts_with(workspace.path()));
+    let envelope = events
+        .iter()
+        .find(|event| event["type"] == "tool_result")
+        .unwrap()["data"]["content"]
+        .as_str()
+        .unwrap();
+    assert!(envelope.contains(&format!("output_file: {path}")));
+    let turn = |id: &str, tool: &str, args: Value| {
+        LlmTurn::Complete(vec![
+            tool_call_chunk(id, tool, &args.to_string()),
+            finish_chunk("tool_calls"),
+        ])
+    };
+    llm.push_turns([
+        turn(
+            "read",
+            "read_file",
+            json!({"path":path,"start_line":2,"end_line":2}),
+        ),
+        turn("grep", "grep", json!({"path":path,"pattern":"alpha"})),
+        turn(
+            "glob",
+            "glob",
+            json!({"path":std::path::Path::new(path).parent(),"pattern":"*.log"}),
+        ),
+        text_turn("read done"),
+    ]);
+    app.set_permission_mode(&project, &conv, "default").await;
+    let reads = app
+        .read_sse(app.send_message(&conv, "read output").await)
+        .await;
+    assert!(
+        !reads
+            .iter()
+            .any(|event| event["type"] == "approval_requested")
+    );
+    for (id, text) in [
+        ("read", "omega"),
+        ("grep", "alpha"),
+        ("glob", task.as_str()),
+    ] {
+        let result = reads
+            .iter()
+            .find(|event| event["type"] == "tool_result" && event["data"]["call_id"] == id)
+            .unwrap_or_else(|| panic!("missing {id}: {reads:?}"));
+        assert_eq!(result["data"]["is_error"], false, "{result}");
+        assert!(
+            result["data"]["content"].as_str().unwrap().contains(text),
+            "{result}"
+        );
+    }
+    // Even bypass cannot modify the runtime's files after reading them.
+    app.set_permission_mode(&project, &conv, "bypass").await;
+    llm.push_turns([
+        turn(
+            "write",
+            "write_file",
+            json!({"path":path,"content":"tampered"}),
+        ),
+        turn(
+            "edit",
+            "edit_file",
+            json!({"file_path":path,"old_string":"alpha","new_string":"tampered"}),
+        ),
+        text_turn("write refused"),
+    ]);
+    let writes = app
+        .read_sse(app.send_message(&conv, "attempt writes").await)
+        .await;
+    for id in ["write", "edit"] {
+        let result = writes
+            .iter()
+            .find(|event| event["type"] == "tool_result" && event["data"]["call_id"] == id)
+            .unwrap();
+        assert_eq!(result["data"]["is_error"], true);
+        assert!(
+            result["data"]["content"]
+                .as_str()
+                .unwrap()
+                .contains("read-only")
+        );
+    }
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "alpha\nomega\n");
+    for request in llm.requests() {
+        assert!(
+            !request["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["function"]["name"] == "task_output")
+        );
+    }
 }

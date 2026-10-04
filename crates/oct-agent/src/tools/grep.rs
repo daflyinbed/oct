@@ -14,7 +14,7 @@ use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContex
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -29,7 +29,8 @@ const SEARCH_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_RESULT_LINE_CHARS: usize = 1_000;
 /// Upper bound for the before/after context line counts.
 const MAX_CONTEXT_LINES: usize = 5;
-/// Files larger than this are skipped (bounded work per file).
+/// Directory walks skip files larger than this; explicit files are streamed
+/// with the same heap budget, even when the complete file is much larger.
 const MAX_FILE_SIZE_BYTES: u64 = 5 * 1024 * 1024;
 /// head_limit default / hard cap for content mode (matched lines).
 const DEFAULT_CONTENT_LIMIT: usize = 200;
@@ -128,7 +129,9 @@ impl AgentTool for GrepTool {
         "Search file contents with a regular expression (rg-like). \
          Returns matching lines as path:line: text, or just file paths / per-file counts \
          via output_mode. Respects .gitignore and skips junk directories. \
-         Hidden dotfiles are skipped unless given explicitly via path."
+         Hidden dotfiles are skipped unless given explicitly via path. \
+         Pass a large log's file path explicitly to search it; directory searches \
+         report files skipped over 5 MiB."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -356,6 +359,42 @@ fn line_text(bytes: &[u8]) -> String {
     truncate_line(text, MAX_RESULT_LINE_CHARS)
 }
 
+/// Check the budget on reads as well as matches: a large file with no
+/// matches must not bypass the timeout. The file's initial length bounds
+/// reading a log that is still being appended to.
+struct DeadlineReader<R> {
+    reader: R,
+    deadline: Instant,
+}
+
+impl<R: Read> Read for DeadlineReader<R> {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        if Instant::now() >= self.deadline {
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "search timed out"));
+        }
+        self.reader.read(bytes)
+    }
+}
+
+fn search_file<S: Sink<Error = io::Error>>(
+    searcher: &mut Searcher,
+    matcher: &grep_regex::RegexMatcher,
+    path: &Path,
+    deadline: Instant,
+    sink: S,
+) -> io::Result<()> {
+    let file = std::fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    searcher.search_reader(
+        matcher,
+        DeadlineReader {
+            reader: file.take(len),
+            deadline,
+        },
+        sink,
+    )
+}
+
 /// Walk the search root and collect results for the requested output mode.
 /// Runs entirely on a blocking thread. Also returns the UI-facing stats.
 fn run_search(
@@ -368,6 +407,10 @@ fn run_search(
     let deadline = Instant::now() + SEARCH_TIMEOUT;
     let mut timed_out = false;
     let mut truncated = false;
+    let explicit_file = root.is_file();
+    let mut skipped_large = 0;
+    let mut failed_files = 0;
+    let mut first_error = None;
 
     let mut content = ContentResults {
         lines: Vec::new(),
@@ -386,6 +429,9 @@ fn run_search(
         .line_number(true)
         .before_context(config.before_context)
         .after_context(config.after_context)
+        // A pathological single line must not grow the stream buffer without
+        // bound. Buffer-limit errors are reported as incomplete searches.
+        .heap_limit(Some(MAX_FILE_SIZE_BYTES as usize))
         .build();
 
     for entry in search_walk_builder(&root).build() {
@@ -414,14 +460,17 @@ fn run_search(
                 continue;
             }
         }
-        if entry
-            .metadata()
-            .map_or(true, |m| m.len() > MAX_FILE_SIZE_BYTES)
+        if !explicit_file
+            && entry
+                .metadata()
+                .is_ok_and(|m| m.len() > MAX_FILE_SIZE_BYTES)
         {
+            skipped_large += 1;
             continue;
         }
 
         let display = relativize_roots(&display_roots, path);
+        let search_error;
         match config.mode {
             OutputMode::Content => {
                 let mut sink = ContentSink {
@@ -430,9 +479,8 @@ fn run_search(
                     deadline,
                     head_limit: config.head_limit,
                 };
-                // Read errors (permissions, file vanished mid-walk) skip the
-                // file, like a quiet rg.
-                let _ = searcher.search_path(&matcher, path, &mut sink);
+                search_error =
+                    search_file(&mut searcher, &matcher, path, deadline, &mut sink).err();
                 if content.truncated || content.timed_out {
                     truncated = content.truncated;
                     timed_out = content.timed_out;
@@ -441,18 +489,20 @@ fn run_search(
             }
             OutputMode::FilesWithMatches => {
                 let mut sink = FoundSink::default();
-                let _ = searcher.search_path(&matcher, path, &mut sink);
+                search_error =
+                    search_file(&mut searcher, &matcher, path, deadline, &mut sink).err();
                 if sink.found {
                     if files.len() >= config.head_limit {
                         truncated = true;
                         break;
                     }
-                    files.push(display);
+                    files.push(display.clone());
                 }
             }
             OutputMode::Count => {
                 let mut sink = CountSink::default();
-                let _ = searcher.search_path(&matcher, path, &mut sink);
+                search_error =
+                    search_file(&mut searcher, &matcher, path, deadline, &mut sink).err();
                 if sink.count > 0 {
                     if files.len() >= config.head_limit {
                         truncated = true;
@@ -463,11 +513,21 @@ fn run_search(
                 }
             }
         }
+        if let Some(error) = search_error {
+            if error.kind() == io::ErrorKind::TimedOut {
+                timed_out = true;
+                break;
+            }
+            failed_files += 1;
+            first_error.get_or_insert_with(|| {
+                truncate_line(&format!("{display}: {error}"), MAX_RESULT_LINE_CHARS)
+            });
+        }
     }
 
     // After an early stop (limit or timeout) the counts shown are lower
     // bounds, hence the "at least" phrasing.
-    let incomplete = truncated || timed_out;
+    let incomplete = truncated || timed_out || skipped_large > 0 || failed_files > 0;
     let mut out = String::new();
     match config.mode {
         OutputMode::Content => {
@@ -520,6 +580,16 @@ fn run_search(
         out.push_str(&timeout_note(SEARCH_TIMEOUT));
         out.push('\n');
     }
+    if skipped_large > 0 {
+        out.push_str(&format!(
+            "Search incomplete: skipped {skipped_large} files larger than 5 MiB. Pass a file path explicitly to search a large log.\n"
+        ));
+    }
+    if let Some(error) = first_error {
+        out.push_str(&format!(
+            "Search incomplete: could not fully search {failed_files} files (first error: {error}).\n"
+        ));
+    }
 
     let stats = GrepStats {
         // What "matched" means depends on the mode (see GrepDetails).
@@ -528,7 +598,7 @@ fn run_search(
             OutputMode::FilesWithMatches => files.len(),
             OutputMode::Count => total_matches,
         },
-        truncated: truncated || out.len() > MAX_TOOL_OUTPUT_BYTES,
+        truncated: incomplete || out.len() > MAX_TOOL_OUTPUT_BYTES,
         timed_out,
     };
 
@@ -566,6 +636,86 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[tokio::test]
+    async fn explicit_large_log_is_searchable_in_every_mode() {
+        use std::io::Write;
+        let project = tempfile::tempdir().unwrap();
+        let exec = tempfile::tempdir().unwrap();
+        let path = exec.path().join("output.log");
+        let mut file = std::fs::File::create(&path).unwrap();
+        let chunk = "ordinary output\n".repeat(1024);
+        for _ in 0..400 {
+            file.write_all(chunk.as_bytes()).unwrap();
+        }
+        file.write_all(b"NEEDLE at end\n").unwrap();
+        assert!(file.metadata().unwrap().len() > MAX_FILE_SIZE_BYTES);
+        let roots = WorkspaceRoots::new(project.path().to_path_buf(), vec![])
+            .with_read_only_root(exec.path().to_path_buf());
+        for (mode, expected) in [
+            ("content", "NEEDLE at end"),
+            ("files_with_matches", "Found 1 files"),
+            ("count", "Found 1 matches across 1 files"),
+        ] {
+            let output = GrepTool::new(roots.clone())
+                .execute(
+                    serde_json::json!({"path":path,"pattern":"NEEDLE","output_mode":mode}),
+                    &noop_ctx(),
+                )
+                .await
+                .unwrap();
+            assert!(!output.is_error, "{}", output.content);
+            assert!(output.content.contains(expected), "{}", output.content);
+            assert!(output.content.contains(path.to_str().unwrap()));
+            assert_eq!(output.details.unwrap()["truncated"], false);
+        }
+        let output = GrepTool::new(roots)
+            .execute(
+                serde_json::json!({"path":exec.path(),"pattern":"NEEDLE"}),
+                &noop_ctx(),
+            )
+            .await
+            .unwrap();
+        assert!(output.content.contains("skipped 1 files larger than 5 MiB"));
+        assert!(output.content.contains("Search incomplete"));
+        assert_eq!(output.details.unwrap()["truncated"], true);
+    }
+
+    #[tokio::test]
+    async fn unbounded_lines_report_an_incomplete_search() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("long.log");
+        let mut file = std::fs::File::create(&path).unwrap();
+        io::copy(
+            &mut io::repeat(b'x').take(MAX_FILE_SIZE_BYTES + 1),
+            &mut file,
+        )
+        .unwrap();
+        file.write_all(b"NEEDLE\n").unwrap();
+        let output = GrepTool::new(WorkspaceRoots::new(dir.path().to_path_buf(), vec![]))
+            .execute(
+                serde_json::json!({"path":path,"pattern":"NEEDLE"}),
+                &noop_ctx(),
+            )
+            .await
+            .unwrap();
+        assert!(output.content.contains("Search incomplete"));
+        assert!(output.content.contains("could not fully search 1 files"));
+        assert_eq!(output.details.unwrap()["truncated"], true);
+    }
+
+    #[test]
+    fn timeout_applies_to_reads_without_matches() {
+        let mut reader = DeadlineReader {
+            reader: io::repeat(b'x'),
+            deadline: Instant::now(),
+        };
+        assert_eq!(
+            reader.read(&mut [0; 8]).unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
     }
 
     #[tokio::test]

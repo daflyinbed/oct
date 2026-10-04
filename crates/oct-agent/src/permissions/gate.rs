@@ -10,19 +10,18 @@
 //!   the model sees and can react to the refusal; the loop treats it no
 //!   differently from a tool's own error.
 //! * **Ask** → register a pending approval, publish `ApprovalRequested`,
-//!   and park on `select! { oneshot, run cancel, timeout }`. Subagent runs
-//!   never park: their Ask is downgraded to a Deny with an explanatory
-//!   message (the requirement travels back to the root instead).
+//!   and park on `select! { oneshot, run cancel, timeout }`. Worker requests
+//!   and resolutions are delivered to both child and parent subscribers.
 
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Weak};
 use std::time::Duration;
 
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::{AgentEvent, ApprovalOutcome, EventHub};
+use crate::agent::EventHub;
 use crate::permissions::descriptor::describe;
-use crate::permissions::evaluator::{PermissionAction, PermissionMode, decide, rule_suggestion};
+use crate::permissions::evaluator::{PermissionAction, PermissionMode, decide};
 use crate::permissions::registry::{ApprovalDecision, ApprovalRegistry};
 use crate::permissions::rules::{Rule, RuleSet};
 use crate::tools::ToolOutput;
@@ -46,9 +45,7 @@ pub enum GateVerdict {
 const RULE_DENY_PREFIX: &str = "Permission denied by rule";
 /// The built-in exec-root deny: the background-task output isolation
 /// promise, restated for the model.
-const EXEC_ROOT_DENY: &str = "Permission denied: background task output is only readable through the task_output tool";
-/// Subagent Ask downgrade.
-const SUBAGENT_ASK_DOWNGRADE: &str = "Permission denied: subagents cannot trigger interactive approval; state the needed action in your final answer";
+const EXEC_ROOT_DENY: &str = "Permission denied: background task output files are read-only";
 const USER_DENY: &str = "Permission denied by the user";
 const TIMEOUT_DENY: &str = "Permission denied: approval timed out";
 /// The cancel arm reuses the loop's cancellation copy so the refusal blends
@@ -82,16 +79,20 @@ fn denied_output(reason: String) -> ToolOutput {
 /// One run's permission policy: the rule chain (mutable only through
 /// `allow_always` injection), the conversation mode (mutable through the
 /// PATCH endpoint — per-call effective), the workspace roots the descriptor
-/// resolves against, and the subagent flag that downgrades Ask to Deny.
+/// resolves against, and an optional parent approval surface.
+pub struct ApprovalParent {
+    pub conversation_id: String,
+    pub hub: Weak<EventHub>,
+}
+
 pub struct PermissionGate {
     conversation_id: String,
     run_id: String,
     roots: WorkspaceRoots,
     rules: RwLock<RuleSet>,
     mode: RwLock<PermissionMode>,
-    /// Subagent runs have no interactive surface: their Ask becomes a Deny
-    /// carrying the guidance copy.
-    subagent: bool,
+    /// Weak delivery avoids keeping a completed parent's stream alive.
+    parent: Option<ApprovalParent>,
     registry: Arc<ApprovalRegistry>,
 }
 
@@ -105,7 +106,7 @@ impl PermissionGate {
         roots: WorkspaceRoots,
         rules: RuleSet,
         mode: PermissionMode,
-        subagent: bool,
+        parent: Option<ApprovalParent>,
         registry: Arc<ApprovalRegistry>,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -114,7 +115,7 @@ impl PermissionGate {
             roots,
             rules: RwLock::new(rules),
             mode: RwLock::new(mode),
-            subagent,
+            parent,
             registry,
         })
     }
@@ -129,7 +130,7 @@ impl PermissionGate {
             WorkspaceRoots::new(std::path::PathBuf::new(), Vec::new()),
             RuleSet::new("/oct-permissive-no-exec-root"),
             PermissionMode::Bypass,
-            false,
+            None,
             Arc::new(ApprovalRegistry::new()),
         )
     }
@@ -210,9 +211,6 @@ impl PermissionGate {
                 GateVerdict::Denied(denied_output(reason))
             }
             crate::permissions::evaluator::Decision::Ask => {
-                if self.subagent {
-                    return GateVerdict::Denied(denied_output(SUBAGENT_ASK_DOWNGRADE.to_string()));
-                }
                 self.park_for_approval(&action, tool_name, call_id, hub, cancel)
                     .await
             }
@@ -229,37 +227,23 @@ impl PermissionGate {
         hub: &Arc<EventHub>,
         cancel: &CancellationToken,
     ) -> GateVerdict {
-        let (approval_id, mut responder) = self.registry.create(
+        let mut hubs = vec![hub.clone()];
+        if let Some(parent) = self.parent.as_ref().and_then(|parent| parent.hub.upgrade()) {
+            hubs.push(parent);
+        }
+        let (approval_id, mut responder) = self.registry.create_with_delivery(
             &self.conversation_id,
             &self.run_id,
             call_id,
             tool_name,
             action,
+            self.parent
+                .as_ref()
+                .map(|parent| parent.conversation_id.as_str()),
+            &hubs,
         );
 
-        // The event mirrors the registry's meta (the pending-list endpoint
-        // serves the same fields from there): the resolved path, the
-        // command, the outside mark and a conservative always-allow
-        // suggestion the user can edit before submitting.
-        hub.publish(AgentEvent::ApprovalRequested {
-            approval_id: approval_id.clone(),
-            call_id: call_id.to_string(),
-            tool: tool_name.to_string(),
-            kind: action.kind_str().to_string(),
-            title: action.title(),
-            path: action.file_path().map(|p| p.display().to_string()),
-            command: match action {
-                PermissionAction::Command { command } => Some(command.clone()),
-                _ => None,
-            },
-            outside: match action {
-                PermissionAction::Read { outside, .. }
-                | PermissionAction::Write { outside, .. }
-                | PermissionAction::Edit { outside, .. } => Some(*outside),
-                _ => None,
-            },
-            rule_suggestion: rule_suggestion(action),
-        });
+        drop(hubs);
 
         tokio::select! {
             answer = &mut responder => match answer {
@@ -286,13 +270,7 @@ impl PermissionGate {
             _ = tokio::time::sleep(approval_timeout()) => {
                 // Fail-closed self-denial; only THIS approval is
                 // dropped — a parallel sibling keeps waiting for its user.
-                if let Some(meta) = self.registry.remove(&approval_id) {
-                    hub.publish(AgentEvent::ApprovalResolved {
-                        approval_id: meta.id,
-                        outcome: ApprovalOutcome::Expired,
-                        rule_id: None,
-                    });
-                }
+                self.registry.expire(&approval_id);
                 GateVerdict::Denied(denied_output(TIMEOUT_DENY.to_string()))
             }
         }
@@ -304,24 +282,15 @@ impl PermissionGate {
 /// supervisors call at settlement, right before releasing occupancy — a
 /// parked gate future may simply be dropped when the loop's cancel branch
 /// wins the select race, so the supervisor (not the gate) owns this.
-pub fn publish_cancelled_approvals(
-    registry: &ApprovalRegistry,
-    run_id: &str,
-    hub: &EventHub,
-) {
-    for meta in registry.remove_for_run(run_id) {
-        hub.publish(AgentEvent::ApprovalResolved {
-            approval_id: meta.id,
-            outcome: ApprovalOutcome::Cancelled,
-            rule_id: None,
-        });
-    }
+pub fn publish_cancelled_approvals(registry: &ApprovalRegistry, run_id: &str, hub: &EventHub) {
+    registry.cancel_run(run_id, hub);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::agent::events::EventHub;
+    use crate::agent::{AgentEvent, ApprovalOutcome};
     use crate::permissions::evaluator::Decision;
     use crate::permissions::rules::Effect;
     use futures_util::StreamExt;
@@ -329,8 +298,13 @@ mod tests {
     fn gate_with(
         mode: PermissionMode,
         rules: impl FnOnce(&mut RuleSet),
-        subagent: bool,
-    ) -> (Arc<PermissionGate>, Arc<ApprovalRegistry>, Arc<EventHub>, CancellationToken) {
+        _subagent: bool,
+    ) -> (
+        Arc<PermissionGate>,
+        Arc<ApprovalRegistry>,
+        Arc<EventHub>,
+        CancellationToken,
+    ) {
         let registry = Arc::new(ApprovalRegistry::new());
         let mut set = RuleSet::new("/oct-gate-test-no-exec-root");
         rules(&mut set);
@@ -341,7 +315,7 @@ mod tests {
             roots,
             set,
             mode,
-            subagent,
+            None,
             registry.clone(),
         );
         let hub = Arc::new(EventHub::new());
@@ -373,13 +347,17 @@ mod tests {
 
         // A deny rule wins even under bypass and yields the marked error
         // output; the decision never touches the registry.
-        let (gate, registry, hub, cancel) = gate_with(PermissionMode::Bypass, |set| {
-            set.add(Rule {
-                effect: Effect::Deny,
-                tool: "write_file".into(),
-                pattern: None,
-            });
-        }, false);
+        let (gate, registry, hub, cancel) = gate_with(
+            PermissionMode::Bypass,
+            |set| {
+                set.add(Rule {
+                    effect: Effect::Deny,
+                    tool: "write_file".into(),
+                    pattern: None,
+                });
+            },
+            false,
+        );
         let verdict = gate
             .check("write_file", &outside_write_args(), "call-1", &hub, &cancel)
             .await;
@@ -410,7 +388,13 @@ mod tests {
         let cancel_clone = cancel.clone();
         let parked = tokio::spawn(async move {
             gate_clone
-                .check("write_file", &outside_write_args(), "call-9", &hub_clone, &cancel_clone)
+                .check(
+                    "write_file",
+                    &outside_write_args(),
+                    "call-9",
+                    &hub_clone,
+                    &cancel_clone,
+                )
                 .await
         });
 
@@ -448,7 +432,15 @@ mod tests {
         let gate2 = gate.clone();
         let hub2 = hub.clone();
         let parked = tokio::spawn(async move {
-            gate2.check("write_file", &outside_write_args(), "call-d", &hub2, &cancel).await
+            gate2
+                .check(
+                    "write_file",
+                    &outside_write_args(),
+                    "call-d",
+                    &hub2,
+                    &cancel,
+                )
+                .await
         });
         let requested = subscriber.next().await.expect("ApprovalRequested");
         let AgentEvent::ApprovalRequested { approval_id, .. } = requested else {
@@ -473,7 +465,15 @@ mod tests {
         let hub2 = hub.clone();
         let cancel2 = cancel.clone();
         let parked = tokio::spawn(async move {
-            gate2.check("write_file", &outside_write_args(), "call-c", &hub2, &cancel2).await
+            gate2
+                .check(
+                    "write_file",
+                    &outside_write_args(),
+                    "call-c",
+                    &hub2,
+                    &cancel2,
+                )
+                .await
         });
         let requested = subscriber.next().await.expect("ApprovalRequested");
         let AgentEvent::ApprovalRequested { approval_id, .. } = requested else {
@@ -513,7 +513,15 @@ mod tests {
         let gate2 = gate.clone();
         let hub2 = hub.clone();
         let mut parked = tokio::spawn(async move {
-            gate2.check("write_file", &outside_write_args(), "call-t", &hub2, &cancel).await
+            gate2
+                .check(
+                    "write_file",
+                    &outside_write_args(),
+                    "call-t",
+                    &hub2,
+                    &cancel,
+                )
+                .await
         });
         let requested = subscriber.next().await.expect("ApprovalRequested");
         let AgentEvent::ApprovalRequested { approval_id, .. } = requested else {
@@ -539,36 +547,57 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subagent_ask_downgrades_to_deny_without_parking() {
-        let (gate, registry, hub, cancel) =
-            gate_with(PermissionMode::Default, |_| {}, true);
-        // Inside-workspace write: Ask under default mode → downgraded.
-        let verdict = gate
-            .check(
-                "write_file",
-                &json!({"path": "inner.txt", "content": "x"}),
-                "call-s",
-                &hub,
-                &cancel,
-            )
-            .await;
-        match verdict {
-            GateVerdict::Denied(output) => {
-                assert!(output.is_error);
-                assert!(output
-                    .content
-                    .contains("subagents cannot trigger interactive approval"));
-            }
-            GateVerdict::Proceed => panic!("subagent Ask must downgrade to Deny"),
-        }
-        // Nothing was parked and nothing was published.
-        assert!(registry.pending_for_conversation("conv-1").is_empty());
-        assert!(hub.snapshot().is_empty());
-        // Inside reads still pass for subagents (constant Allow row).
-        assert!(matches!(
-            gate.check("read_file", &json!({"path": "inner.txt"}), "call-r", &hub, &cancel).await,
-            GateVerdict::Proceed
-        ));
+    async fn subagent_ask_waits_and_forwards_to_parent_without_retaining_hubs() {
+        let parent = Arc::new(EventHub::new());
+        let child = Arc::new(EventHub::new());
+        let registry = Arc::new(ApprovalRegistry::new());
+        let gate = PermissionGate::new(
+            "child".into(),
+            "child-run".into(),
+            WorkspaceRoots::new(std::path::PathBuf::from("/tmp"), vec![]),
+            RuleSet::new("/oct-gate-no-exec-root"),
+            PermissionMode::Default,
+            Some(ApprovalParent {
+                conversation_id: "parent".into(),
+                hub: Arc::downgrade(&parent),
+            }),
+            registry.clone(),
+        );
+        let mut events = parent.subscribe();
+        let gate2 = gate.clone();
+        let child2 = child.clone();
+        let parked = tokio::spawn(async move {
+            gate2
+                .check(
+                    "execute_command",
+                    &json!({"command":"echo child"}),
+                    "child-call",
+                    &child2,
+                    &CancellationToken::new(),
+                )
+                .await
+        });
+        let AgentEvent::ApprovalRequested {
+            approval_id,
+            agent_id,
+            ..
+        } = events.next().await.unwrap()
+        else {
+            panic!("missing request")
+        };
+        assert_eq!(agent_id.as_deref(), Some("child"));
+        assert_eq!(registry.pending_for_conversation("parent").len(), 1);
+        assert_eq!(registry.pending_for_conversation("child").len(), 1);
+        assert_eq!(Arc::strong_count(&parent), 1);
+        registry
+            .resolve(&approval_id, ApprovalDecision::Allow)
+            .unwrap();
+        assert!(matches!(parked.await.unwrap(), GateVerdict::Proceed));
+        assert!(
+            matches!(events.next().await.unwrap(), AgentEvent::ApprovalResolved { agent_id: Some(id), outcome: ApprovalOutcome::Approved, .. } if id == "child")
+        );
+        assert_eq!(child.snapshot().len(), 2);
+        assert!(registry.pending_for_conversation("parent").is_empty());
     }
 
     #[tokio::test]

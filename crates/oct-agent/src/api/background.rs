@@ -1,7 +1,7 @@
 //! Background bash task REST surface: the list the UI polls
 //! while tasks run, bounded output reads for the full-log viewer, and the
 //! HTTP cancel behind the UI stop button. The model-facing equivalents are
-//! the `task_output` / `task_stop` tools; these endpoints serve the
+//! notifications, generic file tools and `task_stop`; these endpoints serve the
 //! frontend only.
 
 use axum::Json;

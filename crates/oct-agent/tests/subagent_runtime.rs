@@ -19,9 +19,7 @@ use futures_util::StreamExt;
 use serde_json::{Value, json};
 
 use support::TestApp;
-use support::llm::{
-    LlmTurn, finish_chunk, gate, spawn_llm_mock, text_chunk, tool_call_chunk,
-};
+use support::llm::{LlmTurn, finish_chunk, gate, spawn_llm_mock, text_chunk, tool_call_chunk};
 use support::sse_payloads;
 
 // --- Shared helpers ---------------------------------------------------------
@@ -30,10 +28,7 @@ type EventStream = futures_util::stream::BoxStream<'static, Value>;
 
 /// Next SSE payload matching `pred`; fails the test on timeout (30s) or
 /// stream end, mirroring `support::collect_events`'s assertion model.
-async fn next_event(
-    stream: &mut EventStream,
-    pred: impl Fn(&Value) -> bool,
-) -> Value {
+async fn next_event(stream: &mut EventStream, pred: impl Fn(&Value) -> bool) -> Value {
     loop {
         let event = tokio::time::timeout(Duration::from_secs(30), stream.next())
             .await
@@ -76,6 +71,25 @@ async fn subagent_list(app: &TestApp, conv: &str) -> Vec<Value> {
         .await;
     assert_eq!(resp.status(), 200, "subagent list should load");
     resp.json::<Vec<Value>>().await.expect("task list json")
+}
+
+/// Parallel dispatch does not promise cross-child event ordering: B may
+/// complete before A's startup event. Observe both without discarding either.
+async fn running_a_and_completed_b(events: &mut EventStream) -> String {
+    let mut agent_a = None;
+    let mut b_completed = false;
+    while agent_a.is_none() || !b_completed {
+        let event = next_event(events, |v| {
+            updated("A", "running")(v) || updated("B", "completed")(v)
+        })
+        .await;
+        if updated("A", "running")(&event) {
+            agent_a = Some(event["data"]["agent_id"].as_str().unwrap().to_string());
+        } else {
+            b_completed = true;
+        }
+    }
+    agent_a.unwrap()
 }
 
 /// GET /api/conversations/{conv}/messages
@@ -158,7 +172,7 @@ async fn wired_app(llm: &support::llm::LlmMock) -> (TestApp, String, String) {
     let conv = app.create_conversation(&project).await;
     // This suite predates the permission layer and its workers
     // write/edit inside the workspace — under `default` mode a subagent's
-    // Ask is downgraded to a Deny, which is not what these tests
+    // Interactive approvals are exercised separately; these tests
     // exercise. `bypass` keeps the subagent flows as they were.
     app.set_permission_mode(&project, &conv, "bypass").await;
     (app, project, conv)
@@ -195,8 +209,7 @@ async fn parallel_tasks_run_concurrently_and_settle_once() {
     let (app, _project, conv) = wired_app(&llm).await;
 
     let mut events = sse_payloads(app.send_message(&conv, "please research").await);
-    next_event(&mut events, updated("A", "running")).await;
-    next_event(&mut events, updated("B", "completed")).await;
+    running_a_and_completed_b(&mut events).await;
 
     // Overlap proof: A is still parked behind the closed gate, yet B settled.
     let tasks = subagent_list(&app, &conv).await;
@@ -398,11 +411,7 @@ async fn cancel_single_child_only() {
     let (app, _project, conv) = wired_app(&llm).await;
 
     let mut events = sse_payloads(app.send_message(&conv, "please research").await);
-    // Stream order: A launches first (dispatch order), B settles while A is
-    // parked — wait for A's start BEFORE B's completion.
-    let a_started = next_event(&mut events, updated("A", "running")).await;
-    let agent_a = a_started["data"]["agent_id"].as_str().unwrap().to_string();
-    next_event(&mut events, updated("B", "completed")).await;
+    let agent_a = running_a_and_completed_b(&mut events).await;
 
     let cancel_resp = app
         .post_json(&format!("/api/subagents/{agent_a}/cancel"), json!(null))
@@ -625,21 +634,50 @@ async fn child_inherits_parent_tools_excluding_task() {
                 ),
                 finish_chunk("tool_calls"),
             ]),
+            LdmTurns::complete(vec![
+                tool_call_chunk(
+                    "ce2",
+                    "mcp__fake__echo",
+                    &json!({"message":"after saved rule"}).to_string(),
+                ),
+                finish_chunk("tool_calls"),
+            ]),
             LdmTurns::quick_child("done-a"),
         ],
     );
-    let (app, _project, conv) = wired_app(&llm).await;
+    let (app, project, conv) = wired_app(&llm).await;
+    app.set_permission_mode(&project, &conv, "default").await;
 
     // A global (scope = None) fake MCP server: its tools join every run of
     // every project, parent and child alike, on the one shared connection.
     let fake = std::sync::Arc::new(support::mcp::FakeMcpConnection::new(vec![
         support::mcp::fake_tool("echo", Some("Echo the arguments back.")),
     ]));
-    let listing = vec![support::mcp::fake_tool("echo", Some("Echo the arguments back."))];
-    app.mcp
-        .insert_connection_for_test(&uuid::Uuid::new_v4().to_string(), "fake", None, fake.clone(), listing);
+    let listing = vec![support::mcp::fake_tool(
+        "echo",
+        Some("Echo the arguments back."),
+    )];
+    app.mcp.insert_connection_for_test(
+        &uuid::Uuid::new_v4().to_string(),
+        "fake",
+        None,
+        fake.clone(),
+        listing,
+    );
 
     let mut events = sse_payloads(app.send_message(&conv, "use the tools").await);
+    let requested = next_event(&mut events, |event| event["type"] == "approval_requested").await;
+    let approval = requested["data"]["approval_id"].as_str().unwrap();
+    let agent = requested["data"]["agent_id"].as_str().unwrap();
+    assert_eq!(
+        app.post_json(
+            &format!("/api/conversations/{agent}/approvals/{approval}"),
+            json!({"decision":"allow_always"})
+        )
+        .await
+        .status(),
+        200
+    );
     next_event(&mut events, updated("A", "completed")).await;
     next_event(&mut events, |v| v["type"] == "finish").await;
     drain_to_end(&mut events).await;
@@ -649,9 +687,7 @@ async fn child_inherits_parent_tools_excluding_task() {
     let requests = llm.requests();
     let child_request = requests
         .iter()
-        .find(|r| {
-            r["messages"].to_string().contains("TASKA-7f3a") && r["tools"].is_array()
-        })
+        .find(|r| r["messages"].to_string().contains("TASKA-7f3a") && r["tools"].is_array())
         .expect("child request captured");
     let child_tools: Vec<&str> = child_request["tools"]
         .as_array()
@@ -673,10 +709,19 @@ async fn child_inherits_parent_tools_excluding_task() {
     // ORIGINAL server-side name, and cancelling-free usage never shut it down.
     assert_eq!(
         fake.calls(),
-        vec![("echo".to_string(), json!({"message": "hi"}))],
+        vec![
+            ("echo".to_string(), json!({"message": "hi"})),
+            ("echo".to_string(), json!({"message": "after saved rule"})),
+        ],
         "the child dispatched to the shared MCP connection"
     );
     assert_eq!(fake.shutdown_count(), 0, "the shared connection survives");
+    let rules = oct_agent::db::permissions::list_rules_for_project(&app.pool, &project)
+        .await
+        .unwrap();
+    assert!(rules.iter().any(|rule| rule.tool == "mcp__fake__echo"
+        && rule.pattern.is_none()
+        && rule.source == "approval"));
 }
 
 // --- 7. Crash recovery: both lost, one resume restarts the tree --------------
@@ -710,11 +755,7 @@ async fn restart_recovery_resumes_child_then_parent() {
         .await
         .unwrap();
     let dir2 = tempfile::tempdir().unwrap();
-    std::fs::copy(
-        app.dir.path().join("test.db"),
-        dir2.path().join("test.db"),
-    )
-    .unwrap();
+    std::fs::copy(app.dir.path().join("test.db"), dir2.path().join("test.db")).unwrap();
     let app2 = TestApp::new_with_dir(dir2).await;
 
     // A plain send must refuse to append past the unsettled delegation.
@@ -809,11 +850,7 @@ async fn recovery_backfills_completed_child_without_rerunning() {
         .await
         .unwrap();
     let dir2 = tempfile::tempdir().unwrap();
-    std::fs::copy(
-        app.dir.path().join("test.db"),
-        dir2.path().join("test.db"),
-    )
-    .unwrap();
+    std::fs::copy(app.dir.path().join("test.db"), dir2.path().join("test.db")).unwrap();
     let app2 = TestApp::new_with_dir(dir2).await;
 
     // The child "completed" in the copy's past (e.g. it settled in a window
@@ -901,10 +938,7 @@ async fn lost_run_with_tool_tail_is_resumable_but_completed_is_not() {
     oct_agent::db::messages::insert_message(
         pool,
         &conv,
-        &oct_llm_provider::core::Message::text(
-            oct_llm_provider::core::Role::User,
-            "run the check",
-        ),
+        &oct_llm_provider::core::Message::text(oct_llm_provider::core::Role::User, "run the check"),
         Some("mock-llm"),
         Some("test-model"),
         None,
@@ -1063,11 +1097,7 @@ impl LdmTurns {
     /// A parent turn issuing ONE task call (call-a) for the marker's task.
     fn single(marker: &str) -> LlmTurn {
         LdmTurns::complete(vec![
-            task_call(
-                "call-a",
-                "A",
-                &format!("Research {marker} and report."),
-            ),
+            task_call("call-a", "A", &format!("Research {marker} and report.")),
             finish_chunk("tool_calls"),
         ])
     }
@@ -1080,4 +1110,215 @@ impl LdmTurns {
     fn quick_child(text: &str) -> LlmTurn {
         LdmTurns::complete(vec![text_chunk(text), finish_chunk("stop")])
     }
+}
+
+/// Root and child viewers share one approval identity. Decisions remain
+/// scoped to that task tree, and persisted rules reach the live worker.
+#[tokio::test]
+async fn worker_approval_is_forwarded_scoped_and_can_be_decided_from_either_surface() {
+    for decision in ["allow", "allow_always", "deny"] {
+        let marker = "WORKER-APPROVAL";
+        let llm = spawn_llm_mock(vec![
+            parent_single_task_turn(marker),
+            quick_child_turn("parent done"),
+        ])
+        .await;
+        let mut child_turns = vec![LlmTurn::Complete(vec![
+            tool_call_chunk(
+                "worker-write",
+                "write_file",
+                &json!({"path":"approved-worker.txt","content":"child bytes"}).to_string(),
+            ),
+            finish_chunk("tool_calls"),
+        ])];
+        if decision == "allow_always" {
+            child_turns.push(LlmTurn::Complete(vec![
+                tool_call_chunk(
+                    "worker-write-again",
+                    "write_file",
+                    &json!({"path":"approved-worker.txt","content":"after saved rule"}).to_string(),
+                ),
+                finish_chunk("tool_calls"),
+            ]));
+        }
+        child_turns.push(quick_child_turn("child done"));
+        llm.push_marker_turns(marker, child_turns);
+        let (app, project, root) = wired_app(&llm).await;
+        app.set_permission_mode(&project, &root, "default").await;
+        let other = app.create_conversation(&project).await;
+        let mut parent = sse_payloads(app.send_message(&root, "delegate").await);
+        let requested =
+            next_event(&mut parent, |event| event["type"] == "approval_requested").await;
+        let agent = requested["data"]["agent_id"].as_str().unwrap();
+        let approval = requested["data"]["approval_id"].as_str().unwrap();
+        assert!(!app.dir.path().join("approved-worker.txt").exists());
+        let pending: Vec<Value> = app
+            .get_json(&format!("/api/conversations/{root}/approvals"))
+            .await
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0]["agent_id"], agent);
+        assert_eq!(pending[0]["approval_id"], approval);
+        let mut child = sse_payloads(
+            app.get_json(&format!("/api/subagents/{agent}/events"))
+                .await,
+        );
+        let replay = next_event(&mut child, |event| event["type"] == "approval_requested").await;
+        assert_eq!(replay, requested);
+        assert_eq!(
+            app.post_json(
+                &format!("/api/conversations/{other}/approvals/{approval}"),
+                json!({"decision":"allow"})
+            )
+            .await
+            .status(),
+            404
+        );
+        if decision == "allow_always" {
+            // Both panels may click together: exactly one decision and one
+            // persisted rule, while the next worker call uses that live rule.
+            let parent_path = format!("/api/conversations/{root}/approvals/{approval}");
+            let child_path = format!("/api/conversations/{agent}/approvals/{approval}");
+            let (from_parent, from_child) = tokio::join!(
+                app.post_json(&parent_path, json!({"decision":decision})),
+                app.post_json(&child_path, json!({"decision":decision})),
+            );
+            let mut statuses = [from_parent.status().as_u16(), from_child.status().as_u16()];
+            statuses.sort();
+            assert_eq!(statuses, [200, 404]);
+        } else {
+            assert_eq!(
+                app.post_json(
+                    &format!("/api/conversations/{root}/approvals/{approval}"),
+                    json!({"decision":decision})
+                )
+                .await
+                .status(),
+                200
+            );
+        }
+        let resolution =
+            next_event(&mut parent, |event| event["type"] == "approval_resolved").await;
+        assert_eq!(resolution["data"]["agent_id"], agent);
+        assert_eq!(
+            resolution["data"]["outcome"],
+            if decision == "deny" {
+                "denied"
+            } else {
+                "approved"
+            }
+        );
+        let child_resolution =
+            next_event(&mut child, |event| event["type"] == "approval_resolved").await;
+        assert_eq!(resolution, child_resolution);
+        drain_to_end(&mut parent).await;
+        drain_to_end(&mut child).await;
+        assert_eq!(
+            app.dir.path().join("approved-worker.txt").exists(),
+            decision != "deny"
+        );
+        let pending: Vec<Value> = app
+            .get_json(&format!("/api/conversations/{root}/approvals"))
+            .await
+            .json()
+            .await
+            .unwrap();
+        assert!(pending.is_empty());
+        assert_eq!(
+            app.post_json(
+                &format!("/api/conversations/{root}/approvals/{approval}"),
+                json!({"decision":"allow"})
+            )
+            .await
+            .status(),
+            404
+        );
+        if decision == "allow_always" {
+            let rules = oct_agent::db::permissions::list_rules_for_project(&app.pool, &project)
+                .await
+                .unwrap();
+            assert_eq!(
+                rules
+                    .iter()
+                    .filter(|rule| rule.tool == "write_file" && rule.source == "approval")
+                    .count(),
+                1
+            );
+            assert_eq!(
+                std::fs::read_to_string(app.dir.path().join("approved-worker.txt")).unwrap(),
+                "after saved rule"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn cancelling_a_waiting_worker_resolves_its_parent_approval_and_preserves_siblings() {
+    let llm = spawn_llm_mock(vec![
+        dual_task_parent_turn(),
+        quick_child_turn("parent done"),
+    ])
+    .await;
+    for marker in ["TASKA-7f3a", "TASKB-9c2e"] {
+        llm.push_marker_turns(
+            marker,
+            vec![
+                LlmTurn::Complete(vec![
+                    tool_call_chunk(
+                        marker,
+                        "write_file",
+                        &json!({"path":format!("{marker}.txt"),"content":"child"}).to_string(),
+                    ),
+                    finish_chunk("tool_calls"),
+                ]),
+                quick_child_turn("child done"),
+            ],
+        );
+    }
+    let (app, project, root) = wired_app(&llm).await;
+    app.set_permission_mode(&project, &root, "default").await;
+    let mut parent = sse_payloads(app.send_message(&root, "delegate both").await);
+    let first = next_event(&mut parent, |event| event["type"] == "approval_requested").await;
+    let second = next_event(&mut parent, |event| event["type"] == "approval_requested").await;
+    let agent = first["data"]["agent_id"].as_str().unwrap();
+    assert_eq!(
+        app.post_json(&format!("/api/subagents/{agent}/cancel"), json!({}))
+            .await
+            .status(),
+        200
+    );
+    let cancelled = next_event(&mut parent, |event| {
+        event["type"] == "approval_resolved"
+            && event["data"]["approval_id"] == first["data"]["approval_id"]
+    })
+    .await;
+    assert_eq!(cancelled["data"]["outcome"], "cancelled");
+    let pending: Vec<Value> = app
+        .get_json(&format!("/api/conversations/{root}/approvals"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0]["approval_id"], second["data"]["approval_id"]);
+    let approval = second["data"]["approval_id"].as_str().unwrap();
+    assert_eq!(
+        app.post_json(
+            &format!("/api/conversations/{root}/approvals/{approval}"),
+            json!({"decision":"allow"})
+        )
+        .await
+        .status(),
+        200
+    );
+    drain_to_end(&mut parent).await;
+    let pending: Vec<Value> = app
+        .get_json(&format!("/api/conversations/{root}/approvals"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert!(pending.is_empty());
 }

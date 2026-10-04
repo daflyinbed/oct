@@ -21,6 +21,8 @@ export type ApprovalDecision = "allow" | "allow_always" | "deny";
  */
 export interface PendingApproval {
   approvalId: string;
+  /** Source worker; null/absent for a root approval. */
+  agentId?: string | null;
   /** 被挂起的工具调用 id（审批卡与消息流里的工具卡对应关系）。 */
   callId: string;
   /** 模型侧工具名（如 `write_file` / `mcp__server__tool`）。 */

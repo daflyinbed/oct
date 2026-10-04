@@ -11,7 +11,6 @@ use utoipa::ToSchema;
 
 use super::AppState;
 use super::error::{ApiResult, AppError};
-use crate::agent::{AgentEvent, ApprovalOutcome};
 use crate::db::{conversations as conv_db, permissions as rule_db};
 use crate::permissions::registry::{ApprovalDecision, PendingApprovalMeta};
 use crate::permissions::rules::{Effect, Rule};
@@ -22,6 +21,7 @@ use crate::permissions::rules::{Effect, Rule};
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PendingApprovalDto {
     pub approval_id: String,
+    pub agent_id: Option<String>,
     pub run_id: String,
     /// The tool call id the approval parks.
     pub call_id: String,
@@ -45,6 +45,10 @@ pub struct PendingApprovalDto {
 impl PendingApprovalDto {
     fn from_meta(meta: PendingApprovalMeta) -> Self {
         Self {
+            agent_id: meta
+                .parent_conversation_id
+                .as_ref()
+                .map(|_| meta.conversation_id.clone()),
             approval_id: meta.id,
             run_id: meta.run_id,
             call_id: meta.call_id,
@@ -111,7 +115,12 @@ pub async fn list_pending_approvals(
         .ok_or_else(|| AppError::NotFound("Conversation not found".into()))?;
 
     let pending = state.runs.approvals.pending_for_conversation(&id);
-    Ok(Json(pending.into_iter().map(PendingApprovalDto::from_meta).collect()))
+    Ok(Json(
+        pending
+            .into_iter()
+            .map(PendingApprovalDto::from_meta)
+            .collect(),
+    ))
 }
 
 /// Answer a pending approval: `allow` proceeds the parked call,
@@ -144,6 +153,12 @@ pub async fn decide_approval(
         .await?
         .ok_or_else(|| AppError::NotFound("Conversation not found".into()))?;
     let decision = parse_decision(&req.decision)?;
+    let lock = state
+        .runs
+        .approvals
+        .decision_lock(&approval_id)
+        .ok_or_else(|| AppError::NotFound("Approval is unknown or already resolved".into()))?;
+    let _decision_guard = lock.lock().await;
 
     // Scope check through the conversation's own pending list: an approval
     // of another conversation (or an unknown/already-decided id) is the
@@ -154,9 +169,7 @@ pub async fn decide_approval(
         .pending_for_conversation(&id)
         .into_iter()
         .find(|meta| meta.id == approval_id)
-        .ok_or_else(|| {
-            AppError::NotFound("Approval is unknown or already resolved".into())
-        })?;
+        .ok_or_else(|| AppError::NotFound("Approval is unknown or already resolved".into()))?;
 
     // `allow_always`: persist first, then inject into every live
     // gate of the conversation, then resolve. MCP tools take a NULL
@@ -170,7 +183,7 @@ pub async fn decide_approval(
         } else {
             req.pattern.as_deref().or(meta.rule_suggestion.as_deref())
         };
-        if let Some(pattern) = pattern {
+        if meta.kind == "mcp" || pattern.is_some() {
             let rule = rule_db::create_rule(
                 &state.pool,
                 rule_db::NewPermissionRule {
@@ -178,17 +191,21 @@ pub async fn decide_approval(
                     conversation_id: None,
                     effect: "allow",
                     tool: &meta.tool,
-                    pattern: Some(pattern),
+                    pattern,
                     source: "approval",
                 },
             )
             .await?;
             rule_id = Some(rule.id);
-            for gate in state.runs.active_gates(&id) {
+            for gate in state.runs.active_gates(
+                meta.parent_conversation_id
+                    .as_deref()
+                    .unwrap_or(&meta.conversation_id),
+            ) {
                 gate.add_rule(Rule {
                     effect: Effect::Allow,
                     tool: meta.tool.clone(),
-                    pattern: Some(pattern.to_string()),
+                    pattern: pattern.map(str::to_string),
                 });
             }
         }
@@ -200,23 +217,8 @@ pub async fn decide_approval(
     state
         .runs
         .approvals
-        .resolve(&approval_id, decision)
+        .resolve_with_rule(&approval_id, decision, rule_id)
         .map_err(|_| AppError::NotFound("Approval is unknown or already resolved".into()))?;
-
-    // Resolution event for live subscribers and the replay log. The hub is
-    // the run handle's (a pending approval implies a live run), so the
-    // event precedes the ToolResult the parked call is about to produce.
-    if let Some(handle) = state.sessions.get(&id) {
-        let outcome = match decision {
-            ApprovalDecision::Allow | ApprovalDecision::AllowAlways => ApprovalOutcome::Approved,
-            ApprovalDecision::Deny => ApprovalOutcome::Denied,
-        };
-        handle.hub.publish(AgentEvent::ApprovalResolved {
-            approval_id,
-            outcome,
-            rule_id,
-        });
-    }
 
     Ok(Json(DecideApprovalResponse { resolved: true }))
 }

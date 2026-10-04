@@ -5,8 +5,10 @@
 //! answers, lists and cleans up.
 
 use dashmap::DashMap;
+use std::sync::{Arc, Weak};
 use tokio::sync::oneshot;
 
+use crate::agent::{AgentEvent, ApprovalOutcome, EventHub};
 use crate::permissions::evaluator::{PermissionAction, rule_suggestion};
 
 /// What the user answered to an approval request — the REST decide body.
@@ -27,6 +29,9 @@ pub enum ApprovalDecision {
 pub struct PendingApprovalMeta {
     pub id: String,
     pub conversation_id: String,
+    /// Parent surface for a worker approval; the waiter still belongs to
+    /// conversation_id and run_id.
+    pub parent_conversation_id: Option<String>,
     pub run_id: String,
     /// The tool call id the approval parks.
     pub call_id: String,
@@ -74,6 +79,7 @@ impl PendingApprovalMeta {
         Self {
             id,
             conversation_id: conversation_id.to_string(),
+            parent_conversation_id: None,
             run_id: run_id.to_string(),
             call_id: call_id.to_string(),
             tool: tool.to_string(),
@@ -95,6 +101,36 @@ impl PendingApprovalMeta {
 pub struct PendingApproval {
     pub meta: PendingApprovalMeta,
     pub responder: oneshot::Sender<ApprovalDecision>,
+    hubs: Vec<Weak<EventHub>>,
+    decision_lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+impl PendingApproval {
+    fn publish_resolution(
+        &self,
+        outcome: ApprovalOutcome,
+        rule_id: Option<String>,
+        fallback: Option<&EventHub>,
+    ) {
+        let event = AgentEvent::ApprovalResolved {
+            approval_id: self.meta.id.clone(),
+            agent_id: self
+                .meta
+                .parent_conversation_id
+                .as_ref()
+                .map(|_| self.meta.conversation_id.clone()),
+            outcome,
+            rule_id,
+        };
+        for hub in self.hubs.iter().filter_map(Weak::upgrade) {
+            hub.publish(event.clone());
+        }
+        if self.hubs.is_empty()
+            && let Some(hub) = fallback
+        {
+            hub.publish(event);
+        }
+    }
 }
 
 /// The decide outcome for an id the registry does not hold. Unknown and
@@ -129,9 +165,23 @@ impl ApprovalRegistry {
         tool: &str,
         action: &PermissionAction,
     ) -> (String, oneshot::Receiver<ApprovalDecision>) {
+        self.create_with_delivery(conversation_id, run_id, call_id, tool, action, None, &[])
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_with_delivery(
+        &self,
+        conversation_id: &str,
+        run_id: &str,
+        call_id: &str,
+        tool: &str,
+        action: &PermissionAction,
+        parent_conversation_id: Option<&str>,
+        hubs: &[Arc<EventHub>],
+    ) -> (String, oneshot::Receiver<ApprovalDecision>) {
         let id = format!("apr_{}", uuid::Uuid::new_v4());
         let (responder, receiver) = oneshot::channel();
-        let meta = PendingApprovalMeta::from_action(
+        let mut meta = PendingApprovalMeta::from_action(
             id.clone(),
             conversation_id,
             run_id,
@@ -139,11 +189,44 @@ impl ApprovalRegistry {
             tool,
             action,
         );
-        self.pending.insert(
-            id.clone(),
-            PendingApproval { meta, responder },
-        );
+        meta.parent_conversation_id = parent_conversation_id.map(str::to_owned);
+        let approval = self.pending.entry(id.clone()).or_insert(PendingApproval {
+            meta,
+            responder,
+            hubs: hubs.iter().map(Arc::downgrade).collect(),
+            decision_lock: Arc::new(tokio::sync::Mutex::new(())),
+        });
+        // Keep registration locked until the request has reached BOTH logs:
+        // a concurrent snapshot/decision must not publish resolved first.
+        let meta = &approval.meta;
+        let requested = AgentEvent::ApprovalRequested {
+            approval_id: meta.id.clone(),
+            agent_id: meta
+                .parent_conversation_id
+                .as_ref()
+                .map(|_| meta.conversation_id.clone()),
+            call_id: meta.call_id.clone(),
+            tool: meta.tool.clone(),
+            kind: meta.kind.clone(),
+            title: meta.title.clone(),
+            path: meta.path.clone(),
+            command: meta.command.clone(),
+            outside: meta.outside,
+            rule_suggestion: meta.rule_suggestion.clone(),
+        };
+        for hub in hubs {
+            hub.publish(requested.clone());
+        }
+        drop(approval);
         (id, receiver)
+    }
+
+    /// Serialize parent/child decisions across rule persistence, then recheck
+    /// membership under this lock. Cancellation never waits for the lock.
+    pub fn decision_lock(&self, id: &str) -> Option<Arc<tokio::sync::Mutex<()>>> {
+        self.pending
+            .get(id)
+            .map(|approval| approval.decision_lock.clone())
     }
 
     /// Answer a pending approval (the REST decide endpoint). `Ok` when the
@@ -152,7 +235,23 @@ impl ApprovalRegistry {
     /// cancelled run whose cleanup raced us) — the approval is settled
     /// either way.
     pub fn resolve(&self, id: &str, decision: ApprovalDecision) -> Result<(), UnknownApproval> {
+        self.resolve_with_rule(id, decision, None)
+    }
+
+    pub fn resolve_with_rule(
+        &self,
+        id: &str,
+        decision: ApprovalDecision,
+        rule_id: Option<String>,
+    ) -> Result<(), UnknownApproval> {
         let (_, approval) = self.pending.remove(id).ok_or(UnknownApproval)?;
+        let outcome = match decision {
+            ApprovalDecision::Allow | ApprovalDecision::AllowAlways => ApprovalOutcome::Approved,
+            ApprovalDecision::Deny => ApprovalOutcome::Denied,
+        };
+        // Publish before releasing the waiter, so ToolResult cannot overtake
+        // its resolution on either the child or the parent stream.
+        approval.publish_resolution(outcome, rule_id, None);
         let _ = approval.responder.send(decision);
         Ok(())
     }
@@ -163,6 +262,26 @@ impl ApprovalRegistry {
     /// can publish the `expired` resolution.
     pub fn remove(&self, id: &str) -> Option<PendingApprovalMeta> {
         self.pending.remove(id).map(|(_, approval)| approval.meta)
+    }
+
+    pub fn expire(&self, id: &str) {
+        if let Some((_, approval)) = self.pending.remove(id) {
+            approval.publish_resolution(ApprovalOutcome::Expired, None, None);
+        }
+    }
+
+    pub fn cancel_run(&self, run_id: &str, fallback: &EventHub) {
+        let ids: Vec<String> = self
+            .pending
+            .iter()
+            .filter(|entry| entry.meta.run_id == run_id)
+            .map(|entry| entry.key().clone())
+            .collect();
+        for id in ids {
+            if let Some((_, approval)) = self.pending.remove(&id) {
+                approval.publish_resolution(ApprovalOutcome::Cancelled, None, Some(fallback));
+            }
+        }
     }
 
     /// Drop every pending approval of a run — the settlement/cancel/crash
@@ -189,7 +308,10 @@ impl ApprovalRegistry {
     pub fn pending_for_conversation(&self, conversation_id: &str) -> Vec<PendingApprovalMeta> {
         self.pending
             .iter()
-            .filter(|entry| entry.value().meta.conversation_id == conversation_id)
+            .filter(|entry| {
+                entry.value().meta.conversation_id == conversation_id
+                    || entry.value().meta.parent_conversation_id.as_deref() == Some(conversation_id)
+            })
             .map(|entry| entry.value().meta.clone())
             .collect()
     }
@@ -216,6 +338,52 @@ mod tests {
     /// create → visible in the conversation's pending list; resolve once
     /// delivers through the oneshot; a second resolve (and an unknown id)
     /// are errors; the entry is gone afterwards.
+    #[test]
+    fn worker_expiry_resolves_both_surfaces_and_leaves_sibling_waiting() {
+        let registry = ApprovalRegistry::new();
+        let parent = Arc::new(EventHub::new());
+        let child = Arc::new(EventHub::new());
+        let hubs = [child.clone(), parent.clone()];
+        let (first, mut first_rx) = registry.create_with_delivery(
+            "child",
+            "child-run",
+            "first",
+            "write_file",
+            &write_action(),
+            Some("parent"),
+            &hubs,
+        );
+        let (second, mut second_rx) = registry.create_with_delivery(
+            "child",
+            "child-run",
+            "second",
+            "write_file",
+            &write_action(),
+            Some("parent"),
+            &hubs,
+        );
+        registry.expire(&first);
+        for hub in &hubs {
+            let events = hub.snapshot();
+            assert!(
+                matches!(&events[0], AgentEvent::ApprovalRequested { approval_id, .. } if approval_id == &first)
+            );
+            assert!(
+                matches!(&events[2], AgentEvent::ApprovalResolved { approval_id, agent_id: Some(agent), outcome: ApprovalOutcome::Expired, .. } if approval_id == &first && agent == "child")
+            );
+        }
+        assert_eq!(registry.pending_for_conversation("parent")[0].id, second);
+        assert!(matches!(
+            first_rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Closed)
+        ));
+        assert!(matches!(
+            second_rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        assert_eq!(Arc::strong_count(&parent), 2); // only this test's Arc and hubs
+    }
+
     #[test]
     fn create_resolve_once_and_only_once() {
         let registry = ApprovalRegistry::new();

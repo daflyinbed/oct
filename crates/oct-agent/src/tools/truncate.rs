@@ -5,11 +5,77 @@
 //! - [`truncate_middle`]: drop the middle of a large blob, keeping head and tail.
 //! - [`truncate_line`]: cap a single overly long line, keeping its head.
 
+use std::collections::VecDeque;
+
 /// Maximum size of a tool's final combined output, in bytes.
 pub const MAX_TOOL_OUTPUT_BYTES: usize = 50_000;
 
 /// Maximum length of a single output line, in chars.
 pub const MAX_LINE_CHARS: usize = 2_000;
+
+/// Streaming equivalent of `truncate_middle`: retain only a fixed head/tail
+/// window, even when the source has millions of lines.
+pub(crate) struct BoundedText {
+    head: Vec<u8>,
+    tail: VecDeque<u8>,
+    total: usize,
+    max_bytes: usize,
+}
+
+impl BoundedText {
+    pub(crate) fn new(max_bytes: usize) -> Self {
+        Self {
+            head: Vec::new(),
+            tail: VecDeque::new(),
+            total: 0,
+            max_bytes,
+        }
+    }
+
+    pub(crate) fn push(&mut self, text: &str) {
+        self.total += text.len();
+        let bytes = text.as_bytes();
+        let head_len = bytes.len().min(self.max_bytes / 2 - self.head.len());
+        self.head.extend_from_slice(&bytes[..head_len]);
+        let bytes = &bytes[head_len..];
+        let tail_budget = self.max_bytes - self.max_bytes / 2;
+        if bytes.len() >= tail_budget {
+            self.tail.clear();
+            self.tail.extend(&bytes[bytes.len() - tail_budget..]);
+        } else {
+            let excess = (self.tail.len() + bytes.len()).saturating_sub(tail_budget);
+            self.tail.drain(..excess);
+            self.tail.extend(bytes);
+        }
+    }
+
+    pub(crate) fn finish(mut self) -> (String, bool) {
+        if self.total <= self.max_bytes {
+            self.head.extend(self.tail);
+            return (String::from_utf8(self.head).expect("UTF-8 input"), false);
+        }
+        // The byte windows can cut inside a character. Shrink each cut to a
+        // character boundary, just like truncate_middle.
+        let head_end = match std::str::from_utf8(&self.head) {
+            Ok(_) => self.head.len(),
+            Err(error) => error.valid_up_to(),
+        };
+        self.head.truncate(head_end);
+        while self.tail.front().is_some_and(|byte| byte & 0xC0 == 0x80) {
+            self.tail.pop_front();
+        }
+        let omitted = self.total - self.head.len() - self.tail.len();
+        let head = String::from_utf8(self.head).expect("UTF-8 head");
+        let tail = String::from_utf8(self.tail.into_iter().collect()).expect("UTF-8 tail");
+        (
+            format!(
+                "[output truncated: original size {} bytes]\n{head}\n\n... {omitted} bytes omitted ...\n\n{tail}",
+                self.total,
+            ),
+            true,
+        )
+    }
+}
 
 /// Truncate `s` to at most `max_bytes` of content by dropping its middle.
 ///
@@ -72,6 +138,19 @@ pub fn truncate_line(line: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streaming_truncation_preserves_utf8_across_pushes() {
+        for text in ["short".to_string(), "中👍末abc".repeat(100)] {
+            let mut output = BoundedText::new(101);
+            for character in text.chars() {
+                output.push(&character.to_string());
+            }
+            let (output, truncated) = output.finish();
+            assert_eq!(output, truncate_middle(&text, 101));
+            assert_eq!(truncated, text.len() > 101);
+        }
+    }
 
     #[test]
     fn truncate_middle_passthrough_when_under_budget() {

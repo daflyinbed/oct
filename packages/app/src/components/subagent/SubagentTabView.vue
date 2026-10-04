@@ -50,6 +50,15 @@
       empty-hint="等待委派 prompt 落地…"
     />
 
+    <ApprovalBanner
+      v-if="approvals.length > 0"
+      :approvals="approvals"
+      @decide="
+        (id, decision, pattern) =>
+          decideApproval(agentId, id, decision, pattern)
+      "
+    />
+
     <!-- 状态栏（替代输入区）：任务状态 + 子会话上下文用量 + 停止/结束提示 -->
     <div class="flex-none px-7 pb-3.5 pt-2.5">
       <div
@@ -89,6 +98,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, watch } from "vue";
+import ApprovalBanner from "@/components/chat/ApprovalBanner.vue";
 import ChatMessageList from "@/components/chat/ChatMessageList.vue";
 import ContextRing from "@/components/chat/ContextRing.vue";
 import { createChatSession } from "@/composables/useChat";
@@ -113,7 +123,18 @@ const props = defineProps<{
 // 实例化会话：contextUsage=false（子 usage 不进全局单例），不接线
 // subagent 事件派发（子 hub 不发该事件）。
 const session = createChatSession({ contextUsage: false });
-const { messages, sending, usage, attachSubagent, dispose } = session;
+const {
+  messages,
+  sending,
+  usage,
+  pendingApprovals,
+  decideApproval,
+  attachSubagent,
+  dispose,
+} = session;
+const approvals = computed(
+  () => pendingApprovals.value.get(props.agentId) ?? [],
+);
 
 // 任务 store（模块级）：面板打开时通常已由根会话快照/事件维护
 const task = computed(() => taskByAgentId(props.agentId));

@@ -80,7 +80,7 @@ impl AgentTool for TaskStopTool {
                 // mid-settlement (the DB write happens before the registry
                 // removal) — report what the row says right now.
                 Ok(ToolOutput::error(format!(
-                    "Task {} is settling; check its status with task_output",
+                    "Task {} is settling; you will be notified when settlement finishes",
                     row.id
                 )))
             }

@@ -30,6 +30,9 @@
       <span v-if="part.inherited" class="text-[11px] text-faint"
         >来源会话历史任务</span
       >
+      <span v-else-if="approvals.length > 0" class="text-[11px] text-warning-10"
+        >等待审批 · {{ approvals.length }}</span
+      >
       <span
         v-else-if="state.status === 'running'"
         class="flex flex-none items-center gap-1"
@@ -101,6 +104,7 @@
 <script setup lang="ts">
 import { useNow } from "@vueuse/core";
 import { computed } from "vue";
+import { useChat } from "@/composables/useChat";
 import {
   formatSubagentElapsed,
   openSubagentPanel,
@@ -116,6 +120,7 @@ const props = defineProps<{
   conversationId: string | null;
 }>();
 
+const { pendingApprovals } = useChat();
 // 运行中的耗时需要每秒走表；useNow 随组件作用域自动停止
 const now = useNow({ interval: 1000 });
 
@@ -126,6 +131,14 @@ const task = computed(() =>
 );
 
 const state = computed(() => resolveTaskCard(props.part, task.value));
+const approvals = computed(() =>
+  props.part.inherited || !state.value.agentId
+    ? []
+    : (pendingApprovals.value.get(props.conversationId ?? "") ?? []).filter(
+        (approval) => approval.agentId === state.value.agentId,
+      ),
+);
+
 const statusClass = computed(() => subagentStatusClass(state.value.status));
 
 const elapsed = computed(() =>

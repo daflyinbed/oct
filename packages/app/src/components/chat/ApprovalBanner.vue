@@ -25,6 +25,15 @@
             {{ kindMeta(approval.kind).label }}
           </span>
           <span
+            v-if="approval.agentId"
+            class="max-w-[180px] truncate text-[11px] text-warning-10"
+            :title="approval.agentId"
+            >子代理 ·
+            {{
+              taskByAgentId(approval.agentId)?.description ?? approval.agentId
+            }}</span
+          >
+          <span
             v-if="approval.outside"
             class="h-[16px] inline-flex flex-none items-center whitespace-nowrap rounded-full bg-warning-7 px-1.5 text-[10.5px] text-warning-10 font-medium leading-none"
             title="目标路径解析后位于工作区（含附加目录）之外"
@@ -92,6 +101,7 @@
 
 <script setup lang="ts">
 import { reactive } from "vue";
+import { taskByAgentId } from "@/composables/useSubagents";
 import type { ApprovalDecision, PendingApproval } from "@/composables/useChat";
 
 defineProps<{

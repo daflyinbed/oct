@@ -14,14 +14,8 @@ use crate::tools::AgentTool;
 /// order. Keyed by tool name so a rebuilt toolset (e.g. a worker's file
 /// tools) still renders the same lines.
 const CURATED_TOOLS: &[(&str, &str)] = &[
-    (
-        "read_file",
-        "Read file contents with line numbers",
-    ),
-    (
-        "list_dir",
-        "List directory contents in a tree format",
-    ),
+    ("read_file", "Read file contents with line numbers"),
+    ("list_dir", "List directory contents in a tree format"),
     (
         "grep",
         "Search file contents with a regular expression (content, files-with-matches, or count mode)",
@@ -30,22 +24,19 @@ const CURATED_TOOLS: &[(&str, &str)] = &[
         "glob",
         "Find files by glob pattern (e.g. \"**/*.ts\"), sorted by most recently modified",
     ),
-    (
-        "write_file",
-        "Write/overwrite file contents",
-    ),
+    ("write_file", "Write/overwrite file contents"),
     (
         "edit_file",
         "Edit a file by replacing exact text (requires a prior read_file of the file)",
     ),
-    (
-        "execute_command",
-        "Run shell commands",
-    ),
+    ("execute_command", "Run shell commands"),
 ];
 
 /// The delegation guidance for the `task` tool, shown to ROOT agents only.
 const TASK_GUIDANCE: &str = "\
+Background commands: completion notifications include status, exit_code and output_file. \
+Use read_file or grep on output_file for output, and task_stop to cancel. \
+Do not poll or sleep while waiting for completion.
 Delegation:
 - Use the task tool to delegate self-contained subtasks to a fresh worker agent. \
 Give `description` a short UI title and `prompt` the full instructions, including \
@@ -58,6 +49,7 @@ round run concurrently, so prefer parallel independent tasks over one huge one."
 /// The worker identity paragraph appended to every subagent system prompt:
 /// same base as the root prompt, never the task guidance (depth <= 1).
 const WORKER_IDENTITY: &str = "\
+Tool actions needing approval will pause until the user decides in the parent or worker panel.
 You are a delegated worker subagent running in its own conversation, with no \
 access to the parent agent's history. Complete the task exactly as described in \
 the delegation prompt in this conversation's first user message. Your final \
@@ -209,7 +201,11 @@ mod tests {
         fn input_schema(&self) -> serde_json::Value {
             serde_json::json!({"type": "object"})
         }
-        async fn execute(&self, _args: serde_json::Value, _ctx: &ToolContext) -> anyhow::Result<ToolOutput> {
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> anyhow::Result<ToolOutput> {
             Ok(ToolOutput::success("noop"))
         }
     }
@@ -222,7 +218,10 @@ mod tests {
     fn root_prompt_lists_curated_and_generic_tools_with_task_guidance() {
         let tools = vec![
             tool("read_file", "curated anyway"),
-            tool("mcp__gh__create_issue", "Create a new issue. Returns the issue URL."),
+            tool(
+                "mcp__gh__create_issue",
+                "Create a new issue. Returns the issue URL.",
+            ),
             tool("task", "Delegate a subtask."),
         ];
         let prompt = system_prompt(Path::new("/w"), &[], &tools);

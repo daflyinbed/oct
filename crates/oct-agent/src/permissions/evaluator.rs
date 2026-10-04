@@ -51,14 +51,27 @@ pub enum PermissionAction {
     /// The read class: `read_file` / `list_dir` / `grep` / `glob`.
     /// `path` is the RESOLVED path (canonicalized, symlink targets
     /// followed); `outside` is the workspace containment verdict.
-    Read { path: PathBuf, outside: bool },
-    Write { path: PathBuf, outside: bool },
-    Edit { path: PathBuf, outside: bool },
+    Read {
+        path: PathBuf,
+        outside: bool,
+    },
+    Write {
+        path: PathBuf,
+        outside: bool,
+    },
+    Edit {
+        path: PathBuf,
+        outside: bool,
+    },
     /// `execute_command` (foreground and `run_in_background` alike).
-    Command { command: String },
+    Command {
+        command: String,
+    },
     /// An MCP tool invocation, named by its fully qualified name.
-    Mcp { tool: String },
-    /// Free-pass tools (`task`/`task_output`/`task_stop`): constant
+    Mcp {
+        tool: String,
+    },
+    /// Free-pass tools (`task`/`task_stop`): constant
     /// Allow; no descriptor is built for them at the gate.
     Trusted,
 }
@@ -128,7 +141,7 @@ pub fn decide(action: &PermissionAction, mode: PermissionMode, rules: &RuleSet) 
     }
 
     // Built-in exec-root deny: outranks every rule and every mode —
-    // the background-task output stays readable through `task_output` only.
+    // runtime-owned output files cannot be modified.
     if rules.denies_exec_root(action) {
         return Decision::Deny;
     }
@@ -152,6 +165,9 @@ pub fn decide(action: &PermissionAction, mode: PermissionMode, rules: &RuleSet) 
         return Decision::Ask;
     }
     if saw_allow {
+        return Decision::Allow;
+    }
+    if rules.allows_exec_read(action) {
         return Decision::Allow;
     }
     mode_default(action, mode)
@@ -278,11 +294,13 @@ mod tests {
             PermissionAction::Write { .. } => "write_file",
             PermissionAction::Edit { .. } => "edit_file",
             PermissionAction::Command { .. } => "execute_command",
-            PermissionAction::Mcp { tool } => return Rule {
-                effect,
-                tool: tool.clone(),
-                pattern: None,
-            },
+            PermissionAction::Mcp { tool } => {
+                return Rule {
+                    effect,
+                    tool: tool.clone(),
+                    pattern: None,
+                };
+            }
             PermissionAction::Trusted => "task",
         };
         Rule {
@@ -299,21 +317,42 @@ mod tests {
     fn decision_table_cells_match() {
         let cases: Vec<(PermissionAction, [Decision; 3])> = vec![
             // read/listdir/grep/glob — inside: constant Allow.
-            (read("/ws/src/a.rs", false), [Decision::Allow, Decision::Allow, Decision::Allow]),
+            (
+                read("/ws/src/a.rs", false),
+                [Decision::Allow, Decision::Allow, Decision::Allow],
+            ),
             // read class — outside: Ask, Ask, Allow.
-            (read("/etc/hosts", true), [Decision::Ask, Decision::Ask, Decision::Allow]),
+            (
+                read("/etc/hosts", true),
+                [Decision::Ask, Decision::Ask, Decision::Allow],
+            ),
             // write/edit — inside: Ask, Allow, Allow.
-            (write("/ws/src/a.rs", false), [Decision::Ask, Decision::Allow, Decision::Allow]),
-            (edit("/ws/src/a.rs", false), [Decision::Ask, Decision::Allow, Decision::Allow]),
+            (
+                write("/ws/src/a.rs", false),
+                [Decision::Ask, Decision::Allow, Decision::Allow],
+            ),
+            (
+                edit("/ws/src/a.rs", false),
+                [Decision::Ask, Decision::Allow, Decision::Allow],
+            ),
             // write/edit — outside: Ask in both non-bypass modes.
-            (write("/etc/app.conf", true), [Decision::Ask, Decision::Ask, Decision::Allow]),
-            (edit("/etc/app.conf", true), [Decision::Ask, Decision::Ask, Decision::Allow]),
+            (
+                write("/etc/app.conf", true),
+                [Decision::Ask, Decision::Ask, Decision::Allow],
+            ),
+            (
+                edit("/etc/app.conf", true),
+                [Decision::Ask, Decision::Ask, Decision::Allow],
+            ),
             // execute_command (incl. background): Ask, Ask, Allow.
             (command(), [Decision::Ask, Decision::Ask, Decision::Allow]),
             // mcp tools: Ask, Ask, Allow.
             (mcp(), [Decision::Ask, Decision::Ask, Decision::Allow]),
-            // task/task_output/task_stop: constant Allow.
-            (PermissionAction::Trusted, [Decision::Allow, Decision::Allow, Decision::Allow]),
+            // task/task_stop: constant Allow.
+            (
+                PermissionAction::Trusted,
+                [Decision::Allow, Decision::Allow, Decision::Allow],
+            ),
         ];
         let modes = [
             PermissionMode::Default,
@@ -436,7 +475,7 @@ mod tests {
     /// every mode, even with allow rules matching, and even under bypass;
     /// sibling directories and non-file classes are untouched.
     #[test]
-    fn builtin_exec_dir_denies_file_actions_in_every_mode() {
+    fn builtin_exec_dir_is_read_only_in_every_mode() {
         let modes = [
             PermissionMode::Default,
             PermissionMode::AcceptEdits,
@@ -458,8 +497,12 @@ mod tests {
 
         for mode in modes {
             assert_eq!(
-                decide(&read(&under.display().to_string(), false), mode, &allow_all_files),
-                Decision::Deny,
+                decide(
+                    &read(&under.display().to_string(), false),
+                    mode,
+                    &allow_all_files
+                ),
+                Decision::Allow,
                 "read under exec root: {mode:?}"
             );
             assert_eq!(
@@ -478,7 +521,24 @@ mod tests {
         // the root (component-wise comparison, not string prefix): the
         // outside-read mode default (Ask) stands, not the built-in Deny.
         let bare = RuleSet::new(&root);
-        let sibling = root.with_file_name("oct-perm-test-exec2").join("conv/bg.log");
+        let action = read(&under.display().to_string(), true);
+        for effect in [Effect::Ask, Effect::Deny] {
+            let mut rules = bare.clone();
+            rules.add(matching_rule(&action, effect));
+            for mode in modes {
+                assert_eq!(
+                    decide(&action, mode, &rules),
+                    if effect == Effect::Ask {
+                        Decision::Ask
+                    } else {
+                        Decision::Deny
+                    }
+                );
+            }
+        }
+        let sibling = root
+            .with_file_name("oct-perm-test-exec2")
+            .join("conv/bg.log");
         assert_eq!(
             decide(&read(&sibling.display().to_string(), true), PermissionMode::Default, &bare),
             Decision::Ask

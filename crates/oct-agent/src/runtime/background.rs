@@ -105,8 +105,8 @@ pub struct BackgroundTaskManager {
     pool: SqlitePool,
     /// Root directory for task output files: `{exec_dir}/{conversation_id}/
     /// {task_id}.log`. Deliberately OUTSIDE any project workspace — the
-    /// sandboxed `read` tool must not reach it; the model reads output
-    /// through `task_output` instead.
+    /// file tools receive it as a read-only root; the model reads output
+    /// through read_file/grep at the returned absolute output_file path.
     exec_dir: PathBuf,
     service: OnceLock<Weak<crate::runtime::RunService>>,
     tasks: DashMap<String, ActiveTask>,
@@ -118,9 +118,9 @@ pub struct BackgroundTaskManager {
 /// Where background task output files live: next to the database file
 /// (`sqlite://dir/oct.db` → `dir/exec`), overridable via `OCT_EXEC_DIR`
 /// (the env override itself stays in `main`). Deliberately outside any
-/// project workspace — the sandboxed read tool must not reach it. The
+/// project workspace — file tools receive it as a read-only root. The
 /// permission evaluator resolves the SAME root
-/// through this function for its built-in `{exec root}/**` deny, so the
+/// through this function for its built-in `{exec root}/**` write deny, so the
 /// manager and the deny can never drift apart.
 pub fn exec_output_root(database_url: &str) -> PathBuf {
     let file = database_url
@@ -133,7 +133,13 @@ pub fn exec_output_root(database_url: &str) -> PathBuf {
         .filter(|p| !p.as_os_str().is_empty())
         .map(PathBuf::from)
         .unwrap_or_default();
-    parent.join("exec")
+    absolute_output_path(&parent.join("exec"))
+}
+
+/// Runtime paths are backend-anchored, while relative tool inputs are
+/// project-anchored. Also normalize legacy rows before advertising them.
+pub(crate) fn absolute_output_path(path: &Path) -> PathBuf {
+    std::path::absolute(path).expect("resolve output path against backend working directory")
 }
 
 /// Open (create) the task's output file for appending: O_APPEND keeps the
@@ -164,7 +170,7 @@ impl BackgroundTaskManager {
         Self {
             output_limit_bytes: std::sync::atomic::AtomicU64::new(DEFAULT_OUTPUT_LIMIT_BYTES),
             pool,
-            exec_dir,
+            exec_dir: absolute_output_path(&exec_dir),
             service: OnceLock::new(),
             tasks: DashMap::new(),
             delivering: DashMap::new(),
@@ -532,6 +538,7 @@ pub(crate) async fn build_notification_content(
     let mut blocks = Vec::with_capacity(pending.len());
     let mut details_tasks = Vec::with_capacity(pending.len());
     for task in pending {
+        let output_path = absolute_output_path(Path::new(&task.output_path));
         let tail = read_tail(&task.output_path, NOTIFICATION_TAIL_BYTES).await;
         let tail_note = if tail.0 {
             "[earlier output omitted]\n"
@@ -555,12 +562,13 @@ pub(crate) async fn build_notification_content(
              exit_code: {exit}\n\
              {lost_note}\
              output_file: {path}\n\
+             Use read_file or grep on output_file for more output.\n\
              output (tail):\n{tail_note}{tail}\n\
              </task-notification>",
             id = task.id,
             command = task.command,
             status = task.status,
-            path = task.output_path,
+            path = output_path.display(),
             tail = tail.1,
         ));
         details_tasks.push(serde_json::json!({
@@ -569,7 +577,7 @@ pub(crate) async fn build_notification_content(
             "status": task.status,
             "exit_code": task.exit_code,
             "error": task.error,
-            "output_path": task.output_path,
+            "output_path": output_path,
             "created_at": task.created_at.format("%Y-%m-%dT%H:%M:%S").to_string(),
             "finished_at": task.finished_at.map(|t| t.format("%Y-%m-%dT%H:%M:%S").to_string()),
         }));
@@ -606,7 +614,7 @@ pub(crate) async fn read_tail(path: &str, max: u64) -> (bool, String) {
     (start > 0, String::from_utf8_lossy(&buf).into_owned())
 }
 
-/// One bounded slice of a task's output file, for `task_output` and the
+/// One bounded slice of a task's output file, for the
 /// output REST endpoint: `offset` pages from the start, no offset takes
 /// the tail.
 pub struct OutputChunk {
