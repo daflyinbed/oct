@@ -464,12 +464,8 @@ pub async fn run_compaction(
         ordering: e.ordering + 1,
     }))
     .collect();
-    let est_after = crate::context::estimate_view(
-        &rebuilt,
-        req.system_prompt,
-        req.tool_specs,
-        None,
-    );
+    let est_after =
+        crate::context::estimate_view(&rebuilt, req.system_prompt, req.tool_specs, None);
 
     let details = marker_details(req.trigger, cut, req.est_before, est_after);
     let stored = match msg_db::insert_message_at_ordering(

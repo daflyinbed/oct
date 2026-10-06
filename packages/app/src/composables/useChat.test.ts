@@ -361,6 +361,38 @@ describe("fetchMessages 历史回放", () => {
 // ---------------------------------------------------------------------------
 
 describe("sendMessage 实时流", () => {
+  it("嵌套 MCP 事件只更新外层代码卡片，重放不新增卡片", async () => {
+    const call = {
+      id: "code1/1",
+      name: "mcp__api__search",
+      title: "api / search",
+      status: "running",
+      error: null,
+    };
+    const nested = (status: string) => ({
+      type: "nested_tool_update",
+      data: { parent_call_id: "code1", call: { ...call, status } },
+    });
+    stubFetch(
+      sse([
+        toolCallStart(
+          "code1",
+          "execute_code",
+          "MCP code mode",
+          '{"code":"text(42)"}',
+        ),
+        nested("running"),
+        nested("completed"),
+        nested("completed"),
+        cancelledEvent,
+      ]),
+    );
+    await sendMessage(nextConvId(), "code");
+    expect(toolCards()).toHaveLength(1);
+    expect(toolCards()[0]!.details?.calls).toEqual([
+      { ...call, status: "completed" },
+    ]);
+  });
   function stubFetch(...responses: Response[]) {
     const fetchMock = vi.fn();
     for (const r of responses) fetchMock.mockResolvedValueOnce(r);

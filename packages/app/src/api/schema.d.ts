@@ -545,6 +545,22 @@ export interface paths {
         patch: operations["update_project"];
         trace?: never;
     };
+    "/api/projects/{id}/settings/mcp": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_project_mcp_settings"];
+        put: operations["update_project_mcp_settings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{projectId}/conversations": {
         parameters: {
             query?: never;
@@ -960,6 +976,14 @@ export interface components {
             /** @enum {string} */
             type: "tool_output_delta";
         } | {
+            /** @description UI-only nested execution state. Never creates a model tool message. */
+            data: {
+                call: components["schemas"]["NestedCall"];
+                parent_call_id: string;
+            };
+            /** @enum {string} */
+            type: "nested_tool_update";
+        } | {
             data: {
                 call_id: string;
                 content: string;
@@ -1213,12 +1237,15 @@ export interface components {
             selector: components["schemas"]["ToolSelector"];
         };
         AppSettings: {
+            code_mode_available: boolean;
             /**
              * @description Whether LLM wire logging is currently in effect (the live control,
              *     not just the persisted row — a process started with
              *     `OCT_LLM_WIRE_LOG=off` reports `false` here regardless of the row).
              */
             llm_wire_log: boolean;
+            /** @description MCP exposure for new root runs; workers retain direct tools. */
+            mcp_tool_mode: components["schemas"]["McpToolMode"];
         };
         /**
          * @description How a pending approval was settled (the `approval_resolved` event's
@@ -1639,6 +1666,8 @@ export interface components {
             updated_at: string;
             url?: string | null;
         };
+        /** @enum {string} */
+        McpToolMode: "direct" | "code";
         /**
          * @description One cached `tools/list` entry, as surfaced to the UI while the server is
          *     connected. `description` is the raw server-provided text (no `[mcp:...]`
@@ -1814,6 +1843,18 @@ export interface components {
             source: string;
             tool_call: boolean;
         };
+        NestedCall: {
+            /** Format: int64 */
+            duration_ms?: number | null;
+            error?: string | null;
+            error_code?: string | null;
+            id: string;
+            name: string;
+            /** Format: int64 */
+            started_at_ms?: number | null;
+            status: string;
+            title: string;
+        };
         /** @description Response body of `POST /mcp/servers/{id}/oauth/start`. */
         OAuthStartResponse: {
             /**
@@ -1892,6 +1933,11 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
             working_dir: string;
+        };
+        ProjectMcpSettings: {
+            code_mode_available: boolean;
+            effective_mcp_tool_mode: components["schemas"]["McpToolMode"];
+            mcp_tool_mode?: null | components["schemas"]["McpToolMode"];
         };
         /**
          * @description One rendered prompt message; `role` is `user` | `assistant`, `text` the
@@ -2148,6 +2194,7 @@ export interface components {
         UpdateAppSettings: {
             /** @description Omitted keys are left untouched (the PUT is a partial update). */
             llm_wire_log?: boolean | null;
+            mcp_tool_mode?: null | components["schemas"]["McpToolMode"];
         };
         UpdateConversationRequest: {
             /**
@@ -2207,6 +2254,9 @@ export interface components {
             temperature?: boolean | null;
             tool_call?: boolean | null;
         };
+        UpdateProjectMcpSettings: {
+            mcp_tool_mode?: null | components["schemas"]["McpToolMode"];
+        };
         UpdateProjectRequest: {
             /**
              * @description Additional working directories (absolute paths). `None` leaves the
@@ -2224,10 +2274,13 @@ export interface components {
         };
         WorkerSnapshot: {
             agent_type: string;
+            /** Format: int32 */
+            code_catalog_version?: number | null;
             instructions: string;
             /** Format: int32 */
             prompt_template_version: number;
             sources: components["schemas"]["SettingSources"];
+            tool_mode?: components["schemas"]["McpToolMode"];
             tools: components["schemas"]["SnapshotTool"][];
             /** Format: int32 */
             version: number;
@@ -3597,6 +3650,56 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_project_mcp_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Project MCP exposure */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectMcpSettings"];
+                };
+            };
+        };
+    };
+    update_project_mcp_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateProjectMcpSettings"];
+            };
+        };
+        responses: {
+            /** @description Updated project MCP exposure */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectMcpSettings"];
                 };
             };
         };

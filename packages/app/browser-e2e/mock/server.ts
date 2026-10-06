@@ -74,6 +74,8 @@ export type ScriptStep =
   | StepHang;
 
 export interface Scenario {
+  settings?: components["schemas"]["AppSettings"];
+  projectMcpModes?: Record<string, "direct" | "code" | null>;
   git?: {
     status: components["schemas"]["GitStatus"];
     history?: components["schemas"]["GitEntry"][];
@@ -283,6 +285,7 @@ const RE_GATE_OPEN = /^\/__mock\/gates\/([^/]+)\/open$/;
 const RE_AGENT_SETTINGS =
   /^\/api\/(?:projects\/([^/]+)\/)?settings\/agents(?:\/([^/]+))?$/;
 const RE_AGENT_TOOLS = /^\/api\/(?:projects\/[^/]+\/)?settings\/agent-tools$/;
+const RE_MCP_SETTINGS = /^\/api\/projects\/([^/]+)\/settings\/mcp$/;
 
 function resetState() {
   state.scenario = {};
@@ -477,6 +480,34 @@ async function handleApi(
   searchParams: URLSearchParams,
 ): Promise<void> {
   const s = state.scenario;
+
+  if (pathname === "/api/settings") {
+    const settings = (s.settings ??= {
+      llm_wire_log: true,
+      mcp_tool_mode: "code",
+      code_mode_available: true,
+    });
+    if (req.method === "PUT")
+      Object.assign(settings, await readBodyCached(req));
+    return sendJson(res, 200, settings);
+  }
+  const mcpSettings = pathname.match(RE_MCP_SETTINGS);
+  if (mcpSettings) {
+    const project = mcpSettings[1]!;
+    const modes = (s.projectMcpModes ??= {});
+    if (req.method === "PUT") {
+      const body = (await readBodyCached(
+        req,
+      )) as components["schemas"]["UpdateProjectMcpSettings"];
+      modes[project] = body.mcp_tool_mode ?? null;
+    }
+    return sendJson(res, 200, {
+      mcp_tool_mode: modes[project] ?? null,
+      effective_mcp_tool_mode:
+        modes[project] ?? s.settings?.mcp_tool_mode ?? "code",
+      code_mode_available: s.settings?.code_mode_available ?? true,
+    });
+  }
 
   const agents = pathname.match(RE_AGENT_SETTINGS);
   if (agents) {

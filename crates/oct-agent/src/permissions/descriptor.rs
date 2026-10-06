@@ -169,7 +169,10 @@ mod tests {
                 &roots,
             );
             let (path, outside) = read(&action);
-            assert_eq!(*path, fx.primary.path().canonicalize().unwrap().join("a.txt"));
+            assert_eq!(
+                *path,
+                fx.primary.path().canonicalize().unwrap().join("a.txt")
+            );
             assert!(!*outside, "{tool}");
 
             // Absolute inside an additional root.
@@ -220,7 +223,11 @@ mod tests {
         let (path, outside) = written(&action);
         assert_eq!(
             *path,
-            fx.primary.path().canonicalize().unwrap().join("new-dir/f.txt")
+            fx.primary
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("new-dir/f.txt")
         );
         assert!(!outside);
 
@@ -275,7 +282,9 @@ mod tests {
                 &serde_json::json!({"command": "ls", "working_dir": "sub"}),
                 &roots,
             ),
-            PermissionAction::Command { command: "ls".into() }
+            PermissionAction::Command {
+                command: "ls".into()
+            }
         );
     }
 
@@ -283,7 +292,11 @@ mod tests {
     fn mcp_tools_map_by_qualified_name() {
         let fx = Fixture::new();
         assert_eq!(
-            describe("mcp__github__create_issue", &serde_json::json!({}), &fx.roots()),
+            describe(
+                "mcp__github__create_issue",
+                &serde_json::json!({}),
+                &fx.roots()
+            ),
             PermissionAction::Mcp {
                 tool: "mcp__github__create_issue".into()
             }
@@ -298,7 +311,11 @@ mod tests {
         // Missing path (read resolution fails): Trusted, the read tool
         // itself reports "Path not found".
         assert_eq!(
-            describe("read_file", &serde_json::json!({"path": "no-such.txt"}), &roots),
+            describe(
+                "read_file",
+                &serde_json::json!({"path": "no-such.txt"}),
+                &roots
+            ),
             PermissionAction::Trusted
         );
         // Missing parameters entirely.
@@ -307,11 +324,19 @@ mod tests {
             PermissionAction::Trusted
         );
         assert_eq!(
-            describe("edit_file", &serde_json::json!({"path": "wrong-key-name"}), &roots),
+            describe(
+                "edit_file",
+                &serde_json::json!({"path": "wrong-key-name"}),
+                &roots
+            ),
             PermissionAction::Trusted
         );
         assert_eq!(
-            describe("execute_command", &serde_json::json!({"timeout_secs": 5}), &roots),
+            describe(
+                "execute_command",
+                &serde_json::json!({"timeout_secs": 5}),
+                &roots
+            ),
             PermissionAction::Trusted
         );
         // Non-string argument values.

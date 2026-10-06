@@ -115,7 +115,9 @@ impl BackgroundTaskManager {
         if pending.is_empty() && previous.is_none() {
             return Ok(());
         }
-        crate::runtime::preparation::prepare_history(&self.pool, conversation_id).await?;
+        crate::runtime::preparation::ensure_no_pending_recovery(&self.pool, conversation_id)
+            .await?;
+        service.repair_dangling_tools(conversation_id, &[]).await?;
         let start_message_id = if pending.is_empty() {
             previous.expect("checked above")
         } else {

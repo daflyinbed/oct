@@ -125,6 +125,10 @@ pub struct WorkerSnapshot {
     pub prompt_template_version: u32,
     pub tools: Vec<SnapshotTool>,
     pub sources: SettingSources,
+    #[serde(default)]
+    pub tool_mode: crate::codemode::McpToolMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_catalog_version: Option<u32>,
 }
 
 impl WorkerSnapshot {
@@ -132,8 +136,19 @@ impl WorkerSnapshot {
         raw.map(|raw| {
             let v: Self = serde_json::from_str(raw)?;
             anyhow::ensure!(
-                v.version == 1 && v.prompt_template_version == 1 && v.agent_type == "worker",
+                matches!(v.version, 1 | 2)
+                    && v.prompt_template_version == 1
+                    && v.agent_type == "worker",
                 "Unsupported worker configuration snapshot"
+            );
+            anyhow::ensure!(
+                match (v.version, v.tool_mode, v.code_catalog_version) {
+                    (1 | 2, crate::codemode::McpToolMode::Direct, None) => true,
+                    (2, crate::codemode::McpToolMode::Code, Some(version)) =>
+                        version == crate::codemode::catalog::VERSION,
+                    _ => false,
+                },
+                "Unsupported worker code-mode snapshot"
             );
             validate_tool_list(
                 &v.tools
@@ -442,5 +457,42 @@ impl ModelChoice {
                 model_id,
             } => (provider_id.clone(), model_id.clone()),
         }
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use crate::codemode::McpToolMode;
+    use serde_json::json;
+
+    #[test]
+    fn legacy_worker_snapshots_keep_direct_tools() {
+        let legacy = json!({
+            "version":1, "agent_type":"worker", "instructions":"legacy",
+            "prompt_template_version":1, "tools":[],
+            "sources":{"model":"builtin","instructions":"builtin","tools":"builtin"}
+        });
+        let snapshot = WorkerSnapshot::decode(Some(&legacy.to_string()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.tool_mode, McpToolMode::Direct);
+        assert!(snapshot.code_catalog_version.is_none());
+        assert!(WorkerSnapshot::decode(None).unwrap().is_none());
+    }
+
+    #[test]
+    fn code_worker_snapshots_require_a_matching_catalog_version() {
+        let mut raw = json!({
+            "version":2, "agent_type":"worker", "instructions":"",
+            "prompt_template_version":1, "tools":[], "tool_mode":"code",
+            "code_catalog_version":crate::codemode::catalog::VERSION,
+            "sources":{"model":"builtin","instructions":"builtin","tools":"builtin"}
+        });
+        assert!(WorkerSnapshot::decode(Some(&raw.to_string())).is_ok());
+        raw["code_catalog_version"] = json!(crate::codemode::catalog::VERSION + 1);
+        assert!(WorkerSnapshot::decode(Some(&raw.to_string())).is_err());
+        raw.as_object_mut().unwrap().remove("code_catalog_version");
+        assert!(WorkerSnapshot::decode(Some(&raw.to_string())).is_err());
     }
 }

@@ -107,7 +107,8 @@ async fn orchestrate_inner(job: RecoveryJob) -> Result<()> {
         .iter()
         .filter_map(|r| r.parent_tool_call_id.clone())
         .collect();
-    msg_db::repair_dangling_tool_calls_except(&pool, &job.conversation_id, &managed_call_ids)
+    job.runs
+        .repair_dangling_tools(&job.conversation_id, &managed_call_ids)
         .await
         .context("repairing unmanaged dangling tool calls")?;
 
@@ -193,7 +194,8 @@ async fn recover_one(job: &RecoveryJob, run: AgentRun) -> Result<()> {
 
     // Repair the child conversation's dangling NORMAL tool calls (a child
     // toolset has no `task`, so every dangling call there is ordinary).
-    msg_db::repair_dangling_tool_calls(pool, &run.conversation_id)
+    job.runs
+        .repair_dangling_tools(&run.conversation_id, &[])
         .await
         .context("repairing the child conversation's dangling tool calls")?;
 

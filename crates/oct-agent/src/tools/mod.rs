@@ -13,6 +13,7 @@ use crate::agent::AgentEvent;
 use crate::agent::events::EventHub;
 use tokio_util::sync::CancellationToken;
 
+pub mod dispatch;
 pub mod edit;
 pub mod execute;
 pub mod glob;
@@ -178,6 +179,8 @@ impl SmootherState {
 
 struct ToolContextInner {
     call_id: String,
+    /// Outer model call owning this operation in the persisted timeline.
+    timeline_call_id: String,
     hub: Arc<EventHub>,
     state: Mutex<SmootherState>,
     /// The run's cancellation token: long-running tools (execute, MCP) race
@@ -199,9 +202,11 @@ pub struct ToolContext {
 
 impl ToolContext {
     pub fn new(call_id: impl Into<String>, hub: Arc<EventHub>, cancel: CancellationToken) -> Self {
+        let call_id = call_id.into();
         Self {
             inner: Arc::new(ToolContextInner {
-                call_id: call_id.into(),
+                timeline_call_id: call_id.clone(),
+                call_id,
                 hub,
                 state: Mutex::new(SmootherState::default()),
                 cancel,
@@ -211,6 +216,26 @@ impl ToolContext {
 
     pub fn call_id(&self) -> &str {
         &self.inner.call_id
+    }
+
+    pub fn timeline_call_id(&self) -> &str {
+        &self.inner.timeline_call_id
+    }
+
+    pub(crate) fn nested(&self, call_id: String) -> Self {
+        Self {
+            inner: Arc::new(ToolContextInner {
+                call_id,
+                timeline_call_id: self.timeline_call_id().to_owned(),
+                hub: self.hub(),
+                state: Mutex::new(SmootherState::default()),
+                cancel: self.cancel_token().clone(),
+            }),
+        }
+    }
+
+    pub fn hub(&self) -> Arc<EventHub> {
+        self.inner.hub.clone()
     }
 
     /// The run's cancellation token. Tools with unbounded or long waits
@@ -304,6 +329,42 @@ pub trait AgentTool: Send + Sync {
     /// JSON Schema for the tool's input parameters.
     fn input_schema(&self) -> serde_json::Value;
 
+    /// Host-side schema validation. Builtins deserialize typed arguments;
+    /// MCP validates its immutable schema before either dispatch path.
+    fn validate_input(&self, _args: &serde_json::Value) -> Result<()> {
+        Ok(())
+    }
+
+    /// Diagnostics for a cancelled call after its owned work has been dropped.
+    fn interrupted_output(&self, _call_id: &str) -> Option<ToolOutput> {
+        None
+    }
+
+    /// Optional structured-output contract (MCP outputSchema).
+    fn output_schema(&self) -> Option<serde_json::Value> {
+        None
+    }
+
+    fn mcp_server_name(&self) -> Option<&str> {
+        None
+    }
+
+    /// Code mode receives the native tool's bounded text and images. UI details
+    /// never cross this boundary; MCP overrides it with pre-truncation data.
+    async fn execute_for_code(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<CodeToolResult> {
+        let out = self.execute(args, ctx).await?;
+        Ok(CodeToolResult {
+            text: out.content,
+            is_error: out.is_error,
+            images: out.images,
+            structured_content: None,
+        })
+    }
+
     /// Short human-readable title for one specific call, shown in the UI
     /// (e.g. the command being run). Best-effort from the raw args; falls
     /// back to the tool name when the interesting field is missing or the
@@ -317,6 +378,16 @@ pub trait AgentTool: Send + Sync {
     /// to stream live output to the frontend; tools that do not stream
     /// simply ignore it.
     async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput>;
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeToolResult {
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub structured_content: Option<serde_json::Value>,
+    pub images: Vec<ToolImage>,
+    pub is_error: bool,
 }
 
 /// Convert an `AgentTool` to the oct-llm-provider `ToolSpec` for LLM requests.

@@ -16,8 +16,8 @@ pub mod recover;
 pub mod task_tool;
 
 pub use manager::{
-    ChildHandle, ChildRun, ChildRunRequest, SubagentManager, TaskEnvelope, TaskError,
-    activity_of, await_done, build_task_envelope,
+    ChildHandle, ChildRun, ChildRunRequest, SubagentManager, TaskEnvelope, TaskError, activity_of,
+    await_done, build_task_envelope,
 };
 pub use recover::{RecoveryJob, orchestrate};
 pub use task_tool::{TaskSpawnConfig, TaskTool, ToolsetSlot};

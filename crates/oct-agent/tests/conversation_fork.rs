@@ -651,8 +651,7 @@ async fn aborted_tool_round_forks_at_its_closed_boundary_and_resumes_without_rep
         let mut slow_started = false;
         let mut fast_finished = false;
         while let Some(event) = events.next().await {
-            slow_started |=
-                event["type"] == "tool_call_start" && event["data"]["id"] == "slow";
+            slow_started |= event["type"] == "tool_call_start" && event["data"]["id"] == "slow";
             fast_finished |= event["type"] == "tool_result" && event["data"]["call_id"] == "fast";
             if slow_started && fast_finished {
                 return;

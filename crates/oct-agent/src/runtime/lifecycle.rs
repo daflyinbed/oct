@@ -71,9 +71,15 @@ impl RunService {
             }
         }
         self.background.cancel_tasks_for_conversation(id).await?;
-        crate::db::conversations::delete_conversation(&self.pool, id)
-            .await
-            .map_err(Into::into)
+        let deleted = crate::db::conversations::delete_conversation(&self.pool, id).await?;
+        if deleted {
+            match tokio::fs::remove_dir_all(self.codemode_root().join(id)).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => tracing::warn!("Cannot remove code mode artifacts for {id}: {error}"),
+            }
+        }
+        Ok(deleted)
     }
     pub async fn delete_project(&self, id: &str) -> Result<bool, AppError> {
         // Serialize project deletion against creation of conversations. Runs

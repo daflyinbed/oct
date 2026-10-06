@@ -45,7 +45,7 @@ pub enum GateVerdict {
 const RULE_DENY_PREFIX: &str = "Permission denied by rule";
 /// The built-in exec-root deny: the background-task output isolation
 /// promise, restated for the model.
-const EXEC_ROOT_DENY: &str = "Permission denied: background task output files are read-only";
+const EXEC_ROOT_DENY: &str = "Permission denied: runtime-owned files are read-only";
 const USER_DENY: &str = "Permission denied by the user";
 const TIMEOUT_DENY: &str = "Permission denied: approval timed out";
 /// The cancel arm reuses the loop's cancellation copy so the refusal blends
@@ -182,6 +182,34 @@ impl PermissionGate {
         hub: &Arc<EventHub>,
         cancel: &CancellationToken,
     ) -> GateVerdict {
+        self.check_inner(tool_name, args, call_id, hub, cancel, None)
+            .await
+    }
+
+    /// Count only actual Ask waits. Dropping a parked future releases its
+    /// lease too; code-mode wall deadlines pause without disabling CPU limits.
+    pub async fn check_with_wait_counter(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        call_id: &str,
+        hub: &Arc<EventHub>,
+        cancel: &CancellationToken,
+        waiting: &std::sync::atomic::AtomicUsize,
+    ) -> GateVerdict {
+        self.check_inner(tool_name, args, call_id, hub, cancel, Some(waiting))
+            .await
+    }
+
+    async fn check_inner(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        call_id: &str,
+        hub: &Arc<EventHub>,
+        cancel: &CancellationToken,
+        waiting: Option<&std::sync::atomic::AtomicUsize>,
+    ) -> GateVerdict {
         // Descriptor first: extraction failures map to Trusted (the tool's
         // own error is the right outcome), so `decide` always sees a
         // well-formed action.
@@ -211,6 +239,18 @@ impl PermissionGate {
                 GateVerdict::Denied(denied_output(reason))
             }
             crate::permissions::evaluator::Decision::Ask => {
+                struct WaitLease<'a>(Option<&'a std::sync::atomic::AtomicUsize>);
+                impl Drop for WaitLease<'_> {
+                    fn drop(&mut self) {
+                        if let Some(n) = self.0 {
+                            n.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                        }
+                    }
+                }
+                if let Some(n) = waiting {
+                    n.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+                let _wait = WaitLease(waiting);
                 self.park_for_approval(&action, tool_name, call_id, hub, cancel)
                     .await
             }
@@ -244,6 +284,22 @@ impl PermissionGate {
         );
 
         drop(hubs);
+
+        // A code cell may end while its run (and sibling tools) continues.
+        // Remove exactly this pending approval when its waiter is dropped.
+        struct PendingLease<'a> {
+            registry: &'a ApprovalRegistry,
+            id: &'a str,
+        }
+        impl Drop for PendingLease<'_> {
+            fn drop(&mut self) {
+                self.registry.cancel(self.id);
+            }
+        }
+        let _pending = PendingLease {
+            registry: &self.registry,
+            id: &approval_id,
+        };
 
         tokio::select! {
             answer = &mut responder => match answer {
@@ -279,9 +335,9 @@ impl PermissionGate {
 
 /// Drop every pending approval of a run and publish a `cancelled`
 /// resolution for each: the deterministic sweep both run
-/// supervisors call at settlement, right before releasing occupancy — a
-/// parked gate future may simply be dropped when the loop's cancel branch
-/// wins the select race, so the supervisor (not the gate) owns this.
+/// supervisors call at settlement, right before releasing occupancy.
+/// Parked gate futures remove their own rows on drop; the supervisor still
+/// sweeps anything remaining when the loop's cancel branch wins the race.
 pub fn publish_cancelled_approvals(registry: &ApprovalRegistry, run_id: &str, hub: &EventHub) {
     registry.cancel_run(run_id, hub);
 }
@@ -294,6 +350,72 @@ mod tests {
     use crate::permissions::evaluator::Decision;
     use crate::permissions::rules::Effect;
     use futures_util::StreamExt;
+
+    #[tokio::test]
+    async fn dropped_nested_waiter_removes_only_its_approval_and_wait_lease() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (gate, registry, hub, cancel) = gate_with(PermissionMode::Default, |_| {}, false);
+        let waiting = Arc::new(AtomicUsize::new(0));
+        let mut events = hub.subscribe();
+        let first = {
+            let (gate, hub, cancel, waiting) =
+                (gate.clone(), hub.clone(), cancel.clone(), waiting.clone());
+            tokio::spawn(async move {
+                gate.check_with_wait_counter(
+                    "mcp__api__search",
+                    &serde_json::json!({}),
+                    "code/1",
+                    &hub,
+                    &cancel,
+                    &waiting,
+                )
+                .await
+            })
+        };
+        let sibling = {
+            let (gate, hub, cancel) = (gate.clone(), hub.clone(), cancel.clone());
+            tokio::spawn(async move {
+                gate.check(
+                    "mcp__api__other",
+                    &serde_json::json!({}),
+                    "sibling",
+                    &hub,
+                    &cancel,
+                )
+                .await
+            })
+        };
+        let mut ids = std::collections::BTreeMap::new();
+        for _ in 0..2 {
+            match events.next().await.unwrap() {
+                AgentEvent::ApprovalRequested {
+                    approval_id,
+                    call_id,
+                    ..
+                } => {
+                    ids.insert(call_id, approval_id);
+                }
+                event => panic!("Unexpected event: {event:?}"),
+            }
+        }
+        assert_eq!(waiting.load(Ordering::SeqCst), 1);
+        first.abort();
+        assert!(first.await.unwrap_err().is_cancelled());
+        assert_eq!(waiting.load(Ordering::SeqCst), 0);
+        assert_eq!(registry.pending_for_conversation("conv-1").len(), 1);
+        match events.next().await.unwrap() {
+            AgentEvent::ApprovalResolved {
+                approval_id,
+                outcome: ApprovalOutcome::Cancelled,
+                ..
+            } => assert_eq!(approval_id, ids["code/1"]),
+            event => panic!("Unexpected event: {event:?}"),
+        }
+        registry
+            .resolve(&ids["sibling"], ApprovalDecision::Allow)
+            .unwrap();
+        assert!(matches!(sibling.await.unwrap(), GateVerdict::Proceed));
+    }
 
     fn gate_with(
         mode: PermissionMode,
@@ -333,14 +455,8 @@ mod tests {
         // Bypass: everything proceeds, zero hub events.
         let (gate, _registry, hub, cancel) = gate_with(PermissionMode::Bypass, |_| {}, false);
         assert!(matches!(
-            gate.check(
-                "write_file",
-                &outside_write_args(),
-                "call-1",
-                &hub,
-                &cancel
-            )
-            .await,
+            gate.check("write_file", &outside_write_args(), "call-1", &hub, &cancel)
+                .await,
             GateVerdict::Proceed
         ));
         assert!(hub.snapshot().is_empty());
@@ -366,7 +482,11 @@ mod tests {
                 assert!(output.is_error);
                 assert!(output.content.starts_with("Permission denied by rule"));
                 assert_eq!(
-                    output.details.as_ref().and_then(|d| d.get("kind")).and_then(|k| k.as_str()),
+                    output
+                        .details
+                        .as_ref()
+                        .and_then(|d| d.get("kind"))
+                        .and_then(|k| k.as_str()),
                     Some("permission_denied")
                 );
             }
@@ -379,8 +499,7 @@ mod tests {
     #[tokio::test]
     async fn ask_parks_publishes_and_answers() {
         // default mode + outside write → Ask.
-        let (gate, registry, hub, cancel) =
-            gate_with(PermissionMode::Default, |_| {}, false);
+        let (gate, registry, hub, cancel) = gate_with(PermissionMode::Default, |_| {}, false);
         let mut subscriber = hub.subscribe();
 
         let gate_clone = gate.clone();
@@ -419,15 +538,18 @@ mod tests {
         assert_eq!(rule_suggestion.as_deref(), Some("/etc/**"));
 
         // allow → Proceed; the pending entry is gone.
-        assert!(registry.resolve(&approval_id, ApprovalDecision::Allow).is_ok());
+        assert!(
+            registry
+                .resolve(&approval_id, ApprovalDecision::Allow)
+                .is_ok()
+        );
         assert!(matches!(parked.await.unwrap(), GateVerdict::Proceed));
         assert!(registry.pending_for_conversation("conv-1").is_empty());
     }
 
     #[tokio::test]
     async fn ask_denied_by_user_answer() {
-        let (gate, registry, hub, cancel) =
-            gate_with(PermissionMode::Default, |_| {}, false);
+        let (gate, registry, hub, cancel) = gate_with(PermissionMode::Default, |_| {}, false);
         let mut subscriber = hub.subscribe();
         let gate2 = gate.clone();
         let hub2 = hub.clone();
@@ -446,7 +568,11 @@ mod tests {
         let AgentEvent::ApprovalRequested { approval_id, .. } = requested else {
             panic!("expected ApprovalRequested");
         };
-        assert!(registry.resolve(&approval_id, ApprovalDecision::Deny).is_ok());
+        assert!(
+            registry
+                .resolve(&approval_id, ApprovalDecision::Deny)
+                .is_ok()
+        );
         match parked.await.unwrap() {
             GateVerdict::Denied(output) => {
                 assert!(output.is_error);
@@ -458,8 +584,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_cleans_up_pending_and_publishes_cancelled() {
-        let (gate, registry, hub, cancel) =
-            gate_with(PermissionMode::Default, |_| {}, false);
+        let (gate, registry, hub, cancel) = gate_with(PermissionMode::Default, |_| {}, false);
         let mut subscriber = hub.subscribe();
         let gate2 = gate.clone();
         let hub2 = hub.clone();
@@ -507,8 +632,7 @@ mod tests {
         // the gate stays parked (bounded by a short outer timeout), then
         // verify the expiry publication path through publish-cancelled
         // sibling semantics — the timeout arm shares its shape.
-        let (gate, registry, hub, cancel) =
-            gate_with(PermissionMode::Default, |_| {}, false);
+        let (gate, registry, hub, cancel) = gate_with(PermissionMode::Default, |_| {}, false);
         let mut subscriber = hub.subscribe();
         let gate2 = gate.clone();
         let hub2 = hub.clone();
@@ -614,7 +738,8 @@ mod tests {
         ));
         gate.set_mode(PermissionMode::Bypass);
         assert!(matches!(
-            gate.check("write_file", &args, "call-1", &hub, &cancel).await,
+            gate.check("write_file", &args, "call-1", &hub, &cancel)
+                .await,
             GateVerdict::Proceed
         ));
         // An injected allow rule keeps the verdict when the mode returns to
@@ -626,7 +751,8 @@ mod tests {
         });
         gate.set_mode(PermissionMode::Default);
         assert!(matches!(
-            gate.check("write_file", &args, "call-2", &hub, &cancel).await,
+            gate.check("write_file", &args, "call-2", &hub, &cancel)
+                .await,
             GateVerdict::Proceed
         ));
     }
@@ -640,7 +766,8 @@ mod tests {
         };
         let (id_a, mut rx_a) = registry.create("conv-1", "run-9", "c1", "execute_command", &action);
         let (id_b, mut rx_b) = registry.create("conv-1", "run-9", "c2", "execute_command", &action);
-        let (_other, mut rx_other) = registry.create("conv-1", "run-8", "c3", "execute_command", &action);
+        let (_other, mut rx_other) =
+            registry.create("conv-1", "run-8", "c3", "execute_command", &action);
 
         publish_cancelled_approvals(&registry, "run-9", &hub);
         // Both waiters saw their channels close (the senders dropped)...

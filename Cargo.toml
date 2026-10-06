@@ -2,6 +2,7 @@
 members = [
   "crates/oct-llm-provider",
   "crates/oct-agent",
-  "crates/oct-mcp" 
+  "crates/oct-mcp",
+  "crates/oct-codemode"
 ]
 resolver = "3"

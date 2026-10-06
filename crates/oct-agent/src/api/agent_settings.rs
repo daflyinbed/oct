@@ -44,6 +44,43 @@ fn validate_catalog(state: &AppState, patch: &AgentPatch) -> ApiResult<()> {
     Ok(())
 }
 
+/// Code-mode workers browse their SDK with the regular read tools; a
+/// non-empty allowlist without them would hand the worker a blind
+/// execute_code. Empty allowlists stay valid (no code surface at all).
+async fn validate_code_mode_reads(
+    state: &AppState,
+    key: &str,
+    project: Option<&str>,
+    patch: &AgentPatch,
+) -> ApiResult<()> {
+    if key != "worker"
+        || crate::codemode::mode(&state.pool, project).await? != crate::codemode::McpToolMode::Code
+    {
+        return Ok(());
+    }
+    let Some(Some(ToolChoice::Allowlist { items })) = &patch.tools else {
+        return Ok(());
+    };
+    if items.is_empty() {
+        return Ok(());
+    }
+    let missing: Vec<&str> = ["read_file", "grep", "glob"]
+        .into_iter()
+        .filter(|name| {
+            !items
+                .iter()
+                .any(|selector| matches!(selector, ToolSelector::Builtin { name: n } if n == name))
+        })
+        .collect();
+    if !missing.is_empty() {
+        return Err(AppError::BadRequest(format!(
+            "Code mode requires the read tools for SDK discovery in every non-empty worker allowlist; missing: {}",
+            missing.join(", ")
+        )));
+    }
+    Ok(())
+}
+
 async fn catalog(state: &AppState, project: Option<&str>) -> ApiResult<Vec<AgentToolOption>> {
     if let Some(id) = project {
         config::read(&state.pool, "worker", Some(id)).await?;
@@ -109,6 +146,7 @@ pub async fn update_global(
         .map_err(|error| AppError::BadRequest(error.body_text()))?
         .0;
     validate_catalog(&state, &patch)?;
+    validate_code_mode_reads(&state, &key, None, &patch).await?;
     Ok(Json(config::update(&state.pool, &key, None, patch).await?))
 }
 
@@ -138,6 +176,7 @@ pub async fn update_project(
         .map_err(|error| AppError::BadRequest(error.body_text()))?
         .0;
     validate_catalog(&state, &patch)?;
+    validate_code_mode_reads(&state, &key, Some(&id), &patch).await?;
     Ok(Json(
         config::update(&state.pool, &key, Some(&id), patch).await?,
     ))

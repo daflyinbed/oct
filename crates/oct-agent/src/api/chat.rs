@@ -151,7 +151,9 @@ pub async fn send_message(
     // leaves assistant ToolCalls without tool messages; repairing BEFORE the
     // new user message is appended keeps the stored history a legal
     // conversation for the provider.
-    msg_db::repair_dangling_tool_calls(&state.pool, &id)
+    state
+        .runs
+        .repair_dangling_tools(&id, &[])
         .await
         .map_err(AppError::from)?;
 

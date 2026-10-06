@@ -51,6 +51,13 @@ async function open(extra: Partial<Scenario> = {}) {
     projects: [projectFixture()],
     conversations: [],
     providers: [providerFixture()],
+    // 与后端 TestApp 同理：用例默认直连工具模式，code 模式用例显式开启，
+    // 避免工具保存断言被自动补选的读三件套污染。
+    settings: {
+      llm_wire_log: true,
+      mcp_tool_mode: "direct",
+      code_mode_available: true,
+    },
     agentSettings: {
       global: [profile("worker"), profile("title")],
       p1: [profile("worker", "全局指令", true), profile("title", "", true)],
@@ -143,6 +150,57 @@ it("全局 Worker 指令/模型/工具保存，Title 使用独立的无工具配
       model: title.effective.model,
       instructions: "使用中文",
       tools: null,
+    });
+});
+
+it("代码模式锁定读三件套，可清空回到无工具", async () => {
+  await open({
+    settings: {
+      llm_wire_log: true,
+      mcp_tool_mode: "code",
+      code_mode_available: true,
+    },
+    agentTools: ["read_file", "grep", "glob", "write_file"].map((name) => ({
+      selector: { kind: "builtin" as const, name },
+      label: name,
+      group: "内置工具",
+      available: true,
+    })),
+    agentPatchReplies: { "global/worker": profile("worker") },
+  });
+  await page.getByTitle("Agent 工具策略").click();
+  await page.getByRole("option", { name: "自定义列表" }).click();
+  await page.getByRole("checkbox", { name: "write_file", exact: true }).click();
+  // 初始挂载即生效（未切换作用域）：三个读工具自动补选并锁定。
+  // 若 code-mode 状态加载失败（如初始化时序缺陷），这里不会出现锁定。
+  await expect.poll(text).toContain("代码模式已启用");
+  for (const name of ["read_file", "grep", "glob"]) {
+    const box = page.getByRole("checkbox", { name: new RegExp(`^${name}`) });
+    await expect
+      .poll(async () => ((await box.element()) as HTMLInputElement).checked)
+      .toBe(true);
+    expect(((await box.element()) as HTMLInputElement).disabled).toBe(true);
+  }
+  // 锁定的三件套无法逐个取消；「清空」是回到无工具 worker 的唯一出口。
+  await page.getByRole("button", { name: "清空（无工具）" }).click();
+  await expect.poll(text).not.toContain("代码模式已启用");
+  for (const name of ["read_file", "grep", "glob", "write_file"]) {
+    await expect
+      .poll(
+        async () =>
+          (await page.getByRole("checkbox", { name, exact: true }).element())
+            .checked,
+      )
+      .toBe(false);
+  }
+  await page.getByRole("button", { name: "保存配置" }).click();
+  await expect.poll(text).toContain("之后新建的子任务生效");
+  await expect
+    .poll(async () => (await patches())[0]?.body)
+    .toEqual({
+      model: { mode: "parent" },
+      instructions: "",
+      tools: { mode: "allowlist", items: [] },
     });
 });
 

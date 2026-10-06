@@ -141,6 +141,7 @@ pub struct RuleSet {
     /// anchored absolute so the built-in deny can prefix-match the
     /// canonicalized paths file actions carry.
     exec_root: PathBuf,
+    read_only_roots: Vec<PathBuf>,
 }
 
 impl RuleSet {
@@ -168,12 +169,17 @@ impl RuleSet {
         Self {
             rules: Vec::new(),
             exec_root,
+            read_only_roots: Vec::new(),
         }
     }
 
     pub fn add(&mut self, rule: Rule) -> &mut Self {
         self.rules.push(rule);
         self
+    }
+
+    pub fn protect_read_only_roots(&mut self, roots: &[PathBuf]) {
+        self.read_only_roots.extend(roots.iter().cloned());
     }
 
     pub fn rules(&self) -> &[Rule] {
@@ -190,7 +196,7 @@ impl RuleSet {
     /// or an allow rule. Canonical paths keep symlink aliases equivalent.
     pub(crate) fn denies_exec_root(&self, action: &PermissionAction) -> bool {
         matches!(action, PermissionAction::Write { path, .. } | PermissionAction::Edit { path, .. }
-            if self.under_exec_root(path))
+            if self.under_exec_root(path) || self.read_only_roots.iter().any(|root| path.starts_with(root) || root.canonicalize().is_ok_and(|root| path.starts_with(root))))
     }
 
     fn under_exec_root(&self, path: &Path) -> bool {
@@ -284,11 +290,12 @@ mod tests {
         assert!(!r.matches(&PermissionAction::Command {
             command: "/etc/ssh/config".into()
         }));
-        assert!(!rule(Effect::Allow, "write_file", Some("/etc/**"))
-            .matches(&PermissionAction::Edit {
+        assert!(!rule(Effect::Allow, "write_file", Some("/etc/**")).matches(
+            &PermissionAction::Edit {
                 path: PathBuf::from("/etc/hosts"),
                 outside: true
-            }));
+            }
+        ));
     }
 
     #[test]
@@ -314,15 +321,18 @@ mod tests {
         assert!(!rule(Effect::Allow, "read_*", None).matches(&read("/tmp/a", false)));
 
         // A pattern on an Mcp rule has no semantics: never matches.
-        assert!(!rule(Effect::Allow, "mcp__github__*", Some("**"))
-            .matches(&PermissionAction::Mcp {
+        assert!(!rule(Effect::Allow, "mcp__github__*", Some("**")).matches(
+            &PermissionAction::Mcp {
                 tool: "mcp__github__create_issue".into()
-            }));
+            }
+        ));
 
         // Non-mcp rules never match Mcp actions.
-        assert!(!rule(Effect::Allow, "execute_command", None).matches(&PermissionAction::Mcp {
-            tool: "mcp__github__create_issue".into()
-        }));
+        assert!(
+            !rule(Effect::Allow, "execute_command", None).matches(&PermissionAction::Mcp {
+                tool: "mcp__github__create_issue".into()
+            })
+        );
     }
 
     #[test]
@@ -351,9 +361,7 @@ mod tests {
     #[test]
     fn relative_exec_root_is_cwd_anchored() {
         let set = RuleSet::new("some-exec-dir");
-        let anchored = std::env::current_dir()
-            .unwrap()
-            .join("some-exec-dir");
+        let anchored = std::env::current_dir().unwrap().join("some-exec-dir");
         assert_eq!(set.exec_root(), anchored);
         assert!(set.allows_exec_read(&read(
             &anchored.join("conv/bg_1.log").display().to_string(),

@@ -443,6 +443,19 @@ impl TestApp {
             .await
             .expect("bootstrap");
 
+        // Integration tests run in direct tool mode unless a test opts into
+        // code mode explicitly. The app-level default (`codemode::mode`) is
+        // `code`, which would otherwise make every test's behavior depend on
+        // whether a built oct-codemode-worker happens to sit next to the
+        // test binary.
+        oct_agent::db::settings::set(
+            &pool,
+            oct_agent::codemode::SETTING,
+            oct_agent::codemode::McpToolMode::Direct.as_str(),
+        )
+        .await
+        .expect("pin direct tool mode");
+
         let mcp = Arc::new(oct_agent::mcp::McpManager::default());
         let sessions: Arc<dashmap::DashMap<String, oct_agent::agent::RunHandle>> =
             Arc::new(dashmap::DashMap::new());
@@ -464,9 +477,7 @@ impl TestApp {
             file_locks: dashmap::DashMap::new(),
             subagents: subagents.clone(),
             background: background.clone(),
-            approvals: Arc::new(
-                oct_agent::permissions::registry::ApprovalRegistry::new(),
-            ),
+            approvals: Arc::new(oct_agent::permissions::registry::ApprovalRegistry::new()),
             gates: Arc::new(dashmap::DashMap::new()),
         });
         subagents.set_service(runs.clone());

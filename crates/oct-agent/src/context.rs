@@ -236,7 +236,12 @@ impl ContextState {
 
     /// Estimated context of the next request (see [`estimate_view`]).
     pub fn estimate(&self, tool_specs: &[ToolSpec]) -> u64 {
-        estimate_view(&self.entries, Some(&self.system_prompt), tool_specs, self.anchor.as_ref())
+        estimate_view(
+            &self.entries,
+            Some(&self.system_prompt),
+            tool_specs,
+            self.anchor.as_ref(),
+        )
     }
 
     /// Append one persisted message at its timeline ordering.
@@ -249,11 +254,7 @@ impl ContextState {
     /// DB instead of a blind last+1, which could desync a later compaction
     /// marker's slot).
     pub fn next_ordering_fallback(&self) -> i64 {
-        self.entries
-            .last()
-            .map(|e| e.ordering)
-            .unwrap_or_default()
-            + 1
+        self.entries.last().map(|e| e.ordering).unwrap_or_default() + 1
     }
 
     /// Commit a compaction: the rebuilt entries (marker at the cut slot, tail

@@ -3,7 +3,10 @@
 //! guideline text stays for the seven built-ins, everything else (MCP tools
 //! surfaced as `mcp__{server}__{tool}`) gets a generic one-liner derived
 //! from its description, and the `task` tool adds its delegation guidance
-//! only for root agents: workers never see it (no nesting in v1).
+//! only for root agents: workers never see it (no nesting in v1). In code
+//! mode the MCP one-liners disappear (MCP is not exposed as individual
+//! tools); a `CodeModeSection` paragraph takes their place, naming the
+//! loaded server groups and the SDK directory the read tools should browse.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -95,12 +98,35 @@ fn tool_lines(tools: &[Arc<dyn AgentTool>]) -> Vec<String> {
     lines
 }
 
+/// The code-mode discovery paragraph's inputs: where this run's sealed SDK
+/// lives and which server groups it binds (name, callable tool count).
+pub struct CodeModeSection {
+    pub sdk_path: String,
+    pub servers: Vec<(String, usize)>,
+}
+
+fn code_mode_paragraph(section: &CodeModeSection) -> String {
+    let groups = section
+        .servers
+        .iter()
+        .map(|(server, tools)| format!("{server} ({tools} tools)"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "\nCode mode: MCP tools are not exposed as individual tools this run; they are callable only inside execute_code scripts.\n\
+         Loaded SDK server groups: {groups}.\n\
+         Discover every callable interface under {sdk_path}: read_file its index.json for module import specifiers, then grep/read the .d.ts declarations (README.md there documents the execution rules). Import specifiers must match index.json exactly.\n",
+        sdk_path = section.sdk_path
+    )
+}
+
 /// Build the base system prompt (working directory, tool list, guidelines)
 /// shared by root agents and workers.
 fn base_prompt(
     working_dir: &Path,
     additional_dirs: &[std::path::PathBuf],
     tools: &[Arc<dyn AgentTool>],
+    code: Option<&CodeModeSection>,
 ) -> String {
     let lines = tool_lines(tools);
     let mut prompt = format!(
@@ -157,6 +183,10 @@ Guidelines:
         prompt.push('\n');
     }
 
+    if let Some(section) = code {
+        prompt.push_str(&code_mode_paragraph(section));
+    }
+
     if !additional_dirs.is_empty() {
         let list = additional_dirs
             .iter()
@@ -179,8 +209,9 @@ pub fn system_prompt(
     working_dir: &Path,
     additional_dirs: &[std::path::PathBuf],
     tools: &[Arc<dyn AgentTool>],
+    code: Option<&CodeModeSection>,
 ) -> String {
-    base_prompt(working_dir, additional_dirs, tools)
+    base_prompt(working_dir, additional_dirs, tools, code)
 }
 
 /// The subagent (worker) system prompt: the same base, but
@@ -190,6 +221,7 @@ pub fn worker_system_prompt(
     working_dir: &Path,
     additional_dirs: &[std::path::PathBuf],
     tools: &[Arc<dyn AgentTool>],
+    code: Option<&CodeModeSection>,
 ) -> String {
     // Defense in depth: even if a task tool slipped into the worker set, the
     // base prompt must not teach the model to use it.
@@ -198,7 +230,7 @@ pub fn worker_system_prompt(
         .filter(|t| t.name() != "task")
         .cloned()
         .collect();
-    let mut prompt = base_prompt(working_dir, additional_dirs, &filtered);
+    let mut prompt = base_prompt(working_dir, additional_dirs, &filtered, code);
     prompt.push('\n');
     prompt.push_str(WORKER_IDENTITY);
     prompt.push('\n');
@@ -249,7 +281,7 @@ mod tests {
             ),
             tool("task", "Delegate a subtask."),
         ];
-        let prompt = system_prompt(Path::new("/w"), &[], &tools);
+        let prompt = system_prompt(Path::new("/w"), &[], &tools, None);
         assert!(prompt.contains("You are a coding agent working in the directory: /w"));
         assert!(prompt.contains("- read_file: Read file contents with line numbers"));
         // Generic line uses the FIRST SENTENCE of the description only.
@@ -268,14 +300,14 @@ mod tests {
             tool("execute_command", "curated"),
             tool("mcp__db__query", "Run a read-only SQL query."),
         ];
-        let prompt = worker_system_prompt(Path::new("/w"), &[], &tools);
+        let prompt = worker_system_prompt(Path::new("/w"), &[], &tools, None);
         assert!(!prompt.contains("Delegation:"));
         assert!(prompt.contains("delegated worker subagent"));
         assert!(prompt.contains("- mcp__db__query: Run a read-only SQL query"));
 
         // Even a (buggy) task tool in the set must not produce guidance.
         let with_task = vec![tool("task", "Delegate a subtask.")];
-        let prompt = worker_system_prompt(Path::new("/w"), &[], &with_task);
+        let prompt = worker_system_prompt(Path::new("/w"), &[], &with_task, None);
         assert!(!prompt.contains("Delegation:"));
         assert!(!prompt.contains("- task:"));
     }
@@ -287,10 +319,32 @@ mod tests {
             Path::new("/w"),
             &[std::path::PathBuf::from("/extra")],
             &tools,
+            None,
         );
         assert!(
             prompt
                 .contains("Additional working directories you may also read and write:\n- /extra")
         );
+    }
+
+    #[test]
+    fn code_mode_section_names_servers_and_sdk_path_for_root_and_workers() {
+        let section = CodeModeSection {
+            sdk_path: "/sdk/root".into(),
+            servers: vec![("builtin".into(), 7), ("chrome-devtools".into(), 21)],
+        };
+        let tools = vec![tool("read_file", "curated"), tool("execute_code", "code")];
+        let prompt = system_prompt(Path::new("/w"), &[], &tools, Some(&section));
+        assert!(prompt.contains("Code mode: MCP tools are not exposed as individual tools"));
+        assert!(
+            prompt.contains(
+                "Loaded SDK server groups: builtin (7 tools), chrome-devtools (21 tools)."
+            )
+        );
+        assert!(prompt.contains("under /sdk/root"));
+        assert!(prompt.contains("read_file its index.json"));
+        // The same section is appended for workers (discovery is not root-only).
+        let worker = worker_system_prompt(Path::new("/w"), &[], &tools, Some(&section));
+        assert!(worker.contains("Loaded SDK server groups"));
     }
 }

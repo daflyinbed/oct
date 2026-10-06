@@ -548,7 +548,7 @@ pub async fn find_dangling_tool_calls(
 /// Placeholder content for a tool call whose execution was interrupted by a
 /// backend restart: the workspace state after the crash is unknown, so the
 /// model is told as much instead of a fabricated result.
-pub const INTERRUPTED_TOOL_RESULT_CONTENT: &str = "工具执行被中断（后端重启），工作区状态未知。";
+pub const INTERRUPTED_TOOL_RESULT_CONTENT: &str = "工具执行被中断（后端重启），工作区或远端调用的状态未知。不要自动重试有副作用的操作，请先检查已有结果与调用记录。";
 
 /// Persist a synthetic error ToolResult for every dangling ToolCall (see
 /// [`find_dangling_tool_calls`]), mirroring what the cancel path writes for
@@ -572,17 +572,39 @@ pub async fn repair_dangling_tool_calls_except(
     conversation_id: &str,
     exclude: &[String],
 ) -> Result<Vec<String>> {
+    repair_dangling_tool_calls_with_outputs(
+        pool,
+        conversation_id,
+        exclude,
+        &std::collections::HashMap::new(),
+    )
+    .await
+}
+
+/// Runtime-prepared diagnostics are scoped by call id. The DB layer still
+/// owns the marker-aware repair and never reads execution artifacts itself.
+pub async fn repair_dangling_tool_calls_with_outputs(
+    pool: &SqlitePool,
+    conversation_id: &str,
+    exclude: &[String],
+    outputs: &std::collections::HashMap<String, (String, Value)>,
+) -> Result<Vec<String>> {
     let dangling = find_dangling_tool_calls(pool, conversation_id)
         .await?
         .into_iter()
         .filter(|id| !exclude.contains(id))
         .collect::<Vec<_>>();
     for call_id in &dangling {
+        let output = outputs.get(call_id);
         let placeholder = Message {
             role: Role::Tool,
             parts: vec![ContentPart::ToolResult(ToolResult {
                 call_id: call_id.clone(),
-                content: Value::String(INTERRUPTED_TOOL_RESULT_CONTENT.into()),
+                content: Value::String(
+                    output
+                        .map(|(content, _)| content.clone())
+                        .unwrap_or_else(|| INTERRUPTED_TOOL_RESULT_CONTENT.into()),
+                ),
                 is_error: true,
                 images: Vec::new(),
             })],
@@ -595,7 +617,11 @@ pub async fn repair_dangling_tool_calls_except(
             &placeholder,
             None,
             None,
-            Some(&json!({ "title": "执行被中断" })),
+            Some(
+                &output
+                    .map(|(_, details)| details.clone())
+                    .unwrap_or_else(|| json!({ "title": "执行被中断" })),
+            ),
         )
         .await?;
     }

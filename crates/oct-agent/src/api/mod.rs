@@ -84,6 +84,9 @@ pub struct AppState {
         mcp::OAuthStartResponse,
         settings::AppSettings,
         settings::UpdateAppSettings,
+        settings::ProjectMcpSettings,
+        settings::UpdateProjectMcpSettings,
+        crate::codemode::NestedCall,
         mcp::RenderPromptRequest,
         mcp::RenderPromptResponse,
         mcp::PromptMessageResponse,
@@ -191,6 +194,8 @@ fn api_routes(state: AppState) -> OpenApiRouter<AppState> {
         // Application settings (LLM wire log switch)
         .routes(utoipa_axum::routes!(settings::get_settings))
         .routes(utoipa_axum::routes!(settings::update_settings))
+        .routes(utoipa_axum::routes!(settings::get_project_mcp_settings))
+        .routes(utoipa_axum::routes!(settings::update_project_mcp_settings))
         .routes(utoipa_axum::routes!(agent_settings::list_global))
         .routes(utoipa_axum::routes!(agent_settings::get_global))
         .routes(utoipa_axum::routes!(agent_settings::update_global))

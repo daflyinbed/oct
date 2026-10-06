@@ -64,7 +64,9 @@ impl AnthropicMock {
             .expect("bind anthropic llm mock");
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move {
-            axum::serve(listener, app).await.expect("anthropic llm mock server");
+            axum::serve(listener, app)
+                .await
+                .expect("anthropic llm mock server");
         });
 
         AnthropicMock {
@@ -85,18 +87,22 @@ async fn messages(
     axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
     Json(body): Json<Value>,
 ) -> Response {
-    state.requests.lock().unwrap().push(CapturedAnthropicRequest {
-        path: uri.path().to_string(),
-        api_key: headers
-            .get("x-api-key")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string),
-        anthropic_version: headers
-            .get("anthropic-version")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string),
-        body: body.clone(),
-    });
+    state
+        .requests
+        .lock()
+        .unwrap()
+        .push(CapturedAnthropicRequest {
+            path: uri.path().to_string(),
+            api_key: headers
+                .get("x-api-key")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string),
+            anthropic_version: headers
+                .get("anthropic-version")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string),
+            body: body.clone(),
+        });
 
     let turn = state
         .turns
@@ -111,36 +117,51 @@ async fn messages(
         // block streamed as a single delta → message_delta (output usage +
         // stop reason) → message_stop.
         let events: Vec<Result<Event, Infallible>> = vec![
-            sse("message_start", json!({
-                "type": "message_start",
-                "message": {
-                    "id": "msg_mock",
-                    "type": "message",
-                    "role": "assistant",
-                    "model": "claude-test",
-                    "content": [],
-                    "usage": {"input_tokens": 3, "output_tokens": 0},
-                },
-            })),
-            sse("content_block_start", json!({
-                "type": "content_block_start",
-                "index": 0,
-                "content_block": {"type": "text", "text": ""},
-            })),
-            sse("content_block_delta", json!({
-                "type": "content_block_delta",
-                "index": 0,
-                "delta": {"type": "text_delta", "text": text},
-            })),
-            sse("content_block_stop", json!({
-                "type": "content_block_stop",
-                "index": 0,
-            })),
-            sse("message_delta", json!({
-                "type": "message_delta",
-                "delta": {"stop_reason": "end_turn", "stop_sequence": null},
-                "usage": {"output_tokens": 5},
-            })),
+            sse(
+                "message_start",
+                json!({
+                    "type": "message_start",
+                    "message": {
+                        "id": "msg_mock",
+                        "type": "message",
+                        "role": "assistant",
+                        "model": "claude-test",
+                        "content": [],
+                        "usage": {"input_tokens": 3, "output_tokens": 0},
+                    },
+                }),
+            ),
+            sse(
+                "content_block_start",
+                json!({
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                }),
+            ),
+            sse(
+                "content_block_delta",
+                json!({
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": text},
+                }),
+            ),
+            sse(
+                "content_block_stop",
+                json!({
+                    "type": "content_block_stop",
+                    "index": 0,
+                }),
+            ),
+            sse(
+                "message_delta",
+                json!({
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn", "stop_sequence": null},
+                    "usage": {"output_tokens": 5},
+                }),
+            ),
             sse("message_stop", json!({"type": "message_stop"})),
         ];
         return Sse::new(futures_util::stream::iter(events)).into_response();
@@ -160,7 +181,5 @@ async fn messages(
 }
 
 fn sse(event: &str, payload: Value) -> Result<Event, Infallible> {
-    Ok(Event::default()
-        .event(event)
-        .data(payload.to_string()))
+    Ok(Event::default().event(event).data(payload.to_string()))
 }

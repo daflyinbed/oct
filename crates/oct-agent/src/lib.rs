@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod agent_settings;
 pub mod api;
+pub mod codemode;
 pub mod context;
 pub mod db;
 pub mod mcp;

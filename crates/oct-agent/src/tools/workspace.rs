@@ -65,6 +65,10 @@ impl WorkspaceRoots {
         &self.primary
     }
 
+    pub fn read_only_roots(&self) -> &[PathBuf] {
+        &self.read_only
+    }
+
     /// Canonicalized roots for classification, primary first. Best effort:
     /// roots that fail to canonicalize (e.g. do not exist yet) are skipped —
     /// a path cannot be inside a root that does not exist, and resolution

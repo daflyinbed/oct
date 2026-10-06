@@ -395,17 +395,29 @@ mod tests {
         for action in &actions {
             for mode in modes {
                 assert_eq!(
-                    decide(action, mode, &ruleset_with(matching_rule(action, Effect::Allow))),
+                    decide(
+                        action,
+                        mode,
+                        &ruleset_with(matching_rule(action, Effect::Allow))
+                    ),
                     Decision::Allow,
                     "allow rule: {action:?} {mode:?}"
                 );
                 assert_eq!(
-                    decide(action, mode, &ruleset_with(matching_rule(action, Effect::Ask))),
+                    decide(
+                        action,
+                        mode,
+                        &ruleset_with(matching_rule(action, Effect::Ask))
+                    ),
                     Decision::Ask,
                     "ask rule: {action:?} {mode:?}"
                 );
                 assert_eq!(
-                    decide(action, mode, &ruleset_with(matching_rule(action, Effect::Deny))),
+                    decide(
+                        action,
+                        mode,
+                        &ruleset_with(matching_rule(action, Effect::Deny))
+                    ),
                     Decision::Deny,
                     // The headline case: deny survives even bypass.
                     "deny rule: {action:?} {mode:?}"
@@ -506,12 +518,20 @@ mod tests {
                 "read under exec root: {mode:?}"
             );
             assert_eq!(
-                decide(&write(&under.display().to_string(), false), mode, &allow_all_files),
+                decide(
+                    &write(&under.display().to_string(), false),
+                    mode,
+                    &allow_all_files
+                ),
                 Decision::Deny,
                 "write under exec root: {mode:?}"
             );
             assert_eq!(
-                decide(&edit(&under.display().to_string(), false), mode, &allow_all_files),
+                decide(
+                    &edit(&under.display().to_string(), false),
+                    mode,
+                    &allow_all_files
+                ),
                 Decision::Deny,
                 "edit under exec root: {mode:?}"
             );
@@ -540,7 +560,11 @@ mod tests {
             .with_file_name("oct-perm-test-exec2")
             .join("conv/bg.log");
         assert_eq!(
-            decide(&read(&sibling.display().to_string(), true), PermissionMode::Default, &bare),
+            decide(
+                &read(&sibling.display().to_string(), true),
+                PermissionMode::Default,
+                &bare
+            ),
             Decision::Ask
         );
 
@@ -559,10 +583,7 @@ mod tests {
 
     #[test]
     fn rule_suggestions_are_conservative() {
-        assert_eq!(
-            rule_suggestion(&command()).as_deref(),
-            Some("cargo build")
-        );
+        assert_eq!(rule_suggestion(&command()).as_deref(), Some("cargo build"));
         assert_eq!(
             rule_suggestion(&PermissionAction::Command {
                 command: "npm".into()
@@ -573,7 +594,9 @@ mod tests {
         // No pattern from an empty/whitespace command: an empty prefix
         // would match every command.
         assert_eq!(
-            rule_suggestion(&PermissionAction::Command { command: "  ".into() }),
+            rule_suggestion(&PermissionAction::Command {
+                command: "  ".into()
+            }),
             None
         );
 

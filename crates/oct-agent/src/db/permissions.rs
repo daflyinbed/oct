@@ -41,10 +41,7 @@ pub struct NewPermissionRule<'a> {
     pub source: &'a str,
 }
 
-pub async fn create_rule(
-    pool: &SqlitePool,
-    new: NewPermissionRule<'_>,
-) -> Result<PermissionRule> {
+pub async fn create_rule(pool: &SqlitePool, new: NewPermissionRule<'_>) -> Result<PermissionRule> {
     let id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().naive_utc();
 

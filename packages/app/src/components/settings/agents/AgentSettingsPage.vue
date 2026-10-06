@@ -143,6 +143,7 @@
                     "
                     :disabled="
                       saving ||
+                      isLockedReadTool(option.selector) ||
                       (!option.available &&
                         !selectedTools.some(
                           (t) => toolKey(t) === toolKey(option.selector),
@@ -156,7 +157,11 @@
                     "
                   />
                   {{ option.label
-                  }}<span v-if="!option.available" class="text-faint"
+                  }}<span
+                    v-if="isLockedReadTool(option.selector)"
+                    class="text-faint"
+                    >（代码模式必需）</span
+                  ><span v-if="!option.available" class="text-faint"
                     >（不可用）</span
                   >
                 </label>
@@ -165,6 +170,21 @@
                 edit_file 需要 read_file，选择会联动。execute_command 与 MCP
                 可能修改数据。
               </p>
+              <div v-if="requireReadTools" class="flex items-center gap-2">
+                <p class="text-[11px] text-dim">
+                  代码模式已启用：read_file / grep / glob
+                  用于浏览本运行生成的工具
+                  SDK，非空列表必须包含（后端同样校验）。
+                </p>
+                <button
+                  type="button"
+                  class="shrink-0 control-ghost rounded-md px-2.5 py-1 text-[11px] control-focus"
+                  :disabled="saving"
+                  @click="clearAllTools"
+                >
+                  清空（无工具）
+                </button>
+              </div>
             </div>
             <p class="mt-2 text-[11px] text-dim">
               当前生效：{{
@@ -238,14 +258,17 @@ import {
   AlertDialogTitle,
 } from "reka-ui";
 import { computed, onBeforeUnmount, ref, watch } from "vue";
+import client from "@/api/client";
 import AppSelect from "@/components/ui/AppSelect.vue";
 import { toolKey, useAgentSettings } from "@/composables/useAgentSettings";
+import { useSettings } from "@/composables/useSettings";
 import type { components } from "@/api/schema";
 import type { ToolSelector } from "@/composables/useAgentSettings";
 
 const props = defineProps<{ projectId: string | null }>();
 const editor = useAgentSettings();
 const { views, tools, loading, saving, error, saved, modelOptions } = editor;
+const settings = useSettings();
 const selectedKey = ref("worker");
 const current = computed(() =>
   views.value.find((v) => v.key === selectedKey.value),
@@ -287,11 +310,65 @@ function discard() {
 }
 defineExpose({ dirty, requestLeave });
 
+// 代码模式下 worker 用这三个只读工具浏览自己的 SDK：非空列表必须包含。
+// 状态必须先于下方 immediate watcher 初始化——watcher 在 setup 期同步调用
+// loadCodeMode，晚于此处的 let 声明会触发 TDZ ReferenceError。
+const REQUIRED_READ_TOOLS = ["read_file", "grep", "glob"] as const;
+const codeMode = ref(false);
+let codeModeRequest = 0;
+async function loadCodeMode(id: string | null) {
+  const request = ++codeModeRequest;
+  try {
+    if (id) {
+      const { data, error: apiError } = await client.GET(
+        "/api/projects/{id}/settings/mcp",
+        { params: { path: { id } } },
+      );
+      if (request !== codeModeRequest || apiError) return;
+      codeMode.value = data.effective_mcp_tool_mode === "code";
+    } else {
+      // 强制刷新：模式可能在其它入口被修改过，单例缓存的旧值不可信。
+      await settings.load(true);
+      if (request !== codeModeRequest) return;
+      codeMode.value = settings.mcpToolMode.value === "code";
+    }
+  } catch {
+    // 仅影响提示，加载失败不打断面板。
+  }
+}
+const requireReadTools = computed(
+  () =>
+    codeMode.value &&
+    selectedKey.value === "worker" &&
+    toolsMode.value === "allowlist" &&
+    selectedTools.value.length > 0,
+);
+watch(requireReadTools, (required) => {
+  if (!required) return;
+  for (const name of REQUIRED_READ_TOOLS)
+    if (
+      !selectedTools.value.some((t) => t.kind === "builtin" && t.name === name)
+    )
+      selectedTools.value.push({ kind: "builtin", name });
+});
+function isLockedReadTool(selector: ToolSelector) {
+  return (
+    requireReadTools.value &&
+    selector.kind === "builtin" &&
+    (REQUIRED_READ_TOOLS as readonly string[]).includes(selector.name)
+  );
+}
+// 锁定的三件套无法逐个取消；清空是回到「无工具」worker 的唯一出口。
+function clearAllTools() {
+  selectedTools.value = [];
+}
+
 watch(
   () => props.projectId,
   (id) => {
     baseline.value = "";
     void editor.load(id);
+    void loadCodeMode(id);
   },
   { immediate: true },
 );

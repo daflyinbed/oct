@@ -53,6 +53,13 @@ pub enum AgentEvent {
         delta: String,
     },
 
+    /// UI-only nested execution state. Never creates a model tool message.
+    #[serde(rename = "nested_tool_update")]
+    NestedToolUpdate {
+        parent_call_id: String,
+        call: crate::codemode::NestedCall,
+    },
+
     #[serde(rename = "tool_result")]
     ToolResult {
         call_id: String,

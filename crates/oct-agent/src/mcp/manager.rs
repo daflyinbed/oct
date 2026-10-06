@@ -838,6 +838,7 @@ mod tests {
 
     fn info(name: &str, description: Option<&str>) -> McpToolInfo {
         McpToolInfo {
+            output_schema: None,
             name: name.to_string(),
             description: description.map(str::to_string),
             input_schema: json!({"type": "object", "properties": {}}),

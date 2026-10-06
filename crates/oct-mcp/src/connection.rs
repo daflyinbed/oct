@@ -92,6 +92,8 @@ pub struct McpToolInfo {
     /// [`normalize_input_schema`] (missing `type`/`properties` are
     /// defaulted; nothing the server sent is rewritten).
     pub input_schema: Value,
+    /// Optional schema for structuredContent; kept separate from inputSchema.
+    pub output_schema: Option<Value>,
 }
 
 /// One image content block from a tool result, ready for LLM pass-through:
@@ -645,6 +647,7 @@ fn map_tool_info(tool: Tool) -> McpToolInfo {
         name: tool.name.into_owned(),
         description: tool.description.map(|d| d.into_owned()),
         input_schema: normalize_input_schema(&Value::Object((*tool.input_schema).clone())),
+        output_schema: tool.output_schema.map(|s| Value::Object((*s).clone())),
     }
 }
 
@@ -1261,6 +1264,7 @@ mod tests {
             tools,
             vec![
                 McpToolInfo {
+                    output_schema: None,
                     name: "echo".to_string(),
                     description: Some("say things".to_string()),
                     input_schema: json!({
@@ -1269,11 +1273,13 @@ mod tests {
                     }),
                 },
                 McpToolInfo {
+                    output_schema: None,
                     name: "boom".to_string(),
                     description: None,
                     input_schema: json!({"type": "object", "properties": {}}),
                 },
                 McpToolInfo {
+                    output_schema: None,
                     name: "mirror".to_string(),
                     description: None,
                     input_schema: json!({"type": "object", "properties": {}}),

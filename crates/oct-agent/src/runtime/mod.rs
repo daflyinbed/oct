@@ -31,6 +31,7 @@
 //! (epoch-guarded `finish_run` + `subagent_updated` on the parent hub +
 //! done-watch + memory cleanup) before dropping the guard.
 
+mod code_recovery;
 /// DB-driven model resolution (the single ChatModel construction path).
 mod resolve;
 mod supervision;
@@ -169,6 +170,14 @@ pub(crate) fn workspace_roots(project: &project_db::Project) -> (WorkspaceRoots,
 }
 
 impl RunService {
+    fn codemode_root(&self) -> PathBuf {
+        self.background
+            .exec_dir()
+            .parent()
+            .unwrap_or(self.background.exec_dir())
+            .join("codemode")
+    }
+
     /// Insert the session entry for a new run: a REAL handle with a fresh
     /// event hub (not a placeholder channel) and a fresh cancellation token.
     /// A GET /events arriving in the run-startup window already replays from
@@ -258,6 +267,8 @@ impl RunService {
         subagent: bool,
     ) -> Result<Arc<PermissionGate>, AppError> {
         let mut rules = RuleSet::new(self.background.exec_dir());
+        rules.protect_read_only_roots(roots.read_only_roots());
+        rules.protect_read_only_roots(&[self.codemode_root()]);
         match crate::db::permissions::list_rules_for_project(&self.pool, project_id).await {
             Ok(rows) => {
                 for row in &rows {
@@ -459,7 +470,22 @@ impl RunService {
             .expect("the occupancy guard guarantees the session entry");
 
         let (roots, additional) = workspace_roots(&project);
-        let roots = roots.with_read_only_root(self.background.exec_dir().to_path_buf());
+        let mut roots = roots.with_read_only_root(self.background.exec_dir().to_path_buf());
+        let mcp_tools: Vec<Arc<dyn tools::AgentTool>> = self
+            .mcp
+            .tools_for_run(Some(&project.id))
+            .into_iter()
+            .map(Arc::from)
+            .collect();
+        let use_code = crate::codemode::mode(&self.pool, Some(&project.id))
+            .await
+            .unwrap_or_default()
+            == crate::codemode::McpToolMode::Code;
+        let worker_roots = roots.clone();
+        if use_code {
+            roots = roots
+                .with_read_only_root(self.codemode_root().join(&conversation_id).join(&run.id));
+        }
         let locks = self.file_locks_for(&project.id);
         let reads = Arc::new(AgentReadState::new());
 
@@ -473,12 +499,7 @@ impl RunService {
                 .into_iter()
                 .map(Arc::from)
                 .collect();
-        run_tools.extend(
-            self.mcp
-                .tools_for_run(Some(&project.id))
-                .into_iter()
-                .map(Arc::from),
-        );
+        run_tools.extend(mcp_tools);
 
         // Background execution surface: the default set's plain
         // execute tool is swapped in place for a background-enabled instance
@@ -501,6 +522,31 @@ impl RunService {
             conversation_id.clone(),
         )) as Arc<dyn tools::AgentTool>);
 
+        // Bind the actual per-run native instances as well as MCP tools:
+        // read/edit share this agent's state, and root bash keeps its background identity.
+        let mut code_warning = None;
+        let prepared = if use_code {
+            match crate::codemode::Prepared::new(
+                self.codemode_root(),
+                &conversation_id,
+                &run.id,
+                &run_tools,
+            )
+            .await
+            {
+                Ok(prepared) => Some(prepared),
+                Err(error) => {
+                    tracing::warn!("Code mode preparation failed; using direct tools: {error:#}");
+                    code_warning = Some(format!(
+                        "Code mode was unavailable for this run: {error:#}. Tools are exposed directly.\n"
+                    ));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         // The delegation tool for root runs of chat conversations: it hands
         // the SubagentManager everything it needs to spawn a worker —
         // including (through the OnceLock filled right below) the very
@@ -519,11 +565,16 @@ impl RunService {
                     root_conversation_id: conversation_id.clone(),
                     root_run_id: run.id.clone(),
                     project: project.clone(),
-                    roots: roots.clone(),
+                    roots: worker_roots,
                     locks: locks.clone(),
                     provider_id: provider_id.clone(),
                     model_id: model_id.clone(),
                     context_window,
+                    tool_mode: if prepared.is_some() {
+                        crate::codemode::McpToolMode::Code
+                    } else {
+                        crate::codemode::McpToolMode::Direct
+                    },
                     parent_cancel: handle.cancel.clone(),
                     parent_hub: handle.hub.clone(),
                     parent_toolset: parent_toolset.clone(),
@@ -573,17 +624,29 @@ impl RunService {
             }
         };
 
+        // Keep the full set alive through CodeTool; TaskTool's weak parent slot
+        // references it, so worker selection sees the original authorized tools.
+        let code_section = prepared.as_ref().map(|p| p.prompt_section());
+        let model_tools = match prepared {
+            Some(prepared) => prepared.expose(toolset.clone(), gate.clone()),
+            None => toolset.clone(),
+        };
+        let mut prompt = system_prompt(
+            &PathBuf::from(&project.working_dir),
+            &additional,
+            &model_tools,
+            code_section.as_ref(),
+        );
+        if let Some(warning) = code_warning {
+            prompt.push_str(&warning);
+        }
         let ctx = AgentContext {
             model: Arc::from(model),
-            tools: toolset.clone(),
+            tools: model_tools,
             pool: self.pool.clone(),
             // Built from the ACTUAL tool list (task guidance included for
             // root agents; see the prompt module).
-            system_prompt: system_prompt(
-                &PathBuf::from(&project.working_dir),
-                &additional,
-                &toolset,
-            ),
+            system_prompt: prompt,
             context_window,
             idle,
             permission: gate,
@@ -650,7 +713,15 @@ impl RunService {
             .map(|entry| entry.value().clone())
             .expect("the occupancy guard guarantees the session entry");
 
-        let roots = roots.with_read_only_root(self.background.exec_dir().to_path_buf());
+        let tool_mode = agent_config
+            .as_ref()
+            .map(|snapshot| snapshot.tool_mode)
+            .unwrap_or_default();
+        let mut roots = roots.with_read_only_root(self.background.exec_dir().to_path_buf());
+        if tool_mode == crate::codemode::McpToolMode::Code {
+            roots = roots
+                .with_read_only_root(self.codemode_root().join(&conversation_id).join(&run_id));
+        }
 
         // Effective toolset = parent set − task, with the three file tools
         // rebuilt over the shared locks and a FRESH read state (the child's
@@ -699,7 +770,68 @@ impl RunService {
             },
             None => child_tools,
         };
+        // Code-mode workers discover their SDK through the regular read
+        // tools; the settings API rejects non-empty allowlists without them,
+        // and this guard covers configs sealed before a mode switch to code.
+        if tool_mode == crate::codemode::McpToolMode::Code && !child_tools.is_empty() {
+            let names: std::collections::HashSet<&str> =
+                child_tools.iter().map(|tool| tool.name()).collect();
+            let missing: Vec<&str> = ["read_file", "grep", "glob"]
+                .into_iter()
+                .filter(|name| !names.contains(name))
+                .collect();
+            if !missing.is_empty() {
+                let error = anyhow::anyhow!(
+                    "Code mode worker requires read_file/grep/glob in its tool set for SDK discovery; missing: {}",
+                    missing.join(", ")
+                );
+                run_db::finish_run(
+                    &self.pool,
+                    &run_id,
+                    run_db::RunFinalStatus::Failed,
+                    None,
+                    Some(&error.to_string()),
+                    None,
+                    None,
+                    Some(epoch),
+                )
+                .await?;
+                return Err(AppError::Internal(error));
+            }
+        }
         let child_tools = Arc::new(child_tools);
+        let prepared = if tool_mode == crate::codemode::McpToolMode::Code && !child_tools.is_empty()
+        {
+            match crate::codemode::Prepared::for_worker(
+                self.codemode_root(),
+                &conversation_id,
+                &run_id,
+                epoch,
+                &child_tools,
+            )
+            .await
+            {
+                Ok(prepared) => Some(prepared),
+                Err(error) => {
+                    // A sealed code-mode worker must not silently change its
+                    // exposure mode on recovery when its helper is unavailable.
+                    run_db::finish_run(
+                        &self.pool,
+                        &run_id,
+                        run_db::RunFinalStatus::Failed,
+                        None,
+                        Some(&error.to_string()),
+                        None,
+                        None,
+                        Some(epoch),
+                    )
+                    .await?;
+                    return Err(error.into());
+                }
+            }
+        } else {
+            None
+        };
 
         // The child's permission gate: rules load like
         // a root run's, the MODE inherits the root conversation (child rows
@@ -739,11 +871,17 @@ impl RunService {
             }
         };
 
+        let code_section = prepared.as_ref().map(|p| p.prompt_section());
+        let model_tools = match prepared {
+            Some(prepared) => prepared.expose(child_tools, gate.clone()),
+            None => child_tools,
+        };
         let (_, additional) = workspace_roots(&project);
         let mut prompt = worker_system_prompt(
             &PathBuf::from(&project.working_dir),
             &additional,
-            &child_tools,
+            &model_tools,
+            code_section.as_ref(),
         );
         if let Some(snapshot) = &agent_config
             && !snapshot.instructions.is_empty()
@@ -753,7 +891,7 @@ impl RunService {
         }
         let ctx = AgentContext {
             model: Arc::from(model),
-            tools: child_tools.clone(),
+            tools: model_tools,
             pool: self.pool.clone(),
             system_prompt: prompt,
             context_window,

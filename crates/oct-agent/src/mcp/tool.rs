@@ -61,10 +61,10 @@ pub(crate) fn tool_description(server: &str, description: Option<&str>) -> Strin
 /// Model-visible content of one call result: the joined text blocks, or —
 /// when the server sent no text — `structuredContent` rendered as pretty
 /// JSON.
-pub(crate) fn result_content(result: &McpCallResult) -> String {
-    if !result.text.is_empty() {
-        result.text.clone()
-    } else if let Some(structured) = &result.structured_json {
+pub(crate) fn result_content(text: &str, structured: Option<&Value>) -> String {
+    if !text.is_empty() {
+        text.to_owned()
+    } else if let Some(structured) = structured {
         serde_json::to_string_pretty(structured).unwrap_or_else(|_| structured.to_string())
     } else {
         NO_CONTENT.to_string()
@@ -83,6 +83,8 @@ pub struct McpTool {
     timeout: Duration,
     description: String,
     input_schema: Value,
+    output_schema: Option<Value>,
+    validator: std::sync::OnceLock<Result<jsonschema::Validator, String>>,
 }
 
 impl McpTool {
@@ -103,6 +105,8 @@ impl McpTool {
             timeout,
             description,
             input_schema: info.input_schema,
+            output_schema: info.output_schema,
+            validator: Default::default(),
         }
     }
 
@@ -110,6 +114,44 @@ impl McpTool {
     pub fn with_server_id(mut self, server_id: String) -> Self {
         self.server_id = server_id;
         self
+    }
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> anyhow::Result<McpCallResult> {
+        // Shared transport path: direct calls project errors to ToolOutput;
+        // code calls propagate them as catchable ToolCallError values.
+        // Timeout, cancellation and transport errors name the server and the
+        // tool so the user (and the model) can locate the misbehaving party.
+        let result = tokio::select! {
+            result = self.connection.call_tool(&self.original_name, &args) => result,
+            _ = tokio::time::sleep(self.timeout) => {
+                return Err(oct_codemode::CallError::new("tool_timeout", format!(
+                    "MCP tool error: tool `{}` on MCP server `{}` timed out after {:?}",
+                    self.original_name, self.server_name, self.timeout
+                )).into());
+            }
+            // The run was cancelled: bail out now instead of letting the call
+            // run to its timeout. The shared connection is NOT shut down — it
+            // is keyed by server id and outlives this run — and dropping the
+            // request future simply makes rmcp discard the eventual response.
+            // Sending a JSON-RPC cancelled notification is deliberately out
+            // of scope here.
+            _ = ctx.cancel_token().cancelled() => {
+                return Err(oct_codemode::CallError::new("cancelled", format!(
+                    "MCP tool error: tool `{}` on MCP server `{}` was cancelled by the user",
+                    self.original_name, self.server_name
+                )).into());
+            }
+        };
+        match result {
+            Ok(result) => Ok(result),
+            Err(e) => Err(oct_codemode::CallError::new(
+                "transport_error",
+                format!(
+                    "MCP tool error: calling `{}` on MCP server `{}` failed: {e:#}",
+                    self.original_name, self.server_name
+                ),
+            )
+            .into()),
+        }
     }
 }
 
@@ -134,6 +176,48 @@ impl crate::tools::AgentTool for McpTool {
         self.input_schema.clone()
     }
 
+    fn validate_input(&self, args: &Value) -> anyhow::Result<()> {
+        let validator = self.validator.get_or_init(|| {
+            jsonschema::validator_for(&self.input_schema).map_err(|e| e.to_string())
+        });
+        let validator = validator
+            .as_ref()
+            .map_err(|error| anyhow::anyhow!("Unsupported MCP input schema: {error}"))?;
+        validator
+            .validate(args)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok(())
+    }
+
+    fn output_schema(&self) -> Option<Value> {
+        self.output_schema.clone()
+    }
+
+    fn mcp_server_name(&self) -> Option<&str> {
+        Some(&self.server_name)
+    }
+
+    async fn execute_for_code(
+        &self,
+        args: Value,
+        ctx: &ToolContext,
+    ) -> anyhow::Result<crate::tools::CodeToolResult> {
+        let result = self.invoke(args, ctx).await?;
+        Ok(crate::tools::CodeToolResult {
+            text: result.text,
+            structured_content: result.structured_json,
+            images: result
+                .images
+                .into_iter()
+                .map(|image| ToolImage {
+                    mime_type: image.mime_type,
+                    data: image.data,
+                })
+                .collect(),
+            is_error: result.is_error,
+        })
+    }
+
     fn title(&self, _args: &serde_json::Value) -> String {
         format!("{} / {}", self.server_name, self.original_name)
     }
@@ -143,39 +227,9 @@ impl crate::tools::AgentTool for McpTool {
         args: serde_json::Value,
         ctx: &ToolContext,
     ) -> anyhow::Result<ToolOutput> {
-        // Never `Err`: a dead or slow server becomes an error ToolOutput so
-        // the agent loop keeps running and the model can react to the text.
-        // Timeout, cancellation and transport errors name the server and the
-        // tool so the user (and the model) can locate the misbehaving party.
-        let result = tokio::select! {
-            result = self.connection.call_tool(&self.original_name, &args) => result,
-            _ = tokio::time::sleep(self.timeout) => {
-                return Ok(ToolOutput::error(format!(
-                    "MCP tool error: tool `{}` on MCP server `{}` timed out after {:?}",
-                    self.original_name, self.server_name, self.timeout
-                )));
-            }
-            // The run was cancelled: bail out now instead of letting the call
-            // run to its timeout. The shared connection is NOT shut down — it
-            // is keyed by server id and outlives this run — and dropping the
-            // request future simply makes rmcp discard the eventual response.
-            // Sending a JSON-RPC cancelled notification is deliberately out
-            // of scope here.
-            _ = ctx.cancel_token().cancelled() => {
-                return Ok(ToolOutput::error(format!(
-                    "MCP tool error: tool `{}` on MCP server `{}` was cancelled by the user",
-                    self.original_name, self.server_name
-                )));
-            }
-        };
-        let result = match result {
+        let result = match self.invoke(args, ctx).await {
             Ok(result) => result,
-            Err(e) => {
-                return Ok(ToolOutput::error(format!(
-                    "MCP tool error: calling `{}` on MCP server `{}` failed: {e:#}",
-                    self.original_name, self.server_name
-                )));
-            }
+            Err(error) => return Ok(ToolOutput::error(format!("{error:#}"))),
         };
 
         // Reuse the shared output budget (head+tail truncation) so a server
@@ -183,7 +237,10 @@ impl crate::tools::AgentTool for McpTool {
         // text budget but are capped separately (count + per-image size);
         // dropped ones are counted in details so the UI (and the log) can
         // tell something was withheld.
-        let content = truncate_middle(&result_content(&result), MAX_TOOL_OUTPUT_BYTES);
+        let content = truncate_middle(
+            &result_content(&result.text, result.structured_json.as_ref()),
+            MAX_TOOL_OUTPUT_BYTES,
+        );
         let mut images = Vec::new();
         let mut dropped_images = 0usize;
         for image in &result.images {

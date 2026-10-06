@@ -541,32 +541,18 @@ pub async fn run_agent_loop(
             // an approval until answered, cancelled or timed out.
             let permission = ctx.permission.clone();
             let gate_hub = handle.hub.clone();
-            let gate_cancel = handle.cancel.clone();
 
             futures.spawn(async move {
                 let tool = tools.iter().find(|t| t.name() == tc.name);
-                let output = if tool.is_none() {
-                    crate::tools::ToolOutput::error(format!("Unknown tool: {}", tc.name))
-                } else {
-                    match permission
-                        .check(&tc.name, &args, &tc.id, &gate_hub, &gate_cancel)
-                        .await
-                    {
-                        crate::permissions::gate::GateVerdict::Denied(output) => output,
-                        crate::permissions::gate::GateVerdict::Proceed => match tool {
-                            Some(t) => match t.execute(args, &tool_ctx).await {
-                                Ok(o) => o,
-                                Err(e) => crate::tools::ToolOutput::error(format!(
-                                    "Tool execution error: {e}"
-                                )),
-                            },
-                            None => crate::tools::ToolOutput::error(format!(
-                                "Unknown tool: {}",
-                                tc.name
-                            )),
-                        },
-                    }
-                };
+                let output = tools::dispatch::direct(
+                    tool,
+                    &tc.name,
+                    args,
+                    &tool_ctx,
+                    &permission,
+                    &gate_hub,
+                )
+                .await;
                 (idx, tc, output)
             });
         }
@@ -653,18 +639,30 @@ pub async fn run_agent_loop(
         if handle.cancel.is_cancelled() {
             for (idx, tc) in &indexed_calls {
                 if !completed.contains(idx) {
+                    let output = ctx
+                        .tools
+                        .iter()
+                        .find(|t| t.name() == tc.name)
+                        .and_then(|t| t.interrupted_output(&tc.id))
+                        .unwrap_or_else(|| tools::ToolOutput::error("用户取消了执行"));
                     let cancel_msg = Message {
                         role: Role::Tool,
                         parts: vec![ContentPart::ToolResult(ToolResult {
                             call_id: tc.id.clone(),
-                            content: Value::String("用户取消了执行".into()),
+                            content: Value::String(output.content),
                             is_error: true,
                             images: Vec::new(),
                         })],
                     };
-                    if let Err(e) =
-                        msg_db::insert_message(&ctx.pool, &conv_id, &cancel_msg, None, None, None)
-                            .await
+                    if let Err(e) = msg_db::insert_message(
+                        &ctx.pool,
+                        &conv_id,
+                        &cancel_msg,
+                        None,
+                        None,
+                        output.details.as_ref(),
+                    )
+                    .await
                     {
                         error!("Failed to persist cancel result: {e}");
                     }

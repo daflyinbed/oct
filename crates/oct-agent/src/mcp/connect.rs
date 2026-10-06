@@ -66,9 +66,14 @@ pub(crate) async fn connect_server(
             let Some(url) = row.url.as_deref().map(str::trim).filter(|u| !u.is_empty()) else {
                 return failed("http transport requires a url".to_string());
             };
-            let authorized =
-                credential::authorize_headers(pool, &row.id, url, &row.name, row.headers.as_deref())
-                    .await;
+            let authorized = credential::authorize_headers(
+                pool,
+                &row.id,
+                url,
+                &row.name,
+                row.headers.as_deref(),
+            )
+            .await;
             let had_token = authorized.had_token;
             let cfg = HttpServerConfig {
                 url: url.to_string(),
@@ -83,8 +88,7 @@ pub(crate) async fn connect_server(
                         // surfaces HTTP 401s in its error chains (status
                         // codes / WWW-Authenticate text), so a substring
                         // probe is the honest best-effort.
-                        if had_token
-                            && credential::looks_like_auth_rejection(&format!("{error:#}"))
+                        if had_token && credential::looks_like_auth_rejection(&format!("{error:#}"))
                         {
                             return Err(error.context(
                                 "the stored OAuth token was rejected (401); it may be expired \

@@ -270,6 +270,13 @@ impl ApprovalRegistry {
         }
     }
 
+    /// A single owned tool future was dropped while the run keeps progressing.
+    pub fn cancel(&self, id: &str) {
+        if let Some((_, approval)) = self.pending.remove(id) {
+            approval.publish_resolution(ApprovalOutcome::Cancelled, None, None);
+        }
+    }
+
     pub fn cancel_run(&self, run_id: &str, fallback: &EventHub) {
         let ids: Vec<String> = self
             .pending
@@ -403,10 +410,7 @@ mod tests {
         assert!(registry.pending_for_conversation("conv-2").is_empty());
 
         assert!(registry.resolve(&id, ApprovalDecision::AllowAlways).is_ok());
-        assert_eq!(
-            receiver.try_recv().unwrap(),
-            ApprovalDecision::AllowAlways
-        );
+        assert_eq!(receiver.try_recv().unwrap(), ApprovalDecision::AllowAlways);
 
         // Second resolve and unknown id: the same indistinguishable error.
         assert_eq!(
@@ -443,10 +447,19 @@ mod tests {
         assert!(removed.iter().all(|m| m.run_id == "run-1"));
 
         // The dropped senders close the channels: the gate's select! arm.
-        assert!(matches!(rx_a.try_recv(), Err(oneshot::error::TryRecvError::Closed)));
-        assert!(matches!(rx_b.try_recv(), Err(oneshot::error::TryRecvError::Closed)));
+        assert!(matches!(
+            rx_a.try_recv(),
+            Err(oneshot::error::TryRecvError::Closed)
+        ));
+        assert!(matches!(
+            rx_b.try_recv(),
+            Err(oneshot::error::TryRecvError::Closed)
+        ));
         // Other runs' approvals survive...
-        assert!(matches!(rx_other.try_recv(), Err(oneshot::error::TryRecvError::Empty)));
+        assert!(matches!(
+            rx_other.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
         // ...and an empty removal is a no-op.
         assert!(registry.remove_for_run("run-1").is_empty());
         assert_eq!(registry.pending_for_conversation("conv-1").len(), 1);

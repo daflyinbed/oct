@@ -165,6 +165,39 @@
                 General
               </div>
               <div
+                class="flex items-center gap-[18px] border-b border-line-soft border-dashed py-3"
+              >
+                <div class="min-w-0 flex-1">
+                  <div class="text-[13px] text-strong font-semibold">
+                    工具调用方式
+                  </div>
+                  <div class="mt-0.5 text-[12px] text-dim">
+                    代码模式按需读取工具声明，用 TypeScript 组合文件、命令和 MCP
+                    调用并筛选结果；下次运行生效，子代理继承调用方式并遵守工具白名单。
+                  </div>
+                  <div
+                    v-if="!codeModeAvailable"
+                    class="mt-0.5 text-[12px] text-warning-10"
+                  >
+                    代码运行组件尚未安装，当前会回退为直接调用。
+                  </div>
+                  <div
+                    v-if="mcpModeError"
+                    class="mt-0.5 text-[12px] text-danger-10"
+                  >
+                    {{ mcpModeError }}
+                  </div>
+                </div>
+                <AppSelect
+                  :model-value="selectedMcpMode"
+                  :options="mcpModeOptions"
+                  :disabled="mcpModePending"
+                  class="w-36 flex-none"
+                  title="工具调用方式"
+                  @update:model-value="changeMcpMode"
+                />
+              </div>
+              <div
                 v-if="!inProjectScope"
                 class="flex items-center gap-[18px] border-b border-line-soft border-dashed py-3"
               >
@@ -371,6 +404,7 @@ import {
   SwitchThumb,
 } from "reka-ui";
 import { computed, ref, watch } from "vue";
+import client from "@/api/client";
 import AgentSettingsPage from "@/components/settings/agents/AgentSettingsPage.vue";
 import McpEditPage from "@/components/settings/mcp/McpEditPage.vue";
 import McpListPage from "@/components/settings/mcp/McpListPage.vue";
@@ -408,7 +442,14 @@ const emit = defineEmits<{
 const { providers } = useProviders();
 const { servers: mcpServers, fetchServers: fetchMcpServers } = useMcpServers();
 const { projects } = useProjects();
-const { llmWireLog, load: loadSettings, setLlmWireLog } = useSettings();
+const {
+  llmWireLog,
+  mcpToolMode,
+  codeModeAvailable,
+  load: loadSettings,
+  setLlmWireLog,
+  setMcpToolMode,
+} = useSettings();
 const wireLogPending = ref(false);
 
 /** 弹窗打开时拉一次设置（wire 开关行在 AI 根页展示当前生效值）。 */
@@ -464,6 +505,76 @@ const GLOBAL_SCOPE = "__global__";
 const scopeId = ref<string>(GLOBAL_SCOPE);
 
 const inProjectScope = computed(() => scopeId.value !== GLOBAL_SCOPE);
+
+const localMcpMode = ref<"direct" | "code" | null>(null);
+const mcpModePending = ref(false);
+const mcpModeError = ref("");
+let mcpScopeRequest = 0;
+const selectedMcpMode = computed(() =>
+  inProjectScope.value ? (localMcpMode.value ?? "inherit") : mcpToolMode.value,
+);
+const mcpModeOptions = computed(() => [
+  ...(inProjectScope.value
+    ? [
+        {
+          value: "inherit",
+          label: `继承全局（${mcpToolMode.value === "code" ? "代码" : "直接"}）`,
+        },
+      ]
+    : []),
+  { value: "direct", label: "直接调用" },
+  { value: "code", label: "代码模式" },
+]);
+watch(
+  [scopeId, () => props.visible],
+  async ([scope, visible]) => {
+    const request = ++mcpScopeRequest;
+    mcpModeError.value = "";
+    localMcpMode.value = null;
+    mcpModePending.value = false;
+    if (!visible || scope === GLOBAL_SCOPE) return;
+    mcpModePending.value = true;
+    try {
+      const { data, error } = await client.GET(
+        "/api/projects/{id}/settings/mcp",
+        { params: { path: { id: scope } } },
+      );
+      if (request !== mcpScopeRequest) return;
+      if (error !== undefined) mcpModeError.value = "读取设置失败";
+      else localMcpMode.value = data.mcp_tool_mode ?? null;
+    } finally {
+      if (request === mcpScopeRequest) mcpModePending.value = false;
+    }
+  },
+  { immediate: true },
+);
+
+async function changeMcpMode(value: string) {
+  if (value !== "direct" && value !== "code" && value !== "inherit") return;
+  const scope = scopeId.value;
+  const request = ++mcpScopeRequest;
+  mcpModePending.value = true;
+  mcpModeError.value = "";
+  try {
+    if (scope === GLOBAL_SCOPE) {
+      if (value !== "inherit" && !(await setMcpToolMode(value)))
+        mcpModeError.value = "保存设置失败";
+    } else {
+      const { data, error } = await client.PUT(
+        "/api/projects/{id}/settings/mcp",
+        {
+          params: { path: { id: scope } },
+          body: { mcp_tool_mode: value === "inherit" ? null : value },
+        },
+      );
+      if (request !== mcpScopeRequest) return;
+      if (error !== undefined) mcpModeError.value = "保存设置失败";
+      else localMcpMode.value = data.mcp_tool_mode ?? null;
+    }
+  } finally {
+    if (request === mcpScopeRequest) mcpModePending.value = false;
+  }
+}
 
 // 所选项目失效（列表加载/变更、项目被他处删除）时回退：活动项目 > 第一个 > 全局
 watch(

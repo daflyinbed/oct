@@ -48,6 +48,8 @@ pub struct TaskSpawnConfig {
     pub provider_id: String,
     pub model_id: String,
     pub context_window: Option<u32>,
+    /// Effective parent exposure mode; persisted with each worker's tool set.
+    pub tool_mode: crate::codemode::McpToolMode,
     /// The parent run's cancellation token: children derive `child_token()`
     /// from it, so cancelling the parent cascades to every worker.
     pub parent_cancel: CancellationToken,
@@ -108,8 +110,7 @@ impl AgentTool for TaskTool {
     }
 
     async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
-        let args: TaskArgs =
-            serde_json::from_value(args).context("Invalid arguments for task")?;
+        let args: TaskArgs = serde_json::from_value(args).context("Invalid arguments for task")?;
         if args.description.trim().is_empty() || args.prompt.trim().is_empty() {
             return Ok(ToolOutput::error(
                 "task requires non-empty 'description' and 'prompt' arguments",
@@ -140,7 +141,7 @@ impl AgentTool for TaskTool {
                             message: format!("failed to build the task envelope: {e:#}"),
                             agent_id: Some(run.conversation_id.clone()),
                             run_id: Some(run.id.clone()),
-                        }))
+                        }));
                     }
                 };
                 Ok(ToolOutput {

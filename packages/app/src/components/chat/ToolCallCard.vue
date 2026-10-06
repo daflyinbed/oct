@@ -141,6 +141,51 @@
             : 'border-line-soft'
       "
     >
+      <div v-if="nestedCalls.length > 0" class="text-[11.5px] space-y-1">
+        <div
+          v-for="call in nestedCalls"
+          :key="call.id"
+          class="flex items-start gap-2 rounded bg-surface px-2.5 py-1.5"
+        >
+          <i-lucide-loader-circle
+            v-if="call.status === 'running' && part.status === 'running'"
+            class="mt-0.5 h-3 w-3 flex-none animate-spin text-accent-7"
+          />
+          <span
+            v-else
+            class="flex-none"
+            :class="
+              call.status === 'completed'
+                ? 'text-success-10'
+                : 'text-warning-10'
+            "
+            >{{
+              call.status === "completed"
+                ? "完成"
+                : call.status === "failed"
+                  ? "失败"
+                  : "结果未知"
+            }}</span
+          >
+          <div class="min-w-0">
+            <div class="break-all text-dim">{{ call.title || call.name }}</div>
+            <div
+              v-if="call.duration_ms != null || call.error_code"
+              class="text-[10px] text-dim"
+            >
+              <span v-if="call.duration_ms != null"
+                >{{ call.duration_ms }} ms</span
+              >
+              <span v-if="call.error_code" class="ml-2">{{
+                call.error_code
+              }}</span>
+            </div>
+            <div v-if="call.error" class="break-all text-danger-10">
+              {{ call.error }}
+            </div>
+          </div>
+        </div>
+      </div>
       <!-- 生成中：参数流式累积， pulsing cursor，不解析半截 JSON -->
       <div
         v-if="part.status === 'generating' && part.arguments"
@@ -265,11 +310,12 @@
 </template>
 
 <script setup lang="ts">
-import { buildDiffRows, splitLines, type DiffRow } from "./toolDiff";
 import { computed, nextTick, ref, watch } from "vue";
 import client from "@/api/client";
 import DiffLines from "@/components/diff/DiffLines.vue";
 import BashTaskCard from "./BashTaskCard.vue";
+import { buildDiffRows, splitLines } from "./toolDiff";
+import type { DiffRow } from "./toolDiff";
 import type { ToolCallPart } from "@/composables/useChat";
 
 const props = defineProps<{
@@ -371,6 +417,8 @@ const displayName = computed<string | null>(() => {
   switch (props.part.name) {
     case "execute_command":
       return "终端";
+    case "execute_code":
+      return "代码执行";
     case "read_file":
       return "读取文件";
     case "write_file":
@@ -389,6 +437,29 @@ const displayName = computed<string | null>(() => {
 });
 
 const titleText = computed(() => props.part.title?.trim() || null);
+
+interface NestedCall {
+  id: string;
+  name: string;
+  title: string;
+  status: string;
+  error?: string | null;
+  error_code?: string | null;
+  duration_ms?: number | null;
+}
+const nestedCalls = computed<NestedCall[]>(() => {
+  const calls = props.part.details?.calls;
+  if (props.part.name !== "execute_code" || !Array.isArray(calls)) return [];
+  return calls.filter(
+    (row): row is NestedCall =>
+      row &&
+      typeof row === "object" &&
+      typeof row.id === "string" &&
+      typeof row.name === "string" &&
+      typeof row.title === "string" &&
+      typeof row.status === "string",
+  );
+});
 
 const errorTone = computed(
   () => props.part.status === "done" && props.part.isError,
@@ -660,6 +731,11 @@ const argBlocks = computed<ArgBlock[]>(() => {
   const notes: string[] = [];
 
   switch (props.part.name) {
+    case "execute_code": {
+      const code = argStr("code");
+      if (code !== null) blocks.push({ kind: "code", text: code });
+      break;
+    }
     case "read_file": {
       const path = argStr("path");
       if (path === null) break;

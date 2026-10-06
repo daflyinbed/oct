@@ -71,13 +71,12 @@ pub struct CreatePermissionRuleRequest {
 fn validated(
     req: &CreatePermissionRuleRequest,
 ) -> Result<(Effect, String, Option<String>), AppError> {
-    let effect =
-        Effect::from_str_opt(&req.effect).ok_or_else(|| {
-            AppError::BadRequest(format!(
-                "Invalid effect: '{}' (expected one of: allow, deny, ask)",
-                req.effect
-            ))
-        })?;
+    let effect = Effect::from_str_opt(&req.effect).ok_or_else(|| {
+        AppError::BadRequest(format!(
+            "Invalid effect: '{}' (expected one of: allow, deny, ask)",
+            req.effect
+        ))
+    })?;
     let tool = req.tool.trim();
     if tool.is_empty() {
         return Err(AppError::BadRequest("tool must not be empty".into()));
@@ -105,7 +104,9 @@ pub async fn list_project_permission_rules(
         .ok_or_else(|| AppError::NotFound("Project not found".into()))?;
 
     let rules = rule_db::list_rules_for_project(&state.pool, &project_id).await?;
-    Ok(Json(rules.into_iter().map(PermissionRuleDto::from_row).collect()))
+    Ok(Json(
+        rules.into_iter().map(PermissionRuleDto::from_row).collect(),
+    ))
 }
 
 /// Create a project-scoped rule. Manual CRUD writes the DB only — runs
@@ -161,7 +162,9 @@ pub async fn list_global_permission_rules(
     State(state): State<AppState>,
 ) -> ApiResult<Json<Vec<PermissionRuleDto>>> {
     let rules = rule_db::list_global_rules(&state.pool).await?;
-    Ok(Json(rules.into_iter().map(PermissionRuleDto::from_row).collect()))
+    Ok(Json(
+        rules.into_iter().map(PermissionRuleDto::from_row).collect(),
+    ))
 }
 
 /// Create a global rule (`project_id = NULL`).

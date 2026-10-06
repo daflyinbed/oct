@@ -1022,7 +1022,8 @@ async fn mcp_tools_join_the_chat_loop_and_status_reports_live_state() {
     let conv_id = app.create_conversation(&project_id).await;
     // MCP tools ask under the default permission mode; this
     // test pins the tool-join mechanics, not the approval flow.
-    app.set_permission_mode(&project_id, &conv_id, "bypass").await;
+    app.set_permission_mode(&project_id, &conv_id, "bypass")
+        .await;
 
     // The chat turn reconciles (spawning the missing binary fails fast),
     // keeps the injected connection, and advertises the MCP tool to the LLM.
@@ -1574,7 +1575,11 @@ async fn anthropic_provider_row_drives_endpoint_and_key_from_db() {
     // (path `/messages` appended by the adapter), the row's key in the
     // Anthropic header, the version header, and the wire shape.
     let captured = first.requests();
-    assert_eq!(captured.len(), 1, "exactly one request to the first endpoint");
+    assert_eq!(
+        captured.len(),
+        1,
+        "exactly one request to the first endpoint"
+    );
     assert_eq!(captured[0].path, "/messages");
     assert_eq!(captured[0].api_key.as_deref(), Some("sk-db-first"));
     assert_eq!(captured[0].anthropic_version.as_deref(), Some("2023-06-01"));
@@ -3125,8 +3130,23 @@ use oct_agent::db::runs as run_db;
 async fn agent_run_rows(
     app: &TestApp,
     conv_id: &str,
-) -> Vec<(String, Option<String>, Option<String>, Option<i64>, Option<i64>)> {
-    sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<i64>, Option<i64>)>(
+) -> Vec<(
+    String,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<i64>,
+)> {
+    sqlx::query_as::<
+        _,
+        (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+        ),
+    >(
         "SELECT status, final_message_id, error, input_tokens, output_tokens \
          FROM agent_runs WHERE conversation_id = ? ORDER BY rowid",
     )
@@ -3289,7 +3309,10 @@ async fn completed_run_without_usage_persists_null_not_zero() {
 
     let resp = app.send_message(&conv_id, "hi").await;
     assert_eq!(resp.status(), 200);
-    assert_eq!(*event_types(&app.read_sse(resp).await).last().unwrap(), "finish");
+    assert_eq!(
+        *event_types(&app.read_sse(resp).await).last().unwrap(),
+        "finish"
+    );
 
     // No Usage event ever arrived ⇒ unknown (NULL), never 0.
     let rows = agent_run_rows(&app, &conv_id).await;
@@ -3426,7 +3449,9 @@ async fn next_of(
         let kind = ev["type"].as_str().expect("event type");
         assert!(
             kind != "finish" && kind != "error" && kind != "cancelled",
-            "run ended before a `{}` event: {}", r#type, ev
+            "run ended before a `{}` event: {}",
+            r#type,
+            ev
         );
         if kind == r#type {
             return ev;
@@ -3521,7 +3546,10 @@ async fn approval_flow_allow_via_http_continues_run() {
         .iter()
         .position(|t| *t == "tool_result")
         .expect("tool_result in stream");
-    assert!(resolved_at < result_at, "the resolution precedes the result");
+    assert!(
+        resolved_at < result_at,
+        "the resolution precedes the result"
+    );
     assert_eq!(rest[resolved_at]["data"]["outcome"], "approved");
     assert_eq!(rest[resolved_at]["data"]["rule_id"], Value::Null);
     assert_eq!(rest[result_at]["data"]["is_error"], false);
@@ -3550,7 +3578,10 @@ async fn approval_allow_always_persists_rule_and_next_run_skips_asking() {
 
     let mut events = sse_payloads(app.send_message(&conv_id, "write outside").await);
     let requested = next_of(&mut events, "approval_requested").await;
-    let approval_id = requested["data"]["approval_id"].as_str().unwrap().to_string();
+    let approval_id = requested["data"]["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let suggestion = requested["data"]["rule_suggestion"]
         .as_str()
         .unwrap()
@@ -3651,7 +3682,10 @@ async fn approval_deny_refuses_and_mode_patch_to_bypass_skips_asking() {
     // Decide deny: the refusal rides the normal tool-result path.
     let mut events = sse_payloads(app.send_message(&conv_id, "write outside").await);
     let requested = next_of(&mut events, "approval_requested").await;
-    let approval_id = requested["data"]["approval_id"].as_str().unwrap().to_string();
+    let approval_id = requested["data"]["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let resp = app
         .post_json(
             &format!("/api/conversations/{conv_id}/approvals/{approval_id}"),
@@ -3660,20 +3694,26 @@ async fn approval_deny_refuses_and_mode_patch_to_bypass_skips_asking() {
         .await;
     assert_eq!(resp.status(), 200);
     let rest: Vec<Value> = events.collect().await;
-    let resolved = rest.iter().find(|e| e["type"] == "approval_resolved").unwrap();
+    let resolved = rest
+        .iter()
+        .find(|e| e["type"] == "approval_resolved")
+        .unwrap();
     assert_eq!(resolved["data"]["outcome"], "denied");
     let result = rest.iter().find(|e| e["type"] == "tool_result").unwrap();
     assert_eq!(result["data"]["is_error"], true);
-    assert!(result["data"]["content"]
-        .as_str()
-        .unwrap()
-        .contains("denied by the user"));
+    assert!(
+        result["data"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("denied by the user")
+    );
     assert_eq!(*event_types(&rest).last().unwrap(), "finish");
     assert!(!target.exists());
 
     // PATCH the mode to bypass (mid-conversation, between runs): the next
     // run reads it from the row and never asks.
-    app.set_permission_mode(&project_id, &conv_id, "bypass").await;
+    app.set_permission_mode(&project_id, &conv_id, "bypass")
+        .await;
     let conv = get_conversation(&app, &project_id, &conv_id).await;
     assert_eq!(conv["permission_mode"], "bypass");
 
@@ -3699,7 +3739,10 @@ async fn approval_decide_is_idempotent_and_scoped() {
 
     let mut events = sse_payloads(app.send_message(&conv_id, "write outside").await);
     let requested = next_of(&mut events, "approval_requested").await;
-    let approval_id = requested["data"]["approval_id"].as_str().unwrap().to_string();
+    let approval_id = requested["data"]["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Unknown conversation → 404 even for a real approval id...
     let resp = app
@@ -3800,10 +3843,12 @@ async fn permission_deny_rule_blocks_without_asking() {
     assert!(!event_types(&events).contains(&"approval_requested"));
     let result = events.iter().find(|e| e["type"] == "tool_result").unwrap();
     assert_eq!(result["data"]["is_error"], true);
-    assert!(result["data"]["content"]
-        .as_str()
-        .unwrap()
-        .contains("Permission denied by rule"));
+    assert!(
+        result["data"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Permission denied by rule")
+    );
     assert_eq!(result["data"]["details"]["kind"], "permission_denied");
     assert_eq!(*event_types(&events).last().unwrap(), "finish");
 
@@ -3897,9 +3942,13 @@ async fn permission_rules_crud_roundtrip() {
     assert_eq!(resp.status(), 404);
 
     // Delete: one-shot.
-    let resp = app.http_delete(&format!("/api/permission-rules/{id}")).await;
+    let resp = app
+        .http_delete(&format!("/api/permission-rules/{id}"))
+        .await;
     assert_eq!(resp.status(), 204);
-    let resp = app.http_delete(&format!("/api/permission-rules/{id}")).await;
+    let resp = app
+        .http_delete(&format!("/api/permission-rules/{id}"))
+        .await;
     assert_eq!(resp.status(), 404);
     let resp = app
         .get_json(&format!("/api/projects/{project_id}/permission-rules"))
@@ -3952,7 +4001,8 @@ async fn patch_permission_mode_accept_edits_and_validation() {
     assert_eq!(resp.status(), 404);
 
     // accept_edits: an INSIDE-workspace write runs without asking.
-    app.set_permission_mode(&project_id, &conv_id, "accept_edits").await;
+    app.set_permission_mode(&project_id, &conv_id, "accept_edits")
+        .await;
     let conv = get_conversation(&app, &project_id, &conv_id).await;
     assert_eq!(conv["permission_mode"], "accept_edits");
 
@@ -4046,10 +4096,18 @@ async fn llm_wire_log_settings_toggle_controls_sink_live() {
     let conv_on = app.create_conversation(&project_id).await;
 
     // Default is on; PUT flips live and persists.
-    let current = app.get_json("/api/settings").await.json::<Value>().await.unwrap();
+    let current = app
+        .get_json("/api/settings")
+        .await
+        .json::<Value>()
+        .await
+        .unwrap();
     assert_eq!(current["llm_wire_log"], true);
     let updated = app
-        .put_json("/api/settings", serde_json::json!({ "llm_wire_log": false }))
+        .put_json(
+            "/api/settings",
+            serde_json::json!({ "llm_wire_log": false }),
+        )
         .await;
     assert_eq!(updated.status(), 200);
     assert_eq!(
@@ -4057,7 +4115,11 @@ async fn llm_wire_log_settings_toggle_controls_sink_live() {
         false
     );
     assert_eq!(
-        app.get_json("/api/settings").await.json::<Value>().await.unwrap()["llm_wire_log"],
+        app.get_json("/api/settings")
+            .await
+            .json::<Value>()
+            .await
+            .unwrap()["llm_wire_log"],
         false
     );
     let stored: Option<String> =
@@ -4101,9 +4163,14 @@ async fn llm_wire_log_settings_toggle_controls_sink_live() {
     assert!(request["run_id"].as_str().is_some_and(|id| !id.is_empty()));
     assert!(request["provider"].as_str().is_some_and(|p| !p.is_empty()));
     assert!(
-        lines.iter().any(|l| l["kind"] == "llm_sse_event" && l["seq"].is_u64()),
+        lines
+            .iter()
+            .any(|l| l["kind"] == "llm_sse_event" && l["seq"].is_u64()),
         "SSE events recorded with seq"
     );
-    let end = lines.iter().find(|l| l["kind"] == "llm_stream_end").unwrap();
+    let end = lines
+        .iter()
+        .find(|l| l["kind"] == "llm_stream_end")
+        .unwrap();
     assert_eq!(end["outcome"], "eof");
 }

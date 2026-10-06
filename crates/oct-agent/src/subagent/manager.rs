@@ -311,12 +311,15 @@ impl SubagentManager {
             .resolve_context_window(model.as_ref(), &provider_id, &model_id)
             .await;
         let snapshot = crate::agent_settings::WorkerSnapshot {
-            version: 1,
+            version: 2,
             agent_type: "worker".into(),
             instructions: settings.effective.instructions,
             prompt_template_version: 1,
             tools: selected,
             sources: settings.sources,
+            tool_mode: spawn.tool_mode,
+            code_catalog_version: (spawn.tool_mode == crate::codemode::McpToolMode::Code)
+                .then_some(crate::codemode::catalog::VERSION),
         };
         let (run, start_message_id) = match register_child_tx(
             &pool,
@@ -401,6 +404,12 @@ impl SubagentManager {
                     .or_else(|| run.context_window.and_then(|v| u32::try_from(v).ok()))
             };
 
+            if epoch > 1 {
+                service
+                    .repair_dangling_tools(&run.conversation_id, &[])
+                    .await
+                    .map_err(|e| task_err_ctx(&run, e))?;
+            }
             let view = msg_db::load_llm_view(&pool, &run.conversation_id)
                 .await
                 .map_err(|e| task_err_ctx(&run, e))?;

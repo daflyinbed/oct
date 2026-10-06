@@ -42,6 +42,7 @@ pub struct FakeMcpConnection {
     list_calls: AtomicUsize,
     tool_list_notifier: ToolListNotifier,
     tool_list_watcher: ToolListChanged,
+    call_started: tokio::sync::Notify,
 }
 
 impl FakeMcpConnection {
@@ -58,6 +59,7 @@ impl FakeMcpConnection {
             list_calls: AtomicUsize::new(0),
             tool_list_notifier,
             tool_list_watcher,
+            call_started: Default::default(),
         }
     }
 
@@ -102,6 +104,16 @@ impl FakeMcpConnection {
         self.calls.lock().unwrap().clone()
     }
 
+    pub async fn wait_for_call(&self) {
+        loop {
+            let notified = self.call_started.notified();
+            if !self.calls.lock().unwrap().is_empty() {
+                return;
+            }
+            notified.await;
+        }
+    }
+
     /// How many times `list_tools` was served (connect-time listing plus
     /// every notification-driven refresh).
     pub fn list_call_count(&self) -> usize {
@@ -125,6 +137,7 @@ impl McpConnection for FakeMcpConnection {
             .lock()
             .unwrap()
             .push((name.to_string(), arguments.clone()));
+        self.call_started.notify_waiters();
         // Clone the outcome out of the lock: the Hang arm awaits forever and
         // a held MutexGuard would make the future !Send.
         let outcome = self.outcomes.lock().unwrap().get(name).cloned();
@@ -154,6 +167,7 @@ impl McpConnection for FakeMcpConnection {
 /// schema (already in normalized form).
 pub fn fake_tool(name: &str, description: Option<&str>) -> McpToolInfo {
     McpToolInfo {
+        output_schema: None,
         name: name.to_string(),
         description: description.map(str::to_string),
         input_schema: serde_json::json!({

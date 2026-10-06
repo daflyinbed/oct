@@ -48,7 +48,8 @@
       class="flex-none border-b border-line-soft px-7 py-2 text-[11.5px] text-dim"
     >
       <summary class="cursor-pointer">
-        任务配置 · {{ task.agent_config.tools.length }} 个工具
+        任务配置 · {{ task.agent_config.tools.length }} 个工具 ·
+        {{ task.agent_config.tool_mode === "code" ? "代码模式" : "直接调用" }}
       </summary>
       <p class="mt-2 whitespace-pre-wrap">
         {{ task.agent_config.instructions || "无额外角色指令" }}

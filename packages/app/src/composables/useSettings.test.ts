@@ -14,11 +14,28 @@ const PUT = vi.mocked(client.PUT);
 // resetModules——这里选择把状态归零的等价路径：见下方 beforeEach）。
 const { llmWireLog, load, setLlmWireLog } = useSettings();
 
-function settingsResponse(llm_wire_log: boolean) {
-  return { data: { llm_wire_log }, error: undefined } as const;
+function settingsResponse(
+  llm_wire_log: boolean,
+  mcp_tool_mode: "direct" | "code" = "code",
+) {
+  return {
+    data: { llm_wire_log, mcp_tool_mode, code_mode_available: true },
+    error: undefined,
+  } as const;
 }
 
 describe("useSettings", () => {
+  it("mCP 模式持久化并回显，不改日志开关", async () => {
+    const { mcpToolMode, codeModeAvailable, setMcpToolMode } = useSettings();
+    PUT.mockResolvedValue(settingsResponse(false, "code") as never);
+    expect(await setMcpToolMode("code")).toBe(true);
+    expect(mcpToolMode.value).toBe("code");
+    expect(codeModeAvailable.value).toBe(true);
+    expect(llmWireLog.value).toBe(false);
+    expect(PUT).toHaveBeenCalledWith("/api/settings", {
+      body: { mcp_tool_mode: "code" },
+    });
+  });
   beforeEach(() => {
     GET.mockReset();
     PUT.mockReset();

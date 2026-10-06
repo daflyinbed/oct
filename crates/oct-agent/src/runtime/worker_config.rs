@@ -76,11 +76,30 @@ impl AgentTool for AliasedTool {
     fn input_schema(&self) -> serde_json::Value {
         self.inner.input_schema()
     }
+    fn validate_input(&self, args: &serde_json::Value) -> Result<()> {
+        self.inner.validate_input(args)
+    }
+    fn output_schema(&self) -> Option<serde_json::Value> {
+        self.inner.output_schema()
+    }
+    fn mcp_server_name(&self) -> Option<&str> {
+        self.inner.mcp_server_name()
+    }
+    fn interrupted_output(&self, call_id: &str) -> Option<ToolOutput> {
+        self.inner.interrupted_output(call_id)
+    }
     fn title(&self, args: &serde_json::Value) -> String {
         self.inner.title(args)
     }
     async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
         self.inner.execute(args, ctx).await
+    }
+    async fn execute_for_code(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<crate::tools::CodeToolResult> {
+        self.inner.execute_for_code(args, ctx).await
     }
 }
 
@@ -108,6 +127,15 @@ mod tests {
         }
         fn input_schema(&self) -> serde_json::Value {
             json!({"type":"object"})
+        }
+        fn validate_input(&self, args: &serde_json::Value) -> Result<()> {
+            ensure!(
+                args.get("query")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some(),
+                "query required"
+            );
+            Ok(())
         }
         async fn execute(&self, args: serde_json::Value, _: &ToolContext) -> Result<ToolOutput> {
             Ok(ToolOutput::success(format!("{:?}:{}", self.selector, args)))
@@ -146,6 +174,12 @@ mod tests {
         .unwrap();
         assert_eq!(restored.len(), 1);
         assert_eq!(restored[0].name(), "mcp__old__search");
+        assert!(restored[0].validate_input(&json!({})).is_err());
+        assert!(
+            restored[0]
+                .validate_input(&json!({"query":"needle"}))
+                .is_ok()
+        );
         let ctx = ToolContext::new("call", Arc::new(EventHub::new()), CancellationToken::new());
         let output = restored[0]
             .execute(json!({"query":"needle"}), &ctx)

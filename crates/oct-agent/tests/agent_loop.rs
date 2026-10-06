@@ -2576,7 +2576,10 @@ async fn waterline_micro_still_fires_after_summary_failure() {
         let AgentEvent::Microcompacted { triggered_by, .. } = event else {
             unreachable!()
         };
-        assert_eq!(*triggered_by, oct_agent::agent::MicrocompactTrigger::Waterline);
+        assert_eq!(
+            *triggered_by,
+            oct_agent::agent::MicrocompactTrigger::Waterline
+        );
     }
     // The turn-3 clear includes results that only exist because the run kept
     // going after the summary failure.
@@ -3276,9 +3279,11 @@ async fn permission_ask_allow_executes_outside_write() {
 
     // Answer allow (the decide endpoint's plain-allow path): the tool
     // really executes and the run settles normally.
-    assert!(registry
-        .resolve(&approval_id, ApprovalDecision::Allow)
-        .is_ok());
+    assert!(
+        registry
+            .resolve(&approval_id, ApprovalDecision::Allow)
+            .is_ok()
+    );
     let events = collect_events(&mut rx, is_terminal).await;
     assert_eq!(*events.last().unwrap(), AgentEvent::Finish);
     let result = events
@@ -3335,13 +3340,20 @@ async fn permission_ask_deny_returns_error_result_visible_to_model() {
     .await;
 
     let (approval_id, _) = wait_for_approval(&mut rx).await;
-    assert!(registry.resolve(&approval_id, ApprovalDecision::Deny).is_ok());
+    assert!(
+        registry
+            .resolve(&approval_id, ApprovalDecision::Deny)
+            .is_ok()
+    );
 
     // The denial rides the NORMAL result path: an is_error ToolResult
     // event, a persisted tool row and a tool message in the next request.
     let events = collect_events(&mut rx, is_terminal).await;
     assert_eq!(*events.last().unwrap(), AgentEvent::Finish);
-    match events.iter().find(|e| matches!(e, AgentEvent::ToolResult { .. })) {
+    match events
+        .iter()
+        .find(|e| matches!(e, AgentEvent::ToolResult { .. }))
+    {
         Some(AgentEvent::ToolResult {
             call_id,
             content,
@@ -3353,7 +3365,10 @@ async fn permission_ask_deny_returns_error_result_visible_to_model() {
             assert!(*is_error);
             assert!(content.contains("denied by the user"), "got: {content}");
             assert_eq!(
-                details.as_ref().and_then(|d| d.get("kind")).and_then(|k| k.as_str()),
+                details
+                    .as_ref()
+                    .and_then(|d| d.get("kind"))
+                    .and_then(|k| k.as_str()),
                 Some("permission_denied")
             );
         }
@@ -3362,8 +3377,7 @@ async fn permission_ask_deny_returns_error_result_visible_to_model() {
     let second = &observer.requests()[1];
     match &second.messages[3].parts[0] {
         ContentPart::ToolResult(ToolResult {
-            content,
-            is_error, ..
+            content, is_error, ..
         }) => {
             assert!(*is_error);
             assert!(
@@ -3432,7 +3446,9 @@ async fn permission_pending_cancel_resolves_cancelled() {
         .collect();
     assert_eq!(cancelled.len(), 1, "exactly one cancelled resolution");
     match cancelled[0] {
-        AgentEvent::ApprovalResolved { approval_id: id, .. } => assert_eq!(*id, approval_id),
+        AgentEvent::ApprovalResolved {
+            approval_id: id, ..
+        } => assert_eq!(*id, approval_id),
         other => panic!("expected ApprovalResolved, got {other:?}"),
     }
     assert!(registry.pending_for_conversation(&conv_id).is_empty());
@@ -3487,7 +3503,9 @@ async fn permission_allow_always_injects_rule_and_skips_next_ask() {
     else {
         panic!("expected ApprovalRequested");
     };
-    let pattern = rule_suggestion.clone().expect("write actions suggest a dir glob");
+    let pattern = rule_suggestion
+        .clone()
+        .expect("write actions suggest a dir glob");
 
     // Emulate the decide endpoint's allow_always path: persist is the DB
     // layer's business (covered by the e2e suite); the LIVE part is the
@@ -3497,9 +3515,11 @@ async fn permission_allow_always_injects_rule_and_skips_next_ask() {
         tool: "write_file".into(),
         pattern: Some(pattern),
     });
-    assert!(registry
-        .resolve(&approval_id, ApprovalDecision::AllowAlways)
-        .is_ok());
+    assert!(
+        registry
+            .resolve(&approval_id, ApprovalDecision::AllowAlways)
+            .is_ok()
+    );
 
     let events = collect_events(&mut rx, is_terminal).await;
     assert_eq!(*events.last().unwrap(), AgentEvent::Finish);
@@ -3608,10 +3628,17 @@ async fn permission_outside_read_asks_in_default_mode() {
         other => panic!("expected ApprovalRequested, got {other:?}"),
     }
 
-    assert!(registry.resolve(&approval_id, ApprovalDecision::Allow).is_ok());
+    assert!(
+        registry
+            .resolve(&approval_id, ApprovalDecision::Allow)
+            .is_ok()
+    );
     let events = collect_events(&mut rx, is_terminal).await;
     assert_eq!(*events.last().unwrap(), AgentEvent::Finish);
-    match events.iter().find(|e| matches!(e, AgentEvent::ToolResult { .. })) {
+    match events
+        .iter()
+        .find(|e| matches!(e, AgentEvent::ToolResult { .. }))
+    {
         Some(AgentEvent::ToolResult {
             content, is_error, ..
         }) => {

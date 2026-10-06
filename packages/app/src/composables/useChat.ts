@@ -604,6 +604,21 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
         break;
       }
 
+      case "nested_tool_update": {
+        const card = findCard(event.data.parent_call_id);
+        if (!card || card.name !== "execute_code") break;
+        const previous = Array.isArray(card.details?.calls)
+          ? card.details.calls
+          : [];
+        const calls = previous.filter(
+          (row) =>
+            row && typeof row === "object" && row.id !== event.data.call.id,
+        );
+        calls.push(event.data.call);
+        card.details = { ...card.details, kind: "code_mode", calls };
+        break;
+      }
+
       case "tool_result": {
         const card = findCard(event.data.call_id);
         if (card) {

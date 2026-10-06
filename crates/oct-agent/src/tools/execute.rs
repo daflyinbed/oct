@@ -362,7 +362,7 @@ impl AgentTool for ExecuteCommandTool {
                 .start_bash(BashStart {
                     conversation_id: bg.conversation_id.clone(),
                     parent_run_id: Some(bg.parent_run_id.clone()),
-                    parent_call_id: ctx.call_id().to_string(),
+                    parent_call_id: ctx.timeline_call_id().to_string(),
                     command: args.command.clone(),
                     cwd,
                 })
