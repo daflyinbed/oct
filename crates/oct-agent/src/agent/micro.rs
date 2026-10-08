@@ -197,7 +197,10 @@ pub enum MicroAttempt {
 }
 
 /// Run one microcompaction: select, persist the COW batch, apply the clears
-/// to the in-run context state, publish the event.
+/// to the in-run context state, publish the event. `prompt_env_refresh`
+/// flags the conversation's frozen prompt environment dirty once swaps land
+/// (the prefix cache breaks with the rewritten history; the next run
+/// re-reads the instruction files).
 pub async fn run_microcompaction(
     pool: &SqlitePool,
     conv_id: &str,
@@ -205,6 +208,7 @@ pub async fn run_microcompaction(
     trigger: MicrocompactTrigger,
     context: &mut ContextState,
     tool_specs: &[ToolSpec],
+    prompt_env_refresh: Option<&super::repo_instructions::PromptEnvRefresh>,
 ) -> MicroAttempt {
     // Selection works on plain messages (conversation coordinates — no
     // system prompt, same indices as the context entries).
@@ -237,6 +241,12 @@ pub async fn run_microcompaction(
         // The in-memory view and the DB disagree (e.g. another writer swapped
         // first); leave memory untouched and let the next selection re-sync.
         return MicroAttempt::Nothing;
+    }
+
+    // Swaps landed: the history changed under the frozen prompt head — flag
+    // the environment so the next run's assembly refreshes it.
+    if let Some(refresh) = prompt_env_refresh {
+        refresh.mark_dirty();
     }
 
     // Account ONLY for the swaps that actually landed: `applied` can be a

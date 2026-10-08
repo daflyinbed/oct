@@ -96,6 +96,8 @@ pub struct AppState {
         chat::RunningStatus,
         chat::CompactQuery,
         chat::CompactResult,
+        chat::InstructionFileDto,
+        chat::InstructionsReloadResult,
         subagents::SubagentTaskDto,
         background::BackgroundTaskDto,
         background::TaskOutputQuery,
@@ -225,6 +227,8 @@ fn api_routes(state: AppState) -> OpenApiRouter<AppState> {
         .routes(utoipa_axum::routes!(chat::cancel_agent))
         .routes(utoipa_axum::routes!(chat::resume_turn))
         .routes(utoipa_axum::routes!(chat::compact_conversation))
+        // Frozen prompt environment refresh (repo instructions + MCP set)
+        .routes(utoipa_axum::routes!(chat::reload_instructions))
         // Run reconnection (frontend refresh while a run is in flight)
         .routes(utoipa_axum::routes!(chat::get_run_status))
         .routes(utoipa_axum::routes!(chat::stream_run_events))

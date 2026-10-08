@@ -29,6 +29,7 @@
     @stop="handleStop"
     @resume="handleResume"
     @compact="handleCompact"
+    @reload="handleReload"
     @select-provider="selectProvider"
     @select-model="selectModel"
     @decide-approval="handleDecideApproval"
@@ -102,6 +103,7 @@ const {
   attachRun,
   cancelConversation,
   compactConversation,
+  reloadInstructions,
   decideApproval,
   beginHistoryChange,
   endHistoryChange,
@@ -232,6 +234,11 @@ async function handleCompact() {
   )
     return;
   await compactConversation(conversationId.value);
+}
+
+async function handleReload() {
+  if (!conversationId.value || readOnly.value) return;
+  await reloadInstructions(conversationId.value);
 }
 
 function handleRevert(cut: ForkCut) {

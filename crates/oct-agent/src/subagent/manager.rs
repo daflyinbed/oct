@@ -95,6 +95,11 @@ pub struct ChildRunRequest {
     /// (`None` during recovery — the crashed process's instances are gone
     /// and the child set is rebuilt from the same assembly sources).
     pub parent_toolset: Option<Arc<Vec<Arc<dyn crate::tools::AgentTool>>>>,
+    /// The delegating run's own frozen prompt environment (live task-tool
+    /// path); `None` during recovery, where the child resolves the shared
+    /// cache instead. Prevents mid-run `/reload` drift between a parent and
+    /// the children it delegates to.
+    pub parent_env: Option<std::sync::Arc<crate::agent::repo_instructions::FrozenPromptEnv>>,
 }
 
 /// Failure of a `task` delegation, with the child's ids when they are
@@ -452,6 +457,7 @@ impl SubagentManager {
                         .parent_toolset
                         .get()
                         .and_then(std::sync::Weak::upgrade),
+                    parent_env: Some(spawn.parent_env.clone()),
                 })
                 .await
                 .map_err(|e| TaskError {

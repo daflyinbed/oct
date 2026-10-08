@@ -73,6 +73,10 @@ impl RunService {
         self.background.cancel_tasks_for_conversation(id).await?;
         let deleted = crate::db::conversations::delete_conversation(&self.pool, id).await?;
         if deleted {
+            // The conversation's frozen prompt environment dies with it
+            // (children are cascade-deleted with the same row; forks never
+            // shared the key).
+            self.drop_prompt_env(id);
             match tokio::fs::remove_dir_all(self.codemode_root().join(id)).await {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}

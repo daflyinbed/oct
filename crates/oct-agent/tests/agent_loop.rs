@@ -1015,6 +1015,8 @@ async fn tool_event_overflow_stops_before_compaction_or_another_model_request() 
         context_window: Some(8192),
         idle: None,
         permission: oct_agent::permissions::gate::PermissionGate::permissive(),
+        prompt_env_refresh: None,
+        prompt_generation: 0,
     };
 
     let outcome = tokio::time::timeout(
@@ -3680,4 +3682,398 @@ async fn permission_worker_ask_waits_for_user_decision() {
         "x"
     );
     drop(handle);
+}
+
+// --- Repository instructions & the frozen prompt environment -----------------
+//
+// These tests drive the RunService's own assembly (`run_root_with_guard`),
+// the production path the HTTP layer uses, so the system prompt asserted on
+// is exactly what a real run would send: base prompt + code-mode section +
+// the frozen `<repo-instructions>` block.
+
+// `compact`, `msg_db` and `Message` are already imported by the compaction
+// section above; everything else this section needs is pulled here.
+use oct_agent::agent::repo_instructions::PromptEnvRefresh;
+use oct_agent::agent::MicrocompactTrigger;
+use oct_agent::context::ContextEntry;
+use oct_agent::runtime::{RootRunRequest, RunService};
+
+use support::ScriptedObserver;
+
+/// A RunService wired like the test HTTP harness: same two-phase manager
+/// wiring, direct tool mode pinned (the app-level code-mode default would
+/// otherwise depend on a helper binary next to the test binary).
+async fn spawn_run_service(env: &TestEnv) -> Arc<RunService> {
+    oct_agent::db::settings::set(
+        &env.pool,
+        oct_agent::codemode::SETTING,
+        oct_agent::codemode::McpToolMode::Direct.as_str(),
+    )
+    .await
+    .expect("pin direct tool mode");
+    let subagents = Arc::new(oct_agent::subagent::SubagentManager::default());
+    let background = Arc::new(oct_agent::runtime::background::BackgroundTaskManager::new(
+        env.pool.clone(),
+        env.dir.path().join("exec"),
+    ));
+    let runs = Arc::new(RunService {
+        lifecycle: Default::default(),
+        pool: env.pool.clone(),
+        registry: Arc::new(oct_llm_provider::providers::default_registry()),
+        mcp: Arc::new(oct_agent::mcp::McpManager::default()),
+        sessions: Arc::new(dashmap::DashMap::new()),
+        file_locks: dashmap::DashMap::new(),
+        subagents: subagents.clone(),
+        background: background.clone(),
+        approvals: Arc::new(oct_agent::permissions::registry::ApprovalRegistry::new()),
+        gates: Arc::new(dashmap::DashMap::new()),
+        prompt_envs: Arc::new(dashmap::DashMap::new()),
+        prompt_env_locks: dashmap::DashMap::new(),
+    });
+    subagents.set_service(runs.clone());
+    background.set_service(runs.clone());
+    runs
+}
+
+/// Run ONE root turn over the production assembly path: insert the user
+/// message, load the view, occupy, subscribe, and hand everything to
+/// `run_root_with_guard`. Draining the subscription to EOF waits for the
+/// supervisor's settlement (the hub drops with the occupancy guard), so the
+/// conversation is free for the next turn when this returns. `window` is the
+/// run's context window — callers keep it large enough that the turn-top
+/// waterline triggers stay silent unless a test wants them.
+async fn run_root_turn(
+    env: &TestEnv,
+    runs: &Arc<RunService>,
+    conv_id: &str,
+    model: ScriptedModel,
+    window: u32,
+) -> ScriptedObserver {
+    let observer = model.observer();
+    let conversation = oct_agent::db::conversations::get_conversation(&env.pool, conv_id)
+        .await
+        .expect("read conversation")
+        .expect("conversation exists");
+    let project = oct_agent::db::projects::get_project(&env.pool, &conversation.project_id)
+        .await
+        .expect("read project")
+        .expect("project exists");
+    oct_agent::db::messages::insert_message(
+        &env.pool,
+        conv_id,
+        &Message::text(Role::User, "go"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("insert user message");
+    let view = oct_agent::db::messages::load_llm_view(&env.pool, conv_id)
+        .await
+        .expect("load view");
+
+    let guard = runs.occupy(conv_id).expect("conversation is free");
+    // Subscribe through a short-lived hub borrow: holding the hub Arc (or a
+    // whole RunHandle clone) for the drain below would keep the hub alive
+    // past the supervisor's settlement and the stream would never EOF.
+    let mut stream = {
+        let hub = runs
+            .sessions
+            .get(conv_id)
+            .expect("occupancy guarantees the entry")
+            .value()
+            .hub
+            .clone();
+        hub.subscribe()
+    };
+    runs.run_root_with_guard(RootRunRequest {
+        guard,
+        conversation_id: conv_id.to_string(),
+        project,
+        model: Box::new(model),
+        provider_id: "test".to_string(),
+        model_id: "scripted".to_string(),
+        view,
+        context_window: Some(window),
+        idle: None,
+        attach_task_tool: false,
+    })
+    .await
+    .expect("root run starts");
+
+    // SSE EOF = the supervisor settled and occupancy released.
+    while let Some(event) = tokio::time::timeout(Duration::from_secs(30), stream.next())
+        .await
+        .expect("run settled within the timeout (loop hung?)")
+    {
+        let _ = event;
+    }
+    observer
+}
+
+/// A model whose single turn answers with plain text and stops.
+fn plain_turn_model() -> ScriptedModel {
+    ScriptedModel::new(vec![Turn::Stream(vec![
+        text("ok"),
+        finish(FinishReason::Stop),
+    ])])
+}
+
+/// The system prompt text of the observer's n-th recorded request.
+fn system_prompt_at(observer: &ScriptedObserver, index: usize) -> String {
+    let requests = observer.requests();
+    assert!(requests.len() > index, "model saw at least {} requests", index + 1);
+    let message = &requests[index].messages[0];
+    assert_eq!(message.role, Role::System);
+    message
+        .parts
+        .iter()
+        .filter_map(|p| match p {
+            ContentPart::Text(t) => Some(t.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The conversation's entries (message + ordering), zipped the way the chat
+/// layer builds them for the compaction transaction.
+async fn conversation_entries(env: &TestEnv, conv_id: &str) -> Vec<ContextEntry> {
+    let view = oct_agent::db::messages::load_llm_view(&env.pool, conv_id)
+        .await
+        .expect("load view");
+    view.messages
+        .into_iter()
+        .zip(view.orderings)
+        .map(|(message, ordering)| ContextEntry { message, ordering })
+        .collect()
+}
+
+#[tokio::test]
+async fn repo_instructions_block_enters_the_system_prompt() {
+    let env = TestEnv::new().await;
+    std::fs::write(env.dir.path().join("AGENTS.md"), "Use tabs in this repo.").unwrap();
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+    let runs = spawn_run_service(&env).await;
+
+    let observer = run_root_turn(&env, &runs, &conv_id, plain_turn_model(), 8192).await;
+    let system = system_prompt_at(&observer, 0);
+    assert!(system.contains("<repo-instructions>"), "block wrapper present");
+    assert!(system.contains("Use tabs in this repo."), "file content present");
+    assert!(system.contains("</repo-instructions>"));
+    // The file tag carries the absolute path.
+    let tagged = format!("path=\"{}\"", env.dir.path().join("AGENTS.md").display());
+    assert!(system.contains(&tagged), "absolute path in the file tag");
+    // The block closes the prompt: nothing after the wrapper's end.
+    assert!(system
+        .rfind("</repo-instructions>")
+        .is_some_and(|start| system[start + "</repo-instructions>".len()..].trim().is_empty()));
+}
+
+#[tokio::test]
+async fn claude_md_loads_only_as_the_same_directory_fallback() {
+    let runs_setup = async |env: &TestEnv| {
+        let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+        let runs = spawn_run_service(env).await;
+        let observer = run_root_turn(env, &runs, &conv_id, plain_turn_model(), 8192).await;
+        (conv_id, runs, observer)
+    };
+
+    // CLAUDE.md alone: it is the fallback and loads.
+    let env = TestEnv::new().await;
+    std::fs::write(env.dir.path().join("CLAUDE.md"), "claude-only rules").unwrap();
+    let (_, _, observer) = runs_setup(&env).await;
+    let system = system_prompt_at(&observer, 0);
+    assert!(system.contains("claude-only rules"));
+
+    // Both present: AGENTS.md wins and CLAUDE.md does not load.
+    let env = TestEnv::new().await;
+    std::fs::write(env.dir.path().join("AGENTS.md"), "agents rules").unwrap();
+    std::fs::write(env.dir.path().join("CLAUDE.md"), "claude rules").unwrap();
+    let (_, _, observer) = runs_setup(&env).await;
+    let system = system_prompt_at(&observer, 0);
+    assert!(system.contains("agents rules"));
+    assert!(!system.contains("claude rules"), "no double load per directory");
+}
+
+#[tokio::test]
+async fn frozen_repo_block_is_reused_byte_for_byte_across_runs() {
+    let env = TestEnv::new().await;
+    std::fs::write(env.dir.path().join("AGENTS.md"), "RULE-v1").unwrap();
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+    let runs = spawn_run_service(&env).await;
+
+    let first = run_root_turn(&env, &runs, &conv_id, plain_turn_model(), 8192).await;
+    let system1 = system_prompt_at(&first, 0);
+    assert!(system1.contains("RULE-v1"));
+
+    // Edit the file between runs WITHOUT a refresh point: the frozen block
+    // must keep the prompt byte-identical (this is the prefix-cache
+    // guarantee).
+    std::fs::write(env.dir.path().join("AGENTS.md"), "RULE-v2").unwrap();
+    let second = run_root_turn(&env, &runs, &conv_id, plain_turn_model(), 8192).await;
+    let system2 = system_prompt_at(&second, 0);
+    assert_eq!(system1, system2, "clean entry reuses the block byte-for-byte");
+}
+
+#[tokio::test]
+async fn manual_compaction_refreshes_the_frozen_block_on_the_next_run() {
+    let env = TestEnv::new().await;
+    std::fs::write(env.dir.path().join("AGENTS.md"), "RULE-v1").unwrap();
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+    let runs = spawn_run_service(&env).await;
+
+    let first = run_root_turn(&env, &runs, &conv_id, plain_turn_model(), 8192).await;
+    assert!(system_prompt_at(&first, 0).contains("RULE-v1"));
+
+    // Grow the history past the compaction floor with text the tail budget
+    // (window 1024 → 102 tokens) cannot keep verbatim.
+    for _ in 0..5 {
+        for role_text in [("user", "x".repeat(160)), ("assistant", "y".repeat(160))] {
+            let role = if role_text.0 == "user" { Role::User } else { Role::Assistant };
+            oct_agent::db::messages::insert_message(
+                &env.pool,
+                &conv_id,
+                &Message::text(role, &role_text.1),
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+    }
+
+    // The shared compaction transaction with the conversation's refresh
+    // handle — the same wiring the manual endpoint uses.
+    let entries = conversation_entries(&env, &conv_id).await;
+    let summary_model = ScriptedModel::new(vec![]);
+    summary_model.push_generation(Ok("summary of the region".into()));
+    let outcome = match compact::run_compaction(
+        &summary_model,
+        &env.pool,
+        &conv_id,
+        compact::CompactRequest {
+            entries: &entries,
+            est_before: 4_000,
+            system_prompt: None,
+            tool_specs: &[],
+            window: Some(1024),
+            trigger: oct_agent::agent::CompactionTrigger::Manual,
+            hub: None,
+            cancel: None,
+            prompt_env_refresh: Some(runs.prompt_env_refresh(&conv_id)),
+        },
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(_) => panic!("manual compaction over the seeded history must succeed"),
+    };
+
+    // Edit AFTER the compaction flagged the entry dirty: the next run must
+    // re-read the files (fresh text) instead of reusing the frozen block.
+    std::fs::write(env.dir.path().join("AGENTS.md"), "RULE-v2").unwrap();
+    let second = run_root_turn(&env, &runs, &conv_id, plain_turn_model(), 8192).await;
+    let system = system_prompt_at(&second, 0);
+    assert!(system.contains("RULE-v2"), "dirty entry re-reads the files");
+    assert!(!system.contains("RULE-v1"));
+    // The compaction really happened (a marker row landed in the timeline).
+    assert!(!outcome.summary_message_id.is_empty());
+}
+
+#[tokio::test]
+async fn microcompaction_refreshes_the_frozen_block_on_the_next_run() {
+    let env = TestEnv::new().await;
+    std::fs::write(env.dir.path().join("AGENTS.md"), "RULE-v1").unwrap();
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+    let runs = spawn_run_service(&env).await;
+
+    // Seed a history with clearable old tool results: user, nine
+    // (assistant call + large result) rounds, user. The newest five results
+    // and the trailing round are protected; the four oldest clear. The
+    // rounds are sized to keep the total estimate BELOW the waterline
+    // (8192 × 70% ≈ 5734) so the first run below does NOT microcompact on
+    // its own — the manual invocation is what must flag the environment.
+    oct_agent::db::messages::insert_message(
+        &env.pool,
+        &conv_id,
+        &Message::text(Role::User, "go"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    for i in 0..9 {
+        let assistant = Message {
+            role: Role::Assistant,
+            parts: vec![ContentPart::ToolCall(ToolCall {
+                id: format!("c{i}"),
+                name: "read_file".to_string(),
+                arguments: "{}".to_string(),
+            })],
+        };
+        oct_agent::db::messages::insert_message(&env.pool, &conv_id, &assistant, None, None, None)
+            .await
+            .unwrap();
+        let result = Message {
+            role: Role::Tool,
+            parts: vec![ContentPart::ToolResult(ToolResult {
+                call_id: format!("c{i}"),
+                content: serde_json::Value::String("x".repeat(1_600)),
+                is_error: false,
+                images: Vec::new(),
+            })],
+        };
+        oct_agent::db::messages::insert_message(&env.pool, &conv_id, &result, None, None, None)
+            .await
+            .unwrap();
+    }
+    oct_agent::db::messages::insert_message(
+        &env.pool,
+        &conv_id,
+        &Message::text(Role::User, "next"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // First run freezes the environment with the v1 block. The oversized
+    // window keeps BOTH turn-top triggers silent (history + prompt stay far
+    // below 70%/85% of it) — only the manual invocation below may touch the
+    // environment.
+    let first = run_root_turn(&env, &runs, &conv_id, plain_turn_model(), 16384).await;
+    assert!(system_prompt_at(&first, 0).contains("RULE-v1"));
+
+    // One real microcompaction over the persisted history, with the
+    // conversation's refresh handle wired exactly like the loop does.
+    let view = oct_agent::db::messages::load_llm_view(&env.pool, &conv_id)
+        .await
+        .expect("load view");
+    let mut context = oct_agent::context::ContextState::new("sys".into(), view);
+    let hub = oct_agent::agent::EventHub::new();
+    let refresh: PromptEnvRefresh = runs.prompt_env_refresh(&conv_id);
+    let attempt = oct_agent::agent::micro::run_microcompaction(
+        &env.pool,
+        &conv_id,
+        &hub,
+        MicrocompactTrigger::Waterline,
+        &mut context,
+        &[],
+        Some(&refresh),
+    )
+    .await;
+    assert!(
+        matches!(attempt, oct_agent::agent::micro::MicroAttempt::Done(_)),
+        "seeded history has clearable results"
+    );
+
+    // Dirty → the next run re-reads the file.
+    std::fs::write(env.dir.path().join("AGENTS.md"), "RULE-v2").unwrap();
+    let second = run_root_turn(&env, &runs, &conv_id, plain_turn_model(), 16384).await;
+    let system = system_prompt_at(&second, 0);
+    assert!(system.contains("RULE-v2"));
+    assert!(!system.contains("RULE-v1"));
 }

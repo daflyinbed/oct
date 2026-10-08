@@ -284,6 +284,8 @@ const emit = defineEmits<{
   resume: [];
   /** /compact 命令：请求手动压缩当前会话。 */
   compact: [];
+  /** /reload 命令：请求重载指令文件与 MCP 组合（冻结环境刷新）。 */
+  reload: [];
   selectProvider: [providerId: string];
   selectModel: [modelId: string];
   /** 审批卡决定：交页面层调 decideApproval。 */
@@ -348,10 +350,15 @@ function handleSend() {
     props.readOnly
   )
     return;
-  // 斜杠命令拦截（v1 精确匹配）：/compact 不作为消息发送。
+  // 斜杠命令拦截（v1 精确匹配）：/compact、/reload 不作为消息发送。
   if (inputMessage.value.trim() === "/compact") {
     inputMessage.value = "";
     emit("compact");
+    return;
+  }
+  if (inputMessage.value.trim() === "/reload") {
+    inputMessage.value = "";
+    emit("reload");
     return;
   }
   emit("send", inputMessage.value);
@@ -389,7 +396,17 @@ const compactCommand: BuiltinSlashCommand = {
     return null;
   },
 };
-const slashBuiltins = [compactCommand, ...builtinSlashCommands];
+// /reload 同为就地注册：emit 到页面层调 reloadInstructions（后端立即重
+// 解析并替换冻结 entry，下一 run 生效；运行中调用也安全）。
+const reloadCommand: BuiltinSlashCommand = {
+  label: "reload",
+  description: "重载指令文件（AGENTS.md）与 MCP 工具组合，下一轮生效",
+  run: async () => {
+    if (props.conversationId && !props.readOnly) emit("reload");
+    return null;
+  },
+};
+const slashBuiltins = [compactCommand, reloadCommand, ...builtinSlashCommands];
 
 const slashGroups = computed<SlashMenuGroup[]>(() =>
   filterSlashMenuGroups(

@@ -323,6 +323,15 @@ pub trait AgentTool: Send + Sync {
     /// Tool name as used by the LLM.
     fn name(&self) -> &str;
 
+    /// Authorization identity for the permission gate: the CANONICAL name
+    /// rules are written against, independent of any model-facing alias.
+    /// Aliasing wrappers (frozen MCP exposure names) override this so a
+    /// server rename cannot strand a `deny`/`allow` rule written against
+    /// the current name.
+    fn authz_name(&self) -> &str {
+        self.name()
+    }
+
     /// Description shown to the LLM.
     fn description(&self) -> &str;
 

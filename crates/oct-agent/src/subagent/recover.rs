@@ -294,6 +294,9 @@ async fn recover_one(job: &RecoveryJob, run: AgentRun) -> Result<()> {
             // mcp.tools_for_run — the same assembly sources, equal to
             // parent-minus-task in effect.
             parent_toolset: None,
+            // No live parent to inherit from: the child resolves the
+            // conversation's shared frozen environment from the cache.
+            parent_env: None,
         })
         .await
         .map_err(|e| anyhow!("starting the recovered child run: {e}"))?;

@@ -114,6 +114,12 @@ pub struct AgentSettingsView {
 pub struct SnapshotTool {
     pub selector: ToolSelector,
     pub exposed_name: String,
+    /// Frozen presentation: the description rendered into the system prompt
+    /// (`[mcp:{server}] ...` embeds the server name, so a rename would
+    /// change the bytes). Empty on snapshots predating the field — restore
+    /// then falls back to the live description.
+    #[serde(default)]
+    pub exposed_description: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

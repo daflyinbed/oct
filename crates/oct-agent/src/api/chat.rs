@@ -481,6 +481,8 @@ async fn run_manual_compact(
     // cancellation token — a synchronous request. Tagged with the
     // conversation so the manual path's wire lines land in the right
     // per-conversation file (the run path inherits them from the supervisor).
+    // The prompt-env handle flags the frozen instruction block dirty on
+    // success — the next run re-reads the files.
     let compaction = oct_llm_provider::wire::with_tags(
         oct_llm_provider::wire::Tags {
             conversation_id: Some(id.to_string()),
@@ -499,6 +501,7 @@ async fn run_manual_compact(
                 trigger: CompactionTrigger::Manual,
                 hub: None,
                 cancel: None,
+                prompt_env_refresh: Some(state.runs.prompt_env_refresh(id)),
             },
         ),
     );
@@ -530,6 +533,89 @@ async fn run_manual_compact(
         est_tokens_before: outcome.est_before,
         est_tokens_after: outcome.est_after,
         summary: outcome.summary,
+    }))
+}
+
+/// One entry of the `/reload` manifest: a loaded instruction file with its
+/// budgeted size.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct InstructionFileDto {
+    /// Absolute (canonical) path of the loaded file.
+    pub path: String,
+    /// Content length in bytes, AFTER budgeting.
+    pub bytes: u64,
+    /// Whether the per-file or total budget cut the content.
+    pub truncated: bool,
+}
+
+/// Result of an instructions reload: the freshly frozen environment's
+/// manifest.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct InstructionsReloadResult {
+    /// The instruction files now in effect (empty when the workspace has
+    /// none).
+    pub repo_files: Vec<InstructionFileDto>,
+    /// Exposed names of the MCP tools now in effect for this conversation.
+    pub mcp_tools: Vec<String>,
+}
+
+/// Re-read the conversation's repository instruction files and re-snapshot
+/// the live MCP tool set, REPLACING the frozen prompt environment: the next
+/// run assembles from the fresh entry (a run in flight is unaffected — its
+/// prompt is already built). This is the explicit refresh point for edits
+/// that would otherwise wait for a compaction boundary.
+#[utoipa::path(
+    post,
+    path = "/conversations/{id}/instructions/reload",
+    params(("id" = String, Path, description = "Conversation ID")),
+    responses(
+        (status = 200, description = "Environment re-frozen; manifest of what is now in effect", body = InstructionsReloadResult),
+        (status = 404, description = "Conversation not found"),
+        (status = 409, description = "Managed subagent conversation (reload through its parent)")
+    ),
+    tag = "chat"
+)]
+pub async fn reload_instructions(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<InstructionsReloadResult>> {
+    let conversation = conv_db::get_conversation(&state.pool, &id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Conversation not found".into()))?;
+    // Managed subagent sessions share their ROOT conversation's entry —
+    // reload through the parent (or the root id itself).
+    ensure_not_managed(&conversation)?;
+    // Read-only backups (revert) never run and must not mint a frozen entry.
+    conversation.ensure_writable()?;
+    let project = project_db::get_project(&state.pool, &conversation.project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Project not found".into()))?;
+
+    // Same reconcile a chat turn performs, so newly-enabled servers join
+    // the fresh identity snapshot (best-effort; failed servers contribute
+    // no tools, as ever).
+    state
+        .mcp
+        .ensure_connections(&state.pool, Some(&project.id))
+        .await;
+
+    let env = state.runs.reload_prompt_env(&id, &project).await;
+    Ok(Json(InstructionsReloadResult {
+        repo_files: env
+            .repo
+            .files
+            .iter()
+            .map(|f| InstructionFileDto {
+                path: f.path.clone(),
+                bytes: f.bytes as u64,
+                truncated: f.truncated,
+            })
+            .collect(),
+        mcp_tools: env
+            .mcp_tools
+            .iter()
+            .map(|t| t.exposed_name.clone())
+            .collect(),
     }))
 }
 

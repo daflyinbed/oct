@@ -139,6 +139,7 @@ pub async fn run_agent_loop(
                 MicrocompactTrigger::Idle,
                 &mut context,
                 &tool_specs,
+                ctx.prompt_env_refresh.as_ref(),
             )
             .await
             {
@@ -162,6 +163,7 @@ pub async fn run_agent_loop(
                     MicrocompactTrigger::Waterline,
                     &mut context,
                     &tool_specs,
+                    ctx.prompt_env_refresh.as_ref(),
                 )
                 .await
                 {
@@ -184,6 +186,7 @@ pub async fn run_agent_loop(
                     &tool_specs,
                     &mut context,
                     est,
+                    ctx.prompt_env_refresh.clone(),
                 )
                 .await;
                 match attempt {
@@ -394,7 +397,7 @@ pub async fn run_agent_loop(
         }
 
         let mut assistant_parts: Vec<ContentPart> = Vec::new();
-        let reasoning_details = reasoning_started_at
+        let mut reasoning_details = reasoning_started_at
             .filter(|_| !reasoning_text.is_empty())
             .map(|started| {
                 let ms = reasoning_ended_at
@@ -404,7 +407,15 @@ pub async fn run_agent_loop(
                 // UI-only thinking duration for the frontend card; stored in
                 // details_json so it never enters the model-visible parts.
                 json!({ "reasoning_duration_ms": ms })
-            });
+            })
+            .unwrap_or_else(|| json!({}));
+        // Anchor bookkeeping rides in details_json too: the generation of
+        // the prompt THIS request runs under, so a later assembly can reject
+        // usage anchors measured under a different prompt (an in-flight
+        // request completing after a `/reload` keeps the OLD generation here
+        // and is correctly rejected by the new entry).
+        reasoning_details["prompt_generation"] = json!(ctx.prompt_generation);
+        let reasoning_details = Some(reasoning_details);
         if !reasoning_text.is_empty() {
             assistant_parts.push(ContentPart::Reasoning(reasoning_text));
         }
@@ -469,7 +480,7 @@ pub async fn run_agent_loop(
             // message sits at its final index. (Skipped naturally when the
             // stream reported no usage — the old anchor stays valid.)
             if let Some(tokens) = pending_anchor.take() {
-                context.set_anchor(tokens);
+                context.set_anchor(tokens, ctx.prompt_generation);
             }
         }
 

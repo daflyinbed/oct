@@ -87,9 +87,19 @@ pub async fn view_from_snapshot(
     let anchor = match anchor {
         Some((mi, row)) => {
             let tokens = cow_adjusted_anchor_tokens(tx, &kept, &messages, row).await?;
+            // The prompt generation this request ran under (stamped by the
+            // loop into details_json); absent on rows predating the feature
+            // → 0 = unknown, accepted by no environment.
+            let prompt_generation = row
+                .details_json
+                .as_deref()
+                .and_then(|d| serde_json::from_str::<serde_json::Value>(d).ok())
+                .and_then(|d| d.get("prompt_generation").and_then(|v| v.as_u64()))
+                .unwrap_or(0);
             Some(UsageAnchor {
                 tokens,
                 message_index: mi,
+                prompt_generation,
             })
         }
         None => None,

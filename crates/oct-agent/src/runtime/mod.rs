@@ -37,9 +37,12 @@ mod resolve;
 mod supervision;
 use supervision::{derive_child_toolset, supervise, supervise_child};
 
+use prompt_env::log_prompt_env;
+
 pub mod background;
 pub mod lifecycle;
 pub mod preparation;
+pub(crate) mod prompt_env;
 pub(crate) mod worker_config;
 
 use std::path::PathBuf;
@@ -57,6 +60,7 @@ use oct_llm_provider::wire;
 
 use crate::agent::loop_runner::run_agent_loop;
 use crate::agent::prompt::{system_prompt, worker_system_prompt};
+use crate::agent::repo_instructions::FrozenPromptEnv;
 use crate::agent::{
     AgentContext, AgentEvent, EventHub, RunHandle, RunOutcome, RunStatus, SubagentRunStatus,
 };
@@ -122,6 +126,18 @@ pub struct RunService {
     /// settled run's gate dies with its loop; `allow_always` decisions and
     /// mode PATCHes reach the ACTIVE runs of a conversation through here.
     pub gates: Arc<DashMap<String, Vec<Weak<PermissionGate>>>>,
+    /// Frozen prompt-head environments by ROOT conversation id: the
+    /// repo-instruction block and MCP identity snapshot every run of that
+    /// tree assembles from, reused byte-for-byte while clean (see
+    /// [`prompt_env`]). `Arc` so dirty-flag handles can outlive a borrow.
+    pub prompt_envs: Arc<DashMap<String, FrozenPromptEnv>>,
+    /// Per-root-conversation serialization of environment resolution vs
+    /// `/reload`: a reload in flight makes a concurrently STARTING run wait
+    /// and then resolve the fresh entry, instead of racing the old one for
+    /// its whole lifetime. Locks cover only the resolution section (never
+    /// the run itself), and the guard extends to backend-initiated entry
+    /// points (wake runs, recovery) that no frontend coordination reaches.
+    pub prompt_env_locks: DashMap<String, Arc<tokio::sync::Mutex<()>>>,
 }
 
 /// Everything [`RunService::start_root_run`] needs to launch one root run.
@@ -471,12 +487,41 @@ impl RunService {
 
         let (roots, additional) = workspace_roots(&project);
         let mut roots = roots.with_read_only_root(self.background.exec_dir().to_path_buf());
-        let mcp_tools: Vec<Arc<dyn tools::AgentTool>> = self
+        // Frozen prompt environment (repo instruction block + MCP tool
+        // identities), keyed by the root conversation: the first assembly
+        // reads the files and snapshots the live MCP set; clean hits reuse
+        // the entry byte-for-byte so the system prompt — and the provider
+        // prefix cache with it — stays stable across runs. Dispatch maps the
+        // frozen identities onto the LIVE instances: a renamed server keeps
+        // its frozen exposed name, a missing one is skipped (and dirties the
+        // the entry, a missing one is skipped (and dirties the
+        // entry for the next run), and servers enabled after the freeze wait
+        // for the next refresh point.
+        let prompt_env = self.resolve_prompt_env(&conversation_id, &project).await;
+        // An anchor from a different prompt generation was measured under a
+        // different system prompt — drop it for this run: the anchored
+        // estimate excludes the prompt, so an enlarged instruction block
+        // would otherwise be invisible to the compaction watermarks.
+        // Equality (not a timestamp) closes the in-flight window: a request
+        // completing after a `/reload` still carries the OLD generation.
+        let mut view = view;
+        if let Some(anchor) = &view.anchor
+            && !prompt_env.accepts_anchor(anchor.prompt_generation)
+        {
+            view.anchor = None;
+        }
+        log_prompt_env(&conversation_id, &prompt_env);
+        let live_mcp: Vec<Arc<dyn tools::AgentTool>> = self
             .mcp
             .tools_for_run(Some(&project.id))
             .into_iter()
             .map(Arc::from)
             .collect();
+        let (mcp_tools, missing_frozen) =
+            worker_config::restore_tools_lenient(&live_mcp, &prompt_env.mcp_tools);
+        if missing_frozen > 0 {
+            self.mark_prompt_env_dirty(&conversation_id);
+        }
         let use_code = crate::codemode::mode(&self.pool, Some(&project.id))
             .await
             .unwrap_or_default()
@@ -578,6 +623,12 @@ impl RunService {
                     parent_cancel: handle.cancel.clone(),
                     parent_hub: handle.hub.clone(),
                     parent_toolset: parent_toolset.clone(),
+                    // The parent's OWN frozen environment: children spawned
+                    // from this live run inherit it verbatim instead of
+                    // re-resolving the mutable cache, so a mid-run `/reload`
+                    // (or a compaction dirty flag) cannot make a child drift
+                    // from the parent that delegated to it.
+                    parent_env: Arc::new(prompt_env.clone()),
                 }),
             ));
             run_tools.push(task);
@@ -640,6 +691,10 @@ impl RunService {
         if let Some(warning) = code_warning {
             prompt.push_str(&warning);
         }
+        // Repo instructions close the prompt head (after the code-mode
+        // warning): the frozen block is byte-stable across the
+        // conversation's runs, so the prefix stays cacheable.
+        prompt.push_str(&prompt_env.repo.block);
         let ctx = AgentContext {
             model: Arc::from(model),
             tools: model_tools,
@@ -650,6 +705,8 @@ impl RunService {
             context_window,
             idle,
             permission: gate,
+            prompt_env_refresh: Some(self.prompt_env_refresh(&conversation_id)),
+            prompt_generation: prompt_env.generation,
         };
 
         let run_id = run.id.clone();
@@ -698,6 +755,9 @@ impl RunService {
             roots,
             locks,
             parent_toolset,
+            // The delegating run's own frozen environment (live task-tool
+            // path); `None` during recovery — resolved from the cache then.
+            parent_env,
             project,
             model,
             // The provider/model ids already live on the run row's snapshot;
@@ -712,6 +772,38 @@ impl RunService {
             .get(&conversation_id)
             .map(|entry| entry.value().clone())
             .expect("the occupancy guard guarantees the session entry");
+
+        // The worker shares its tree's frozen environment (keyed by ROOT
+        // conversation id — the parent's own id for depth-1 tasks): same
+        // repo block, same MCP identity set, parent and children never
+        // drift mid-conversation. A child dispatched from a LIVE parent
+        // inherits the parent's own environment verbatim (the cache may
+        // have been replaced by a mid-run `/reload` — the parent keeps
+        // running on its original block, so the child must too); only the
+        // recovery path (no live parent) resolves the cache. Recovery
+        // included: this assembly IS the recovery path.
+        let root_conversation_id =
+            crate::db::conversations::get_conversation(&self.pool, &conversation_id)
+                .await?
+                .and_then(|conv| conv.root_conversation_id)
+                .unwrap_or_else(|| conversation_id.clone());
+        let prompt_env = match parent_env {
+            Some(env) => (*env).clone(),
+            None => self
+                .resolve_prompt_env(&root_conversation_id, &project)
+                .await,
+        };
+        // Same generation rule as the root assembly, against the child's OWN
+        // view: an inherited environment still rejects anchors measured
+        // under a different prompt, checked per run (no consumed flag to
+        // race for between parent and children).
+        let mut view = view;
+        if let Some(anchor) = &view.anchor
+            && !prompt_env.accepts_anchor(anchor.prompt_generation)
+        {
+            view.anchor = None;
+        }
+        log_prompt_env(&root_conversation_id, &prompt_env);
 
         let tool_mode = agent_config
             .as_ref()
@@ -741,6 +833,13 @@ impl RunService {
                 .into_iter()
                 .map(Arc::from)
                 .collect();
+                // Recovery deliberately does NOT filter by the conversation
+                // freeze: the worker's own sealed snapshot (restored strictly
+                // below) is the selection source, per the recovery contract —
+                // a server that was absent from a `/reload`-era freeze but is
+                // live again at resume must restore, not fail the run with
+                // "Worker snapshot tool is unavailable". Recovery is already
+                // a cache-breaking event, so freeze purity buys nothing here.
                 rebuilt.extend(
                     self.mcp
                         .tools_for_run(Some(&project.id))
@@ -838,11 +937,6 @@ impl RunService {
         // carry no effective mode — recovery included, since this assembly
         // is the recovery path too). Worker approvals are also delivered
         // to the parent surface while keeping their own run identity.
-        let root_conversation_id =
-            crate::db::conversations::get_conversation(&self.pool, &conversation_id)
-                .await?
-                .and_then(|conv| conv.root_conversation_id)
-                .unwrap_or_else(|| conversation_id.clone());
         let gate_result = self
             .assemble_gate(
                 &conversation_id,
@@ -883,6 +977,11 @@ impl RunService {
             &model_tools,
             code_section.as_ref(),
         );
+        // Repo instructions sit between the worker identity and the user's
+        // worker instructions: repository conventions override the built-in
+        // prompt, and the user's explicit configuration stays last (the
+        // escape hatch that must be able to win).
+        prompt.push_str(&prompt_env.repo.block);
         if let Some(snapshot) = &agent_config
             && !snapshot.instructions.is_empty()
         {
@@ -897,6 +996,8 @@ impl RunService {
             context_window,
             idle: None,
             permission: gate,
+            prompt_env_refresh: Some(self.prompt_env_refresh(&root_conversation_id)),
+            prompt_generation: prompt_env.generation,
         };
 
         // Publish the running transition on the PARENT hub (small events

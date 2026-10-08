@@ -150,6 +150,13 @@ pub fn details_kind(details_json: Option<&str>) -> Option<String> {
 pub struct UsageAnchor {
     pub tokens: u64,
     pub message_index: usize,
+    /// Identity of the prompt environment the anchor's request RAN under
+    /// (stamped from the run's context at commit; persisted on the assistant
+    /// row's details so later runs can compare against their own entry).
+    /// `0` = unknown (rows predating the feature). An anchor from a
+    /// different generation was measured under a different system prompt and
+    /// must not drive the anchored estimate, which excludes the prompt.
+    pub prompt_generation: u64,
 }
 
 /// The model-visible view of a conversation plus the estimation anchor:
@@ -268,12 +275,15 @@ impl ContextState {
 
     /// Commit this request's reported usage as the anchor on the LAST entry
     /// (the assistant message the loop just appended). Entry-relative index,
-    /// matching `load_llm_view`'s anchor coordinates.
-    pub fn set_anchor(&mut self, tokens: u64) {
+    /// matching `load_llm_view`'s anchor coordinates. `prompt_generation`
+    /// comes from the run's context: this request ran under THAT
+    /// environment's system prompt, whatever the cache does later.
+    pub fn set_anchor(&mut self, tokens: u64, prompt_generation: u64) {
         if let Some(index) = self.entries.len().checked_sub(1) {
             self.anchor = Some(UsageAnchor {
                 tokens,
                 message_index: index,
+                prompt_generation,
             });
         }
     }
@@ -387,7 +397,7 @@ mod tests {
         // Append two entries (assistant + tool result), anchoring on the
         // assistant.
         state.append(user("late"), 6);
-        state.set_anchor(4_200);
+        state.set_anchor(4_200, 7);
         state.append(tool_result("c3", &"z".repeat(2_000)), 7);
 
         // (1) plain append + anchor: reload-equivalent view would be the same
@@ -474,6 +484,7 @@ mod tests {
         let anchor = UsageAnchor {
             tokens: 500,
             message_index: 1,
+            prompt_generation: 7,
         };
         assert_eq!(
             estimate_view(&entries, Some(system), &specs, Some(&anchor)),

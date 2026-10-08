@@ -3,6 +3,7 @@ pub mod events;
 pub mod loop_runner;
 pub mod micro;
 pub mod prompt;
+pub mod repo_instructions;
 pub mod title;
 
 use serde::{Deserialize, Serialize};
@@ -285,6 +286,19 @@ pub struct AgentContext {
     /// subagent runs alike) from the persisted rules, the conversation's
     /// mode and the workspace roots.
     pub permission: std::sync::Arc<crate::permissions::gate::PermissionGate>,
+    /// Marks this run's ROOT conversation frozen prompt environment dirty
+    /// when compaction/microcompaction rewrites the history (the prefix
+    /// cache breaks anyway; the refresh itself lands at the NEXT run's
+    /// assembly — a run's prompt is constant for its whole lifetime).
+    /// `None` for contexts assembled outside the RunService (test
+    /// harnesses), where the flag has nothing to act on.
+    pub prompt_env_refresh: Option<repo_instructions::PromptEnvRefresh>,
+    /// Identity of the prompt environment this run's system prompt was built
+    /// from: `set_anchor` stamps it onto every usage anchor (and onto the
+    /// assistant row's details), so later runs can reject anchors measured
+    /// under a different prompt. `0` = unknown (test harnesses), which no
+    /// environment accepts.
+    pub prompt_generation: u64,
 }
 
 /// What started a compaction.

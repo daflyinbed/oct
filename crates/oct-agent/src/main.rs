@@ -114,6 +114,8 @@ async fn run_server(
         background: background.clone(),
         approvals: Arc::new(oct_agent::permissions::registry::ApprovalRegistry::new()),
         gates: Arc::new(dashmap::DashMap::new()),
+        prompt_envs: Arc::new(dashmap::DashMap::new()),
+        prompt_env_locks: dashmap::DashMap::new(),
     });
     subagents.set_service(runs.clone());
     background.set_service(runs.clone());

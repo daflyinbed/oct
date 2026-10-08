@@ -337,6 +337,8 @@ pub async fn spawn_agent_with_gate(
         context_window,
         idle,
         permission,
+        prompt_env_refresh: None,
+        prompt_generation: 0,
     };
 
     let conv = conv_id.to_string();
@@ -479,6 +481,8 @@ impl TestApp {
             background: background.clone(),
             approvals: Arc::new(oct_agent::permissions::registry::ApprovalRegistry::new()),
             gates: Arc::new(dashmap::DashMap::new()),
+            prompt_envs: Arc::new(dashmap::DashMap::new()),
+        prompt_env_locks: dashmap::DashMap::new(),
         });
         subagents.set_service(runs.clone());
         background.set_service(runs.clone());

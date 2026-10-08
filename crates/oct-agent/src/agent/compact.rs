@@ -375,6 +375,12 @@ pub struct CompactRequest<'a> {
     /// Cancellation; the summary call is selected against it. The manual
     /// endpoint passes `None`.
     pub cancel: Option<&'a CancellationToken>,
+    /// Flags the conversation's frozen prompt environment dirty on success:
+    /// compaction rewrites the history, so the prefix cache is broken anyway
+    /// and the next run re-reads the instruction files instead of reusing
+    /// the frozen block. Both entry points (manual endpoint and in-run auto
+    /// trigger) pass their conversation's handle; `None` skips.
+    pub prompt_env_refresh: Option<super::repo_instructions::PromptEnvRefresh>,
 }
 
 /// Typed result of one compaction transaction.
@@ -495,6 +501,13 @@ pub async fn run_compaction(
         });
     }
 
+    // The history rewrite broke the prefix cache regardless — flag the
+    // frozen prompt environment so the next run's assembly re-reads the
+    // instruction files and re-snapshots the MCP identities.
+    if let Some(refresh) = &req.prompt_env_refresh {
+        refresh.mark_dirty();
+    }
+
     Ok(CompactOutcome {
         summary_message_id: stored.id,
         cut,
@@ -538,6 +551,7 @@ pub async fn run_auto_compaction(
     tool_specs: &[ToolSpec],
     context: &mut crate::context::ContextState,
     est_before: u64,
+    prompt_env_refresh: Option<super::repo_instructions::PromptEnvRefresh>,
 ) -> CompactAttempt {
     let outcome = match run_compaction(
         model,
@@ -552,6 +566,7 @@ pub async fn run_auto_compaction(
             trigger: CompactionTrigger::Auto,
             hub: Some(hub),
             cancel: Some(cancel),
+            prompt_env_refresh,
         },
     )
     .await

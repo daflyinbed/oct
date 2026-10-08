@@ -1250,6 +1250,27 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
     }
   };
 
+  /**
+   * /reload：重载指令文件与 MCP 组合——后端立即重解析并替换会话的冻结
+   * 环境，下一 run 生效（运行中调用安全，不影响当前 run 的 prompt）。
+   * 不触碰消息/usage，无需 beginRun；失败静默（console 记录），manifest
+   * 摘要打日志作可见信号。
+   */
+  const reloadInstructions = async (conversationId: string) => {
+    try {
+      const { data, error } = await client.POST(
+        "/api/conversations/{id}/instructions/reload",
+        { params: { path: { id: conversationId } } },
+      );
+      if (error || !data) {
+        console.error("instructions reload failed", error ?? "no data");
+      }
+      // 无 toast 基建（同 compact）：成功静默，生效信号是下一轮行为变化。
+    } catch (error) {
+      console.error("instructions reload failed", error);
+    }
+  };
+
   const clearMessages = () => {
     ++historyGeneration;
     serverResumable.value = false;
@@ -1332,6 +1353,7 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
     attachSubagent,
     cancelConversation,
     compactConversation,
+    reloadInstructions,
     decideApproval,
     refreshApprovals,
     clearMessages,

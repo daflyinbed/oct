@@ -63,6 +63,12 @@ pub struct TaskSpawnConfig {
     /// the SSE streams would never reach EOF. While `task` executes, the
     /// loop's own toolset Arc keeps the upgrade valid.
     pub parent_toolset: ToolsetSlot,
+    /// The parent run's OWN frozen prompt environment: children spawned from
+    /// this live run inherit it verbatim (no cache re-resolution), so a
+    /// mid-run `/reload` or compaction dirty flag cannot make a child drift
+    /// from the parent that delegated to it. No cycle risk — the environment
+    /// references nothing from the toolset.
+    pub parent_env: std::sync::Arc<crate::agent::repo_instructions::FrozenPromptEnv>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

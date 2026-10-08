@@ -726,6 +726,64 @@ async fn child_inherits_parent_tools_excluding_task() {
         && rule.source == "approval"));
 }
 
+// --- 6b. Repo instructions shared across the task tree -----------------------
+
+/// The `<repo-instructions>` … `</repo-instructions>` substring of a captured
+/// request's system message.
+fn repo_block_of(request: &Value) -> String {
+    let system = request["messages"][0]["content"]
+        .as_str()
+        .expect("system message");
+    let start = system.find("<repo-instructions>").expect("repo block present");
+    let end = start
+        + system[start..]
+            .find("</repo-instructions>")
+            .expect("repo block end")
+        + "</repo-instructions>".len();
+    system[start..end].to_string()
+}
+
+#[tokio::test]
+async fn worker_prompt_carries_the_parents_repo_instructions_block() {
+    let llm = spawn_llm_mock(vec![
+        LdmTurns::single("TASKA-7f3a"),
+        LdmTurns::complete(vec![text_chunk("all done"), finish_chunk("stop")]),
+    ])
+    .await;
+    llm.push_marker_turns("TASKA-7f3a", vec![LdmTurns::quick_child("done-a")]);
+    let (app, _project, conv) = wired_app(&llm).await;
+
+    // The workspace instruction file exists BEFORE the parent's first run —
+    // its assembly freezes the tree's prompt environment.
+    std::fs::write(app.dir.path().join("AGENTS.md"), "SHARED-REPO-RULES everywhere").unwrap();
+
+    let mut events = sse_payloads(app.send_message(&conv, "please research").await);
+    next_event(&mut events, updated("A", "completed")).await;
+    next_event(&mut events, |v| v["type"] == "finish").await;
+    drain_to_end(&mut events).await;
+
+    // Parent = the request carrying the research ask; child = the request
+    // whose user turn is the delegation prompt (the marker key).
+    let requests = llm.requests();
+    let parent_request = requests
+        .iter()
+        .find(|r| r["messages"].to_string().contains("please research"))
+        .expect("parent request captured");
+    let child_request = requests
+        .iter()
+        .find(|r| user_role_text(r).contains("TASKA-7f3a"))
+        .expect("child request captured");
+
+    // Both prompts carry the block, and it is byte-identical: the worker
+    // shares the ROOT conversation's frozen entry, so parent and children
+    // never drift mid-conversation.
+    let parent_block = repo_block_of(parent_request);
+    let child_block = repo_block_of(child_request);
+    assert!(parent_block.contains("SHARED-REPO-RULES everywhere"));
+    assert!(child_block.contains("SHARED-REPO-RULES everywhere"));
+    assert_eq!(parent_block, child_block);
+}
+
 // --- 7. Crash recovery: both lost, one resume restarts the tree --------------
 
 #[tokio::test]

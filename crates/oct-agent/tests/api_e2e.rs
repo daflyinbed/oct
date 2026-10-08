@@ -2770,6 +2770,124 @@ async fn manual_compact_conflicts_with_active_run() {
     );
 }
 
+// --- Frozen prompt environment (repo instructions reload) --------------------
+
+#[tokio::test]
+async fn instructions_reload_returns_manifest_and_refreshes_the_next_prompt() {
+    let llm = llm::spawn_llm_mock(vec![
+        LlmTurn::Complete(vec![text_chunk("ok"), finish_chunk("stop")]),
+        LlmTurn::Complete(vec![text_chunk("ok"), finish_chunk("stop")]),
+    ])
+    .await;
+    let app = TestApp::new().await;
+    app.register_llm_provider(&llm).await;
+    let project = app.create_project().await;
+    let conv = app.create_conversation(&project).await;
+
+    let agents_md = app.dir.path().join("AGENTS.md");
+    std::fs::write(&agents_md, "RULE-v1").unwrap();
+
+    // First send freezes the environment with the v1 text in the prompt head.
+    let resp = app.send_message(&conv, "hello").await;
+    assert_eq!(*event_types(&app.read_sse(resp).await).last().unwrap(), "finish");
+    let system1 = llm.requests()[0]["messages"][0]["content"]
+        .as_str()
+        .expect("system message")
+        .to_string();
+    assert!(system1.contains("RULE-v1"));
+    assert!(system1.contains("<repo-instructions>"));
+
+    // The reload reports exactly what is now frozen: the file manifest with
+    // budgeted byte counts, and the (empty) MCP composition.
+    let resp = app
+        .post_json(&format!("/api/conversations/{conv}/instructions/reload"), serde_json::json!(null))
+        .await;
+    assert_eq!(resp.status(), 200);
+    let manifest: Value = resp.json().await.expect("reload manifest json");
+    let files = manifest["repo_files"].as_array().expect("repo_files array");
+    assert_eq!(files.len(), 1);
+    assert!(files[0]["path"].as_str().unwrap().ends_with("AGENTS.md"));
+    assert_eq!(files[0]["bytes"].as_u64(), Some("RULE-v1".len() as u64));
+    assert_eq!(files[0]["truncated"], serde_json::json!(false));
+    assert_eq!(manifest["mcp_tools"], serde_json::json!([]));
+
+    // Editing WITHOUT a reload keeps the frozen block (prefix-cache
+    // guarantee)…
+    std::fs::write(&agents_md, "RULE-v2-EDITED").unwrap();
+    let resp = app.send_message(&conv, "again").await;
+    assert_eq!(*event_types(&app.read_sse(resp).await).last().unwrap(), "finish");
+    let system2 = llm.requests()[1]["messages"][0]["content"]
+        .as_str()
+        .expect("system message")
+        .to_string();
+    assert!(system2.contains("RULE-v1"), "no refresh point → frozen block");
+    assert!(!system2.contains("RULE-v2-EDITED"));
+
+    // …while a reload after the edit swaps the block for the next run.
+    let resp = app
+        .post_json(&format!("/api/conversations/{conv}/instructions/reload"), serde_json::json!(null))
+        .await;
+    assert_eq!(resp.status(), 200);
+    let manifest: Value = resp.json().await.expect("reload manifest json");
+    assert_eq!(
+        manifest["repo_files"][0]["bytes"].as_u64(),
+        Some("RULE-v2-EDITED".len() as u64)
+    );
+    llm.push_turns([LlmTurn::Complete(vec![
+        text_chunk("ok"),
+        finish_chunk("stop"),
+    ])]);
+    let resp = app.send_message(&conv, "once more").await;
+    assert_eq!(*event_types(&app.read_sse(resp).await).last().unwrap(), "finish");
+    let system3 = llm.requests()[2]["messages"][0]["content"]
+        .as_str()
+        .expect("system message")
+        .to_string();
+    assert!(system3.contains("RULE-v2-EDITED"), "reload replaced the frozen block");
+
+    // Unknown conversation → 404.
+    let resp = app
+        .post_json(
+            "/api/conversations/does-not-exist/instructions/reload",
+            serde_json::json!(null),
+        )
+        .await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn instructions_reload_rejects_managed_subagent_conversation() {
+    let app = TestApp::new().await;
+    let project = app.create_project().await;
+    let conv = app.create_conversation(&project).await;
+
+    // A managed subagent conversation row (as the task tool would create it).
+    let mut tx = app.pool.begin().await.unwrap();
+    let child = oct_agent::db::conversations::create_subagent_conversation_in_tx(
+        &mut tx,
+        oct_agent::db::conversations::NewSubagentConversation {
+            project_id: &project,
+            parent_conversation_id: &conv,
+            root_conversation_id: &conv,
+            agent_type: "worker",
+            title: "child task",
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let resp = app
+        .post_json(
+            &format!("/api/conversations/{}/instructions/reload", child.id),
+            serde_json::json!(null),
+        )
+        .await;
+    assert_eq!(resp.status(), 409);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["code"], "managed_conversation");
+}
+
 #[tokio::test]
 async fn auto_compaction_end_to_end_via_tiny_model_window() {
     let llm = llm::spawn_llm_mock(vec![LlmTurn::Complete(vec![

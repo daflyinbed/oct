@@ -21,8 +21,11 @@ pub async fn direct(
     if let Err(error) = tool.validate_input(&args) {
         return ToolOutput::error(format!("Invalid tool arguments: {error:#}"));
     }
+    // Authorize by the CANONICAL name (`authz_name`), not the model-facing
+    // alias the call came in under: permission rules are written against
+    // current server names and must keep matching across frozen renames.
     match gate
-        .check(name, &args, ctx.call_id(), hub, ctx.cancel_token())
+        .check(tool.authz_name(), &args, ctx.call_id(), hub, ctx.cancel_token())
         .await
     {
         GateVerdict::Denied(output) => output,
@@ -45,7 +48,7 @@ pub async fn nested(
         .map_err(|error| oct_codemode::CallError::new("invalid_arguments", format!("{error:#}")))?;
     match gate
         .check_with_wait_counter(
-            tool.name(),
+            tool.authz_name(),
             &args,
             ctx.call_id(),
             hub,

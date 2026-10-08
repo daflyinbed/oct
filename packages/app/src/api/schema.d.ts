@@ -181,6 +181,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/conversations/{id}/instructions/reload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Re-read the conversation's repository instruction files and re-snapshot
+         *     the live MCP tool set, REPLACING the frozen prompt environment: the next
+         *     run assembles from the fresh entry (a run in flight is unaffected — its
+         *     prompt is already built). This is the explicit refresh point for edits
+         *     that would otherwise wait for a compaction boundary.
+         */
+        post: operations["reload_instructions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/conversations/{id}/messages": {
         parameters: {
             query?: never;
@@ -1570,6 +1593,34 @@ export interface components {
             upstream?: string | null;
         };
         /**
+         * @description One entry of the `/reload` manifest: a loaded instruction file with its
+         *     budgeted size.
+         */
+        InstructionFileDto: {
+            /**
+             * Format: int64
+             * @description Content length in bytes, AFTER budgeting.
+             */
+            bytes: number;
+            /** @description Absolute (canonical) path of the loaded file. */
+            path: string;
+            /** @description Whether the per-file or total budget cut the content. */
+            truncated: boolean;
+        };
+        /**
+         * @description Result of an instructions reload: the freshly frozen environment's
+         *     manifest.
+         */
+        InstructionsReloadResult: {
+            /** @description Exposed names of the MCP tools now in effect for this conversation. */
+            mcp_tools: string[];
+            /**
+             * @description The instruction files now in effect (empty when the workspace has
+             *     none).
+             */
+            repo_files: components["schemas"]["InstructionFileDto"][];
+        };
+        /**
          * @description Metadata kinds the API understands structurally.
          * @enum {string}
          */
@@ -2029,6 +2080,13 @@ export interface components {
             tools: string;
         };
         SnapshotTool: {
+            /**
+             * @description Frozen presentation: the description rendered into the system prompt
+             *     (`[mcp:{server}] ...` embeds the server name, so a rename would
+             *     change the bytes). Empty on snapshots predating the field — restore
+             *     then falls back to the live description.
+             */
+            exposed_description?: string;
             exposed_name: string;
             selector: components["schemas"]["ToolSelector"];
         };
@@ -2616,6 +2674,43 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
+            };
+        };
+    };
+    reload_instructions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Conversation ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Environment re-frozen; manifest of what is now in effect */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InstructionsReloadResult"];
+                };
+            };
+            /** @description Conversation not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Managed subagent conversation (reload through its parent) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
