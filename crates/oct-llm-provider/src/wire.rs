@@ -399,8 +399,16 @@ impl<S: Subscriber> tracing_subscriber::Layer<S> for WireLogLayer {
         tracing_core::Interest::sometimes()
     }
 
+    /// `Layer::enabled` is GLOBAL narrowing: a `false` here short-circuits
+    /// the callsite for EVERY layer on the stack — including the
+    /// human-facing fmt layer — so callsites outside the wire target are
+    /// not ours to gate and must always answer `true` (the
+    /// target/level/toggle narrowing for this layer's own recording lives
+    /// in `on_event`). For wire callsites the sink toggle is the answer,
+    /// and it doubles as the `tracing::enabled!` probe adapters use to
+    /// skip request serialization while the sink is off.
     fn enabled(&self, metadata: &Metadata<'_>, _cx: Context<'_, S>) -> bool {
-        metadata.target() == TARGET && *metadata.level() == Level::TRACE && wire_sink_enabled()
+        metadata.target() != TARGET || wire_sink_enabled()
     }
 
     fn on_event(&self, event: &Event<'_>, _cx: Context<'_, S>) {
