@@ -468,7 +468,10 @@ mod tests {
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = [0; 2048];
-            stream.read(&mut request).await.unwrap();
+            // One partial read is enough: the server only stalls after the
+            // request arrives, it never parses it.
+            let read = stream.read(&mut request).await.unwrap();
+            assert!(read > 0);
             entered.send(()).unwrap();
             std::future::pending::<()>().await;
             drop(stream);
@@ -492,7 +495,8 @@ mod tests {
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = [0; 2048];
-            stream.read(&mut request).await.unwrap();
+            let read = stream.read(&mut request).await.unwrap();
+            assert!(read > 0);
             stream
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n")
                 .await
