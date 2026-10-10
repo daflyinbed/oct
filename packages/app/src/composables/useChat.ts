@@ -18,6 +18,7 @@ import { createRunController } from "./chat/run";
 import { readChatStream } from "./chat/transport";
 import type {
   AgentEvent,
+  ApiMessage,
   ApprovalDecision,
   ChatStreamEvent,
   DisplayMessage,
@@ -798,6 +799,7 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
   const loadMessages = async (
     conversationId: string,
     requireRevision = false,
+    shouldReplace?: (history: ApiMessage[], revision: number | null) => boolean,
   ) => {
     if (historyChanging) return;
     selectConversation(conversationId);
@@ -822,6 +824,7 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
       generation === historyGeneration &&
       activeConversationId === conversationId
     ) {
+      if (shouldReplace && !shouldReplace(data, revision)) return;
       messages.value = storedToDisplayList(data);
       contextRevision.value = revision;
       sendRevision = revision;
@@ -851,6 +854,43 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
     await loadMessages(conversationId);
   };
 
+  /** A transport rejection does not tell us whether POST was committed.
+   * Reconcile execution and history before releasing the view; never replay
+   * the send. Only this request's persisted receipt can replace its draft;
+   * unrelated runs, notifications and even identical text are insufficient. */
+  async function reconcileUncertainSend(
+    owner: RunOwner,
+    clientRequestId: string,
+  ): Promise<boolean> {
+    let running = false;
+    let confirmed = false;
+    try {
+      const { data } = await client.GET("/api/conversations/{id}/run", {
+        params: { path: { id: owner.conversationId } },
+        signal: owner.signal,
+      });
+      if (!runs.owns(owner)) return false;
+      running = data?.running ?? false;
+      serverResumable.value = data?.resumable ?? false;
+    } catch {
+      // History can still settle a completed send if status probing failed.
+    }
+    if (!runs.owns(owner)) return false;
+    try {
+      await loadMessages(owner.conversationId, false, (history) => {
+        confirmed = history.some(
+          (message) =>
+            message.role === "user" &&
+            message.details?.extra?.client_request_id === clientRequestId,
+        );
+        return confirmed;
+      });
+    } catch {
+      // An unreachable backend keeps the draft/error available for the user.
+    }
+    return runs.owns(owner) && running && confirmed;
+  }
+
   const sendMessage = async (
     conversationId: string,
     content: string,
@@ -860,6 +900,10 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
     const owner = beginRun(conversationId);
     if (!owner) return;
     const expectedRevision = contextRevision.value ?? sendRevision;
+    // getRandomValues also works on HTTP workspaces without a secure context.
+    const clientRequestId = crypto
+      .getRandomValues(new Uint32Array(4))
+      .join("-");
     let accepted = false;
     let reconnect = false;
     let failed = false;
@@ -898,9 +942,10 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
     try {
       const body: {
         content: string;
+        client_request_id: string;
         provider_spec?: string;
         expected_revision?: number;
-      } = { content };
+      } = { content, client_request_id: clientRequestId };
       if (expectedRevision != null) body.expected_revision = expectedRevision;
       if (providerSpec) body.provider_spec = providerSpec;
       const res = await fetch(`/api/conversations/${conversationId}/messages`, {
@@ -931,6 +976,9 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
       failed = true;
       reconnect = accepted;
       showRunFailure(owner, failureText ?? "Failed to send message.");
+      if (!accepted && failureText == null && runs.owns(owner)) {
+        reconnect = await reconcileUncertainSend(owner, clientRequestId);
+      }
     } finally {
       await finalizeRun(
         owner,

@@ -299,7 +299,7 @@ async fn oauth_callback_state_replay_is_rejected() {
 /// An expired stored token refreshes pre-connect (one refresh grant,
 /// rotated tokens persisted) and the connection uses the fresh bearer.
 #[tokio::test]
-async fn oauth_expired_token_refreshes_before_connect() {
+async fn oauth_expired_token_refreshes_an_existing_connection() {
     let app = TestApp::new().await;
     let as_mock = OAuthAsMock::spawn().await;
     let mcp_mock = support::mcp_http::McpHttpMock::spawn_with_oauth(
@@ -310,20 +310,20 @@ async fn oauth_expired_token_refreshes_before_connect() {
     let project_id = app.create_project().await;
     let (id, _url, response) = login(&app, &as_mock, &mcp_mock.url, "oauth-access-1").await;
     assert_eq!(response.status(), 200);
+    assert_eq!(
+        ensure_entry(&app, &project_id, &id).await["status"],
+        "connected"
+    );
+    let before_refresh = mcp_mock.requests().len();
 
     // Age the token and let the next connect see a fresh bearer: the mock
     // now demands the SECOND access token (the one a refresh issues).
     expire_stored_token(&app.pool, &id).await;
     mcp_mock.set_expected_token("Bearer oauth-access-2");
 
-    // The manager currently holds a Connected entry under an unchanged
-    // fingerprint; the refresh path lives in connect, so drop the entry the
-    // same way the OAuth callbacks do.
-    app.mcp.invalidate(&id).await;
-
     let entry = ensure_entry(&app, &project_id, &id).await;
     assert_eq!(entry["status"], "connected", "refreshed token connects");
-    for request in mcp_mock.requests() {
+    for request in &mcp_mock.requests()[before_refresh..] {
         assert_eq!(
             request.authorization.as_deref(),
             Some("Bearer oauth-access-2"),
@@ -358,6 +358,286 @@ async fn oauth_expired_token_refreshes_before_connect() {
     .expect("token row still present");
     assert_eq!(row.0, "oauth-access-2");
     assert_eq!(row.1.as_deref(), Some("oauth-refresh-2"));
+
+    // The saved fresh expiry prevents a reconnect/refresh on every turn.
+    let request_count = mcp_mock.requests().len();
+    assert_eq!(
+        ensure_entry(&app, &project_id, &id).await["status"],
+        "connected"
+    );
+    assert_eq!(mcp_mock.requests().len(), request_count);
+    assert_eq!(as_mock.token_requests().len(), token_requests.len());
+}
+
+#[tokio::test]
+async fn oauth_refresh_preserves_existing_call_and_retires_its_transport_after_release() {
+    assert_refresh_with_borrowed_transport(false).await;
+}
+
+#[tokio::test]
+async fn oauth_logout_closes_retired_transports_still_borrowed_by_an_existing_run() {
+    assert_refresh_with_borrowed_transport(true).await;
+}
+
+async fn assert_refresh_with_borrowed_transport(logout: bool) {
+    use oct_agent::{agent::EventHub, tools::ToolContext};
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+
+    let app = TestApp::new().await;
+    let as_mock = OAuthAsMock::spawn().await;
+    let mcp_mock = support::mcp_http::McpHttpMock::spawn_with_oauth(
+        "Bearer oauth-access-1",
+        &as_mock.base_url,
+    )
+    .await;
+    let project = app.create_project().await;
+    let (id, _, response) = login(&app, &as_mock, &mcp_mock.url, "oauth-access-1").await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        ensure_entry(&app, &project, &id).await["status"],
+        "connected"
+    );
+
+    let old_tools = Arc::new(app.mcp.tools_for_run(Some(&project)));
+    let (entered, release) = mcp_mock.gate_next_tool_call();
+    let tools = old_tools.clone();
+    let call = tokio::spawn(async move {
+        let context = ToolContext::new(
+            "existing-call",
+            Arc::new(EventHub::new()),
+            CancellationToken::new(),
+        );
+        tools[0]
+            .execute(serde_json::json!({}), &context)
+            .await
+            .unwrap()
+    });
+    tokio::time::timeout(Duration::from_secs(5), entered.cancelled())
+        .await
+        .unwrap();
+
+    expire_stored_token(&app.pool, &id).await;
+    mcp_mock.set_expected_token("Bearer oauth-access-2");
+    assert_eq!(
+        ensure_entry(&app, &project, &id).await["status"],
+        "connected"
+    );
+    let deleted = mcp_mock.session_deleted();
+    assert!(
+        !deleted.is_cancelled(),
+        "refresh must not close a borrowed transport"
+    );
+    let context = ToolContext::new(
+        "new-call",
+        Arc::new(EventHub::new()),
+        CancellationToken::new(),
+    );
+    let fresh_tools = app.mcp.tools_for_run(Some(&project));
+    assert!(
+        !fresh_tools[0]
+            .execute(serde_json::json!({}), &context)
+            .await
+            .unwrap()
+            .is_error
+    );
+    assert_eq!(
+        mcp_mock.requests().last().unwrap().authorization.as_deref(),
+        Some("Bearer oauth-access-2")
+    );
+
+    if logout {
+        assert_eq!(
+            app.http_delete(&format!("/api/mcp/servers/{id}/oauth"))
+                .await
+                .status(),
+            204
+        );
+    }
+    release.cancel();
+    let output = tokio::time::timeout(Duration::from_secs(5), call)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        output.is_error, logout,
+        "unexpected sibling call result: {}",
+        output.content
+    );
+    if !logout {
+        assert!(
+            !deleted.is_cancelled(),
+            "the original run still owns its tools"
+        );
+    }
+    drop(old_tools);
+    tokio::time::timeout(Duration::from_secs(5), deleted.cancelled())
+        .await
+        .expect("the retired transport must close after its last run releases it");
+    assert_eq!(
+        mcp_mock
+            .requests()
+            .iter()
+            .filter(|request| request.method == "tools/call")
+            .count(),
+        2,
+        "neither call may be replayed"
+    );
+}
+
+#[tokio::test]
+async fn oauth_rejection_retries_refresh_without_replaying_tools() {
+    use oct_agent::{agent::EventHub, tools::ToolContext};
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+
+    let app = TestApp::new().await;
+    let as_mock = OAuthAsMock::spawn().await;
+    let mcp_mock = support::mcp_http::McpHttpMock::spawn_with_oauth(
+        "Bearer oauth-access-1",
+        &as_mock.base_url,
+    )
+    .await;
+    let project = app.create_project().await;
+    let (id, _, response) = login(&app, &as_mock, &mcp_mock.url, "oauth-access-1").await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        ensure_entry(&app, &project, &id).await["status"],
+        "connected"
+    );
+    // Revoke BEFORE expires_at. Recovery must force refresh even though
+    // the stored credential's advertised expiry is still in the future.
+    mcp_mock.set_expected_token("Bearer oauth-access-2");
+    let context = ToolContext::new(
+        "rejected-call",
+        Arc::new(EventHub::new()),
+        CancellationToken::new(),
+    );
+    let tools = app.mcp.tools_for_run(Some(&project));
+    let output = tools[0]
+        .execute(serde_json::json!({}), &context)
+        .await
+        .unwrap();
+    assert!(output.is_error);
+    assert!(matches!(
+        app.mcp.status_of(&id),
+        Some(oct_agent::mcp::ServerStatus::Failed { .. })
+    ));
+    assert_eq!(
+        mcp_mock
+            .requests()
+            .iter()
+            .filter(|request| request.method == "tools/call")
+            .count(),
+        1
+    );
+
+    as_mock.set_fail_refresh(true);
+    mcp_mock.set_post_failure(Some(axum::http::StatusCode::SERVICE_UNAVAILABLE));
+    assert_eq!(ensure_entry(&app, &project, &id).await["status"], "failed");
+    // A non-auth handshake error must not erase the original rejection.
+    mcp_mock.set_post_failure(None);
+    assert_eq!(ensure_entry(&app, &project, &id).await["status"], "failed");
+    assert_eq!(
+        mcp_mock
+            .requests()
+            .iter()
+            .filter(|request| request.method == "tools/call")
+            .count(),
+        1
+    );
+    as_mock.set_fail_refresh(false);
+    assert_eq!(
+        ensure_entry(&app, &project, &id).await["status"],
+        "connected"
+    );
+    // Reassembly performs discovery/handshake only, never the failed call.
+    assert_eq!(
+        mcp_mock
+            .requests()
+            .iter()
+            .filter(|request| request.method == "tools/call")
+            .count(),
+        1
+    );
+    assert_eq!(
+        as_mock
+            .token_requests()
+            .iter()
+            .filter(|request| request.grant_type == "refresh_token")
+            .count(),
+        3
+    );
+    let tools = app.mcp.tools_for_run(Some(&project));
+    assert!(
+        !tools[0]
+            .execute(serde_json::json!({}), &context)
+            .await
+            .unwrap()
+            .is_error
+    );
+}
+
+#[tokio::test]
+async fn cancelled_refresh_waiter_preserves_shared_rotation_and_connection() {
+    use tokio_util::sync::CancellationToken;
+
+    let app = TestApp::new().await;
+    let as_mock = OAuthAsMock::spawn().await;
+    let mcp_mock = support::mcp_http::McpHttpMock::spawn_with_oauth(
+        "Bearer oauth-access-1",
+        &as_mock.base_url,
+    )
+    .await;
+    let project = app.create_project().await;
+    let (id, _, response) = login(&app, &as_mock, &mcp_mock.url, "oauth-access-1").await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        ensure_entry(&app, &project, &id).await["status"],
+        "connected"
+    );
+    expire_stored_token(&app.pool, &id).await;
+    mcp_mock.set_expected_token("Bearer oauth-access-2");
+    let (entered, release) = as_mock.gate_next_refresh();
+    let cancel = CancellationToken::new();
+    let waiter = {
+        let manager = app.mcp.clone();
+        let pool = app.pool.clone();
+        let project = project.clone();
+        let cancel = cancel.clone();
+        tokio::spawn(async move {
+            manager
+                .ensure_connections_cancelled(&pool, Some(&project), &cancel)
+                .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(10), entered.cancelled())
+        .await
+        .unwrap();
+    cancel.cancel();
+    assert!(
+        !tokio::time::timeout(Duration::from_secs(2), waiter)
+            .await
+            .unwrap()
+            .unwrap()
+    );
+    release.cancel();
+    let entry = ensure_entry(&app, &project, &id).await;
+    assert_eq!(entry["status"], "connected");
+    let token = oct_agent::db::mcp_tokens::get_mcp_server_token(&app.pool, &id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(token.access_token, "oauth-access-2");
+    assert_eq!(token.refresh_token.as_deref(), Some("oauth-refresh-2"));
+    assert_eq!(
+        as_mock
+            .token_requests()
+            .iter()
+            .filter(|request| request.grant_type == "refresh_token")
+            .count(),
+        1
+    );
 }
 
 /// Server deletion retires an in-flight refresh writer.
@@ -413,9 +693,7 @@ async fn remove_credentials_during_refresh(delete_server: bool) {
             .is_none(),
         "the late refresh must not restore removed credentials"
     );
-    if !delete_server {
-        assert!(app.mcp.status_of(&id).is_none());
-    }
+    assert!(app.mcp.status_of(&id).is_none());
 }
 
 /// A failing refresh keeps the stored row (transient AS trouble) and the

@@ -23,13 +23,11 @@
 //! non-streaming, tool-less `generate`, hard timeout, and failure that never
 //! escalates — the run simply continues with the un-compacted history.
 
-use std::time::Duration;
-
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use oct_llm_provider::core::{ContentPart, GenerateOptions, Message, Role, ToolSpec};
-use oct_llm_provider::model::{ChatModel, ChatRequest};
+use oct_llm_provider::core::{Message, Role, ToolSpec};
+use oct_llm_provider::model::ChatModel;
 
 use super::{AgentEvent, CompactionTrigger, EventHub};
 use crate::context::ContextEntry;
@@ -133,170 +131,8 @@ fn is_legal_cut(messages: &[Message], i: usize) -> bool {
     matches!(messages[i].role, Role::User | Role::Assistant)
 }
 
-// ======================================================================
-// Summary input serialization
-// ======================================================================
-
-/// Per-part caps (chars) when serializing history for the summary call.
-const SUMMARY_TEXT_MAX_CHARS: usize = 8_000;
-const SUMMARY_ARGS_MAX_CHARS: usize = 500;
-const SUMMARY_RESULT_MAX_CHARS: usize = 1_500;
-
-/// Total serialization cap when the window is unknown.
-const DEFAULT_SERIALIZE_TOTAL_CHARS: usize = 400_000;
-
-/// Render the compactable region as flat text for the summary model call.
-/// Reasoning parts are dropped (process content, not task state); tool calls
-/// are one-liners; tool results are truncated to their head. The whole thing
-/// is capped (head + tail kept, middle dropped) so the summary request itself
-/// can never overflow the window it is trying to free.
-pub fn serialize_for_summary(region: &[Message], window: Option<u32>) -> String {
-    let max_total = window
-        .map(|w| w as usize * 3)
-        .unwrap_or(DEFAULT_SERIALIZE_TOTAL_CHARS);
-
-    let mut out = String::new();
-    for msg in region {
-        let role = match msg.role {
-            Role::System => "system",
-            Role::User => "user",
-            Role::Assistant => "assistant",
-            Role::Tool => "tool",
-        };
-        let mut wrote_header = false;
-        for part in &msg.parts {
-            let line = match part {
-                ContentPart::Text(t) => Some(truncate_summary_text(t, SUMMARY_TEXT_MAX_CHARS)),
-                // Reasoning is dropped: it is how the model thought, not what
-                // the task state is.
-                ContentPart::Reasoning(_) => None,
-                ContentPart::ImageUrl { .. } => Some("[image]".to_string()),
-                ContentPart::ToolCall(tc) => Some(format!(
-                    "tool call {}({})",
-                    tc.name,
-                    truncate_summary_text(&tc.arguments, SUMMARY_ARGS_MAX_CHARS)
-                )),
-                ContentPart::ToolResult(tr) => Some(format!(
-                    "tool result{}: {}",
-                    if tr.is_error { " (error)" } else { "" },
-                    truncate_summary_text(&tool_result_text(&tr.content), SUMMARY_RESULT_MAX_CHARS)
-                )),
-            };
-            if let Some(line) = line {
-                if !wrote_header {
-                    out.push_str(&format!("[{role}]\n"));
-                    wrote_header = true;
-                }
-                out.push_str(&line);
-                out.push('\n');
-            }
-        }
-    }
-
-    cap_total_chars(out, max_total)
-}
-
-fn truncate_summary_text(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        return s.to_string();
-    }
-    let mut cut: String = s.chars().take(max_chars).collect();
-    cut.push_str("…[truncated]");
-    cut
-}
-
-/// Cap the serialized transcript at `max_chars`, keeping the head and tail in
-/// equal halves with an omission marker between: the head carries the user's
-/// original goal, the tail the most recent progress.
-fn cap_total_chars(s: String, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        return s;
-    }
-    let half = max_chars / 2;
-    let head: String = s.chars().take(half).collect();
-    let tail: String = s.chars().skip(s.chars().count() - half).collect();
-    format!("{head}\n…[older content omitted]…\n{tail}")
-}
-
-// ======================================================================
-// Summary model call
-// ======================================================================
-
-const SUMMARY_MAX_OUTPUT_TOKENS: u32 = 2_048;
-const SUMMARY_TIMEOUT: Duration = Duration::from_secs(120);
-
-const SUMMARY_SYSTEM_PROMPT: &str = "\
-You are compacting the history of an AI coding-agent conversation so work can \
-continue in a fresh context window. Summarize the conversation below for the \
-agent's future context.\n\
-Write the summary in the SAME language as the user's messages.\n\
-Use exactly these sections as markdown headings:\n\
-## Primary Request and Intent\n\
-What the user asked for, as a bullet list — preserve every user request, in \
-order, as close to verbatim as possible.\n\
-## Work Completed\n\
-Files read/created/edited (with paths), commands run, and their outcomes.\n\
-## Key Tool Activity\n\
-Important tool results, errors, and how they were resolved. Keep error \
-messages and identifiers verbatim.\n\
-## Current State and Next Steps\n\
-What is done, what is in progress, and the immediate next action.\n\
-## Important Paths and Identifiers\n\
-File paths, branch names, ids, and other tokens likely to be referenced \
-again.\n\
-\n\
-Rules:\n\
-- Be concrete and information-dense; no pleasantries, no meta-commentary.\n\
-- Prefer exact paths, numbers, and error strings over paraphrase.\n\
-- Do not invent facts not present in the conversation.";
-
-/// One-shot, tool-less, non-streaming summary call. Timeout is inside; cancel
-/// responsiveness is the caller's job (wrap in `select!` against the run's
-/// cancellation token).
-pub async fn generate_summary(
-    model: &dyn ChatModel,
-    region: &[Message],
-    window: Option<u32>,
-) -> anyhow::Result<String> {
-    let serialized = serialize_for_summary(region, window);
-    let request = ChatRequest {
-        messages: vec![
-            Message::text(Role::System, SUMMARY_SYSTEM_PROMPT),
-            Message::text(Role::User, serialized),
-        ],
-        tools: Vec::new(),
-        options: GenerateOptions {
-            max_output_tokens: Some(SUMMARY_MAX_OUTPUT_TOKENS),
-            ..Default::default()
-        },
-    };
-
-    // The with_tags scope covers the generate() call, where the wire ctx
-    // captures purpose=compact (on top of the run's conversation tags).
-    let mut compact_tags = oct_llm_provider::wire::current_tags();
-    compact_tags.purpose = Some("compact".to_string());
-    let response = tokio::time::timeout(
-        SUMMARY_TIMEOUT,
-        oct_llm_provider::wire::with_tags(compact_tags, model.generate(request)),
-    )
-    .await
-    .map_err(|_| anyhow::anyhow!("summary model call timed out"))?
-    .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-    let text: String = response
-        .message
-        .parts
-        .iter()
-        .filter_map(|p| match p {
-            ContentPart::Text(t) => Some(t.as_str()),
-            _ => None,
-        })
-        .collect();
-    if text.trim().is_empty() {
-        anyhow::bail!("summary model call returned no text");
-    }
-    Ok(text)
-}
+mod summary;
+pub use summary::{generate_summary, serialize_for_summary};
 
 // ======================================================================
 // Compaction marker row
@@ -593,7 +429,7 @@ pub async fn run_auto_compaction(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oct_llm_provider::core::{ToolCall, ToolResult};
+    use oct_llm_provider::core::{ContentPart, ToolCall, ToolResult};
 
     fn user(text: &str) -> Message {
         Message::text(Role::User, text)
@@ -739,47 +575,6 @@ mod tests {
     fn cut_point_too_short_returns_none() {
         let msgs = [user("a"), assistant("b"), user("c"), assistant("d")];
         assert_eq!(find_cut_point(&msgs, 1_000), None);
-    }
-
-    #[test]
-    fn serialize_drops_reasoning_and_truncates_results() {
-        let region = [
-            Message {
-                role: Role::Assistant,
-                parts: vec![
-                    ContentPart::Reasoning("thinking...".into()),
-                    ContentPart::Text("did a thing".into()),
-                ],
-            },
-            Message {
-                role: Role::Tool,
-                parts: vec![ContentPart::ToolResult(ToolResult {
-                    call_id: "c1".into(),
-                    content: Value::String("x".repeat(5_000)),
-                    is_error: true,
-                    images: Vec::new(),
-                })],
-            },
-        ];
-        let out = serialize_for_summary(&region, None);
-        assert!(!out.contains("thinking"), "reasoning dropped");
-        assert!(out.contains("did a thing"));
-        assert!(out.contains("tool result (error)"));
-        assert!(out.contains("[truncated]"));
-        assert!(out.len() < 5_000, "result truncated: {} bytes", out.len());
-    }
-
-    #[test]
-    fn serialize_caps_total_with_head_and_tail_kept() {
-        let mut region = Vec::new();
-        for i in 0..50 {
-            region.push(user(&format!("msg-{i:02} {}", "z".repeat(400))));
-        }
-        // window 1000 → total cap 3000 chars < ~20k of content: capped.
-        let out = serialize_for_summary(&region, Some(1_000));
-        assert!(out.contains("msg-00"), "head (user goal) kept");
-        assert!(out.contains("msg-49"), "tail (recent progress) kept");
-        assert!(out.contains("[older content omitted]"));
     }
 
     #[test]

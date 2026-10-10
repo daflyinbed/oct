@@ -169,10 +169,14 @@ impl BackgroundTaskManager {
 
         service.set_start_message_id(conversation_id, &start_message_id);
         // Same pre-run connection sync a user turn performs (best effort).
-        service
+        if !service
             .mcp
-            .ensure_connections(&self.pool, Some(&project.id))
-            .await;
+            .ensure_connections_cancelled(&self.pool, Some(&project.id), &cancel)
+            .await
+        {
+            task_db::cancel_preparing_wake(&self.pool, conversation_id, &start_message_id).await?;
+            return Ok(());
+        }
 
         let run_id = service
             .run_root_with_guard(crate::runtime::RootRunRequest {

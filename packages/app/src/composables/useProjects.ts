@@ -260,8 +260,11 @@ export function useProjects() {
         },
       );
       if (error) return false;
-      const next = [...list];
-      next[index] = { ...next[index]!, permission_mode: mode };
+      // Other requests may have inserted a fork/backup or updated metadata
+      // while PATCH was in flight. Change only the current entity's field.
+      const next = (conversations.value.get(projectId) ?? []).map((item) =>
+        item.id === conversationId ? { ...item, permission_mode: mode } : item,
+      );
       conversations.value = new Map(conversations.value).set(projectId, next);
       return true;
     }

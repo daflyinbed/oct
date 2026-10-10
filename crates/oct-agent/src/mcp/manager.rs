@@ -28,9 +28,9 @@
 //! matches, so a stale-credential result can never re-enter the map.
 
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use dashmap::DashMap;
@@ -50,6 +50,7 @@ use crate::tools::AgentTool;
 use super::catalog::spawn_tool_list_refresh_task;
 use super::connect::{ServerCatalog, connect_server};
 use super::tool::McpTool;
+use super::{credential, health::AuthAwareConnection};
 
 /// Per-call timeout for MCP tool calls when the server row carries no
 /// `tool_timeout_ms`.
@@ -121,6 +122,8 @@ pub(crate) struct ManagedServer {
     pub(crate) scope: Option<String>,
     /// The live connection; `None` exactly when status is `Failed`.
     pub(crate) connection: Option<Arc<dyn McpConnection>>,
+    /// Shared with the connection adapter; a 401 retires this incarnation.
+    pub(crate) auth_rejected: Arc<AtomicBool>,
     /// Cached `tools/list` result (only meaningful while `Connected`),
     /// refreshed in place by the entry's `tools/list_changed` task.
     pub(crate) tools: Vec<McpToolInfo>,
@@ -146,9 +149,12 @@ type Connector = dyn Fn(sqlx::SqlitePool, McpServer) -> futures_util::future::Bo
 /// Owns the process-wide MCP connections. Shared through `AppState` as an
 /// `Arc`; cheap to construct, so tests build their own per case.
 pub struct McpManager {
-    /// key = `mcp_servers.id`. `Arc` so the per-entry refresh tasks can hold
-    /// the map without owning the whole manager.
+    /// key = `mcp_servers.id`. Per-entry refresh tasks hold a Weak of this map.
     servers: Arc<DashMap<String, ManagedServer>>,
+    /// Borrowed HTTP incarnations retired by automatic credential refresh.
+    /// Weak references allow final-lease cleanup, while explicit logout or
+    /// server edits can still shut down every incarnation immediately.
+    retired: DashMap<String, Vec<Weak<dyn McpConnection>>>,
     /// Monotonic source of [`ManagedServer::generation`] values.
     generation: AtomicU64,
     /// Per-server connect gates. Serializes the connects/removals of ONE
@@ -176,6 +182,7 @@ impl Default for McpManager {
     fn default() -> Self {
         Self {
             servers: Arc::new(DashMap::new()),
+            retired: DashMap::new(),
             generation: AtomicU64::new(0),
             gates: DashMap::new(),
             epochs: Arc::new(DashMap::new()),
@@ -190,6 +197,35 @@ impl Default for McpManager {
 }
 
 impl McpManager {
+    /// Wait for shared reconciliation until THIS caller cancels. The owned
+    /// reconciliation continues: aborting a waiter must neither tear down a
+    /// sibling's handshake nor lose a rotated refresh token before storage.
+    /// Returns false when cancelled, true when reconciliation has finished.
+    pub async fn ensure_connections_cancelled(
+        self: &Arc<Self>,
+        pool: &SqlitePool,
+        project_id: Option<&str>,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> bool {
+        if cancel.is_cancelled() {
+            return false;
+        }
+        let manager = self.clone();
+        let pool = pool.clone();
+        let project = project_id.map(str::to_owned);
+        let reconciliation = tokio::spawn(async move {
+            manager.ensure_connections(&pool, project.as_deref()).await;
+        });
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => false,
+            outcome = reconciliation => {
+                if let Err(error) = outcome { warn!("MCP reconciliation task failed: {error}"); }
+                true
+            }
+        }
+    }
+
     /// Reconcile the live connections against the enabled `mcp_servers`
     /// rows, from the perspective of `project_id` (the project whose turn is
     /// about to run). Best-effort by contract: connection failures (and even
@@ -207,9 +243,9 @@ impl McpManager {
     /// - out of scope with a stale-fingerprint entry → the entry is removed
     ///   (and its connection shut down) but NOT reconnected here — the
     ///   project that owns the row connects it again on its own next turn;
-    /// - any scope, a `Connected` entry under the current fingerprint →
-    ///   untouched, even when the current project cannot use it (another
-    ///   project's in-flight run may still be holding its connection).
+    /// - any scope, a healthy `Connected` entry with a current fingerprint
+    ///   and credential → untouched, even when the current project cannot
+    ///   use it (another project's run may still hold its connection).
     ///
     /// Entries (test-injected excepted) whose row disappeared from the
     /// enabled set — deleted or disabled, in any project — are disconnected
@@ -222,6 +258,14 @@ impl McpManager {
                 return;
             }
         };
+        // Read outside decide_lock. Connected HTTP transports retain a
+        // static bearer, so an expiry must trigger a fresh assembly too.
+        let tokens = db::mcp_tokens::list_token_summaries(pool)
+            .await
+            .unwrap_or_else(|error| {
+                warn!("MCP token freshness check skipped: {error:#}");
+                HashMap::new()
+            });
 
         // Phase 1 — decide under the short lock: read the map, plan removals
         // and connects. No network await happens here, so concurrent
@@ -261,6 +305,15 @@ impl McpManager {
                 .filter(|(id, row)| {
                     if scope_hits(row.project_id.as_deref(), project_id) {
                         self.entry_needs_connect(id, row)
+                            || (row.transport == "http"
+                                && self
+                                    .servers
+                                    .get(id)
+                                    .is_some_and(|entry| entry.fingerprint.is_some())
+                                && tokens.get(id).is_some_and(|token| {
+                                    token.has_refresh_token
+                                        && credential::token_expiring(token.expires_at)
+                                }))
                     } else if let Some(seen) = self.stale_fingerprint(id, row) {
                         out_of_scope_stale.push((id.clone(), seen));
                         false
@@ -357,11 +410,25 @@ impl McpManager {
         {
             return;
         }
+        let mut connections = self.take_retired(id);
         if let Some((_, mut managed)) = self.servers.remove(id) {
             if let Some(connection) = managed.connection.take() {
-                connection.shutdown().await;
+                connections.push(connection);
             }
         }
+        futures_util::future::join_all(connections.iter().map(|connection| connection.shutdown()))
+            .await;
+    }
+
+    fn take_retired(&self, id: &str) -> Vec<Arc<dyn McpConnection>> {
+        self.retired
+            .remove(id)
+            .map_or_else(Vec::new, |(_, retired)| {
+                retired
+                    .into_iter()
+                    .filter_map(|connection| connection.upgrade())
+                    .collect()
+            })
     }
 
     /// Force the next reconcile to rebuild this server's connection from
@@ -380,46 +447,103 @@ impl McpManager {
     /// longer match (see [`Self::connect_one`]). A connect that starts
     /// AFTER the bump is unaffected — it reads the fresh credential anyway.
     pub async fn invalidate(&self, server_id: &str) {
-        if let Some(mut epoch) = self.epochs.get_mut(server_id) {
-            *epoch.value_mut() += 1;
-        } else {
-            self.epochs.insert(server_id.to_string(), 1);
-        }
-        if let Some((_, mut managed)) = self.servers.remove(server_id) {
-            if let Some(connection) = managed.connection.take() {
-                connection.shutdown().await;
+        let connections = {
+            // Share the short commit lock with connect_one: invalidation
+            // cannot land between its epoch check and insertion.
+            let _commit = self.decide_lock.lock().await;
+            *self.epochs.entry(server_id.to_string()).or_default() += 1;
+            let mut connections = self.take_retired(server_id);
+            if let Some((_, managed)) = self.servers.remove(server_id)
+                && let Some(connection) = managed.connection
+            {
+                connections.push(connection);
             }
-        }
+            connections
+        };
+        futures_util::future::join_all(connections.iter().map(|connection| connection.shutdown()))
+            .await;
     }
 
     /// Connect one server under its gate. Concurrent reconciles converge
     /// here: the first taker runs the handshake; later takers wait for the
     /// gate, re-check, and find nothing left to do (ONE handshake per
-    /// server, shared outcome). The epoch captured after the re-check is
-    /// the commit ticket — an OAuth invalidation that bumped it
+    /// server, shared outcome). The epoch captured before re-reading the
+    /// DB row is the commit ticket — an invalidation that bumped it
     /// mid-handshake makes the (stale-credential) result be dropped instead
     /// of committed.
     async fn connect_one(&self, pool: &SqlitePool, row: &McpServer) {
         let gate = self.gate_for(&row.id);
         let _guard = gate.lock().await;
-        // Another reconcile committed a fresh entry while we waited: done.
-        if !self.entry_needs_connect(&row.id, row) {
-            return;
-        }
+        // Capture before re-reading the row: a CRUD commit followed by
+        // invalidate must retire this attempt even when it races that read.
         let epoch = self
             .epochs
             .get(&row.id)
             .map(|e| *e.value())
             .unwrap_or_default();
-        // Drop the entry being replaced (Failed, or fingerprint edit) without
-        // waiting for its shutdown — the handshake below is the slow part
-        // and must start now; the old connection dies in the background.
-        if let Some((_, managed)) = self.servers.remove(&row.id) {
-            if let Some(connection) = managed.connection {
-                tokio::spawn(async move {
-                    connection.shutdown().await;
-                });
+        match db::mcp::get_mcp_server(pool, &row.id).await {
+            Ok(Some(current))
+                if current.enabled && fingerprint_of(&current) == fingerprint_of(row) => {}
+            Ok(_) => return, // The queued reconcile plan belongs to an old row.
+            Err(error) => {
+                warn!(server = %row.id, "MCP connect skipped: cannot recheck server row: {error:#}");
+                return;
             }
+        }
+        // Another reconcile committed a fresh entry while we waited: done.
+        if !self.entry_needs_connect(&row.id, row) {
+            // Another waiter may already have refreshed while this one was
+            // queued. Re-read after taking the gate to share that result.
+            let expiring = row.transport == "http"
+                && db::mcp_tokens::token_summary(pool, &row.id)
+                    .await
+                    .is_ok_and(|token| {
+                        token.has_refresh_token && credential::token_expiring(token.expires_at)
+                    });
+            if !expiring {
+                return;
+            }
+        }
+        // Credential-only HTTP replacement releases the registry's lease;
+        // existing runs may still own tools on that transport. Its adapter
+        // closes it when the last lease drops. Config edits and stdio
+        // reconnects still shut down immediately, without delaying handshake.
+        let (mut rejected, connections) = {
+            // Retirement and explicit invalidation share the commit lock;
+            // a logout cannot miss a just-removed, still-borrowed transport.
+            let _commit = self.decide_lock.lock().await;
+            if self
+                .epochs
+                .get(&row.id)
+                .is_some_and(|current| *current != epoch)
+            {
+                return;
+            }
+            let mut rejected = false;
+            let mut connections = Vec::new();
+            if let Some((_, managed)) = self.servers.remove(&row.id) {
+                rejected = managed.auth_rejected.load(Ordering::Acquire);
+                let retire_when_released = row.transport == "http"
+                    && managed.fingerprint.as_deref() == Some(fingerprint_of(row).as_str());
+                if retire_when_released {
+                    if let Some(connection) = managed.connection {
+                        let mut retired = self.retired.entry(row.id.clone()).or_default();
+                        retired.retain(|connection| connection.strong_count() > 0);
+                        retired.push(Arc::downgrade(&connection));
+                    }
+                } else {
+                    connections.extend(self.take_retired(&row.id));
+                    connections.extend(managed.connection);
+                }
+            }
+            (rejected, connections)
+        };
+        for connection in connections {
+            tokio::spawn(async move { connection.shutdown().await });
+        }
+
+        if rejected && row.transport == "http" {
+            rejected = !credential::refresh_after_rejection(pool, row).await;
         }
 
         // connect_server owns the whole http-token path: fetch the stored
@@ -431,6 +555,20 @@ impl McpManager {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
         let (status, connection, catalog) = connector(pool.clone(), row.clone()).await;
+        // Preserve rejection across a failed reconnect. A transient AS
+        // outage must not strand a revoked, future-dated token until expiry.
+        let auth_rejected = Arc::new(AtomicBool::new(matches!(
+            &status, ServerStatus::Failed { error }
+                if rejected || credential::looks_like_auth_rejection(error)
+        )));
+        let connection = connection.map(|connection| {
+            if row.transport == "http" {
+                Arc::new(AuthAwareConnection::new(connection, auth_rejected.clone()))
+                    as Arc<dyn McpConnection>
+            } else {
+                connection
+            }
+        });
         match &status {
             ServerStatus::Connected { tool_count } => info!(
                 server = %row.name,
@@ -446,12 +584,14 @@ impl McpManager {
         // Commit ticket: an invalidation bumped the epoch while the
         // handshake ran — drop the result (shut the connection down) instead
         // of letting a stale entry re-enter the map.
+        let commit = self.decide_lock.lock().await;
         let still_valid = self
             .epochs
             .get(&row.id)
             .map(|e| *e.value() == epoch)
             .unwrap_or(true);
         if !still_valid {
+            drop(commit);
             if let Some(connection) = connection {
                 connection.shutdown().await;
             }
@@ -470,12 +610,14 @@ impl McpManager {
                 fingerprint: Some(fingerprint_of(row)),
                 scope: row.project_id.clone(),
                 connection,
+                auth_rejected,
                 tools: catalog.tools,
                 prompts: catalog.prompts,
                 resources: catalog.resources,
                 tool_timeout: tool_timeout_of(row),
             },
         );
+        drop(commit);
         if let Some(connection) = refresh_connection {
             spawn_tool_list_refresh_task(
                 self.servers.clone(),
@@ -500,6 +642,7 @@ impl McpManager {
             .iter()
             .filter(|entry| {
                 matches!(entry.value().status, ServerStatus::Connected { .. })
+                    && !entry.value().auth_rejected.load(Ordering::Acquire)
                     && scope_hits(entry.value().scope.as_deref(), project_id)
             })
             .map(|entry| {
@@ -541,7 +684,7 @@ impl McpManager {
             .map(|entry| ServerStatusEntry {
                 server_id: entry.key().clone(),
                 name: entry.value().name.clone(),
-                status: entry.value().status.clone(),
+                status: visible_status(entry.value()),
             })
             .collect();
         out.sort_by(|a, b| {
@@ -556,7 +699,7 @@ impl McpManager {
     pub fn status_of(&self, server_id: &str) -> Option<ServerStatus> {
         self.servers
             .get(server_id)
-            .map(|entry| entry.value().status.clone())
+            .map(|entry| visible_status(entry.value()))
     }
 
     /// Cached `tools/list` of one server while `Connected`; empty when the
@@ -652,7 +795,9 @@ impl McpManager {
     fn connected_entry(&self, server_id: &str) -> Option<ConnectedEntry> {
         let entry = self.servers.get(server_id)?;
         let managed = entry.value();
-        if !matches!(managed.status, ServerStatus::Connected { .. }) {
+        if !matches!(managed.status, ServerStatus::Connected { .. })
+            || managed.auth_rejected.load(Ordering::Acquire)
+        {
             return None;
         }
         Some(ConnectedEntry {
@@ -722,6 +867,7 @@ impl McpManager {
                 fingerprint: None,
                 scope: scope.map(str::to_string),
                 connection: Some(connection.clone()),
+                auth_rejected: Default::default(),
                 tools,
                 prompts: Vec::new(),
                 resources: Vec::new(),
@@ -734,6 +880,19 @@ impl McpManager {
             generation,
             connection,
         );
+    }
+}
+
+fn visible_status(server: &ManagedServer) -> ServerStatus {
+    if server.auth_rejected.load(Ordering::Acquire)
+        && matches!(server.status, ServerStatus::Connected { .. })
+    {
+        ServerStatus::Failed {
+            error: "MCP authorization rejected; the next assembly will refresh the credential"
+                .into(),
+        }
+    } else {
+        server.status.clone()
     }
 }
 
@@ -924,6 +1083,7 @@ mod tests {
                 fingerprint: Some("fp".to_string()),
                 scope: None,
                 connection: None,
+                auth_rejected: Default::default(),
                 tools: vec![info("dead", None)],
                 prompts: Vec::new(),
                 resources: Vec::new(),
@@ -1498,6 +1658,7 @@ mod tests {
                 fingerprint: Some("stale-fingerprint".to_string()),
                 scope: None,
                 connection: Some(FakeConn::ok("x")),
+                auth_rejected: Default::default(),
                 tools: vec![info("old", None)],
                 prompts: Vec::new(),
                 resources: Vec::new(),
@@ -1532,6 +1693,7 @@ mod tests {
                 fingerprint: Some(fingerprint_of(&row)),
                 scope: row.project_id.clone(),
                 connection: Some(fake.clone()),
+                auth_rejected: Default::default(),
                 tools: vec![info("echo", None)],
                 prompts: Vec::new(),
                 resources: Vec::new(),
@@ -1579,6 +1741,7 @@ mod tests {
                 fingerprint: Some(fingerprint_of(&row)),
                 scope: Some(owner.id.clone()),
                 connection: Some(fake),
+                auth_rejected: Default::default(),
                 tools: vec![info("mine", None)],
                 prompts: Vec::new(),
                 resources: Vec::new(),
@@ -1623,6 +1786,7 @@ mod tests {
                 fingerprint: Some("stale-fingerprint".to_string()),
                 scope: Some(owner.id.clone()),
                 connection: Some(FakeConn::ok("x")),
+                auth_rejected: Default::default(),
                 tools: vec![info("mine", None)],
                 prompts: Vec::new(),
                 resources: Vec::new(),
@@ -1686,6 +1850,7 @@ mod tests {
                 fingerprint: Some(fingerprint_of(&row)),
                 scope: None,
                 connection: Some(FakeConn::ok("x")),
+                auth_rejected: Default::default(),
                 tools: vec![info("tool", None)],
                 prompts: Vec::new(),
                 resources: Vec::new(),
@@ -1837,6 +2002,47 @@ mod tests {
             manager.status_of(&row.id),
             Some(ServerStatus::Connected { .. })
         ));
+    }
+
+    /// A plan queued before CRUD must recheck the row after taking its gate.
+    #[tokio::test]
+    async fn queued_connect_plan_cannot_recreate_an_updated_or_deleted_server() {
+        use std::sync::atomic::AtomicUsize;
+        for delete in [false, true] {
+            let pool = test_pool().await;
+            let row = create_row(&pool, "queued", "unused").await;
+            let manager = Arc::new(McpManager::default());
+            let calls = Arc::new(AtomicUsize::new(0));
+            manager.set_connector_for_test({
+                let calls = calls.clone();
+                move |_, _| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Box::pin(async { connected_outcome(Vec::new()) })
+                }
+            });
+            let gate = manager.gate_for(&row.id);
+            let held = gate.lock().await;
+            let queued = {
+                let manager = manager.clone();
+                let pool = pool.clone();
+                let row = row.clone();
+                tokio::spawn(async move { manager.connect_one(&pool, &row).await })
+            };
+            if delete {
+                db::mcp::delete_mcp_server(&pool, &row.id).await.unwrap();
+            } else {
+                let mut update = update_request(None);
+                update.command = Some("replacement".into());
+                db::mcp::update_mcp_server(&pool, &row.id, &update)
+                    .await
+                    .unwrap();
+            }
+            manager.invalidate(&row.id).await;
+            drop(held);
+            queued.await.unwrap();
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            assert!(manager.status_of(&row.id).is_none());
+        }
     }
 
     /// An OAuth invalidation that lands while a handshake is in flight must
@@ -2243,6 +2449,7 @@ mod tests {
                 fingerprint: None,
                 scope: None,
                 connection: Some(connection),
+                auth_rejected: Default::default(),
                 tools: Vec::new(),
                 prompts,
                 resources,
@@ -2407,6 +2614,7 @@ mod tests {
                 fingerprint: None,
                 scope: None,
                 connection: Some(Arc::new(hanging)),
+                auth_rejected: Default::default(),
                 tools: Vec::new(),
                 prompts: Vec::new(),
                 resources: vec![resource_info("memo://notes")],

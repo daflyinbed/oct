@@ -28,6 +28,8 @@ pub struct SendMessageRequest {
     pub content: String,
     pub provider_spec: String,
     pub expected_revision: Option<i64>,
+    /// Opaque client receipt used to reconcile a send whose response was lost.
+    pub client_request_id: Option<String>,
 }
 
 /// Whether an agent run is currently active for a conversation.
@@ -139,32 +141,24 @@ pub async fn send_message(
     // active". Clock skew (negative delta) simply means "not idle".
     let idle = conversation_idle(&state, &id).await;
 
-    // Background task catch-up: settled-but-unnotified tasks
-    // (typically `lost` rows after a restart, or deliveries whose wake run
-    // could not start) are flushed as one notification message BEFORE this
-    // turn's user message, so the run below consumes them.
-    if let Err(e) = crate::runtime::background::catch_up_notifications(&state.pool, &id).await {
-        tracing::warn!("failed to flush background task notifications: {e}");
-    }
-
     // Poison guard: a previous run interrupted mid-tool (e.g. backend crash)
-    // leaves assistant ToolCalls without tool messages; repairing BEFORE the
-    // new user message is appended keeps the stored history a legal
-    // conversation for the provider.
-    state
-        .runs
-        .repair_dangling_tools(&id, &[])
-        .await
-        .map_err(AppError::from)?;
+    // leaves assistant ToolCalls without tool messages. Shared preparation
+    // repairs them BEFORE background notifications or the new user message
+    // are appended, keeping the tool batch consecutive for the provider.
+    crate::runtime::preparation::prepare_history(&state.runs, &id).await?;
 
     let user_msg = Message::text(Role::User, &req.content);
+    let user_details = req
+        .client_request_id
+        .as_ref()
+        .map(|request_id| serde_json::json!({ "client_request_id": request_id }));
     let stored_user = msg_db::insert_message(
         &state.pool,
         &id,
         &user_msg,
         Some(&provider_id),
         Some(&model_id),
-        None,
+        user_details.as_ref(),
     )
     .await
     .map_err(AppError::from)?;
@@ -212,10 +206,29 @@ pub async fn send_message(
     // before the run's toolset is assembled, from this project's
     // perspective (best-effort: a server that fails to spawn is recorded as
     // Failed and simply contributes no tools).
-    state
+    let handle = state
+        .sessions
+        .get(&id)
+        .map(|entry| entry.value().clone())
+        .expect("the occupancy guard guarantees the session entry");
+    if !state
         .mcp
-        .ensure_connections(&state.pool, Some(&project.id))
-        .await;
+        .ensure_connections_cancelled(&state.pool, Some(&project.id), &handle.cancel)
+        .await
+    {
+        // The user message is durable and remains resumable. Publish on the
+        // existing hub too, so reconnect subscribers observe cancellation
+        // before this preparation guard releases occupancy.
+        handle.hub.publish(AgentEvent::Cancelled);
+        return Ok(Sse::new(
+            handle
+                .hub
+                .subscribe()
+                .map(|event| Ok::<_, Infallible>(sse_event(&event))),
+        )
+        .keep_alive(KeepAlive::default())
+        .into_response());
+    }
 
     // Shared tail of the chat endpoints: hand the occupancy guard to the run
     // service — it is CONSUMED by the supervised run, so occupancy lasts
@@ -328,18 +341,12 @@ pub async fn resume_turn(
     // Idle captured before any repair writes below (see send_message).
     let idle = conversation_idle(&state, &id).await;
 
-    // Background task catch-up: same flush as send — the
-    // notifications land before the orchestrator's writes, so the resumed
-    // parent loop sees them.
-    if let Err(e) = crate::runtime::background::catch_up_notifications(&state.pool, &id).await {
-        tracing::warn!("failed to flush background task notifications: {e}");
-    }
-
     // Subscribe to the (already occupied) conversation's hub and return the
     // SSE response IMMEDIATELY: keep-alive covers the recovery wait, and
     // children publish `subagent_updated` onto this same hub so the UI is
     // live. The orchestrator does every write (repair, backfill, child
-    // restarts) and finally starts the parent loop over the guard it holds.
+    // restarts), flushes background notifications after all tool results,
+    // and finally starts the parent loop over the guard it holds.
     let handle = state
         .sessions
         .get(&id)

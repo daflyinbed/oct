@@ -56,12 +56,15 @@ pub(crate) async fn authorize_headers(
     };
     // Refresh first (may write the DB row), then merge the header.
     let token = match token {
-        Some(token) => Some(refresh_token_if_needed(pool, server_url, token).await),
+        Some(token) => Some(refresh_token(pool, server_url, token, false).await.0),
         None => None,
     };
     let had_token = token.is_some();
     let mut headers = static_headers.cloned().unwrap_or_default();
     if let Some(token) = &token {
+        // HTTP header names are case-insensitive. Remove every spelling so
+        // normalization in oct-mcp cannot randomly retain a static bearer.
+        headers.retain(|name, _| !name.eq_ignore_ascii_case("authorization"));
         let token_type = if token.token_type.trim().is_empty() {
             "Bearer"
         } else {
@@ -88,26 +91,41 @@ pub(crate) fn looks_like_auth_rejection(message: &str) -> bool {
         || message.contains("invalid_token")
 }
 
-/// Refresh the stored access token when it is near expiry (or already past).
-/// One attempt: on failure the ORIGINAL row is returned unchanged (the AS
-/// may be temporarily down; the next connect retries) and the connect then
-/// proceeds with the old access token — if the server still accepts it, all
-/// is well, otherwise the connect fails with the re-login hint. The token
-/// endpoint is re-discovered per refresh (the row schema deliberately stores
-/// no endpoint URLs; discovery is one cached-able GET).
-async fn refresh_token_if_needed(
+/// Same freshness policy for connected entries and the connect pipeline.
+pub(crate) fn token_expiring(expires_at: Option<chrono::NaiveDateTime>) -> bool {
+    expires_at.is_some_and(|at| Utc::now().naive_utc() + TOKEN_EXPIRY_LEAD >= at)
+}
+
+/// A 401 can revoke a token before its advertised expiry (or without an
+/// expiry). Refresh once under the manager's server gate, on the NEXT
+/// assembly; the rejected call itself is never replayed.
+pub(crate) async fn refresh_after_rejection(pool: &SqlitePool, row: &db::mcp::McpServer) -> bool {
+    let Some(url) = row.url.as_deref() else {
+        return false;
+    };
+    match db::mcp_tokens::get_mcp_server_token(pool, &row.id).await {
+        Ok(Some(token)) => refresh_token(pool, url, token, true).await.1,
+        Ok(None) => false,
+        Err(error) => {
+            warn!("cannot load rejected OAuth credential: {error:#}");
+            false
+        }
+    }
+}
+
+/// One best-effort attempt. The bool records a durable refresh, allowing a
+/// failed handshake to retain an earlier rejection until recovery succeeds.
+async fn refresh_token(
     pool: &SqlitePool,
     server_url: &str,
     token: McpServerToken,
-) -> McpServerToken {
+    force: bool,
+) -> (McpServerToken, bool) {
     let Some(refresh_token) = token.refresh_token.as_deref() else {
-        return token; // No refresh token: nothing to do, try as-is.
+        return (token, false); // No refresh token: nothing to do, try as-is.
     };
-    let stale = token
-        .expires_at
-        .is_some_and(|expires_at| Utc::now().naive_utc() + TOKEN_EXPIRY_LEAD >= expires_at);
-    if !stale {
-        return token;
+    if !force && !token_expiring(token.expires_at) {
+        return (token, false);
     }
     info!("stored OAuth access token is near expiry, refreshing");
     let refreshed = async {
@@ -174,21 +192,28 @@ async fn refresh_token_if_needed(
                 })
                 .await
             });
-            match writer.await {
-                Ok(Ok(true)) => {}
+            let persisted = match writer.await {
+                Ok(Ok(true)) => true,
                 Ok(Ok(false)) => {
-                    info!("refreshed credentials discarded after removal or replacement")
+                    info!("refreshed credentials discarded after removal or replacement");
+                    false
                 }
-                Ok(Err(error)) => warn!("credential persistence stopped: {error}"),
-                Err(error) => warn!("credential writer could not complete: {error}"),
-            }
-            updated
+                Ok(Err(error)) => {
+                    warn!("credential persistence stopped: {error}");
+                    false
+                }
+                Err(error) => {
+                    warn!("credential writer could not complete: {error}");
+                    false
+                }
+            };
+            (updated, persisted)
         }
         Err(error) => {
             // Keep the stored row (refresh may be a transient failure) and
             // let the connect decide with the old access token.
             warn!("OAuth token refresh failed, connecting with the stored token: {error:#}");
-            token
+            (token, false)
         }
     }
 }

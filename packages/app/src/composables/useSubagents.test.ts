@@ -193,6 +193,69 @@ describe("refreshSubagents", () => {
 // ---------------------------------------------------------------------------
 
 describe("applySubagentEvent", () => {
+  it("较新 epoch 的快照优先于 GET 期间到达的旧 epoch 终态事件", async () => {
+    GET.mockResolvedValueOnce({ data: [dto("r1")] } as never);
+    await refreshSubagents("conv-1");
+    let finish!: (value: unknown) => void;
+    GET.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }) as never,
+    );
+    const refreshing = refreshSubagents("conv-1");
+    applySubagentEvent("conv-1", event("r1", { status: "completed" }));
+    finish({ data: [dto("r1", { execution_epoch: 2 })] });
+    await refreshing;
+    expect(taskByAgentId("agent-r1")).toMatchObject({
+      status: "running",
+      execution_epoch: 2,
+      finished_at: null,
+    });
+  });
+
+  it("在途旧快照不能覆盖更新的终态、新任务或恢复 epoch", async () => {
+    GET.mockResolvedValueOnce({ data: [dto("r1"), dto("r2")] } as never);
+    await refreshSubagents("conv-1");
+    let finish!: (value: unknown) => void;
+    GET.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }) as never,
+    );
+    const refreshing = refreshSubagents("conv-1");
+    applySubagentEvent("conv-1", event("r1", { status: "completed" }));
+    applySubagentEvent(
+      "conv-1",
+      event("r2", { execution_epoch: 2, activity: "recovered" }),
+    );
+    applySubagentEvent("conv-1", event("r3"));
+    finish({ data: [dto("r1"), dto("r2")] });
+    await refreshing;
+    expect(taskByAgentId("agent-r1")?.status).toBe("completed");
+    expect(taskByAgentId("agent-r2")).toMatchObject({
+      execution_epoch: 2,
+      activity: "recovered",
+    });
+    expect(taskByAgentId("agent-r3")?.status).toBe("running");
+  });
+
+  it("同 epoch 的 running 重放不能回退终态，较新 epoch 清除结束时间", async () => {
+    GET.mockResolvedValueOnce({
+      data: [dto("r1", { status: "completed", finished_at: T0 })],
+    } as never);
+    await refreshSubagents("conv-1");
+    applySubagentEvent("conv-1", event("r1"));
+    expect(taskByAgentId("agent-r1")?.status).toBe("completed");
+    applySubagentEvent("conv-1", event("r1", { execution_epoch: 2 }));
+    expect(taskByAgentId("agent-r1")).toMatchObject({
+      status: "running",
+      execution_epoch: 2,
+      finished_at: null,
+    });
+  });
+
   it("新事件插入任务行（status/running 派生，activity 保留）", async () => {
     GET.mockResolvedValue({ data: [], error: undefined } as never);
     await refreshSubagents("conv-1");

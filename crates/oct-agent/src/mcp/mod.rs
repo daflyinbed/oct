@@ -23,6 +23,7 @@
 pub mod catalog;
 pub mod connect;
 pub mod credential;
+mod health;
 pub mod manager;
 pub mod tool;
 

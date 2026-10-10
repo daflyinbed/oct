@@ -331,14 +331,41 @@ describe("唤醒 run 探测", () => {
     rows = [dto("t1", { status: "completed", exit_code: 0, finished_at: T0 })];
     await vi.advanceTimersByTimeAsync(2000);
     expect(listCalls).toBeGreaterThanOrEqual(3);
-    // 宽限窗已开出但 run 尚未活跃
+    // 宽限窗已开出：idle 也须对账，wake run 可能已在两次轮询间结束。
     expect(runProbes).toBe(1);
-    expect(wake).not.toHaveBeenCalled();
+    expect(wake).toHaveBeenCalledTimes(1);
 
     runActive = true;
     await vi.advanceTimersByTimeAsync(2000);
-    expect(wake).toHaveBeenCalledTimes(1);
+    expect(wake).toHaveBeenCalledTimes(2);
     expect(wake).toHaveBeenCalledWith("conv-1");
+  });
+
+  it("wake run 在两次轮询间结束时仍触发历史对账", async () => {
+    let rows = [dto("t1")];
+    mockRoutes(() => rows, false);
+    const reconcile = vi.fn().mockResolvedValue(undefined);
+    setWakeRunHandler(reconcile);
+    await refreshBackgroundTasks("conv-1");
+    rows = [dto("t1", { status: "completed", finished_at: T0 })];
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(reconcile).toHaveBeenCalledWith("conv-1");
+    await vi.advanceTimersByTimeAsync(WAKE_GRACE_MS + 4000);
+    const calls = reconcile.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(reconcile).toHaveBeenCalledTimes(calls);
+  });
+
+  it("当前会话首次看到快速任务时已终态也会对账，历史终态不会开窗", async () => {
+    let rows: BackgroundTaskDto[] = [];
+    mockRoutes(() => rows, false);
+    const reconcile = vi.fn().mockResolvedValue(undefined);
+    setWakeRunHandler(reconcile);
+    await refreshBackgroundTasks("conv-1");
+    rows = [dto("fast", { status: "completed", finished_at: T0 })];
+    await refreshBackgroundTasks("conv-1");
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(reconcile).toHaveBeenCalledWith("conv-1");
   });
 
   it("cancel 结算同样开出宽限窗并探测 /run", async () => {

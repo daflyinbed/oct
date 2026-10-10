@@ -2,6 +2,7 @@
 use crate::{
     db::{messages as msg_db, runs as run_db},
     error::AppError,
+    runtime::RunService,
 };
 
 pub async fn ensure_no_pending_recovery(pool: &sqlx::SqlitePool, id: &str) -> Result<(), AppError> {
@@ -23,9 +24,18 @@ pub async fn ensure_no_pending_recovery(pool: &sqlx::SqlitePool, id: &str) -> Re
     ))
 }
 
-pub async fn prepare_history(pool: &sqlx::SqlitePool, id: &str) -> Result<(), AppError> {
-    ensure_no_pending_recovery(pool, id).await?;
-    msg_db::repair_dangling_tool_calls(pool, id).await?;
+/// Close the previous tool batch before appending any synthetic user message.
+/// Resume calls this after managed task backfills; send calls it before its
+/// new user message. The caller owns the conversation's occupancy throughout.
+pub async fn prepare_history(runs: &RunService, id: &str) -> Result<(), AppError> {
+    ensure_no_pending_recovery(&runs.pool, id).await?;
+    runs.repair_dangling_tools(id, &[]).await?;
+    // Notification storage is retried by the durable drainer. Its failure
+    // must not block the user's turn, but a successful insert must always
+    // follow all results of the interrupted tool batch.
+    if let Err(error) = super::background::catch_up_notifications(&runs.pool, id).await {
+        tracing::warn!(conversation_id = id, %error, "failed to flush background task notifications");
+    }
     Ok(())
 }
 

@@ -447,3 +447,26 @@ pub async fn pending_wake(pool: &SqlitePool, id: &str) -> Result<Option<String>>
     .fetch_optional(pool)
     .await?)
 }
+
+/// A user cancelled while this wake attempt was still preparing. Retire
+/// only its admitted message under occupancy, including a retry whose
+/// intent still references a previous failed run.
+pub async fn cancel_preparing_wake(
+    pool: &SqlitePool,
+    conversation_id: &str,
+    message_id: &str,
+) -> Result<()> {
+    // Cancellation is settlement: releasing occupancy on a failed delete
+    // would let the drainer revive this intent with a fresh cancel token.
+    super::persist_critical(pool, || async {
+        sqlx::query!(
+            "DELETE FROM wake_intents WHERE conversation_id = $1 AND message_id = $2",
+            conversation_id,
+            message_id,
+        )
+        .execute(pool)
+        .await?;
+        Ok(())
+    })
+    .await
+}

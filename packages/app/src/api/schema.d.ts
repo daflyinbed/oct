@@ -2069,6 +2069,8 @@ export interface components {
             running: boolean;
         };
         SendMessageRequest: {
+            /** @description Opaque client receipt used to reconcile a send whose response was lost. */
+            client_request_id?: string | null;
             content: string;
             /** Format: int64 */
             expected_revision?: number | null;

@@ -2420,6 +2420,152 @@ describe("stream failure recovery", () => {
 });
 
 describe("failed sends with versioned history", () => {
+  it.each(["idle", "running", "resumable"] as const)(
+    "an unrelated %s history change cannot erase an uncertain send",
+    async (status) => {
+      const session = createChatSession({ contextUsage: false });
+      const before = [storedMessage("assistant", "previous", { id: "before" })];
+      const unrelated = [
+        ...before,
+        // Identical text from another tab still is not this request's receipt.
+        storedMessage("user", "keep this draft", {
+          id: "other-user",
+          details: { extra: { client_request_id: "other-request" } },
+        }),
+        storedMessage("assistant", "another tab's answer", {
+          id: "other-answer",
+        }),
+      ];
+      let changed = false;
+      GET.mockImplementation(async (path: string) => {
+        if (path === "/api/conversations/{id}/run")
+          return {
+            data: {
+              running: status === "running",
+              resumable: status === "resumable",
+            },
+          } as never;
+        return {
+          data: changed ? unrelated : before,
+          response: new Response(null, {
+            headers: { "X-Context-Revision": changed ? "3" : "1" },
+          }),
+        } as never;
+      });
+      await session.fetchMessages("uncertain-send");
+      const request = vi.fn().mockImplementation(async () => {
+        changed = true;
+        throw new TypeError("connection reset before delivery");
+      });
+      vi.stubGlobal("fetch", request);
+      try {
+        await session.sendMessage("uncertain-send", "keep this draft");
+        expect(session.messages.value.map((message) => message.id)).toContain(
+          "before",
+        );
+        expect(session.messages.value[1]?.id.startsWith("pending-")).toBe(true);
+        expect(session.messages.value[1]?.parts).toEqual([
+          { kind: "text", text: "keep this draft" },
+        ]);
+        expect(JSON.stringify(session.messages.value[2]?.parts)).toContain(
+          "Failed to send message.",
+        );
+        expect(request).toHaveBeenCalledTimes(1);
+        expect(session.sending.value).toBe(false);
+      } finally {
+        session.dispose();
+      }
+    },
+  );
+
+  it.each(["running", "completed"] as const)(
+    "a lost POST response reconciles an accepted %s send without repeating it",
+    async (status) => {
+      const session = createChatSession({ contextUsage: false });
+      const before = [storedMessage("assistant", "previous", { id: "before" })];
+      const persisted = [
+        ...before,
+        storedMessage("user", "accepted request", { id: "accepted-user" }),
+        storedMessage("assistant", "accepted answer", {
+          id: "accepted-answer",
+        }),
+      ];
+      let committed = false;
+      let clientRequestId: string | undefined;
+      GET.mockImplementation(async (path: string) => {
+        if (path === "/api/conversations/{id}/run") {
+          return {
+            data: { running: status === "running", resumable: false },
+          } as never;
+        }
+        if (path === "/api/conversations/{id}/approvals")
+          return { data: [] } as never;
+        if (committed)
+          persisted[1]!.details = {
+            extra: { client_request_id: clientRequestId },
+          };
+        return {
+          data: committed ? persisted : before,
+          response: new Response(null, {
+            headers: { "X-Context-Revision": committed ? "3" : "1" },
+          }),
+        } as never;
+      });
+      await session.fetchMessages("lost-response");
+      const request = vi
+        .fn()
+        .mockImplementation(async (path: string, init?: RequestInit) => {
+          if (path.endsWith("/messages")) {
+            clientRequestId = JSON.parse(
+              init?.body as string,
+            ).client_request_id;
+            committed = true;
+            throw new TypeError("response headers lost");
+          }
+          return sse([
+            runMeta("accepted-user"),
+            textDelta("accepted answer"),
+            finishEvent,
+          ]);
+        });
+      vi.stubGlobal("fetch", request);
+      await session.sendMessage("lost-response", "accepted request");
+      expect(clientRequestId).toEqual(expect.any(String));
+      expect(
+        request.mock.calls.filter(([path]) => path.endsWith("/messages")),
+      ).toHaveLength(1);
+      expect(
+        request.mock.calls.filter(([path]) => path.endsWith("/events")),
+      ).toHaveLength(status === "running" ? 1 : 0);
+      expect(session.messages.value.map((message) => message.id)).toEqual(
+        persisted.map((message) => message.id),
+      );
+      expect(session.contextRevision.value).toBe(3);
+      expect(session.sending.value).toBe(false);
+      session.dispose();
+    },
+  );
+
+  it("an unreachable backend preserves the uncertain draft and failure for recovery", async () => {
+    const session = createChatSession({ contextUsage: false });
+    GET.mockResolvedValueOnce({
+      data: [],
+      response: new Response(null, { headers: { "X-Context-Revision": "1" } }),
+    } as never);
+    await session.fetchMessages("unreachable-send");
+    GET.mockRejectedValue(new TypeError("offline"));
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("offline")));
+    await session.sendMessage("unreachable-send", "keep this draft");
+    expect(session.messages.value[0]?.parts).toEqual([
+      { kind: "text", text: "keep this draft" },
+    ]);
+    expect(JSON.stringify(session.messages.value[1]?.parts)).toContain(
+      "Failed to send message.",
+    );
+    expect(session.sending.value).toBe(false);
+    session.dispose();
+  });
+
   it.each(["http", "pending_recovery", "network"] as const)(
     "preserves the rejected prompt and failure explanation (%s)",
     async (failure) => {

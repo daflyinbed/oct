@@ -318,7 +318,8 @@ watch(
 
 // 后台任务唤醒 run 的可见性（P1）：会话空闲时后端在任务终态后自动起的
 // wake run 没有前端 SSE 订阅——store 轮询在结算后的宽限窗内探测 /run，
-// 发现 running 就复用 attachRun 的 events 探测/重放机制挂回流。视图已
+// 复用 attachRun 对账：running 挂回流，idle 刷新历史以覆盖快速结束的 wake。
+// 视图已
 // 切走时不挂（切回时上方 tab-return watch 的 fetchMessages + attachRun
 // 会兜底对账）。
 setWakeRunHandler((conversationId) => {

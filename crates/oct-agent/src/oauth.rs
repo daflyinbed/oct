@@ -41,12 +41,18 @@ use uuid::Uuid;
 /// map holds at most a handful of entries, no background task needed).
 const FLOW_TTL: Duration = Duration::from_secs(10 * 60);
 
+/// Includes receiving the response body: an AS that accepts TCP but stops
+/// responding must not hold a shared MCP connect gate forever.
+pub(crate) const OAUTH_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// reqwest client for the OAuth endpoint calls. Redirects are refused: a
 /// token/registration POST must never be silently replayed against a
 /// redirect target (the verifier and code are single-use secrets).
 pub fn oauth_http_client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(OAUTH_REQUEST_TIMEOUT)
         .build()
         .context("failed to build OAuth HTTP client")
 }
@@ -179,6 +185,20 @@ fn url_parts(server_url: &str) -> Result<(String, String)> {
 /// `openid-configuration`. First 200 response carrying both endpoints wins;
 /// non-200 and unparseable candidates fall through to the next.
 pub async fn discover_authorization_server(
+    client: &reqwest::Client,
+    server_url: &str,
+) -> Result<AuthorizationServerMetadata> {
+    // Candidates are fallbacks inside one budget, not four independent
+    // full waits. This also bounds a response that stalls after headers.
+    tokio::time::timeout(
+        OAUTH_REQUEST_TIMEOUT,
+        discover_authorization_server_inner(client, server_url),
+    )
+    .await
+    .context("OAuth authorization-server discovery timed out")?
+}
+
+async fn discover_authorization_server_inner(
     client: &reqwest::Client,
     server_url: &str,
 ) -> Result<AuthorizationServerMetadata> {
@@ -438,6 +458,57 @@ async fn request_token(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn discovery_has_one_deadline_even_with_an_unbounded_http_client() {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 2048];
+            stream.read(&mut request).await.unwrap();
+            entered.send(()).unwrap();
+            std::future::pending::<()>().await;
+            drop(stream);
+        });
+        let discovery = tokio::spawn(async move {
+            discover_authorization_server(&reqwest::Client::new(), &url).await
+        });
+        started.await.unwrap();
+        tokio::time::pause();
+        tokio::time::advance(OAUTH_REQUEST_TIMEOUT + Duration::from_secs(1)).await;
+        let error = discovery.await.unwrap().unwrap_err();
+        assert!(error.to_string().contains("discovery timed out"), "{error}");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn http_timeout_includes_a_stalled_response_body() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/token", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 2048];
+            stream.read(&mut request).await.unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n")
+                .await
+                .unwrap();
+            // Headers arrived, but the OAuth endpoint never finishes its body.
+            std::future::pending::<()>().await;
+            drop(stream);
+        });
+        let response = oauth_http_client().unwrap().get(url).send().await.unwrap();
+        let body = tokio::spawn(async move { response.text().await });
+        tokio::time::pause();
+        tokio::time::advance(OAUTH_REQUEST_TIMEOUT + Duration::from_secs(1)).await;
+        let error = body.await.unwrap().unwrap_err();
+        assert!(error.is_timeout(), "{error}");
+        server.abort();
+    }
 
     #[test]
     fn pkce_challenge_is_s256_of_verifier() {

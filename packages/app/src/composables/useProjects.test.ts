@@ -360,3 +360,42 @@ it("回退响应插入备份后，较早开始的会话列表请求不能覆盖�
     original,
   ]);
 });
+
+it("权限 PATCH 的晚响应保留并发创建的备份与更新后的会话元数据", async () => {
+  const store = useProjects();
+  const original = {
+    ...conversation("permission-race", "before"),
+    history_epoch: 0,
+  };
+  store.upsertConversation(original as never);
+  let finish!: (value: unknown) => void;
+  PATCH.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }) as never,
+  );
+  const updating = store.setConversationPermissionMode(original.id, "bypass");
+  store.upsertConversation({
+    ...original,
+    history_epoch: 1,
+    title: "after",
+  } as never);
+  const backup = {
+    ...conversation("permission-backup", "backup"),
+    origin_kind: "revert_backup",
+  };
+  store.upsertConversation(backup as never);
+  finish({ error: undefined });
+  expect(await updating).toBe(true);
+  expect(
+    store.conversations.value.get("p1")?.find((row) => row.id === backup.id),
+  ).toEqual(backup);
+  expect(
+    store.conversations.value.get("p1")?.find((row) => row.id === original.id),
+  ).toMatchObject({
+    history_epoch: 1,
+    title: "after",
+    permission_mode: "bypass",
+  });
+});

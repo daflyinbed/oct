@@ -817,6 +817,8 @@ pub async fn update_message_usage(
     Ok(())
 }
 
+mod repair;
 mod view;
+pub use repair::repair_interleaved_notifications;
 use view::is_compaction_marker;
 pub use view::{load_llm_view, load_messages_for_llm, view_from_snapshot};

@@ -542,6 +542,9 @@ pub async fn update_mcp_server(
 
     let updated = db::update_mcp_server(&state.pool, &id, &req).await?;
     if updated {
+        // Retire both the current entry and any handshake started with the
+        // old configuration, including changes to its project scope.
+        state.mcp.invalidate(&id).await;
         Ok(StatusCode::OK)
     } else {
         Err(AppError::NotFound("MCP server not found".into()))
@@ -564,6 +567,7 @@ pub async fn delete_mcp_server(
 ) -> ApiResult<StatusCode> {
     let deleted = db::delete_mcp_server(&state.pool, &id).await?;
     if deleted {
+        state.mcp.invalidate(&id).await;
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(AppError::NotFound("MCP server not found".into()))

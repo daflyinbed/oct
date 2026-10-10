@@ -91,7 +91,8 @@ function hasActiveTask(list: readonly BackgroundTask[]): boolean {
  * 提交新快照并检测「本 tick 内 running → 终态」的结算转换（refresh 整表
  * 替换与 cancel 单行 upsert 共用）：一旦观测到转换就开/顺延唤醒宽限窗
  * ——任务结算后后端会投递通知并起 wake run，前端要在这窗口内探测 /run。
- * 全新出现的终态行（会话首次加载的历史任务）不算转换，不开窗。
+ * 当前会话中新出现的终态行也开窗（快速任务可能来不及观测到 running）；
+ * 首次加载另一会话的历史终态行不开窗。
  */
 function commitSnapshot(next: BackgroundTask[]): void {
   const prevById = new Map(tasks.value.map((task) => [task.id, task]));
@@ -99,8 +100,9 @@ function commitSnapshot(next: BackgroundTask[]): void {
   for (const row of next) {
     const prev = prevById.get(row.id);
     if (
-      prev &&
-      !isBackgroundTaskTerminal(prev.status) &&
+      (prev
+        ? !isBackgroundTaskTerminal(prev.status)
+        : loadedConversationId.value === row.conversation_id) &&
       isBackgroundTaskTerminal(row.status)
     ) {
       settledNow = true;
@@ -152,13 +154,18 @@ export async function refreshBackgroundTasks(
     { params: { path: { id: conversationId } } },
   );
   if (!error && data != null && seq === refreshSeq) {
+    if (loadedConversationId.value !== conversationId) {
+      wakeGraceUntil = 0;
+      stopPolling();
+    }
     commitSnapshot(
       sortBackgroundTasks(
         data.map((row) => ({ ...row, status: narrowStatus(row.status) })),
       ),
     );
     loadedConversationId.value = conversationId;
-    if (hasActiveTask(tasks.value)) startPolling(conversationId);
+    if (hasActiveTask(tasks.value) || Date.now() < wakeGraceUntil)
+      startPolling(conversationId);
   }
 }
 
@@ -237,8 +244,8 @@ async function pollTick(): Promise<void> {
 
 /**
  * 唤醒 run 可见性（P1）：会话空闲时后端在任务终态后自动起 wake run，
- * 前端没有 SSE 订阅看不到流式回复——宽限窗内探测 /run，发现 running 就
- * 经 wakeRunHandler（App.vue 接到 attachRun 的 events 探测/重放）挂回流。
+ * 前端没有 SSE 订阅看不到流式回复——宽限窗内探测 /run，并经
+ * wakeRunHandler 对账：running 挂回流，idle 重拉历史（快速 wake 已结束）。
  * 探测到 run 活跃（用户自己的 run 也算——它占着会话，wake run 还起不来）
  * 时顺延宽限窗，避免长 run 期间窗口提前过期。
  */
@@ -249,8 +256,10 @@ async function probeWakeRun(conversationId: string): Promise<void> {
     const { data, error } = await client.GET("/api/conversations/{id}/run", {
       params: { path: { id: conversationId } },
     });
-    if (error || !data?.running) return;
-    wakeGraceUntil = Date.now() + WAKE_GRACE_MS;
+    if (error || !data || loadedConversationId.value !== conversationId) return;
+    if (data.running) wakeGraceUntil = Date.now() + WAKE_GRACE_MS;
+    // A wake run can finish entirely between polls. The handler must also
+    // reconcile idle history so its notification and reply become visible.
     if (wakeRunHandler) await wakeRunHandler(conversationId);
   } catch {
     // 网络失败静默：下一 tick 再探。

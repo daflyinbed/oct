@@ -11,6 +11,7 @@ impl RunService {
         conversation: &str,
         exclude: &[String],
     ) -> anyhow::Result<Vec<String>> {
+        messages::repair_interleaved_notifications(&self.pool, conversation).await?;
         let mut outputs = HashMap::new();
         let dangling = messages::find_dangling_tool_calls(&self.pool, conversation).await?;
         if dangling.is_empty() {
@@ -68,12 +69,16 @@ impl RunService {
             })
             .await?;
         }
-        messages::repair_dangling_tool_calls_with_outputs(
+        let repaired = messages::repair_dangling_tool_calls_with_outputs(
             &self.pool,
             conversation,
             exclude,
             &outputs,
         )
-        .await
+        .await?;
+        // A legacy notification may also precede a result missing until
+        // this repair. Normalize only after the whole batch has settled.
+        messages::repair_interleaved_notifications(&self.pool, conversation).await?;
+        Ok(repaired)
     }
 }

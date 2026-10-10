@@ -1348,6 +1348,38 @@ fn compact_history(rounds: usize) -> Vec<Message> {
 }
 
 #[tokio::test]
+async fn summary_request_fits_unicode_history_and_rejects_impossible_windows() {
+    let model = ScriptedModel::new(Vec::new());
+    let observer = model.observer();
+    let region: Vec<_> = (0..10)
+        .map(|_| Message::text(Role::User, "汉😀".repeat(4_000)))
+        .collect();
+    assert!(
+        compact::generate_summary(&model, &region, Some(128))
+            .await
+            .is_err()
+    );
+    assert!(
+        observer.generate_requests().is_empty(),
+        "do not send an impossible request"
+    );
+
+    for window in [500, 8_000] {
+        model.push_generation(Ok("summary".to_string()));
+        compact::generate_summary(&model, &region, Some(window))
+            .await
+            .unwrap();
+        let request = observer.generate_requests().pop().unwrap();
+        let output = request.options.max_output_tokens.unwrap();
+        assert!(
+            compact::estimate_messages(&request.messages) + u64::from(output) <= u64::from(window),
+            "the complete request and output must fit window {window}"
+        );
+        assert!(output <= window / 4);
+    }
+}
+
+#[tokio::test]
 async fn auto_compaction_replaces_history_persists_marker_and_streams_events() {
     let env = TestEnv::new().await;
     let conv_id = new_conversation(&env.pool, env.dir.path()).await;

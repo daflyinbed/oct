@@ -18,6 +18,7 @@ use axum::response::Response;
 use axum::routing::post;
 use serde_json::Value;
 use serde_json::json;
+use tokio_util::sync::CancellationToken;
 
 /// Bearer value the stock mock demands on every request.
 pub const TOKEN: &str = "Bearer agent-e2e-token";
@@ -34,6 +35,10 @@ struct MockState {
     /// Bearer the mock demands (defaults to [`TOKEN`]; the OAuth tests point
     /// it at whatever the mock AS issued).
     expected_token: String,
+    /// A transient transport failure, independent of credential validity.
+    post_failure: Option<StatusCode>,
+    tool_gate: Option<(CancellationToken, CancellationToken)>,
+    session_deleted: CancellationToken,
     /// When set, the mock also serves the RFC 8414 well-known for its url
     /// path, advertising the AS at this base url (the "protected resource
     /// knows its AS" same-origin deployment shape).
@@ -106,6 +111,33 @@ impl McpHttpMock {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .expected_token = token.to_string();
     }
+
+    pub fn set_post_failure(&self, status: Option<StatusCode>) {
+        self.shared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .post_failure = status;
+    }
+
+    /// Hold one accepted tools/call while another run refreshes its connection.
+    pub fn gate_next_tool_call(&self) -> (CancellationToken, CancellationToken) {
+        let entered = CancellationToken::new();
+        let release = CancellationToken::new();
+        self.shared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .tool_gate = Some((entered.clone(), release.clone()));
+        (entered, release)
+    }
+
+    /// Signals transport cleanup without requiring tools/list_changed traffic.
+    pub fn session_deleted(&self) -> CancellationToken {
+        self.shared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .session_deleted
+            .clone()
+    }
 }
 
 /// RFC 8414 metadata: the AS endpoints live on the separately spawned mock
@@ -145,7 +177,7 @@ async fn mcp_post(
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
-    let expected_token = {
+    let (expected_token, failure, gate) = {
         let mut state = shared
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -153,11 +185,24 @@ async fn mcp_post(
             method: method.clone(),
             authorization: authorization.clone(),
         });
-        state.expected_token.clone()
+        let gate = if method == "tools/call" {
+            state.tool_gate.take()
+        } else {
+            None
+        };
+        (state.expected_token.clone(), state.post_failure, gate)
     };
+
+    if let Some(status) = failure {
+        return status.into_response();
+    }
 
     if authorization.as_deref() != Some(expected_token.as_str()) {
         return (StatusCode::UNAUTHORIZED, "missing bearer").into_response();
+    }
+    if let Some((entered, release)) = gate {
+        entered.cancel();
+        release.cancelled().await;
     }
     let Some(id) = message.get("id").cloned() else {
         return StatusCode::ACCEPTED.into_response();
@@ -289,6 +334,11 @@ async fn mcp_get() -> StatusCode {
     StatusCode::METHOD_NOT_ALLOWED
 }
 
-async fn mcp_delete() -> StatusCode {
+async fn mcp_delete(State(shared): State<Arc<Mutex<MockState>>>) -> StatusCode {
+    shared
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .session_deleted
+        .cancel();
     StatusCode::OK
 }

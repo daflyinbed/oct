@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM wake_intents WHERE conversation_id = $1 AND message_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "80534eebe971cf9177c19eaca0ab065b8eb03d78fb7a497261f056a69ad63a3b"
+}

@@ -65,6 +65,8 @@ const loadedConversationId = ref<string | null>(null);
  * 调用的响应允许写入状态，旧根会话的迟到响应不能污染新根会话。
  */
 let refreshSeq = 0;
+let eventVersion = 0;
+const taskEventVersions = new Map<string, number>();
 
 /**
  * 拉取 conversationId 的子任务快照（running 优先、created_at 升序）。
@@ -77,21 +79,54 @@ export async function refreshSubagents(
     refreshSeq += 1; // 使在途旧响应失效
     tasks.value = [];
     loadedConversationId.value = null;
+    taskEventVersions.clear();
     return;
   }
   const seq = ++refreshSeq;
+  const version = eventVersion;
   const { data, error } = await client.GET(
     "/api/conversations/{id}/subagents",
     { params: { path: { id: conversationId } } },
   );
   if (!error && data != null && seq === refreshSeq) {
-    tasks.value = data.map((task) => ({
-      ...task,
-      // 生成的 DTO 里 status 是 string；按已知词表收窄（未知值按运行中
-      // 处理，与事件路径一致——宁可多显示活动，不漏 lost 待恢复）。
-      status: isSubagentStatus(task.status) ? task.status : "running",
-      activity: null,
-    }));
+    if (loadedConversationId.value !== conversationId)
+      taskEventVersions.clear();
+    const live = new Map(
+      loadedConversationId.value === conversationId
+        ? tasks.value.map((task) => [task.run_id, task] as const)
+        : [],
+    );
+    const snapshot = data.map(
+      (task): SubagentTask => ({
+        ...task,
+        // 生成的 DTO 里 status 是 string；按已知词表收窄（未知值按运行中
+        // 处理，与事件路径一致——宁可多显示活动，不漏 lost 待恢复）。
+        status: isSubagentStatus(task.status) ? task.status : "running",
+        activity: null,
+      }),
+    );
+    const seen = new Set(snapshot.map((task) => task.run_id));
+    tasks.value = snapshot.map((task) => {
+      const current = live.get(task.run_id);
+      if (
+        current &&
+        (current.execution_epoch > task.execution_epoch ||
+          (current.execution_epoch === task.execution_epoch &&
+            ((taskEventVersions.get(task.run_id) ?? 0) > version ||
+              (current.status !== "running" && task.status === "running"))))
+      )
+        return current;
+      return task;
+    });
+    // Tasks created by events after the GET snapshot must not disappear.
+    for (const current of live.values()) {
+      if (
+        !seen.has(current.run_id) &&
+        (taskEventVersions.get(current.run_id) ?? 0) > version
+      ) {
+        tasks.value.push(current);
+      }
+    }
     loadedConversationId.value = conversationId;
   }
 }
@@ -105,9 +140,10 @@ export function applySubagentEvent(
   conversationId: string,
   data: SubagentUpdatedEventData,
 ): void {
+  if (loadedConversationId.value !== conversationId) return;
   const index = tasks.value.findIndex((task) => task.run_id === data.run_id);
   if (index === -1) {
-    if (loadedConversationId.value !== conversationId) return;
+    taskEventVersions.set(data.run_id, ++eventVersion);
     tasks.value = [
       ...tasks.value,
       {
@@ -134,6 +170,13 @@ export function applySubagentEvent(
   }
   const existing = tasks.value[index]!;
   if (data.execution_epoch < existing.execution_epoch) return;
+  if (
+    data.execution_epoch === existing.execution_epoch &&
+    existing.status !== "running" &&
+    data.status === "running"
+  )
+    return;
+  taskEventVersions.set(data.run_id, ++eventVersion);
   tasks.value = tasks.value.map((task, i) =>
     i === index
       ? {
@@ -145,7 +188,7 @@ export function applySubagentEvent(
           activity: data.activity ?? null,
           finished_at:
             data.status === "running"
-              ? task.finished_at
+              ? null
               : (task.finished_at ?? new Date().toISOString()),
         }
       : task,

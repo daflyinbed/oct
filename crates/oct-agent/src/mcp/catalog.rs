@@ -7,7 +7,7 @@
 //! replace the entry and the old task retires on its next write, so it can
 //! never corrupt a newer entry.
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use dashmap::DashMap;
@@ -27,10 +27,11 @@ pub(crate) const TOOL_LIST_REFRESH_DEBOUNCE: Duration = Duration::from_millis(50
 
 /// Spawn the `tools/list_changed` refresh task for one freshly inserted
 /// entry incarnation. Connections without a notification feed (default
-/// trait impl, e.g. minimal test doubles) spawn nothing. The task shares the
-/// map instead of the manager so it can be spawned from `&self` methods; it
-/// terminates when the feed closes (production connections close it on
-/// shutdown), or at the first write that finds its entry removed or replaced
+/// trait impl, e.g. minimal test doubles) spawn nothing. The task weakly
+/// references the map and connection so idle watching cannot retain retired
+/// transports or the manager. It terminates when the feed closes (production
+/// connections close it on shutdown), or at the first write that finds its
+/// entry removed or replaced
 /// (generation guard). See [`tool_list_refresh_loop`].
 pub(crate) fn spawn_tool_list_refresh_task(
     servers: Arc<DashMap<String, ManagedServer>>,
@@ -42,7 +43,11 @@ pub(crate) fn spawn_tool_list_refresh_task(
         return;
     };
     tokio::spawn(tool_list_refresh_loop(
-        watcher, servers, id, generation, connection,
+        watcher,
+        Arc::downgrade(&servers),
+        id,
+        generation,
+        Arc::downgrade(&connection),
     ));
 }
 
@@ -57,10 +62,10 @@ pub(crate) fn spawn_tool_list_refresh_task(
 /// the authority on reconnects). The loop never removes an entry.
 async fn tool_list_refresh_loop(
     mut watcher: ToolListChanged,
-    servers: Arc<DashMap<String, ManagedServer>>,
+    servers: Weak<DashMap<String, ManagedServer>>,
     id: String,
     generation: u64,
-    connection: Arc<dyn McpConnection>,
+    connection: Weak<dyn McpConnection>,
 ) {
     loop {
         // Park until the server announces a catalog change (or the feed
@@ -88,6 +93,9 @@ async fn tool_list_refresh_loop(
 
         // Same budget the connect-time listing uses, so a server that lists
         // forever cannot pin the task.
+        let (Some(servers), Some(connection)) = (servers.upgrade(), connection.upgrade()) else {
+            return;
+        };
         let refreshed = tokio::time::timeout(CONNECT_TIMEOUT, connection.list_tools()).await;
         match refreshed {
             Ok(Ok(tools)) => {

@@ -223,7 +223,7 @@ import {
   watch,
 } from "vue";
 import AppSelect from "@/components/ui/AppSelect.vue";
-import { renderMcpPrompt } from "@/composables/useMcpServers";
+import { useMcpPromptComposer } from "@/composables/useMcpPromptComposer";
 import { useMcpStatus } from "@/composables/useMcpStatus";
 import { PERMISSION_MODE_OPTIONS } from "@/composables/useProjects";
 import {
@@ -231,7 +231,6 @@ import {
   builtinSlashCommands,
   filterSlashMenuGroups,
   flattenMenuItems,
-  formatPromptMessages,
   replaceSlashCommand,
   slashQueryOf,
 } from "@/composables/useSlashCommands";
@@ -303,10 +302,17 @@ const emit = defineEmits<{
 
 const inputMessage = ref("");
 const inputEl = ref<HTMLTextAreaElement | null>(null);
+/** 带参 prompt 的参数表单状态（非 null 即显示 Dialog）。 */
+const argsPrompt = ref<{
+  serverId: string;
+  serverName: string;
+  prompt: McpPromptSummary;
+} | null>(null);
 watch(
   () => props.conversationId,
   () => {
     inputMessage.value = "";
+    argsPrompt.value = null;
   },
 );
 watch(
@@ -376,8 +382,11 @@ const { servers: mcpServers } = useMcpStatus();
 /** `/` 后的首词,作为菜单查询词;输入不以 `/` 开头时为 null。 */
 const slashQuery = computed(() => slashQueryOf(inputMessage.value));
 
-const slashRendering = ref(false);
-const slashError = ref<string | null>(null);
+const {
+  rendering: slashRendering,
+  error: slashError,
+  render: renderComposerPrompt,
+} = useMcpPromptComposer(() => props.conversationId, inputMessage);
 
 // /compact 在此注册而非全局注册表：需要会话上下文（emit 到页面层的
 // handleCompact）。选中即触发压缩（run 返回 null，不往输入框填文本）；
@@ -424,7 +433,6 @@ const slashEpoch = ref(0);
 const slashDismissedEpoch = ref(-1);
 watch(inputMessage, (value, old) => {
   if (value.startsWith("/") && !old.startsWith("/")) slashEpoch.value += 1;
-  slashError.value = null;
 });
 
 const slashOpen = computed(
@@ -441,13 +449,6 @@ watch(slashItems, () => {
 const slashActiveKey = computed(
   () => slashItems.value[slashActiveIndex.value]?.key ?? null,
 );
-
-/** 带参 prompt 的参数表单状态（非 null 即显示 Dialog）。 */
-const argsPrompt = ref<{
-  serverId: string;
-  serverName: string;
-  prompt: McpPromptSummary;
-} | null>(null);
 
 function handleInputKeydown(event: KeyboardEvent) {
   if (slashOpen.value) {
@@ -518,19 +519,15 @@ async function renderPromptIntoInput(
   prompt: McpPromptSummary,
   arguments_: Record<string, string>,
 ) {
-  slashRendering.value = true;
-  slashError.value = null;
-  try {
-    const { messages } = await renderMcpPrompt(
-      serverId,
-      prompt.name,
-      arguments_,
-    );
-    applySlashResult(formatPromptMessages(messages));
-  } catch (error) {
-    slashError.value = error instanceof Error ? error.message : String(error);
-  } finally {
-    slashRendering.value = false;
+  const conversationId = props.conversationId;
+  const text = await renderComposerPrompt(serverId, prompt.name, arguments_);
+  if (text != null) {
+    const input = inputMessage.value;
+    await nextTick();
+    if (props.conversationId !== conversationId || inputMessage.value !== input)
+      return;
+    inputEl.value?.focus();
+    inputEl.value?.setSelectionRange(text.length, text.length);
   }
 }
 
