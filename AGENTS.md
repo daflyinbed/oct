@@ -59,7 +59,7 @@ pnpm -r exec eslint .                 # ESLint with @xwbx/eslint-config flat con
 
 ## Build & Database
 
-- **Database**: SQLite. Default `DATABASE_URL`: `sqlite://oct.db` (override via env var or `.env`)
+- **Database**: SQLite. 位置解析（`db::resolve_database_url`）仅两级：`DATABASE_URL` 显式设置优先 → 默认 `$XDG_DATA_HOME/oct/oct.db`（Linux `~/.local/share/oct/`，目录 0700、库文件 0600——存 API key/OAuth token；data dir 解析不出则启动报错）。dev 想把库放进 checkout 就显式 `DATABASE_URL=sqlite://oct.db cargo run`。仓库 `.env` 是纯编译期配置（sqlx 宏自行加载：`SQLX_OFFLINE` 走 `.sqlx` 缓存、`DATABASE_URL` 给 `cargo sqlx prepare` 的仓库根 scratch 库），运行时不加载。`exec/`、`llm-wire/` 自动跟 db 目录走
 - **sqlx compile-time macros**: All queries use `sqlx::query!`/`query_as!`/`query_scalar!` (compile-time checked, `sqlite` feature)
 - **Offline mode**: `.sqlx/` cache is committed; builds work without a live database via `SQLX_OFFLINE=true`
 - **Regenerate cache**: After changing SQL queries, run migrations against a SQLite database and then run `cargo sqlx prepare --workspace`

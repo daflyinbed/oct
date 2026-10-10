@@ -11,10 +11,75 @@ pub mod providers;
 pub mod runs;
 pub mod settings;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use std::{str::FromStr, time::Duration};
+
+/// Resolve the database location for this process. Precedence:
+///
+/// 1. `DATABASE_URL` — explicit wins (dev exports, tests, deployments)
+/// 2. `$XDG_DATA_HOME/oct/oct.db` (`~/.local/share/oct/oct.db` on Linux) —
+///    the default never scatters files into whatever directory the binary
+///    was launched from. This branch creates the data directory (0700) and
+///    pre-creates the database file (0600): it stores provider API keys
+///    and OAuth tokens.
+///
+/// The `exec/` and `llm-wire/` trees follow the db directory automatically
+/// (see `runtime::background::exec_output_root` and `main.rs`).
+pub fn resolve_database_url() -> Result<String> {
+    if let Ok(url) = std::env::var("DATABASE_URL") {
+        return Ok(url);
+    }
+    let dir = dirs::data_dir()
+        .context("cannot resolve the default data directory; set DATABASE_URL to choose one")?
+        .join("oct");
+    ensure_private_dir(&dir)?;
+    let db_path = dir.join("oct.db");
+    ensure_private_file(&db_path)?;
+    // sqlx parses sqlite URLs by trimming the scheme and splitting on '?'
+    // — no Url::parse — so an absolute path pastes verbatim even when it
+    // contains spaces or non-ASCII (a literal '?' in the path would still
+    // be mistaken for the query separator).
+    Ok(format!("sqlite://{}", db_path.display()))
+}
+
+#[cfg(unix)]
+fn ensure_private_dir(dir: &std::path::Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(dir)?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn ensure_private_file(path: &std::path::Path) -> Result<()> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(path)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_private_dir(dir: &std::path::Path) -> Result<()> {
+    std::fs::create_dir_all(dir)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_private_file(path: &std::path::Path) -> Result<()> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)?;
+    Ok(())
+}
 
 pub async fn init_pool(database_url: &str) -> Result<SqlitePool> {
     let options = SqliteConnectOptions::from_str(database_url)?
@@ -65,5 +130,29 @@ where
         }
         tokio::time::sleep(delay).await;
         delay = (delay * 2).min(Duration::from_secs(5));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn xdg_default_creates_private_tree() {
+        let dir = std::env::temp_dir().join(format!("oct-db-paths-{}", uuid::Uuid::new_v4()));
+        ensure_private_dir(&dir).unwrap();
+        let db_path = dir.join("oct.db");
+        std::fs::write(&db_path, "existing data").unwrap();
+        ensure_private_file(&db_path).unwrap();
+
+        use std::os::unix::fs::PermissionsExt;
+        let dir_mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+        let file_mode = std::fs::metadata(&db_path).unwrap().permissions().mode();
+        assert_eq!(dir_mode & 0o777, 0o700);
+        assert_eq!(file_mode & 0o777, 0o600);
+        // Opening for permission hardening must never clobber the database.
+        assert_eq!(std::fs::read(&db_path).unwrap(), b"existing data");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -606,6 +606,12 @@ mod tests {
             exec_output_root("sqlite://data/oct.db?mode=rwc"),
             backend.join("data/exec")
         );
+        // The XDG default URL (absolute path, spaces verbatim — sqlx does
+        // not Url::parse sqlite strings) derives the sibling exec root.
+        assert_eq!(
+            exec_output_root("sqlite:///home/u/.local/share/oct/oct.db"),
+            std::path::PathBuf::from("/home/u/.local/share/oct/exec")
+        );
         let output_dir = tempfile::tempdir_in(&backend).unwrap();
         let path = output_dir.path().join("output.log");
         std::fs::write(&path, "command output\n").unwrap();

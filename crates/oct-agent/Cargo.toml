@@ -66,6 +66,8 @@ ignore = "0.4"
 globset = "0.4"
 grep-regex = "0.1"
 grep-searcher = "0.1"
+# Default database location under $XDG_DATA_HOME (db::resolve_database_url)
+dirs = "7.0.0"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

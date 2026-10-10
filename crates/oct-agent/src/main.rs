@@ -23,8 +23,7 @@ enum Cli {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let database_url =
-        std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://oct.db".to_string());
+    let database_url = oct_agent::db::resolve_database_url()?;
 
     // The pool comes up before the tracing subscriber: the wire-log sink's
     // initial on/off state is read from the `settings` table, so both must
@@ -69,6 +68,10 @@ async fn main() -> Result<()> {
         )
         .with(oct_llm_provider::wire::WireLogLayer)
         .init();
+
+    // The pool comes up before the subscriber, so the resolved location is
+    // only logged here — the one line that answers "where did my data go".
+    info!(%database_url, "database location");
 
     match cli {
         Cli::Serve { port } => run_server(pool, db_dir, wire_log, port).await,
