@@ -483,6 +483,33 @@ pub async fn count_user_messages(pool: &SqlitePool, conversation_id: &str) -> Re
     Ok(count)
 }
 
+/// How many user messages the conversation has appended AFTER `revision` —
+/// for a fork, its OWN messages: copied membership rows keep the source's
+/// original `appended_at_revision` stamps (all ≤ the fork point), so rows
+/// past `forked_at_revision` are exactly what was sent inside the fork.
+/// Compaction markers are user-role rows with no user intent — excluded so
+/// a manual compact between fork and first send can't mask the one-shot.
+pub async fn count_user_messages_after(
+    pool: &SqlitePool,
+    conversation_id: &str,
+    revision: i64,
+) -> Result<i64> {
+    let rows = sqlx::query!(
+        "SELECT m.details_json FROM conversation_messages cm JOIN messages m ON m.id = cm.message_id WHERE cm.conversation_id = $1 AND m.role = 'user' AND cm.appended_at_revision > $2",
+        conversation_id,
+        revision,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .filter(|row| {
+            details_kind(row.details_json.as_deref()).as_deref() != Some(COMPACTION_MARKER_KIND)
+        })
+        .count() as i64)
+}
+
 /// Whether the row is a compaction marker, by its details_json `kind`
 /// (recognition rule shared with the agent side via [`crate::context`]).
 pub async fn get_last_provider_spec(

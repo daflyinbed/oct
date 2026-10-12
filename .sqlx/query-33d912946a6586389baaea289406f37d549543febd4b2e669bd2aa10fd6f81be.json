@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE conversations SET origin_kind = 'fork', permission_mode = $1, context_revision = $2, forked_from_conversation_id = $3, forked_at_message_id = $4, forked_at_revision = $2, title_source = CASE WHEN $6 THEN 'default' ELSE 'user' END WHERE id = $5",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "33d912946a6586389baaea289406f37d549543febd4b2e669bd2aa10fd6f81be"
+}

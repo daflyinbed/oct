@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT m.details_json FROM conversation_messages cm JOIN messages m ON m.id = cm.message_id WHERE cm.conversation_id = $1 AND m.role = 'user' AND cm.appended_at_revision > $2",
+  "describe": {
+    "columns": [
+      {
+        "name": "details_json",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "f7f7ef2e1ae2d787a77c335478fabad10117d57a8ce2a596bb94f6ddac0c6824"
+}

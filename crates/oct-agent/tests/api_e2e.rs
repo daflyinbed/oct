@@ -2619,6 +2619,96 @@ async fn first_message_generates_title_and_streams_event() {
     assert_eq!(conv["title_source"], "ai");
 }
 
+/// A fork copies the source's history, so the plain "first user message"
+/// guard can never fire for it — and regenerating at FORK time would be
+/// pointless anyway: the fork's content is then identical to the source's
+/// and the model would just re-derive the same title. The fork therefore
+/// starts with the「（分支）」placeholder over a `default` title source, and
+/// the one-shot fires on its first OWN message — the moment the branch
+/// actually diverges and a new title can say something new.
+#[tokio::test]
+async fn forked_conversation_regenerates_title_on_its_first_own_message() {
+    let app = TestApp::new().await;
+    let llm_server = llm::spawn_llm_mock(vec![
+        // The source's first run.
+        LlmTurn::Complete(vec![text_chunk("ok"), finish_chunk("stop")]),
+        // The fork's first own-message run.
+        LlmTurn::Complete(vec![text_chunk("ok"), finish_chunk("stop")]),
+        // A later fork message (one-shot assertion below).
+        LlmTurn::Complete(vec![text_chunk("ok"), finish_chunk("stop")]),
+    ])
+    .await;
+    llm_server.push_title_turns([
+        llm::TitleTurn::Text("  \"修复登录按钮\"  ".to_string()),
+        llm::TitleTurn::Text("改问 2+2 等于几".to_string()),
+    ]);
+    app.register_llm_provider(&llm_server).await;
+    let project_id = app.create_project().await;
+
+    // Source: a normal first exchange, auto-titled as usual.
+    let conv_id = create_untitled_conversation(&app, &project_id).await;
+    let resp = app.send_message(&conv_id, "登录按钮坏了,帮我修一下").await;
+    assert_eq!(resp.status(), 200);
+    let _ = app.read_sse(resp).await;
+    let source =
+        wait_conversation(&app, &project_id, &conv_id, |c| c["title_source"] == "ai").await;
+    assert_eq!(source["title"], "修复登录按钮");
+
+    // Fork at head: placeholder keeps the「（分支）」disambiguator, but the row
+    // is default — eligible for the one-shot despite the copied history.
+    let revision: i64 = app
+        .get_json(&format!("/api/conversations/{conv_id}/messages"))
+        .await
+        .headers()["X-Context-Revision"]
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let fork_resp = app
+        .post_json(
+            &format!("/api/conversations/{conv_id}/fork"),
+            serde_json::json!({
+                "operation_id": uuid::Uuid::new_v4().to_string(),
+                "expected_revision": revision,
+                "cut": {"kind": "head"},
+                "title": null,
+            }),
+        )
+        .await;
+    assert_eq!(fork_resp.status(), 201);
+    let fork: Value = fork_resp.json().await.unwrap();
+    let fork_id = fork["conversation"]["id"].as_str().unwrap().to_string();
+    assert_eq!(fork["conversation"]["title"], "修复登录按钮（分支）");
+    assert_eq!(fork["conversation"]["title_source"], "default");
+
+    // The fork's first own message is the divergence point: regenerate.
+    let resp = app.send_message(&fork_id, "不对，改成问 2+2 等于几").await;
+    assert_eq!(resp.status(), 200);
+    let _ = app.read_sse(resp).await;
+    let forked =
+        wait_conversation(&app, &project_id, &fork_id, |c| c["title_source"] == "ai").await;
+    assert_eq!(forked["title"], "改问 2+2 等于几");
+
+    // The title model was fed the fork's own message, not the copied first.
+    let title_request = llm_server
+        .requests()
+        .into_iter()
+        .rfind(|r| r.get("stream") != Some(&serde_json::json!(true)))
+        .expect("fork title request");
+    assert_eq!(
+        title_request["messages"][1]["content"],
+        "不对，改成问 2+2 等于几"
+    );
+
+    // Still one-shot: a later fork message doesn't touch the title again.
+    let resp = app.send_message(&fork_id, "thanks").await;
+    assert_eq!(resp.status(), 200);
+    let _ = app.read_sse(resp).await;
+    let conv = get_conversation(&app, &project_id, &fork_id).await;
+    assert_eq!(conv["title"], "改问 2+2 等于几");
+    assert_eq!(conv["title_source"], "ai");
+}
+
 #[tokio::test]
 async fn manual_rename_blocks_title_generation() {
     let app = TestApp::new().await;

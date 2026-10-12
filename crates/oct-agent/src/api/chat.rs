@@ -176,13 +176,28 @@ pub async fn send_message(
     // One-shot title generation: an independent background task firing
     // alongside the run (never inside it). Guards: the conversation still
     // carries its default title, and the user message just persisted is its
-    // first — a failed attempt is not retried on later turns. Spawned only
-    // after every fallible step has succeeded, so an aborted send never
-    // burns the one-shot on a message that was never stored. The weak hub
-    // reference keeps a slow title call from delaying SSE EOF past the
-    // run's end.
+    // first — a failed attempt is not retried on later turns. Forks start
+    // with a default「（分支）」placeholder over copied history, so for them
+    // the one-shot fires on the first message sent INSIDE the fork (the row
+    // count past the fork point) — that is the moment the branch actually
+    // diverges and a regenerated title can say something the source's
+    // cannot. Spawned only after every fallible step has succeeded, so an
+    // aborted send never burns the one-shot on a message that was never
+    // stored. The weak hub reference keeps a slow title call from delaying
+    // SSE EOF past the run's end.
+    let fork_first_own_message = conversation.origin_kind == "fork"
+        && matches!(
+            msg_db::count_user_messages_after(
+                &state.pool,
+                &id,
+                conversation.forked_at_revision.unwrap_or(0),
+            )
+            .await,
+            Ok(1),
+        );
     if conversation.title_source == "default"
-        && matches!(msg_db::count_user_messages(&state.pool, &id).await, Ok(1))
+        && (matches!(msg_db::count_user_messages(&state.pool, &id).await, Ok(1))
+            || fork_first_own_message)
     {
         let hub = state
             .sessions

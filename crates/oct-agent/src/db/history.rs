@@ -374,10 +374,20 @@ pub async fn fork(
     let mut conversation =
         super::conversations::create_conversation_in_tx(&mut tx, &source.project_id, Some(&title))
             .await?;
-    sqlx::query!("UPDATE conversations SET origin_kind = 'fork', permission_mode = $1, context_revision = $2, forked_from_conversation_id = $3, forked_at_message_id = $4, forked_at_revision = $2 WHERE id = $5", source.permission_mode, cut_revision, source.id, target, conversation.id)
+    // 无显式标题时回落为 `default`：「（分支）」只是占位——分叉创建时内容与
+    // 源对话完全一致，重新生成只会得到重复标题；等用户在分叉内发出第一条
+    // 自己的消息（真正的分岔点）再由一次性标题生成接管。显式标题仍是
+    // 用户命名（'user'），永不被覆盖。
+    let auto_title_eligible = request.title.is_none();
+    sqlx::query!("UPDATE conversations SET origin_kind = 'fork', permission_mode = $1, context_revision = $2, forked_from_conversation_id = $3, forked_at_message_id = $4, forked_at_revision = $2, title_source = CASE WHEN $6 THEN 'default' ELSE 'user' END WHERE id = $5", source.permission_mode, cut_revision, source.id, target, conversation.id, auto_title_eligible)
         .execute(&mut *tx).await.map_err(anyhow::Error::from)?;
     conversation.origin_kind = "fork".into();
     conversation.permission_mode = source.permission_mode.clone();
+    conversation.title_source = if auto_title_eligible {
+        "default".into()
+    } else {
+        "user".into()
+    };
     conversation.forked_from_conversation_id = Some(source.id.clone());
     conversation.forked_at_message_id = target;
     conversation.forked_at_revision = Some(cut_revision);

@@ -169,14 +169,32 @@ async fn cuts_share_content_retry_once_and_continue_after_source_deletion() {
     assert_eq!(response.status(), 200);
     app.read_sse(response).await;
     let requests = llm.requests();
-    assert_eq!(requests.len(), 1);
-    let input = requests[0]["messages"].to_string();
+    // The run plus the fork's one-shot title call: the「（分支）」placeholder
+    // is a default title source, so the first own message regenerates it —
+    // fed the fork's own question, never the copied history.
+    assert_eq!(requests.len(), 2);
+    let run_request = requests
+        .iter()
+        .find(|r| r.get("stream") == Some(&serde_json::json!(true)))
+        .expect("the streaming run request");
+    let input = run_request["messages"].to_string();
     assert!(
         input.contains("original question")
             && input.contains("original answer")
             && input.contains("new branch question")
     );
     assert!(!input.contains("editable question"));
+    let title_request = requests
+        .iter()
+        .find(|r| r.get("stream") != Some(&serde_json::json!(true)))
+        .expect("title one-shot fires on the fork's first own message");
+    assert_eq!(title_request["messages"].as_array().unwrap().len(), 2);
+    assert!(
+        title_request["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("new branch question")
+    );
     let (revision, continued) = snapshot(&app, &branch.conversation.id).await;
     assert_eq!(revision, 4);
     assert!(continued[3]["fork_cut"].is_object());
