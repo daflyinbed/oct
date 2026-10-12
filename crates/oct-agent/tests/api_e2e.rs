@@ -177,6 +177,90 @@ async fn provider_create_conflicts_on_duplicate_and_hides_api_key() {
     assert!(providers[0].get("api_key").is_none());
 }
 
+#[tokio::test]
+async fn provider_api_key_reveal_endpoint_roundtrip() {
+    let app = TestApp::new().await;
+    let llm_server = llm::spawn_llm_mock(vec![]).await;
+
+    app.register_llm_provider(&llm_server).await;
+
+    // Reveal returns the stored plaintext (settings page "show" action).
+    let resp = app.get_json("/api/providers/mock-llm/api-key").await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["api_key"], "test-key");
+
+    // Unknown provider → 404.
+    let resp = app.get_json("/api/providers/nope/api-key").await;
+    assert_eq!(resp.status(), 404);
+
+    // Key cleared (empty string) → nothing to reveal → 404.
+    let resp = app
+        .put_json(
+            "/api/providers/mock-llm",
+            serde_json::json!({"api_key": ""}),
+        )
+        .await;
+    assert_eq!(resp.status(), 200);
+    let resp = app.get_json("/api/providers/mock-llm/api-key").await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn provider_delete_removes_custom_only_and_cascades_models() {
+    let app = TestApp::new().await;
+
+    // Custom provider (via POST) with one model: deletable, models cascade.
+    let resp = app
+        .post_json(
+            "/api/providers",
+            serde_json::json!({
+                "id": "custom-one",
+                "name": "Custom One",
+                "base_url": "http://127.0.0.1:9",
+                "api_key": "k",
+                "doc_url": null,
+            }),
+        )
+        .await;
+    assert_eq!(resp.status(), 201);
+    let resp = app
+        .post_json(
+            "/api/providers/custom-one/models",
+            serde_json::json!({"model_id": "m1", "name": "M1"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 201);
+
+    // Seeded rows are catalog-owned (seed recreates them): deletion is refused.
+    sqlx::query(
+        "INSERT INTO providers (id, name, adapter_type, base_url, api_key, doc_url, source, created_at, updated_at) \
+         VALUES ('seeded-one', 'Seeded One', 'openai_compatible', NULL, 'k', NULL, 'seeded', datetime('now'), datetime('now'))",
+    )
+    .execute(&app.pool)
+    .await
+    .expect("insert seeded provider row");
+    let resp = app.http_delete("/api/providers/seeded-one").await;
+    assert_eq!(resp.status(), 404);
+
+    // Custom delete: 204, provider + its models gone (FK ON DELETE CASCADE).
+    let resp = app.http_delete("/api/providers/custom-one").await;
+    assert_eq!(resp.status(), 204);
+    let resp = app.get_json("/api/providers").await;
+    let providers: Vec<Value> = resp.json().await.unwrap();
+    assert!(providers.iter().all(|p| p["id"] != "custom-one"));
+    let models =
+        sqlx::query("SELECT model_id FROM models WHERE provider_id = 'custom-one'")
+            .fetch_all(&app.pool)
+            .await
+            .unwrap();
+    assert!(models.is_empty());
+
+    // Unknown id → 404.
+    let resp = app.http_delete("/api/providers/missing").await;
+    assert_eq!(resp.status(), 404);
+}
+
 // --- MCP servers CRUD ----------------------------------------------------------
 
 #[tokio::test]

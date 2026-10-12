@@ -1,9 +1,4 @@
-import {
-  defineConfig,
-  presetAttributify,
-  presetIcons,
-  presetWind3,
-} from "unocss";
+import { defineConfig, presetWind3 } from "unocss";
 
 // 颜色编号表示组件角色，而不是可随意取用的明暗色阶：
 // 1 ghost hover；2 ghost active / disabled surface；3 surface hover；
@@ -38,11 +33,10 @@ export default defineConfig({
   content: {
     filesystem: ["src/**/*.{vue,ts}", "index.html"],
   },
-  presets: [
-    presetWind3(),
-    presetAttributify(),
-    presetIcons({ scale: 1.2, warn: true }),
-  ],
+  // 图标统一走 unplugin-icons 组件（<i-lucide-xxx /> / ~icons/lucide/xxx 显式导入），
+  // 不启用 presetIcons：它会把任意 i- 前缀 token（含扫描编译产物拼出的碎片）
+  // 当图标解析，只能靠关 warn 压噪音。
+  presets: [presetWind3()],
   safelist: [
     ...colorProperties.flatMap((property) =>
       colorGroups.flatMap((group) =>

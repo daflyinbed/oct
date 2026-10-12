@@ -16,9 +16,9 @@
         <!-- 头部：kind 图标/文案 + 工作区外徽标 + 摘要（命令行或路径） -->
         <div class="min-w-0 flex items-center gap-2">
           <span class="h-4 w-4 flex-none text-warning-10">
-            <span
+            <component
+              :is="kindMeta(approval.kind).icon"
               class="block h-full w-full"
-              :class="kindMeta(approval.kind).icon"
             />
           </span>
           <span class="flex-none text-[12.5px] text-strong font-semibold">
@@ -101,6 +101,12 @@
 
 <script setup lang="ts">
 import { reactive } from "vue";
+import type { Component } from "vue";
+import IconFilePen from "~icons/lucide/file-pen";
+import IconFilePenLine from "~icons/lucide/file-pen-line";
+import IconFileText from "~icons/lucide/file-text";
+import IconTerminal from "~icons/lucide/terminal";
+import IconWrench from "~icons/lucide/wrench";
 import { taskByAgentId } from "@/composables/useSubagents";
 import type { ApprovalDecision, PendingApproval } from "@/composables/useChat";
 
@@ -114,17 +120,17 @@ const emit = defineEmits<{
 }>();
 
 /** kind → 图标/文案；未知 kind 原样展示（工具名兜底）。 */
-const KIND_META: Record<string, { icon: string; label: string }> = {
+const KIND_META: Record<string, { icon: Component; label: string }> = {
   // 读类审批只在工作区外触发（决策表：区内读恒 Allow）
-  read: { icon: "i-lucide-file-text", label: "读取工作区外" },
-  write: { icon: "i-lucide-file-pen", label: "写入文件" },
-  edit: { icon: "i-lucide-file-pen-line", label: "编辑文件" },
-  command: { icon: "i-lucide-terminal", label: "执行命令" },
-  mcp: { icon: "i-lucide-wrench", label: "MCP 工具" },
+  read: { icon: IconFileText, label: "读取工作区外" },
+  write: { icon: IconFilePen, label: "写入文件" },
+  edit: { icon: IconFilePenLine, label: "编辑文件" },
+  command: { icon: IconTerminal, label: "执行命令" },
+  mcp: { icon: IconWrench, label: "MCP 工具" },
 };
 
-function kindMeta(kind: string): { icon: string; label: string } {
-  return KIND_META[kind] ?? { icon: "i-lucide-wrench", label: kind };
+function kindMeta(kind: string): { icon: Component; label: string } {
+  return KIND_META[kind] ?? { icon: IconWrench, label: kind };
 }
 
 // pattern 编辑按 approvalId 存本地：pending 列表 upsert 覆盖（事件重放）

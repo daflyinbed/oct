@@ -28,30 +28,33 @@
       <div class="min-w-0 flex-1">
         <div class="text-[13px] text-strong font-semibold">API Key</div>
         <div class="mt-0.5 text-[12px] text-dim">
-          已配置。输入新 Key 并保存即可替换。
+          {{
+            selected.api_key_set
+              ? "已配置。输入新 Key，失去焦点即保存替换。"
+              : "未配置。输入 Key 后失去焦点即保存。"
+          }}
         </div>
       </div>
-      <input
-        :type="showKey ? 'text' : 'password'"
-        placeholder="••••••••（已配置）"
-        class="h-[26px] w-[240px] flex-none control-surface px-2.5 text-[12px] control-focus"
-        :value="keyInput"
-        @input="keyInput = ($event.target as HTMLInputElement).value"
-        @keydown.enter="saveKey"
-      />
-      <button
-        class="h-[26px] flex-none control-ghost rounded-md px-2 text-[12px] control-focus"
-        @click="showKey = !showKey"
-      >
-        {{ showKey ? "Hide" : "Show" }}
-      </button>
-      <button
-        class="h-[26px] flex-none control-solid rounded-md px-3 text-[12px] font-medium control-focus transition-colors disabled:opacity-50"
-        :disabled="!keyInput.trim()"
-        @click="saveKey"
-      >
-        Save
-      </button>
+      <div class="relative w-[240px] flex-none">
+        <input
+          :type="showKey ? 'text' : 'password'"
+          :placeholder="selected.api_key_set ? '••••••••（已配置）' : '未配置'"
+          class="h-[26px] w-full control-surface pl-2.5 pr-8 text-[12px] control-focus"
+          :value="keyInput"
+          @input="keyInput = ($event.target as HTMLInputElement).value"
+          @keydown.enter="($event.target as HTMLInputElement).blur()"
+          @blur="saveKey"
+        />
+        <button
+          type="button"
+          class="absolute right-1 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center text-dim transition-colors hover:text-strong"
+          :title="showKey ? '隐藏 Key' : '显示 Key'"
+          @click="toggleShowKey"
+        >
+          <i-lucide-eye-off v-if="showKey" class="h-3.5 w-3.5" />
+          <i-lucide-eye v-else class="h-3.5 w-3.5" />
+        </button>
+      </div>
     </div>
 
     <div
@@ -168,7 +171,7 @@ const emit = defineEmits<{
   gone: [];
 }>();
 
-const { providers, updateApiKey, toggleModelEnabled, createModel } =
+const { providers, updateApiKey, getApiKey, toggleModelEnabled, createModel } =
   useProviders();
 
 const selected = computed(
@@ -185,12 +188,15 @@ watch(selected, (value) => {
 /* Key 输入归本页所有（进入清空），不再跨 provider 共享残留。 */
 const keyInput = ref("");
 const showKey = ref(false);
+/* 最近一次确认存在于服务端的明文（保存成功或按需取回）：blur 时与输入相同则跳过重复 PUT。 */
+const knownKey = ref<string | null>(null);
 
 watch(
   () => props.providerId,
   () => {
     keyInput.value = "";
     showKey.value = false;
+    knownKey.value = null;
   },
 );
 
@@ -208,11 +214,33 @@ const filteredModels = computed(() => {
   );
 });
 
+/** 失焦保存：空值不动作，与已知 Key 相同则跳过；成功后清空回到占位符状态。 */
 function saveKey() {
   const key = keyInput.value.trim();
-  if (!key || !selected.value) return;
-  void updateApiKey(selected.value.id, key);
-  keyInput.value = "";
+  if (!selected.value || !key || key === knownKey.value) return;
+  void updateApiKey(selected.value.id, key).then((ok) => {
+    if (!ok) return;
+    knownKey.value = key;
+    keyInput.value = "";
+    showKey.value = false;
+  });
+}
+
+/** 眼睛切换：显示时按需取回真实 Key 填入输入框；隐藏时清空，明文不留在框里。 */
+async function toggleShowKey() {
+  showKey.value = !showKey.value;
+  if (!showKey.value) {
+    keyInput.value = "";
+    return;
+  }
+  const provider = selected.value;
+  if (!provider || keyInput.value) return;
+  const key = await getApiKey(provider.id);
+  // 等待期间可能已切换 provider 或再次点眼睛，过期的明文不回填
+  if (key && showKey.value && selected.value?.id === provider.id) {
+    knownKey.value = key;
+    keyInput.value = key;
+  }
 }
 
 async function submitModel() {

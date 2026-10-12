@@ -9,6 +9,8 @@ cargo build -p oct-codemode --features runtime
 SQLX_OFFLINE=true cargo run -p oct-agent -- serve
 ```
 
+前端（Vue 应用）在发布构建时直接嵌入二进制：`pnpm --filter frontend build` 产出 `packages/app/dist`，随后 `cargo build --release` 将其烧入，单个 `oct-agent` 二进制即可同时提供 API 与界面（history 路由由 SPA fallback 兜底，未知 `/api` 路径仍是 404）。构建顺序必须先前端后 release，否则嵌入的是旧产物或空表（启动时会打 warning 提示）；调试构建不嵌入，运行时从 `packages/app/dist` 读取，日常开发仍走 Vite dev server（5173 端口代理 `/api`）。
+
 `oct-codemode-worker` 需要与 `oct-agent` 放在同一个目录，也可通过 `OCT_CODEMODE_WORKER=/absolute/path/oct-codemode-worker` 指定。部署时可用 `cargo build --workspace --features oct-codemode/runtime --release` 一起构建。主会话组件不可用时会回退到直接调用，界面显示提示；子代理使用已封存的运行快照，恢复时组件不可用会明确失败。通信使用标准 stdin/stdout 管道，当前已在 Linux 验证；其它平台尚未验证，Windows 的操作系统资源限制尚未接入。
 
 每次主会话运行会在数据库目录旁的 `codemode/{conversation}/{run}/sdk/` 生成只读 SDK：`index.json`、`builtin/tools.d.ts`、按 MCP server 分组的 `.d.ts`、原始 schema 和使用说明。Worker 在自己的会话/run 下使用 `sdk-{execution_epoch}/`，恢复时保留旧目录并生成新目录。超过 24 个工具或 32 KiB 声明的 server 自动拆为短索引 + 每工具一个声明/schema 文件；`toolIndex` 列出原始工具名、导出名和文件路径。声明使用多行类型，避免单行预览截断。相同身份、描述和 schema 的生成结果复用有界内存缓存（64 MiB / 8 个 catalog），每个 run 的实际工具和授权仍独立绑定。

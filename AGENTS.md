@@ -13,6 +13,7 @@ Two separate package managers coexist:
 
 ```bash
 cargo build -p oct-agent              # build the backend binary
+cargo build -p oct-agent --release    # 发布构建：先 `pnpm --filter frontend build`（见 Build & Database 的嵌入说明）
 cargo run -p oct-agent                 # run backend `serve` subcommand (port 3000 by default, override with OCT_PORT)
 cargo run -p oct-agent -- serve        # explicit serve subcommand
 cargo run -p oct-agent -- seed         # seed providers & models from models.dev API into the database
@@ -65,6 +66,7 @@ pnpm -r exec eslint .                 # ESLint with @xwbx/eslint-config flat con
 - **Regenerate cache**: After changing SQL queries, run migrations against a SQLite database and then run `cargo sqlx prepare --workspace`
 - **Migrations**: `sqlx::migrate!("../../migrations")` in `crates/oct-agent/src/db/mod.rs` auto-runs on startup; migration files live at repo root `migrations/`
 - **Seeding**: `cargo run -p oct-agent -- seed` fetches the model catalog from `https://models.dev/api.json` and upserts providers/models (source=`seeded`). Custom providers/models (source=`custom`) are preserved.
+- **Embedded frontend**: `packages/app/dist` 经 rust-embed（`api/embed.rs`，tower-http 0.7 `ServeDir::with_backend` + SPA fallback，history 路由深链回 `index.html`、未知 `/api`/`/scalar` 路径保持 404）嵌进 `oct-agent` 二进制——release 编译期烧入（**构建顺序：先 `pnpm --filter frontend build` 再 `cargo build --release`**，dist 缺失/过旧会静默嵌入空表/旧产物，启动时 warn 提示）；debug 构建不嵌入、运行时读 dist 目录（配合 vite dev server 5173 走代理）。`allow_missing` 保证从未构建前端的 checkout 也能纯 Rust 编译。
 
 ## CLI Subcommands
 

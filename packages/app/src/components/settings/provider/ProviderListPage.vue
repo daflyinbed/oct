@@ -16,6 +16,29 @@
       </span>
       <span class="flex-1" />
       <button
+        v-if="provider.source === 'custom'"
+        class="h-[26px] inline-flex flex-none items-center gap-1.5 rounded-md px-2.5 text-[12px] font-medium transition-colors"
+        :class="
+          armedDeleteId === provider.id
+            ? 'bg-danger-10 text-white'
+            : 'control-ghost text-dim'
+        "
+        @blur="armedDeleteId = null"
+        @click="removeCustom(provider.id)"
+      >
+        <i-lucide-trash-2 class="h-3 w-3" />
+        {{ armedDeleteId === provider.id ? "确认删除" : "Delete" }}
+      </button>
+      <button
+        v-else
+        class="h-[26px] inline-flex flex-none items-center gap-1.5 control-ghost rounded-md px-2.5 text-[12px] text-dim control-focus"
+        title="清空 Key 并断开连接"
+        @click="disconnect(provider.id)"
+      >
+        <i-lucide-unlink class="h-3 w-3" />
+        Disconnect
+      </button>
+      <button
         class="h-[26px] inline-flex flex-none items-center gap-1.5 control-surface rounded-md px-2.5 text-[12px] font-medium control-focus"
         @click="emit('open', provider.id)"
       >
@@ -47,7 +70,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { useProviders } from "@/composables/useProviders";
 import type { components } from "@/api/schema";
 
@@ -62,7 +85,15 @@ const emit = defineEmits<{
   open: [providerId: string];
 }>();
 
-const { providers, loading } = useProviders();
+const {
+  providers,
+  loading,
+  disconnectProvider: disconnect,
+  deleteProvider: remove,
+} = useProviders();
+
+/* 删除是破坏性的（自定义 provider 连同模型行一起没）：两段式内联确认，失焦还原。 */
+const armedDeleteId = ref<string | null>(null);
 
 const connectedProviders = computed(() => {
   const q = props.query.trim().toLowerCase();
@@ -76,5 +107,14 @@ const connectedProviders = computed(() => {
 
 function enabledCount(provider: ProviderResponse): number {
   return provider.models.filter((model) => model.is_enabled).length;
+}
+
+function removeCustom(providerId: string) {
+  if (armedDeleteId.value !== providerId) {
+    armedDeleteId.value = providerId;
+    return;
+  }
+  armedDeleteId.value = null;
+  void remove(providerId);
 }
 </script>

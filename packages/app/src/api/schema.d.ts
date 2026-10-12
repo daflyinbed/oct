@@ -805,6 +805,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/providers/{id}/api-key": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_api_key"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/providers/{id}/models": {
         parameters: {
             query?: never;
@@ -1258,6 +1274,9 @@ export interface components {
             group: string;
             label: string;
             selector: components["schemas"]["ToolSelector"];
+        };
+        ApiKeyResponse: {
+            api_key: string;
         };
         AppSettings: {
             code_mode_available: boolean;
@@ -4373,6 +4392,36 @@ export interface operations {
                 content?: never;
             };
             /** @description Provider not found or is not deletable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_api_key: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Provider ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stored API key in plaintext */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiKeyResponse"];
+                };
+            };
+            /** @description Provider not found or API key not set */
             404: {
                 headers: {
                     [name: string]: unknown;

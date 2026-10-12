@@ -51,6 +51,39 @@ export function useProviders() {
     return !error;
   };
 
+  /** 按需取回明文 Key（详情页「显示」用）；未配置或请求失败返回 null。 */
+  const getApiKey = async (providerId: string): Promise<string | null> => {
+    const { data, error } = await client.GET("/api/providers/{id}/api-key", {
+      params: { path: { id: providerId } },
+    });
+    return error || !data ? null : data.api_key;
+  };
+
+  /** 断开（清空 Key 使其退出已连接列表）：body 必须是显式空串，后端 null 语义是「保持不变」。 */
+  const disconnectProvider = async (providerId: string) => {
+    const { error } = await client.PUT("/api/providers/{id}", {
+      params: { path: { id: providerId } },
+      body: { api_key: "" },
+    });
+    if (!error) {
+      providers.value = providers.value.map((p) =>
+        p.id === providerId ? { ...p, api_key_set: false } : p,
+      );
+    }
+    return !error;
+  };
+
+  /** 删除自定义 provider（后端仅允许 source=custom，seeded 目录行不可删）；models 随 FK cascade。 */
+  const deleteProvider = async (providerId: string) => {
+    const { error } = await client.DELETE("/api/providers/{id}", {
+      params: { path: { id: providerId } },
+    });
+    if (!error) {
+      providers.value = providers.value.filter((p) => p.id !== providerId);
+    }
+    return !error;
+  };
+
   const toggleModelEnabled = async (
     providerId: string,
     modelId: string,
@@ -144,6 +177,9 @@ export function useProviders() {
     selectedModelId: readonly(selectedModelId),
     fetchProviders,
     updateApiKey,
+    getApiKey,
+    disconnectProvider,
+    deleteProvider,
     toggleModelEnabled,
     createProvider,
     createModel,

@@ -31,7 +31,7 @@
               : 'text-dim'
         "
       >
-        <span class="block h-full w-full" :class="iconClass" />
+        <component :is="iconComponent" class="block h-full w-full" />
       </span>
 
       <span
@@ -311,6 +311,15 @@
 
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
+import type { Component } from "vue";
+import IconFilePen from "~icons/lucide/file-pen";
+import IconFilePenLine from "~icons/lucide/file-pen-line";
+import IconFileText from "~icons/lucide/file-text";
+import IconFolder from "~icons/lucide/folder";
+import IconFolderSearch from "~icons/lucide/folder-search";
+import IconTerminal from "~icons/lucide/terminal";
+import IconTextSearch from "~icons/lucide/text-search";
+import IconWrench from "~icons/lucide/wrench";
 import client from "@/api/client";
 import DiffLines from "@/components/diff/DiffLines.vue";
 import BashTaskCard from "./BashTaskCard.vue";
@@ -390,25 +399,25 @@ async function loadOriginal(): Promise<void> {
   }
 }
 
-// 图标按工具名映射（完整类名写在此处，UnoCSS 可从源码提取）
-const iconClass = computed(() => {
+// 图标按工具名映射（unplugin-icons 显式导入，<component :is> 渲染，颜色随外层 currentColor）
+const iconComponent = computed<Component>(() => {
   switch (props.part.name) {
     case "execute_command":
-      return "i-lucide-terminal";
+      return IconTerminal;
     case "read_file":
-      return "i-lucide-file-text";
+      return IconFileText;
     case "write_file":
-      return "i-lucide-file-pen";
+      return IconFilePen;
     case "edit_file":
-      return "i-lucide-file-pen-line";
+      return IconFilePenLine;
     case "list_dir":
-      return "i-lucide-folder";
+      return IconFolder;
     case "grep":
-      return "i-lucide-text-search";
+      return IconTextSearch;
     case "glob":
-      return "i-lucide-folder-search";
+      return IconFolderSearch;
     default:
-      return "i-lucide-wrench";
+      return IconWrench;
   }
 });
 

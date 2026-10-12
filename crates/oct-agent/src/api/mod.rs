@@ -4,6 +4,7 @@ pub mod background;
 pub mod chat;
 pub mod conversations;
 pub mod dto;
+pub mod embed;
 pub mod error;
 pub mod files;
 pub mod git;
@@ -14,10 +15,11 @@ pub mod providers;
 pub mod settings;
 pub mod subagents;
 
-use axum::Router;
+use axum::{Router, handler::HandlerWithoutStateExt};
 use dashmap::DashMap;
 use sqlx::SqlitePool;
 use std::sync::Arc;
+use tower_http::services::ServeDir;
 use utoipa::OpenApi;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_scalar::{Scalar, Servable};
@@ -124,6 +126,7 @@ pub struct AppState {
         files::FileEntryKind,
         providers::ProviderResponse,
         providers::ModelSummary,
+        providers::ApiKeyResponse,
     ))
 )]
 pub struct ApiDoc;
@@ -140,6 +143,14 @@ pub fn build_router(state: AppState) -> Router {
             "/api/openapi.json",
             axum::routing::get(move || async move { axum::Json(api_clone) }),
         )
+        // Embedded frontend bundle (packages/app/dist): hashed static assets
+        // via ServeDir, history-mode deep links via the SPA fallback. The
+        // fallback only sees requests unmatched above, so every API route
+        // keeps precedence; unknown /api and /scalar paths stay real 404s.
+        .fallback_service(
+            ServeDir::with_backend("", embed::EmbedBackend)
+                .fallback(embed::spa_fallback.into_service()),
+        )
         .with_state(state)
 }
 
@@ -147,6 +158,7 @@ fn api_routes(state: AppState) -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         // Providers & Models
         .routes(utoipa_axum::routes!(providers::list_providers))
+        .routes(utoipa_axum::routes!(providers::get_api_key))
         .routes(utoipa_axum::routes!(providers::create_provider))
         .routes(utoipa_axum::routes!(providers::update_provider))
         .routes(utoipa_axum::routes!(providers::delete_provider))

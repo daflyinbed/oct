@@ -24,6 +24,11 @@ pub struct ProviderResponse {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
+pub struct ApiKeyResponse {
+    pub api_key: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ModelSummary {
     pub model_id: String,
     pub name: String,
@@ -92,6 +97,31 @@ pub async fn list_providers(
     }
 
     Ok(Json(result))
+}
+
+#[utoipa::path(
+    get,
+    path = "/providers/{id}/api-key",
+    params(("id" = String, Path, description = "Provider ID")),
+    responses(
+        (status = 200, description = "Stored API key in plaintext", body = ApiKeyResponse),
+        (status = 404, description = "Provider not found or API key not set")
+    ),
+    tag = "providers"
+)]
+pub async fn get_api_key(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<ApiKeyResponse>> {
+    let provider = db::get_provider(&state.pool, &id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Provider not found".into()))?;
+    if provider.api_key.is_empty() {
+        return Err(AppError::NotFound("API key not set".into()));
+    }
+    Ok(Json(ApiKeyResponse {
+        api_key: provider.api_key,
+    }))
 }
 
 #[utoipa::path(

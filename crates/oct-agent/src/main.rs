@@ -139,6 +139,12 @@ async fn run_server(
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     info!("Server listening on http://0.0.0.0:{port}");
     info!("OpenAPI docs at http://0.0.0.0:{port}/scalar");
+    if !api::embed::frontend_available() {
+        tracing::warn!(
+            "frontend bundle not embedded — build it with `pnpm --filter frontend build` \
+             (release binaries embed packages/app/dist at compile time)"
+        );
+    }
 
     axum::serve(listener, app).await?;
 

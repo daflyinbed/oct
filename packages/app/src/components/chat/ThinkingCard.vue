@@ -7,7 +7,7 @@
       :aria-expanded="open"
       @click="open = !open"
     >
-      <span class="i-lucide-lightbulb block h-3.5 w-3.5 flex-none text-dim" />
+      <i-lucide-lightbulb class="block h-3.5 w-3.5 flex-none text-dim" />
       <span class="flex-none text-[12px] text-strong">思考</span>
       <span v-if="durationText" class="flex-none text-[12px] text-faint"
         >· {{ durationText }}</span
