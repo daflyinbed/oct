@@ -11,11 +11,7 @@ import {
   textDelta,
   toolCallStart,
 } from "./support/fixtures";
-import {
-  chatText,
-  COMPOSER_SELECTOR,
-  sendChatMessage,
-} from "./support/harness";
+import { chatText, sendChatMessage } from "./support/harness";
 import { getRequests, resetMock, setScenario } from "./support/mock";
 import type { MountedApp } from "./support/app";
 import type { components } from "@/api/schema";
@@ -82,12 +78,18 @@ async function boot(cut: ForkCut, draft: string | null, inherited = rows) {
   mounted = await mountApp();
   await mounted.router.push("/conversation/c1");
   await expect.poll(chatText).toContain("原回复");
-  await expect.element(page.getByTitle("分支当前会话")).toBeEnabled();
+  // 右上角「分支当前会话」已移除，助手消息下有分支按钮即视为就绪
+  await expect.element(page.getByTitle("从这条回复后分支")).toBeEnabled();
 }
 
 it("当前会话分支加入侧栏、展示来源，并能独立继续发送", async () => {
-  await boot({ kind: "head" }, null);
-  await page.getByTitle("分支当前会话").click();
+  const cut = {
+    kind: "message",
+    message_id: "a1",
+    side: "after",
+  } as const;
+  await boot(cut, null);
+  await page.getByTitle("从这条回复后分支").click();
   await expect
     .poll(() => mounted?.router.currentRoute.value.path)
     .toBe("/conversation/branch");
@@ -107,7 +109,7 @@ it("当前会话分支加入侧栏、展示来源，并能独立继续发送", a
   ).toHaveLength(0);
   expect(
     beforeSend.find((request) => request.path.endsWith("/fork"))?.body,
-  ).toMatchObject({ expected_revision: 2, cut: { kind: "head" } });
+  ).toMatchObject({ expected_revision: 2, cut });
   await sendChatMessage("分支追问");
   await expect.poll(chatText).toContain("分支新回复");
   await mounted!.router.push("/conversation/c1");
@@ -116,8 +118,8 @@ it("当前会话分支加入侧栏、展示来源，并能独立继续发送", a
 });
 
 it("删除来源后开放的分支立即移除来源链接，并保留分支标识", async () => {
-  await boot({ kind: "head" }, null);
-  await page.getByTitle("分支当前会话").click();
+  await boot({ kind: "message", message_id: "a1", side: "after" }, null);
+  await page.getByTitle("从这条回复后分支").click();
   await expect
     .poll(() => mounted?.router.currentRoute.value.path)
     .toBe("/conversation/branch");
@@ -143,30 +145,6 @@ it("删除来源后开放的分支立即移除来源链接，并保留分支标�
         request.path === "/api/projects/p1/conversations/c1",
     ),
   ).toBe(true);
-});
-
-it("用户消息前分支排除该消息，回填草稿且不自动发送", async () => {
-  const cut = { kind: "message", message_id: "u1", side: "before" } as const;
-  await boot(cut, "原问题", []);
-  await page.getByTitle("消息操作").nth(0).click();
-  await page.getByRole("menuitem", { name: "从这条消息前分支" }).click();
-  await expect
-    .poll(() => mounted?.router.currentRoute.value.path)
-    .toBe("/conversation/branch");
-  await expect
-    .element(page.getByPlaceholder(COMPOSER_SELECTOR))
-    .toHaveValue("原问题");
-  const requests = await getRequests();
-  expect(
-    requests.find((request) => request.path.endsWith("/fork"))?.body,
-  ).toMatchObject({ expected_revision: 2, cut });
-  expect(
-    requests.filter(
-      (request) =>
-        request.method === "POST" && request.path.endsWith("/messages"),
-    ),
-  ).toHaveLength(0);
-  await expect.poll(chatText).not.toContain("原回复");
 });
 
 it("回复后分支保留回复，继承的后台任务不带停止或查看输出按钮", async () => {
@@ -206,8 +184,7 @@ it("回复后分支保留回复，继承的后台任务不带停止或查看输�
   ];
   const cut = { kind: "message", message_id: "a1", side: "after" } as const;
   await boot(cut, null, taskRows);
-  await page.getByTitle("消息操作").nth(1).click();
-  await page.getByRole("menuitem", { name: "从这条回复后分支" }).click();
+  await page.getByTitle("从这条回复后分支").click();
   await expect
     .poll(() => mounted?.router.currentRoute.value.path)
     .toBe("/conversation/branch");
@@ -324,7 +301,6 @@ async function bootAbort(cut: ForkCut = { kind: "head" }) {
   await mounted.router.push("/conversation/c1");
   await sendChatMessage("run");
   await expect.poll(chatText).toContain("sleep 60");
-  await expect.element(page.getByTitle("分支当前会话")).toBeDisabled();
   await page.getByTitle("停止").click();
   await expect.element(page.getByTitle("从中断处分支")).toBeEnabled();
   await page.getByRole("button", { name: TERMINAL_CARD_HEADER }).click();
@@ -377,8 +353,7 @@ it("中断工具卡片的消息菜单传递闭合工具组的真实结果 id", a
     side: "after",
   } as const;
   await bootAbort(cut);
-  await page.getByTitle("消息操作").nth(1).click();
-  await page.getByRole("menuitem", { name: "从这一步后分支" }).click();
+  await page.getByTitle("从这一步后分支").click();
   await expect
     .poll(() => mounted?.router.currentRoute.value.path)
     .toBe("/conversation/abort-branch");

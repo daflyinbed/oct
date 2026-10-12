@@ -7,8 +7,11 @@
   <div v-else-if="message.role === 'notification'" class="py-1">
     <TaskNotificationDivider :part="notificationPart(message)" />
   </div>
-  <!-- 用户消息：IM 式右侧气泡；助手回合：扁平无头像（对齐 redesign demo） -->
-  <div v-else-if="message.role === 'user'" class="flex justify-end">
+  <!-- 用户消息：IM 式右侧气泡 + 气泡下操作行（复制 / 回退编辑）；助手回合：扁平无头像 -->
+  <div
+    v-else-if="message.role === 'user'"
+    class="flex flex-col items-end gap-1"
+  >
     <div
       class="max-w-[75%] whitespace-pre-wrap break-words border border-line-soft rounded-xl bg-panel px-3.5 py-2 text-[13px] text-neutral-10 leading-[1.55]"
     >
@@ -20,6 +23,26 @@
           >▌</span
         >
       </template>
+    </div>
+    <div v-if="!message.isStreaming" class="flex items-center gap-0.5">
+      <button
+        type="button"
+        :class="ACTION_BUTTON_CLASS"
+        :title="copied ? '已复制' : '复制'"
+        @click="copyMessage(message)"
+      >
+        <i-lucide-check v-if="copied" class="h-3.5 w-3.5" />
+        <i-lucide-copy v-else class="h-3.5 w-3.5" />
+      </button>
+      <button
+        v-if="revertEnabled && message.forkCut"
+        type="button"
+        :class="ACTION_BUTTON_CLASS"
+        title="回退并编辑"
+        @click="$emit('revert', message.forkCut!)"
+      >
+        <i-lucide-pencil class="h-3.5 w-3.5" />
+      </button>
     </div>
   </div>
   <div v-else class="space-y-2">
@@ -49,70 +72,32 @@
     <div v-if="message.isStreaming && message.parts.length === 0">
       <span class="animate-pulse">▌</span>
     </div>
-  </div>
-  <div
-    v-if="
-      (forkEnabled || revertEnabled) && message.forkCut && !message.isStreaming
-    "
-    class="flex justify-end"
-  >
-    <DropdownMenuRoot>
-      <DropdownMenuTrigger
-        class="h-6 w-6 flex items-center justify-center rounded text-faint control-focus hover:bg-neutral-2"
-        title="消息操作"
+    <!-- 助手回合操作行：复制正文（markdown 源）+ 从此处分支 -->
+    <div v-if="!message.isStreaming" class="flex items-center gap-0.5">
+      <button
+        type="button"
+        :class="ACTION_BUTTON_CLASS"
+        :title="copied ? '已复制' : '复制'"
+        @click="copyMessage(message)"
       >
-        <i-lucide-ellipsis class="h-3.5 w-3.5" />
-      </DropdownMenuTrigger>
-      <DropdownMenuPortal>
-        <DropdownMenuContent
-          align="end"
-          :side-offset="4"
-          class="z-50 min-w-[160px] border border-neutral-5 rounded-lg bg-surface p-1 shadow-[var(--oct-shadow)]"
-        >
-          <DropdownMenuItem
-            v-if="forkEnabled"
-            class="h-7 flex cursor-pointer items-center gap-2 rounded px-2 text-[12px] text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
-            @select="$emit('fork', message.forkCut!)"
-          >
-            <i-lucide-git-branch class="h-3.5 w-3.5" />
-            {{
-              message.role === "user"
-                ? "从这条消息前分支"
-                : message.forkCut.kind === "message" &&
-                    message.forkCut.message_id !== message.id
-                  ? "从这一步后分支"
-                  : "从这条回复后分支"
-            }}
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            v-if="revertEnabled"
-            class="h-7 flex cursor-pointer items-center gap-2 rounded px-2 text-[12px] text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
-            @select="$emit('revert', message.forkCut!)"
-          >
-            <i-lucide-undo-2 class="h-3.5 w-3.5" />
-            {{
-              message.role === "user"
-                ? "回退并编辑"
-                : message.forkCut.kind === "message" &&
-                    message.forkCut.message_id !== message.id
-                  ? "回退到这一步"
-                  : "回退到这条回复"
-            }}
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenuPortal>
-    </DropdownMenuRoot>
+        <i-lucide-check v-if="copied" class="h-3.5 w-3.5" />
+        <i-lucide-copy v-else class="h-3.5 w-3.5" />
+      </button>
+      <button
+        v-if="forkEnabled && message.forkCut"
+        type="button"
+        :class="ACTION_BUTTON_CLASS"
+        :title="forkTitle(message)"
+        @click="$emit('fork', message.forkCut!)"
+      >
+        <i-lucide-git-branch class="h-3.5 w-3.5" />
+      </button>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import {
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuPortal,
-  DropdownMenuRoot,
-  DropdownMenuTrigger,
-} from "reka-ui";
+import { ref } from "vue";
 import CompactionDivider from "./CompactionDivider.vue";
 import MarkdownText from "./MarkdownText.vue";
 import TaskCard from "./TaskCard.vue";
@@ -137,6 +122,39 @@ defineEmits<{
   fork: [cut: import("@/composables/chat/display").ForkCut];
   revert: [cut: import("@/composables/chat/display").ForkCut];
 }>();
+
+// 消息底部操作行的幽灵按钮样式（复制 / 编辑 / 分支共用）
+const ACTION_BUTTON_CLASS =
+  "flex h-6 w-6 items-center justify-center rounded text-faint control-focus transition-colors hover:bg-neutral-2 hover:text-neutral-10";
+
+const copied = ref(false);
+let copiedTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** 复制正文：取全部 text part（助手侧即 markdown 源文）。 */
+function messageText(message: DisplayMessage): string {
+  return message.parts
+    .flatMap((part) => (part.kind === "text" ? [part.text] : []))
+    .join("\n\n");
+}
+
+async function copyMessage(message: DisplayMessage) {
+  try {
+    await navigator.clipboard.writeText(messageText(message));
+  } catch {
+    return; // 剪贴板权限被拒等场景：静默失败，不弹反馈
+  }
+  copied.value = true;
+  clearTimeout(copiedTimer);
+  copiedTimer = setTimeout(() => (copied.value = false), 1500);
+}
+
+/** 分支按钮的提示文案与旧菜单一致：切点在中间工具组时是「这一步」。 */
+function forkTitle(message: DisplayMessage): string {
+  return message.forkCut?.kind === "message" &&
+    message.forkCut.message_id !== message.id
+    ? "从这一步后分支"
+    : "从这条回复后分支";
+}
 
 function partKey(part: DisplayPart, index: number): string {
   return part.kind === "tool_call" ? `c-${part.callId}` : `p-${index}`;

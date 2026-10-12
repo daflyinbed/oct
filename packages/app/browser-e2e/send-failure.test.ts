@@ -58,7 +58,9 @@ it.each(["http", "sse"] as const)(
     });
     mounted = await mountApp();
     await mounted.router.push("/conversation/c1");
-    await expect.element(page.getByTitle("分支当前会话")).toBeEnabled();
+    await expect
+      .element(page.getByPlaceholder("Ask Oct to do something..."))
+      .toBeEnabled();
 
     await sendChatMessage("will fail");
 
@@ -77,8 +79,7 @@ it.each(["http", "sse"] as const)(
       await expect.poll(chatText).toContain("partial reply");
     }
     await expect.element(page.getByTitle("发送（Enter）")).toBeInTheDocument();
-    // 失败后不再保留流式光标。
-    await expect.element(page.getByText("▌")).not.toBeInTheDocument();
-    await expect.element(page.getByTitle("分支当前会话")).toBeDisabled();
+    // 失败后不再保留流式光标（▋ 为 vue-stream-markdown 的 block caret）。
+    await expect.element(page.getByText("▋")).not.toBeInTheDocument();
   },
 );

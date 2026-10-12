@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "vitest";
-import { page, userEvent } from "vitest/browser";
+import { page } from "vitest/browser";
 import { mountApp } from "./support/app";
 import {
   conversationFixture,
@@ -53,12 +53,12 @@ const backup = {
   backup_at_revision: 4,
 };
 
-async function boot(side: "before" | "after" = "before", failure?: string) {
+async function boot(failure?: string) {
   await resetMock();
   const cut = {
     kind: "message",
-    message_id: side === "before" ? "u2" : "a1",
-    side,
+    message_id: "u2",
+    side: "before",
   } as const;
   const result: components["schemas"]["RevertResponse"] = {
     conversation: source,
@@ -66,7 +66,7 @@ async function boot(side: "before" | "after" = "before", failure?: string) {
     backup_conversation_id: "backup",
     context_revision: 5,
     cut,
-    draft: side === "before" ? "待编辑的问题" : null,
+    draft: "待编辑的问题",
   };
   await setScenario({
     projects: [projectFixture()],
@@ -116,13 +116,13 @@ async function boot(side: "before" | "after" = "before", failure?: string) {
   mounted = await mountApp();
   await mounted.router.push("/conversation/c1");
   await expect.poll(chatText).toContain("被撤销的回答");
-  await expect.element(page.getByTitle("分支当前会话")).toBeEnabled();
+  // 右上角「分支当前会话」已移除；用户消息下的编辑按钮即回退入口
+  await expect.element(page.getByTitle("回退并编辑").nth(1)).toBeEnabled();
 }
 
 it("用户消息回退保留原会话，回填草稿、创建只读备份并可从备份分支", async () => {
   await boot();
-  await page.getByTitle("消息操作").nth(2).click();
-  await page.getByRole("menuitem", { name: "回退并编辑" }).click();
+  await page.getByTitle("回退并编辑").nth(1).click();
   await expect
     .poll(async () => (await page.getByRole("dialog").element()).textContent)
     .toContain("隐藏 2 条消息");
@@ -159,12 +159,10 @@ it("用户消息回退保留原会话，回填草稿、创建只读备份并可�
   await expect
     .element(page.getByPlaceholder(COMPOSER_SELECTOR))
     .not.toBeInTheDocument();
-  await page.getByTitle("消息操作").nth(0).click();
-  await expect
-    .element(page.getByRole("menuitem", { name: "回退并编辑" }))
-    .not.toBeInTheDocument();
-  await userEvent.keyboard("{Escape}");
-  await page.getByTitle("分支当前会话").click();
+  // 只读备份里不提供回退编辑入口
+  await expect.element(page.getByTitle("回退并编辑")).not.toBeInTheDocument();
+  // 备份的唯一出路是分支：提示区的「分支后继续」按钮（head 切点）
+  await page.getByRole("button", { name: "分支后继续" }).click();
   await expect
     .poll(() => mounted!.router.currentRoute.value.path)
     .toBe("/conversation/branch");
@@ -186,30 +184,12 @@ it("用户消息回退保留原会话，回填草稿、创建只读备份并可�
   ).toBe(true);
 });
 
-it("回复后回退保留该回复，输入框为空且不自动发送", async () => {
-  await boot("after");
-  await page.getByTitle("消息操作").nth(1).click();
-  await page.getByRole("menuitem", { name: "回退到这条回复" }).click();
-  await page.getByRole("button", { name: "确认回退" }).click();
-  await expect.poll(chatText).toContain("第一答");
-  await expect.poll(chatText).not.toContain("被撤销的回答");
-  await expect
-    .element(page.getByPlaceholder(COMPOSER_SELECTOR))
-    .toHaveValue("");
-  expect(
-    (await getRequests()).some(
-      (r) => r.method === "POST" && r.path.endsWith("/messages"),
-    ),
-  ).toBe(false);
-});
-
 it.each([
   ["stale_revision", "刷新"],
   ["background_pending", "后台任务"],
 ])("%s 拒绝时保留当前历史，确认框显示原因", async (code, hint) => {
-  await boot("before", code);
-  await page.getByTitle("消息操作").nth(2).click();
-  await page.getByRole("menuitem", { name: "回退并编辑" }).click();
+  await boot(code);
+  await page.getByTitle("回退并编辑").nth(1).click();
   await page.getByRole("button", { name: "确认回退" }).click();
   await expect
     .poll(async () => (await page.getByRole("dialog").element()).textContent)

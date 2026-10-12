@@ -14,18 +14,6 @@
         >
         <span v-else>分支会话</span> · 与来源共用工作区文件
       </span>
-      <span v-else />
-      <button
-        type="button"
-        class="flex items-center gap-1 rounded px-2 py-1 text-dim control-focus hover:bg-neutral-2 disabled:opacity-40"
-        :disabled="!forkEnabled"
-        title="分支当前会话"
-        @click="$emit('fork', { kind: 'head' })"
-      >
-        <i-lucide-git-branch class="h-3.5 w-3.5" />{{
-          forkBusy ? "处理中…" : "分支当前会话"
-        }}
-      </button>
     </div>
     <div
       v-if="forkError"
@@ -98,7 +86,15 @@
 
     <!-- 输入区：模型选择器内嵌在输入框内（Zed agent 面板的做法） -->
     <div v-if="readOnly" class="flex-none px-7 py-4 text-[13px] text-dim">
-      此会话是只读备份。可通过「分支当前会话」创建分支后继续。
+      此会话是回退前的只读备份。
+      <button
+        type="button"
+        class="rounded text-accent-10 control-focus hover:underline disabled:opacity-40"
+        :disabled="!forkEnabled"
+        @click="$emit('fork', { kind: 'head' })"
+      >
+        分支后继续
+      </button>
     </div>
     <div v-else class="flex-none px-7 pb-3.5 pt-2.5">
       <div
