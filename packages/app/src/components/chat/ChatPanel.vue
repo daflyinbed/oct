@@ -451,6 +451,9 @@ const slashActiveKey = computed(
 );
 
 function handleInputKeydown(event: KeyboardEvent) {
+  // IME 选词态的 keydown（上屏 Enter、候选翻页方向键）不得触发任何快捷行为；
+  // keyCode 229 兜底部分浏览器/旧版 Safari。
+  if (event.isComposing || event.keyCode === 229) return;
   if (slashOpen.value) {
     if (event.key === "ArrowDown") {
       event.preventDefault();
