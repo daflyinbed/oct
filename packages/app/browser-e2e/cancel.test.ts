@@ -41,7 +41,7 @@ it("stop button cancels the hanging run and settles the card as errored", async 
   await page.getByTitle("停止").click();
 
   // cancelled 事件 + 流结束:光标消失、发送按钮恢复、卡片转为错误色
-  await expect.element(page.getByText("▌")).not.toBeInTheDocument();
+  await expect.element(page.getByText("▋")).not.toBeInTheDocument();
   await expect.element(page.getByTitle("发送（Enter）")).toBeInTheDocument();
   await expect
     .poll(async () => {

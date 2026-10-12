@@ -24,17 +24,12 @@
   </div>
   <div v-else class="space-y-2">
     <template v-for="(part, i) in message.parts" :key="partKey(part, i)">
-      <div
+      <!-- 模型正文按 markdown 渲染（vue-stream-markdown）；光标只在最后一个 part 上 -->
+      <MarkdownText
         v-if="part.kind === 'text'"
-        class="whitespace-pre-wrap break-words text-[13px] text-neutral-10 leading-[1.55]"
-      >
-        {{ part.text
-        }}<span
-          v-if="message.isStreaming && i === message.parts.length - 1"
-          class="animate-pulse"
-          >▌</span
-        >
-      </div>
+        :text="part.text"
+        :streaming="message.isStreaming && i === message.parts.length - 1"
+      />
       <ThinkingCard v-else-if="part.kind === 'reasoning'" :part="part" />
       <!-- 流式压缩事件落在当前流式消息的 parts 里（通常位于最前部） -->
       <CompactionDivider v-else-if="part.kind === 'compaction'" :part="part" />
@@ -119,6 +114,7 @@ import {
   DropdownMenuTrigger,
 } from "reka-ui";
 import CompactionDivider from "./CompactionDivider.vue";
+import MarkdownText from "./MarkdownText.vue";
 import TaskCard from "./TaskCard.vue";
 import TaskNotificationDivider from "./TaskNotificationDivider.vue";
 import ThinkingCard from "./ThinkingCard.vue";

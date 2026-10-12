@@ -19,30 +19,33 @@ it("streams assistant text across hostile chunk boundaries", async () => {
   await sendChatMessage("你好");
 
   // gate 之前的内容已渲染;流式光标与停止按钮在场(sending 状态可见)。
+  // 光标是 vue-stream-markdown 的 block caret「▋」。
   await expect.poll(chatText).toContain("你好");
   await expect.poll(chatText).toContain("Hello 世界🌍");
-  await expect.element(page.getByText("▌")).toBeInTheDocument();
+  await expect.element(page.getByText("▋")).toBeInTheDocument();
   await expect.element(page.getByTitle("停止")).toBeInTheDocument();
 
   await openGate("mid");
 
   // gate 之后的内容到达,流经 finish + EOF 收尾:光标消失、发送按钮恢复。
   await expect.poll(chatText).toContain("Hello 世界🌍 done");
-  await expect.element(page.getByText("▌")).not.toBeInTheDocument();
+  await expect.element(page.getByText("▋")).not.toBeInTheDocument();
   await expect.element(page.getByTitle("发送（Enter）")).toBeInTheDocument();
   await expect
     .element(page.getByPlaceholder("Ask Oct to do something..."))
     .toBeEnabled();
 
-  // 请求体带上自动选中的 provider spec(mock-prov 的 model-a)。
+  // 请求体带上自动选中的 provider spec(mock-prov 的 model-a);
+  // client_request_id 是每次发送生成的去重键,只断言字段在場。
   const requests = await getRequests();
   const post = requests.find(
     (r) => r.method === "POST" && r.path === "/api/conversations/c1/messages",
   );
-  expect(post?.body).toEqual({
+  expect(post?.body).toMatchObject({
     content: "你好",
     provider_spec: "mock-prov:model-a",
   });
+  expect(typeof post?.body.client_request_id).toBe("string");
 
   mounted.unmount();
 });

@@ -52,7 +52,7 @@ it("history replay renders identically to the finished live stream", async () =>
   await expect.poll(chatText).toContain("Done.");
   await expect.poll(chatText).toContain("读取文件");
   await expect.poll(chatText).toContain("a.txt");
-  await expect.poll(chatText).not.toContain("▌");
+  await expect.poll(chatText).not.toContain("▋");
   const liveText = await chatText();
 
   // 会话持久化后的形状(mock 直接给出与剧本对应的 StoredMessage)

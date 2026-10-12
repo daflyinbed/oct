@@ -14,6 +14,9 @@ import { openGate } from "./support/mock";
 // 工具卡片头按钮(execute_command 的 displayName 是"终端")
 const TOOL_CARD_HEADER = /终端/;
 
+// 第二个文本段渲染在卡片之后;markdown 会吃掉段首空格
+const TEXT_AFTER_TOOL_OUTPUT = /warn!\s*done/;
+
 // 工具卡片全生命周期:generating(参数分片累积)→ running(标题 + 实时
 // 输出)→ done(exit 徽标 + 返回内容)。三个阶段用 gate 分隔做确定性断言。
 it("tool call card: generating → running with live output → done", async () => {
@@ -71,10 +74,11 @@ it("tool call card: generating → running with live output → done", async () 
   await openGate("before-result");
 
   // done:exit 徽标、流后追加的第二个文本段(text_delta 落在卡片之后,
-  // 是独立的 text part,不与 "Let me run " 合并)、光标消失
+  // 是独立的 text part,不与 "Let me run " 合并;markdown 渲染会吃掉
+  // 段首空格)、光标消失(▋ 为 vue-stream-markdown 的 block caret)
   await expect.poll(chatText).toContain("exit 0");
-  await expect.poll(chatText).toContain("warn! done");
-  await expect.element(page.getByText("▌")).not.toBeInTheDocument();
+  await expect.poll(chatText).toMatch(TEXT_AFTER_TOOL_OUTPUT);
+  await expect.element(page.getByText("▋")).not.toBeInTheDocument();
 
   mounted.unmount();
 });
