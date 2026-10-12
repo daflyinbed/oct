@@ -43,6 +43,8 @@ pub(crate) fn derive_child_toolset(
 /// The run supervisor: await the loop, persist the terminal
 /// state, then release the conversation's occupancy — in that order, so a
 /// new run can never start before the previous one's outcome is on disk.
+#[allow(clippy::too_many_arguments)] // Supervisor/spawner entry: each argument is a distinct
+// input of the operation; a param struct would only shuffle names.
 pub(super) async fn supervise(
     pool: SqlitePool,
     run_id: String,

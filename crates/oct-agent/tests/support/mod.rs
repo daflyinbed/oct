@@ -306,6 +306,8 @@ pub async fn spawn_agent_full(
 /// permission suites park their ScriptedModel turns on the
 /// gate's approval flow and answer through the very registry the gate
 /// holds.
+#[allow(clippy::too_many_arguments)] // Supervisor/spawner entry: each argument is a distinct
+// input of the operation; a param struct would only shuffle names.
 pub async fn spawn_agent_with_gate(
     model: ScriptedModel,
     tools: Vec<Box<dyn oct_agent::tools::AgentTool>>,
@@ -482,7 +484,7 @@ impl TestApp {
             approvals: Arc::new(oct_agent::permissions::registry::ApprovalRegistry::new()),
             gates: Arc::new(dashmap::DashMap::new()),
             prompt_envs: Arc::new(dashmap::DashMap::new()),
-        prompt_env_locks: dashmap::DashMap::new(),
+            prompt_env_locks: dashmap::DashMap::new(),
         });
         subagents.set_service(runs.clone());
         background.set_service(runs.clone());

@@ -15,7 +15,7 @@ fn validate_additional_dirs(dirs: &[String]) -> Result<(), AppError> {
     // non-empty relative path is a contract violation worth rejecting.
     if let Some(dir) = dirs.iter().find_map(|d| {
         let d = d.trim();
-        (!d.is_empty() && !std::path::Path::new(d).is_absolute()).then(|| d)
+        (!d.is_empty() && !std::path::Path::new(d).is_absolute()).then_some(d)
     }) {
         return Err(AppError::BadRequest(format!(
             "additional_dirs entries must be absolute paths: '{dir}'"

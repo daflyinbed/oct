@@ -4,11 +4,11 @@
 //! the callsites while the sink is enabled, and the poisoned-`never`
 //! scenario this test reproduces could never occur.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use oct_llm_provider::wire::{self, WireLogControl, TARGET};
+use oct_llm_provider::wire::{self, TARGET, WireLogControl};
 
 /// One emission point, deliberately a single function: every call shares
 /// the same tracing callsite, whose FIRST evaluation happens while the sink
@@ -23,8 +23,7 @@ fn install_off_start() -> (WireLogControl, PathBuf) {
     static INSTALLED: OnceLock<(WireLogControl, PathBuf)> = OnceLock::new();
     INSTALLED
         .get_or_init(|| {
-            let dir =
-                std::env::temp_dir().join(format!("oct-wire-toggle-{}", std::process::id()));
+            let dir = std::env::temp_dir().join(format!("oct-wire-toggle-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             let control = wire::init(dir.clone(), false);
             use tracing_subscriber::prelude::*;
@@ -38,7 +37,10 @@ fn install_off_start() -> (WireLogControl, PathBuf) {
 
 /// Bounded poll for the writer thread (same rationale as the other wire
 /// tests: a plain std thread + mpsc, nothing to await).
-fn wait_for_lines(dir: &PathBuf, pred: impl Fn(&[serde_json::Value]) -> bool) -> Vec<serde_json::Value> {
+fn wait_for_lines(
+    dir: &Path,
+    pred: impl Fn(&[serde_json::Value]) -> bool,
+) -> Vec<serde_json::Value> {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let lines: Vec<serde_json::Value> = std::fs::read_to_string(dir.join("toggle-probe.jsonl"))
@@ -69,7 +71,10 @@ fn callsite_first_seen_off_recovers_after_enable_and_hard_disable_pins() {
     assert!(control.enabled());
     emit_probe("while-on");
     let lines = wait_for_lines(&dir, |ls| ls.len() == 1);
-    assert_eq!(lines[0]["kind"], "while-on", "only the post-enable line exists");
+    assert_eq!(
+        lines[0]["kind"], "while-on",
+        "only the post-enable line exists"
+    );
 
     // Hard-disable pins the sink off for the rest of the process: later
     // set_enabled calls are rejected outright. The disabled event is

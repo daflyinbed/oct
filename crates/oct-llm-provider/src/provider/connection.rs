@@ -55,10 +55,7 @@ mod tests {
         let config = ConnectionConfig::from_row_fields(Some("  "), "");
         assert_eq!(config, ConnectionConfig::new());
 
-        let config = ConnectionConfig::from_row_fields(
-            Some(" http://localhost:9/v1 "),
-            " sk-key ",
-        );
+        let config = ConnectionConfig::from_row_fields(Some(" http://localhost:9/v1 "), " sk-key ");
         assert_eq!(config.base_url.as_deref(), Some("http://localhost:9/v1"));
         assert_eq!(config.api_key.as_deref(), Some("sk-key"));
     }

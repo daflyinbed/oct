@@ -403,18 +403,18 @@ impl McpManager {
         let gate = self.gate_for(id);
         let _guard = gate.lock().await;
         if let Some(seen) = only_if_fingerprint
-            && !self
+            && self
                 .servers
                 .get(id)
-                .is_some_and(|e| e.value().fingerprint.as_deref() == Some(seen))
+                .is_none_or(|e| e.value().fingerprint.as_deref() != Some(seen))
         {
             return;
         }
         let mut connections = self.take_retired(id);
-        if let Some((_, mut managed)) = self.servers.remove(id) {
-            if let Some(connection) = managed.connection.take() {
-                connections.push(connection);
-            }
+        if let Some((_, mut managed)) = self.servers.remove(id)
+            && let Some(connection) = managed.connection.take()
+        {
+            connections.push(connection);
         }
         futures_util::future::join_all(connections.iter().map(|connection| connection.shutdown()))
             .await;

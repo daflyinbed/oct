@@ -1175,7 +1175,7 @@ mod tests {
             };
             let response = json!({"jsonrpc": "2.0", "id": id, "result": result});
             write_half
-                .write_all(format!("{}\n", response.to_string()).as_bytes())
+                .write_all(format!("{}\n", response).as_bytes())
                 .await?;
             if method == "initialize" && announce_tools_changed {
                 for _ in 0..2 {

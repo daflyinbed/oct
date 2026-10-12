@@ -25,7 +25,13 @@ pub async fn direct(
     // alias the call came in under: permission rules are written against
     // current server names and must keep matching across frozen renames.
     match gate
-        .check(tool.authz_name(), &args, ctx.call_id(), hub, ctx.cancel_token())
+        .check(
+            tool.authz_name(),
+            &args,
+            ctx.call_id(),
+            hub,
+            ctx.cancel_token(),
+        )
         .await
     {
         GateVerdict::Denied(output) => output,

@@ -296,10 +296,10 @@ mod tests {
         assert!(delete_mcp_server_token(&pool, server_id).await.unwrap());
         assert!(!delete_mcp_server_token(&pool, server_id).await.unwrap());
         assert!(
-            !get_mcp_server_token(&pool, server_id)
+            get_mcp_server_token(&pool, server_id)
                 .await
                 .unwrap()
-                .is_some(),
+                .is_none(),
             "row gone after delete"
         );
 
@@ -323,10 +323,10 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            !get_mcp_server_token(&pool, server_id)
+            get_mcp_server_token(&pool, server_id)
                 .await
                 .unwrap()
-                .is_some(),
+                .is_none(),
             "token row cascaded with the server row"
         );
 

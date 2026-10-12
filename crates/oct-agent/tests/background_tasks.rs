@@ -209,7 +209,7 @@ async fn background_task_completes_and_wakes_the_model() {
     // message, tail inlined) and the wake turn consumes it.
     wait_until("the wake request carrying the notification", || async {
         let requests = llm.requests();
-        request_contains(&requests, "<task-notification>").then(|| requests)
+        request_contains(&requests, "<task-notification>").then_some(requests)
     })
     .await;
     let requests = llm.requests();
@@ -298,7 +298,7 @@ async fn cancelling_the_run_does_not_kill_the_background_task() {
     .await;
     let requests = wait_until("the notification wake", || async {
         let requests = llm.requests();
-        request_contains(&requests, "<task-notification>").then(|| requests)
+        request_contains(&requests, "<task-notification>").then_some(requests)
     })
     .await;
     assert!(request_contains(&requests, "exit_code: 0"));
@@ -334,7 +334,7 @@ async fn http_cancel_settles_the_task_as_cancelled() {
     // The cancelled completion still notifies (the envelope promised it).
     let requests = wait_until("the cancelled notification wake", || async {
         let requests = llm.requests();
-        request_contains(&requests, "status: cancelled").then(|| requests)
+        request_contains(&requests, "status: cancelled").then_some(requests)
     })
     .await;
     assert!(request_contains(&requests, &task_id));
@@ -419,7 +419,7 @@ async fn restart_marks_lost_and_send_catch_up_notifies() {
     assert_eq!(resp.status(), 200, "the catch-up send must start a run");
     let requests = wait_until("the catch-up request", || async {
         let requests = llm.requests();
-        request_contains(&requests, "interrupted by a backend restart").then(|| requests)
+        request_contains(&requests, "interrupted by a backend restart").then_some(requests)
     })
     .await;
     assert!(request_contains(&requests, &task_id));

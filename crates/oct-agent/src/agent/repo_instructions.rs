@@ -490,7 +490,10 @@ mod tests {
             paths_of(&files),
             vec![
                 root.join("AGENTS.md").canonicalize().unwrap(),
-                root.join("crates").join("AGENTS.md").canonicalize().unwrap(),
+                root.join("crates")
+                    .join("AGENTS.md")
+                    .canonicalize()
+                    .unwrap(),
                 nested.join("AGENTS.md").canonicalize().unwrap(),
             ],
             "shallow → deep, git root first, working dir last"
@@ -514,7 +517,10 @@ mod tests {
         write(&nested.join("AGENTS.md"), "inner");
 
         let files = discover_chain(&nested, None, &[]);
-        assert_eq!(paths_of(&files), vec![nested.join("AGENTS.md").canonicalize().unwrap()]);
+        assert_eq!(
+            paths_of(&files),
+            vec![nested.join("AGENTS.md").canonicalize().unwrap()]
+        );
     }
 
     #[test]
@@ -527,7 +533,10 @@ mod tests {
 
         // A git root that is not an ancestor of the working dir is ignored.
         let files = discover_chain(&nested, Some(&elsewhere), &[]);
-        assert_eq!(paths_of(&files), vec![nested.join("AGENTS.md").canonicalize().unwrap()]);
+        assert_eq!(
+            paths_of(&files),
+            vec![nested.join("AGENTS.md").canonicalize().unwrap()]
+        );
     }
 
     #[test]
@@ -647,8 +656,7 @@ mod tests {
         // directories resolve to the same canonical file, which must load
         // exactly once.
         #[cfg(unix)]
-        std::os::unix::fs::symlink(working.join("AGENTS.md"), root.join("AGENTS.md"))
-            .unwrap();
+        std::os::unix::fs::symlink(working.join("AGENTS.md"), root.join("AGENTS.md")).unwrap();
 
         let files = discover_chain(&working, Some(&root), &[]);
         assert_eq!(
@@ -723,11 +731,13 @@ mod tests {
         let outside = dir_of(&env, &["outside"]);
         write(&outside.join("secrets.md"), "do not load me");
         #[cfg(unix)]
-        std::os::unix::fs::symlink(outside.join("secrets.md"), working.join("AGENTS.md"))
-            .unwrap();
+        std::os::unix::fs::symlink(outside.join("secrets.md"), working.join("AGENTS.md")).unwrap();
 
         let files = discover_chain(&working, None, &[]);
-        assert!(files.is_empty(), "a symlink out of the directory must not load");
+        assert!(
+            files.is_empty(),
+            "a symlink out of the directory must not load"
+        );
     }
 
     #[test]
@@ -736,11 +746,7 @@ mod tests {
         // Nothing exists at all.
         assert!(discover_chain(env.path(), None, &[]).is_empty());
         // A nonexistent additional root is skipped without an error.
-        let files = discover_chain(
-            env.path(),
-            None,
-            &[env.path().join("does-not-exist")],
-        );
+        let files = discover_chain(env.path(), None, &[env.path().join("does-not-exist")]);
         assert!(files.is_empty());
     }
 
@@ -764,15 +770,25 @@ mod tests {
                 .block
                 .contains("Each file applies within its own directory subtree")
         );
-        assert!(rendered
-            .block
-            .contains("the deeper (more specific) file wins"));
+        assert!(
+            rendered
+                .block
+                .contains("the deeper (more specific) file wins")
+        );
         // Scope discipline: an additional root's file must NOT be told to
         // override the main repository's.
         assert!(!rendered.block.contains("Later files"));
-        assert!(rendered.block.contains("Subdirectories may contain their own AGENTS.md"));
+        assert!(
+            rendered
+                .block
+                .contains("Subdirectories may contain their own AGENTS.md")
+        );
         let path = files[0].path.display().to_string();
-        assert!(rendered.block.contains(&format!("<file path=\"{path}\">\nline1\nline2\n</file>")));
+        assert!(
+            rendered
+                .block
+                .contains(&format!("<file path=\"{path}\">\nline1\nline2\n</file>"))
+        );
         assert!(rendered.block.ends_with("</repo-instructions>\n"));
         // The manifest mirrors the loaded file.
         assert_eq!(rendered.files.len(), 1);
@@ -813,7 +829,11 @@ mod tests {
         assert!(status.success(), "git init must succeed for the test");
 
         let root = detect_git_root(&repo).await.expect("git root detected");
-        assert_eq!(root, repo.canonicalize().unwrap(), "nested dir maps to the repo root");
+        assert_eq!(
+            root,
+            repo.canonicalize().unwrap(),
+            "nested dir maps to the repo root"
+        );
 
         // Outside any repository: None (the temp dir's parent chain has no
         // .git — tempfile places it under the system temp root).

@@ -627,10 +627,10 @@ fn spawn_writer(sink: Arc<Sink>, rx: Receiver<(Option<String>, String)>) {
                 }
             }
             let dropped = sink.dropped.load(Ordering::Relaxed);
-            if dropped > 0 {
-                if let Ok(mut meta) = open_append(&sink.dir.join("_meta.jsonl")) {
-                    let _ = writeln!(meta, "{{\"kind\":\"llm_wire_drop\",\"dropped\":{dropped}}}");
-                }
+            if dropped > 0
+                && let Ok(mut meta) = open_append(&sink.dir.join("_meta.jsonl"))
+            {
+                let _ = writeln!(meta, "{{\"kind\":\"llm_wire_drop\",\"dropped\":{dropped}}}");
             }
         })
         .expect("spawn llm-wire-writer thread");

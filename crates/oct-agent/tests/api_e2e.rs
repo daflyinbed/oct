@@ -249,11 +249,10 @@ async fn provider_delete_removes_custom_only_and_cascades_models() {
     let resp = app.get_json("/api/providers").await;
     let providers: Vec<Value> = resp.json().await.unwrap();
     assert!(providers.iter().all(|p| p["id"] != "custom-one"));
-    let models =
-        sqlx::query("SELECT model_id FROM models WHERE provider_id = 'custom-one'")
-            .fetch_all(&app.pool)
-            .await
-            .unwrap();
+    let models = sqlx::query("SELECT model_id FROM models WHERE provider_id = 'custom-one'")
+        .fetch_all(&app.pool)
+        .await
+        .unwrap();
     assert!(models.is_empty());
 
     // Unknown id → 404.
@@ -2963,7 +2962,10 @@ async fn instructions_reload_returns_manifest_and_refreshes_the_next_prompt() {
 
     // First send freezes the environment with the v1 text in the prompt head.
     let resp = app.send_message(&conv, "hello").await;
-    assert_eq!(*event_types(&app.read_sse(resp).await).last().unwrap(), "finish");
+    assert_eq!(
+        *event_types(&app.read_sse(resp).await).last().unwrap(),
+        "finish"
+    );
     let system1 = llm.requests()[0]["messages"][0]["content"]
         .as_str()
         .expect("system message")
@@ -2974,7 +2976,10 @@ async fn instructions_reload_returns_manifest_and_refreshes_the_next_prompt() {
     // The reload reports exactly what is now frozen: the file manifest with
     // budgeted byte counts, and the (empty) MCP composition.
     let resp = app
-        .post_json(&format!("/api/conversations/{conv}/instructions/reload"), serde_json::json!(null))
+        .post_json(
+            &format!("/api/conversations/{conv}/instructions/reload"),
+            serde_json::json!(null),
+        )
         .await;
     assert_eq!(resp.status(), 200);
     let manifest: Value = resp.json().await.expect("reload manifest json");
@@ -2989,17 +2994,26 @@ async fn instructions_reload_returns_manifest_and_refreshes_the_next_prompt() {
     // guarantee)…
     std::fs::write(&agents_md, "RULE-v2-EDITED").unwrap();
     let resp = app.send_message(&conv, "again").await;
-    assert_eq!(*event_types(&app.read_sse(resp).await).last().unwrap(), "finish");
+    assert_eq!(
+        *event_types(&app.read_sse(resp).await).last().unwrap(),
+        "finish"
+    );
     let system2 = llm.requests()[1]["messages"][0]["content"]
         .as_str()
         .expect("system message")
         .to_string();
-    assert!(system2.contains("RULE-v1"), "no refresh point → frozen block");
+    assert!(
+        system2.contains("RULE-v1"),
+        "no refresh point → frozen block"
+    );
     assert!(!system2.contains("RULE-v2-EDITED"));
 
     // …while a reload after the edit swaps the block for the next run.
     let resp = app
-        .post_json(&format!("/api/conversations/{conv}/instructions/reload"), serde_json::json!(null))
+        .post_json(
+            &format!("/api/conversations/{conv}/instructions/reload"),
+            serde_json::json!(null),
+        )
         .await;
     assert_eq!(resp.status(), 200);
     let manifest: Value = resp.json().await.expect("reload manifest json");
@@ -3012,12 +3026,18 @@ async fn instructions_reload_returns_manifest_and_refreshes_the_next_prompt() {
         finish_chunk("stop"),
     ])]);
     let resp = app.send_message(&conv, "once more").await;
-    assert_eq!(*event_types(&app.read_sse(resp).await).last().unwrap(), "finish");
+    assert_eq!(
+        *event_types(&app.read_sse(resp).await).last().unwrap(),
+        "finish"
+    );
     let system3 = llm.requests()[2]["messages"][0]["content"]
         .as_str()
         .expect("system message")
         .to_string();
-    assert!(system3.contains("RULE-v2-EDITED"), "reload replaced the frozen block");
+    assert!(
+        system3.contains("RULE-v2-EDITED"),
+        "reload replaced the frozen block"
+    );
 
     // Unknown conversation → 404.
     let resp = app

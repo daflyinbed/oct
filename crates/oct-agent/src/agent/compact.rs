@@ -377,6 +377,8 @@ pub enum CompactAttempt {
 /// run's system prompt and tool specs in the rebuilt estimate, the run's hub
 /// and cancellation token wired through. Loop-owned state lives on the
 /// [`ContextState`] the wrapper mutates (marker splice + anchor reset).
+#[allow(clippy::too_many_arguments)] // Supervisor/spawner entry: each argument is a distinct
+// input of the operation; a param struct would only shuffle names.
 pub async fn run_auto_compaction(
     model: &dyn ChatModel,
     pool: &sqlx::SqlitePool,

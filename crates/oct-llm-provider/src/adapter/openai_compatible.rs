@@ -163,10 +163,10 @@ impl ChatModel for OpenAiCompatibleChatModel {
             &self.config.model_info.model_id,
             self.endpoint(),
         );
-        if wire::enabled() {
-            if let Ok(body) = serde_json::to_string(&wire) {
-                wire::log_request(&ctx, &body, false);
-            }
+        if wire::enabled()
+            && let Ok(body) = serde_json::to_string(&wire)
+        {
+            wire::log_request(&ctx, &body, false);
         }
         let response = self
             .client
@@ -210,10 +210,10 @@ impl ChatModel for OpenAiCompatibleChatModel {
             &self.config.model_info.model_id,
             self.endpoint(),
         );
-        if wire::enabled() {
-            if let Ok(body) = serde_json::to_string(&wire) {
-                wire::log_request(&ctx, &body, true);
-            }
+        if wire::enabled()
+            && let Ok(body) = serde_json::to_string(&wire)
+        {
+            wire::log_request(&ctx, &body, true);
         }
         let response = self
             .client
@@ -256,10 +256,9 @@ impl ChatModel for OpenAiCompatibleChatModel {
                     guard.mark_error();
                     ModelError::transport(message)
                 })?;
-                for event in decoder.push(&chunk).map_err(|err| {
+                for event in decoder.push(&chunk).inspect_err(|err| {
                     wire::log_error(&ctx, "parse", None, &err.to_string(), None);
                     guard.mark_error();
-                    err
                 })? {
                     wire::log_sse(&ctx, guard.next_seq(), &event);
                     guard.count();
@@ -269,10 +268,9 @@ impl ChatModel for OpenAiCompatibleChatModel {
                 }
             }
 
-            for event in decoder.finish().map_err(|err| {
+            for event in decoder.finish().inspect_err(|err| {
                 wire::log_error(&ctx, "parse", None, &err.to_string(), None);
                 guard.mark_error();
-                err
             })? {
                 wire::log_sse(&ctx, guard.next_seq(), &event);
                 guard.count();
@@ -295,10 +293,9 @@ fn parse_openai_sse_with_wire(
     guard: &wire::StreamEndGuard,
     tool_state: &mut HashMap<String, OpenAiToolCallAccumulator>,
 ) -> Result<Vec<StreamEvent>, ModelError> {
-    parse_openai_sse_event_with_state(event, tool_state).map_err(|err| {
+    parse_openai_sse_event_with_state(event, tool_state).inspect_err(|err| {
         wire::log_error(ctx, "parse", None, &err.to_string(), None);
         guard.mark_error();
-        err
     })
 }
 

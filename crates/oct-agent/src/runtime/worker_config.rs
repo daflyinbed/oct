@@ -86,13 +86,11 @@ pub(crate) fn restore_tools_lenient(
             .iter()
             .find(|tool| tool.selector() == selected.selector)
         {
-            Some(tool) => restored.push(
-                Arc::new(AliasedTool {
-                    name: selected.exposed_name.clone(),
-                    description: frozen_presentation(selected),
-                    inner: tool.clone(),
-                }) as Arc<dyn AgentTool>
-            ),
+            Some(tool) => restored.push(Arc::new(AliasedTool {
+                name: selected.exposed_name.clone(),
+                description: frozen_presentation(selected),
+                inner: tool.clone(),
+            }) as Arc<dyn AgentTool>),
             None => missing += 1,
         }
     }
@@ -362,10 +360,13 @@ mod tests {
         assert_eq!(restored[0].name(), "mcp__old-name__search");
         // Dispatch still reaches the live instance (same selector → same
         // server), and the schema/description ride along unchanged.
-        assert_eq!(restored[0].selector(), ToolSelector::Mcp {
-            server_id: "a".into(),
-            tool: "search".into(),
-        });
+        assert_eq!(
+            restored[0].selector(),
+            ToolSelector::Mcp {
+                server_id: "a".into(),
+                tool: "search".into(),
+            }
+        );
         assert!(restored[0].validate_input(&json!({})).is_err());
     }
 }

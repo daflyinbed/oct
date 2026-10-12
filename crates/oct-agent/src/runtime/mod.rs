@@ -789,9 +789,10 @@ impl RunService {
                 .unwrap_or_else(|| conversation_id.clone());
         let prompt_env = match parent_env {
             Some(env) => (*env).clone(),
-            None => self
-                .resolve_prompt_env(&root_conversation_id, &project)
-                .await,
+            None => {
+                self.resolve_prompt_env(&root_conversation_id, &project)
+                    .await
+            }
         };
         // Same generation rule as the root assembly, against the child's OWN
         // view: an inherited environment still rejects anchors measured

@@ -380,6 +380,8 @@ impl BackgroundTaskManager {
 /// deliberate kill / the watchdog / the runtime cap), settles the row
 /// one-shot, closes the done watch, drops the registry entry and kicks the
 /// notification drainer. Owns the only `watch::Sender`.
+#[allow(clippy::too_many_arguments)] // Supervisor/spawner entry: each argument is a distinct
+// input of the operation; a param struct would only shuffle names.
 async fn supervise_task(
     manager: Arc<BackgroundTaskManager>,
     task_id: String,

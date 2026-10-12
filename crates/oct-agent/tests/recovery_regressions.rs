@@ -151,10 +151,10 @@ async fn cancel_during_registration_kills_unregistered_process() {
     });
     let pid = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
-            if let Ok(s) = tokio::fs::read_to_string(&pid_file).await {
-                if let Ok(pid) = s.trim().parse::<i32>() {
-                    break pid;
-                }
+            if let Ok(s) = tokio::fs::read_to_string(&pid_file).await
+                && let Ok(pid) = s.trim().parse::<i32>()
+            {
+                break pid;
             }
             tokio::task::yield_now().await;
         }
@@ -200,10 +200,10 @@ async fn cancel_kills_term_ignoring_descendant() {
         .unwrap();
     let pid = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
-            if let Ok(s) = tokio::fs::read_to_string(&pid_file).await {
-                if let Ok(pid) = s.trim().parse::<i32>() {
-                    break pid;
-                }
+            if let Ok(s) = tokio::fs::read_to_string(&pid_file).await
+                && let Ok(pid) = s.trim().parse::<i32>()
+            {
+                break pid;
             }
             tokio::task::yield_now().await;
         }

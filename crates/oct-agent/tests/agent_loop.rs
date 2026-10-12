@@ -3725,8 +3725,8 @@ async fn permission_worker_ask_waits_for_user_decision() {
 
 // `compact`, `msg_db` and `Message` are already imported by the compaction
 // section above; everything else this section needs is pulled here.
-use oct_agent::agent::repo_instructions::PromptEnvRefresh;
 use oct_agent::agent::MicrocompactTrigger;
+use oct_agent::agent::repo_instructions::PromptEnvRefresh;
 use oct_agent::context::ContextEntry;
 use oct_agent::runtime::{RootRunRequest, RunService};
 
@@ -3854,7 +3854,11 @@ fn plain_turn_model() -> ScriptedModel {
 /// The system prompt text of the observer's n-th recorded request.
 fn system_prompt_at(observer: &ScriptedObserver, index: usize) -> String {
     let requests = observer.requests();
-    assert!(requests.len() > index, "model saw at least {} requests", index + 1);
+    assert!(
+        requests.len() > index,
+        "model saw at least {} requests",
+        index + 1
+    );
     let message = &requests[index].messages[0];
     assert_eq!(message.role, Role::System);
     message
@@ -3889,16 +3893,24 @@ async fn repo_instructions_block_enters_the_system_prompt() {
 
     let observer = run_root_turn(&env, &runs, &conv_id, plain_turn_model(), 8192).await;
     let system = system_prompt_at(&observer, 0);
-    assert!(system.contains("<repo-instructions>"), "block wrapper present");
-    assert!(system.contains("Use tabs in this repo."), "file content present");
+    assert!(
+        system.contains("<repo-instructions>"),
+        "block wrapper present"
+    );
+    assert!(
+        system.contains("Use tabs in this repo."),
+        "file content present"
+    );
     assert!(system.contains("</repo-instructions>"));
     // The file tag carries the absolute path.
     let tagged = format!("path=\"{}\"", env.dir.path().join("AGENTS.md").display());
     assert!(system.contains(&tagged), "absolute path in the file tag");
     // The block closes the prompt: nothing after the wrapper's end.
-    assert!(system
-        .rfind("</repo-instructions>")
-        .is_some_and(|start| system[start + "</repo-instructions>".len()..].trim().is_empty()));
+    assert!(system.rfind("</repo-instructions>").is_some_and(|start| {
+        system[start + "</repo-instructions>".len()..]
+            .trim()
+            .is_empty()
+    }));
 }
 
 #[tokio::test]
@@ -3924,7 +3936,10 @@ async fn claude_md_loads_only_as_the_same_directory_fallback() {
     let (_, _, observer) = runs_setup(&env).await;
     let system = system_prompt_at(&observer, 0);
     assert!(system.contains("agents rules"));
-    assert!(!system.contains("claude rules"), "no double load per directory");
+    assert!(
+        !system.contains("claude rules"),
+        "no double load per directory"
+    );
 }
 
 #[tokio::test]
@@ -3944,7 +3959,10 @@ async fn frozen_repo_block_is_reused_byte_for_byte_across_runs() {
     std::fs::write(env.dir.path().join("AGENTS.md"), "RULE-v2").unwrap();
     let second = run_root_turn(&env, &runs, &conv_id, plain_turn_model(), 8192).await;
     let system2 = system_prompt_at(&second, 0);
-    assert_eq!(system1, system2, "clean entry reuses the block byte-for-byte");
+    assert_eq!(
+        system1, system2,
+        "clean entry reuses the block byte-for-byte"
+    );
 }
 
 #[tokio::test]
@@ -3961,7 +3979,11 @@ async fn manual_compaction_refreshes_the_frozen_block_on_the_next_run() {
     // (window 1024 → 102 tokens) cannot keep verbatim.
     for _ in 0..5 {
         for role_text in [("user", "x".repeat(160)), ("assistant", "y".repeat(160))] {
-            let role = if role_text.0 == "user" { Role::User } else { Role::Assistant };
+            let role = if role_text.0 == "user" {
+                Role::User
+            } else {
+                Role::Assistant
+            };
             oct_agent::db::messages::insert_message(
                 &env.pool,
                 &conv_id,

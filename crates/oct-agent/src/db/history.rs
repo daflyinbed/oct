@@ -133,8 +133,7 @@ async fn revert_once(
         return Ok(response);
     }
     let source = super::conversations::get_conversation_in_tx(&mut tx, &source.id)
-        .await
-        .map_err(anyhow::Error::from)?
+        .await?
         .ok_or_else(|| AppError::NotFound("Conversation not found".into()))?;
     source.ensure_writable()?;
     let revision = sqlx::query_scalar!(
@@ -180,8 +179,7 @@ async fn revert_once(
     );
     let mut backup =
         super::conversations::create_conversation_in_tx(&mut tx, &source.project_id, Some(&title))
-            .await
-            .map_err(anyhow::Error::from)?;
+            .await?;
     sqlx::query!("UPDATE conversations SET origin_kind = 'revert_backup', permission_mode = $1, context_revision = $2, backup_of_conversation_id = $3, backup_at_revision = $2 WHERE id = $4", source.permission_mode, revision, source.id, backup.id)
         .execute(&mut *tx).await.map_err(anyhow::Error::from)?;
     backup.origin_kind = "revert_backup".into();
@@ -477,9 +475,9 @@ async fn normalize(
     let mut prefix = Vec::new();
     for row in rows
         .iter()
-        .cloned()
         .take(length)
-        .filter(|row| row.appended_at_revision <= cut_revision)
+        .filter(|&row| row.appended_at_revision <= cut_revision)
+        .cloned()
     {
         let mut row = row;
         if row
@@ -562,10 +560,10 @@ impl PrefixValidator {
                     }
                     self.pending.insert(call.id);
                 }
-                ContentPart::ToolResult(result) => {
-                    if row.role != "tool" || !self.pending.remove(&result.call_id) {
-                        return Err(invalid("Unpaired tool result in fork history"));
-                    }
+                ContentPart::ToolResult(result)
+                    if (row.role != "tool" || !self.pending.remove(&result.call_id)) =>
+                {
+                    return Err(invalid("Unpaired tool result in fork history"));
                 }
                 _ => {}
             }

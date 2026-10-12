@@ -734,7 +734,9 @@ fn repo_block_of(request: &Value) -> String {
     let system = request["messages"][0]["content"]
         .as_str()
         .expect("system message");
-    let start = system.find("<repo-instructions>").expect("repo block present");
+    let start = system
+        .find("<repo-instructions>")
+        .expect("repo block present");
     let end = start
         + system[start..]
             .find("</repo-instructions>")
@@ -755,7 +757,11 @@ async fn worker_prompt_carries_the_parents_repo_instructions_block() {
 
     // The workspace instruction file exists BEFORE the parent's first run —
     // its assembly freezes the tree's prompt environment.
-    std::fs::write(app.dir.path().join("AGENTS.md"), "SHARED-REPO-RULES everywhere").unwrap();
+    std::fs::write(
+        app.dir.path().join("AGENTS.md"),
+        "SHARED-REPO-RULES everywhere",
+    )
+    .unwrap();
 
     let mut events = sse_payloads(app.send_message(&conv, "please research").await);
     next_event(&mut events, updated("A", "completed")).await;

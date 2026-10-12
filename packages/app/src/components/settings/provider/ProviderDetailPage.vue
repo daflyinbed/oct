@@ -47,7 +47,7 @@
         />
         <button
           type="button"
-          class="absolute right-1 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center text-dim transition-colors hover:text-strong"
+          class="absolute right-1 top-1/2 h-5 w-5 flex items-center justify-center text-dim transition-colors -translate-y-1/2 hover:text-strong"
           :title="showKey ? '隐藏 Key' : '显示 Key'"
           @click="toggleShowKey"
         >

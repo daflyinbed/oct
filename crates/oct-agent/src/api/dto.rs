@@ -168,9 +168,8 @@ fn parse_details(details_json: Option<&str>) -> Option<MessageDetails> {
     let kind = match map.get("kind").and_then(Value::as_str) {
         Some("compaction") => {
             extra.remove("kind");
-            if let Some(compaction) =
+            if let Ok(compaction) =
                 serde_json::from_value::<CompactionMetadata>(serde_json::Value::Object(map.clone()))
-                    .ok()
             {
                 return Some(MessageDetails {
                     kind: Some(KnownDetailsKind::Compaction),

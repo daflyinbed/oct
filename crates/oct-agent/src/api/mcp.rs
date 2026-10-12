@@ -217,13 +217,13 @@ fn validate_mcp_fields(
         return Err(AppError::BadRequest("name must not be empty".into()));
     }
 
-    if let Some(transport) = transport {
-        if !SUPPORTED_TRANSPORTS.contains(&transport) {
-            return Err(AppError::BadRequest(format!(
-                "unsupported transport '{transport}'; supported: {}",
-                SUPPORTED_TRANSPORTS.join(", ")
-            )));
-        }
+    if let Some(transport) = transport
+        && !SUPPORTED_TRANSPORTS.contains(&transport)
+    {
+        return Err(AppError::BadRequest(format!(
+            "unsupported transport '{transport}'; supported: {}",
+            SUPPORTED_TRANSPORTS.join(", ")
+        )));
     }
 
     if command.is_some_and(|command| command.trim().is_empty()) {

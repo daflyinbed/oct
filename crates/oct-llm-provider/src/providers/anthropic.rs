@@ -464,7 +464,7 @@ impl AnthropicChatModel {
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         headers.insert(
             "x-api-key",
-            HeaderValue::from_str(&api_key).map_err(|err| {
+            HeaderValue::from_str(api_key).map_err(|err| {
                 ModelError::transport(format!("invalid anthropic api key header: {err}"))
             })?,
         );
@@ -545,10 +545,10 @@ impl ChatModel for AnthropicChatModel {
     async fn generate(&self, req: ChatRequest) -> Result<ChatResponse, ModelError> {
         let wire = self.to_wire_request(&req)?;
         let ctx = wire::WireCtx::new("anthropic", &self.info.model_id, self.endpoint());
-        if wire::enabled() {
-            if let Ok(body) = serde_json::to_string(&wire) {
-                wire::log_request(&ctx, &body, false);
-            }
+        if wire::enabled()
+            && let Ok(body) = serde_json::to_string(&wire)
+        {
+            wire::log_request(&ctx, &body, false);
         }
         let response = self
             .client
@@ -590,10 +590,10 @@ impl ChatModel for AnthropicChatModel {
         wire.stream = Some(true);
 
         let ctx = wire::WireCtx::new("anthropic", &self.info.model_id, self.endpoint());
-        if wire::enabled() {
-            if let Ok(body) = serde_json::to_string(&wire) {
-                wire::log_request(&ctx, &body, true);
-            }
+        if wire::enabled()
+            && let Ok(body) = serde_json::to_string(&wire)
+        {
+            wire::log_request(&ctx, &body, true);
         }
         let response = self
             .client
@@ -637,10 +637,9 @@ impl ChatModel for AnthropicChatModel {
                     guard.mark_error();
                     ModelError::transport(message)
                 })?;
-                for event in decoder.push(&chunk).map_err(|err| {
+                for event in decoder.push(&chunk).inspect_err(|err| {
                     wire::log_error(&ctx, "parse", None, &err.to_string(), None);
                     guard.mark_error();
-                    err
                 })? {
                     wire::log_sse(&ctx, guard.next_seq(), &event);
                     guard.count();
@@ -650,10 +649,9 @@ impl ChatModel for AnthropicChatModel {
                 }
             }
 
-            for event in decoder.finish().map_err(|err| {
+            for event in decoder.finish().inspect_err(|err| {
                 wire::log_error(&ctx, "parse", None, &err.to_string(), None);
                 guard.mark_error();
-                err
             })? {
                 wire::log_sse(&ctx, guard.next_seq(), &event);
                 guard.count();
@@ -678,10 +676,9 @@ fn parse_anthropic_sse_with_wire(
     tool_state: &mut HashMap<usize, AnthropicToolAccumulator>,
     stop_reason: &mut Option<String>,
 ) -> Result<Vec<StreamEvent>, ModelError> {
-    parse_anthropic_sse_event_with_state(event, tool_state, stop_reason).map_err(|err| {
+    parse_anthropic_sse_event_with_state(event, tool_state, stop_reason).inspect_err(|err| {
         wire::log_error(ctx, "parse", None, &err.to_string(), None);
         guard.mark_error();
-        err
     })
 }
 

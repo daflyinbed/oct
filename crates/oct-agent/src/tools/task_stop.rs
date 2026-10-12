@@ -62,9 +62,8 @@ impl AgentTool for TaskStopTool {
 
         // Scope check BEFORE any cancel: a task id from another conversation
         // must not be stopped from here.
-        let Some(row) = task_db::get_visible_task(&self.manager.pool(), &args.task_id)
-            .await
-            .map_err(anyhow::Error::from)?
+        let Some(row) = task_db::get_visible_task(self.manager.pool(), &args.task_id)
+            .await?
             .filter(|t| t.conversation_id == self.conversation_id)
         else {
             return Ok(unknown_task(&self.manager, &self.conversation_id, &args.task_id).await);
@@ -87,9 +86,7 @@ impl AgentTool for TaskStopTool {
             "lost" => {
                 // The backend restart already terminated the process; just
                 // persist the intent so the notification says cancelled.
-                task_db::cancel_lost_task(&self.manager.pool(), &args.task_id)
-                    .await
-                    .map_err(anyhow::Error::from)?;
+                task_db::cancel_lost_task(self.manager.pool(), &args.task_id).await?;
                 Ok(stop_result(&row.id, "cancelled"))
             }
             status => Ok(stop_result(&row.id, status)),
@@ -112,7 +109,7 @@ async fn unknown_task(
     conversation_id: &str,
     task_id: &str,
 ) -> ToolOutput {
-    let known = task_db::list_visible_tasks(&manager.pool(), conversation_id)
+    let known = task_db::list_visible_tasks(manager.pool(), conversation_id)
         .await
         .unwrap_or_default();
     let ids: Vec<String> = known.iter().map(|t| t.id.clone()).collect();

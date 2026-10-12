@@ -38,7 +38,6 @@ const SESSION_ID: &str = "sess-42";
 #[derive(Debug, Clone)]
 struct RecordedRequest {
     method: String,
-    params: Value,
     authorization: Option<String>,
     custom_header: Option<String>,
     session_id: Option<String>,
@@ -81,7 +80,6 @@ async fn mcp_post(
     let method = message["method"].as_str().unwrap_or_default().to_string();
     let record = RecordedRequest {
         method: method.clone(),
-        params: message["params"].clone(),
         authorization: headers
             .get("authorization")
             .and_then(|v| v.to_str().ok())

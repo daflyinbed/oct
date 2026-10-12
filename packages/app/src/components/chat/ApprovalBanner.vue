@@ -101,7 +101,6 @@
 
 <script setup lang="ts">
 import { reactive } from "vue";
-import type { Component } from "vue";
 import IconFilePen from "~icons/lucide/file-pen";
 import IconFilePenLine from "~icons/lucide/file-pen-line";
 import IconFileText from "~icons/lucide/file-text";
@@ -109,6 +108,7 @@ import IconTerminal from "~icons/lucide/terminal";
 import IconWrench from "~icons/lucide/wrench";
 import { taskByAgentId } from "@/composables/useSubagents";
 import type { ApprovalDecision, PendingApproval } from "@/composables/useChat";
+import type { Component } from "vue";
 
 defineProps<{
   /** 当前会话的待决审批（useChat 会话的 pendingApprovals 分桶）。 */

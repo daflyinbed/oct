@@ -149,10 +149,8 @@ async fn openai_maps_http_error_statuses_to_model_errors() {
 #[tokio::test]
 async fn openai_fails_with_authentication_error_when_no_api_key_available() {
     // No materialized key anywhere: must fail before any HTTP traffic.
-    let model = OpenAiCompatibleChatModel::new(openai_config(
-        "http://127.0.0.1:1".to_string(),
-        None,
-    ));
+    let model =
+        OpenAiCompatibleChatModel::new(openai_config("http://127.0.0.1:1".to_string(), None));
     assert!(matches!(
         model.stream(chat_request()).await.err().unwrap(),
         ModelError::Authentication
@@ -303,7 +301,10 @@ async fn openai_stream_accepts_crlf_framing_and_eof_tail_frame() {
     );
 }
 
-fn anthropic_model(base_url: String, key_value: &str) -> Box<dyn oct_llm_provider::model::ChatModel> {
+fn anthropic_model(
+    base_url: String,
+    key_value: &str,
+) -> Box<dyn oct_llm_provider::model::ChatModel> {
     // The key is explicit connection config — no environment involved, so
     // parallel tests cannot race on it.
     AnthropicProvider::new(base_url, Some(key_value.to_string()))
@@ -754,12 +755,15 @@ fn wire_sink_dir() -> std::path::PathBuf {
 
 /// Bounded poll for the writer thread (a plain std thread — no event to
 /// await). The channel handoff is fast; this only guards scheduling.
-fn wait_for_lines(conversation_id: &str, pred: impl Fn(&[serde_json::Value]) -> bool) -> Vec<serde_json::Value> {
+fn wait_for_lines(
+    conversation_id: &str,
+    pred: impl Fn(&[serde_json::Value]) -> bool,
+) -> Vec<serde_json::Value> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
-        if let Ok(raw) = std::fs::read_to_string(
-            wire_sink_dir().join(format!("{conversation_id}.jsonl")),
-        ) {
+        if let Ok(raw) =
+            std::fs::read_to_string(wire_sink_dir().join(format!("{conversation_id}.jsonl")))
+        {
             let lines: Vec<serde_json::Value> = raw
                 .lines()
                 .filter(|l| !l.trim().is_empty())
@@ -769,7 +773,10 @@ fn wait_for_lines(conversation_id: &str, pred: impl Fn(&[serde_json::Value]) -> 
                 return lines;
             }
         }
-        assert!(std::time::Instant::now() < deadline, "wire lines never arrived");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "wire lines never arrived"
+        );
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
 }
@@ -779,7 +786,8 @@ async fn wire_log_records_request_sse_events_and_reambles_byte_faithfully() {
     // Install the subscriber BEFORE any model call: events emitted before
     // it exists are dropped by tracing itself, not by the sink.
     wire_sink_dir();
-    let ev1 = "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"你\"}}]}";
+    let ev1 =
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"你\"}}]}";
     let ev2 = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"好🌍\"}}]}";
     let ev3 = "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}";
     let ev4 = "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5,\"total_tokens\":8}}";
@@ -822,7 +830,10 @@ async fn wire_log_records_request_sse_events_and_reambles_byte_faithfully() {
 
     // Envelope: every line of this request shares the request id and
     // carries the full correlation set from the tags.
-    let request_ids: Vec<_> = lines.iter().map(|l| l["request_id"].as_str().unwrap()).collect();
+    let request_ids: Vec<_> = lines
+        .iter()
+        .map(|l| l["request_id"].as_str().unwrap())
+        .collect();
     assert!(
         request_ids.iter().all(|id| id == &request_ids[0]),
         "one request id across all lines"
@@ -835,7 +846,12 @@ async fn wire_log_records_request_sse_events_and_reambles_byte_faithfully() {
         assert_eq!(line["purpose"], "chat");
         assert_eq!(line["provider"], "mock-openai");
         assert_eq!(line["model"], "test-model");
-        assert!(line["endpoint"].as_str().unwrap().contains("/chat/completions"));
+        assert!(
+            line["endpoint"]
+                .as_str()
+                .unwrap()
+                .contains("/chat/completions")
+        );
         assert!(line["ts"].as_str().unwrap().contains('T'));
         assert!(line["ts_ms"].is_i64());
     }
@@ -932,14 +948,13 @@ async fn wire_log_generate_path_and_orphan_routing() {
     assert!(!kinds.contains(&"llm_stream_end"));
 
     // Untagged call (no with_tags scope) → `_orphan.jsonl`.
-    anthropic_model(server.url(), "sk-wire-gen").generate(chat_request())
+    anthropic_model(server.url(), "sk-wire-gen")
+        .generate(chat_request())
         .await
         .unwrap();
     let orphan = wait_for_lines("_orphan", |ls| {
         ls.iter().filter(|l| l["kind"] == "llm_response").count() >= 1
-            && ls
-                .iter()
-                .any(|l| l.get("conversation_id").is_none())
+            && ls.iter().any(|l| l.get("conversation_id").is_none())
     });
     assert!(
         orphan
@@ -954,10 +969,7 @@ async fn wire_log_records_error_stages() {
     // Install the subscriber BEFORE any model call: events emitted before
     // it exists are dropped by tracing itself, not by the sink.
     wire_sink_dir();
-    let server = spawn_server(vec![
-        MockResponse::json(500, "{\"error\":\"kaboom\"}"),
-    ])
-    .await;
+    let server = spawn_server(vec![MockResponse::json(500, "{\"error\":\"kaboom\"}")]).await;
     let conversation_id = "wire-conv-error".to_string();
     let tags = oct_llm_provider::wire::Tags {
         conversation_id: Some(conversation_id.clone()),
@@ -991,7 +1003,8 @@ async fn wire_log_records_error_stages() {
 /// endings, so re-joining with `\r\n\r\n` must reproduce the body exactly.
 #[tokio::test]
 async fn wire_log_sse_raw_is_byte_faithful_under_crlf_framing() {
-    let ev1 = "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"he\"}}]}";
+    let ev1 =
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"he\"}}]}";
     let ev2 = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"llo\"}}]}";
     let ev3 = "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}";
     let done = "data: [DONE]";

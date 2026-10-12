@@ -23,7 +23,7 @@ struct SummaryBudget {
 
 fn summary_budget(window: Option<u32>) -> SummaryBudget {
     let output_tokens = window
-        .map(|w| (w / 4).max(1).min(SUMMARY_MAX_OUTPUT_TOKENS))
+        .map(|w| (w / 4).clamp(1, SUMMARY_MAX_OUTPUT_TOKENS))
         .unwrap_or(SUMMARY_MAX_OUTPUT_TOKENS);
     let input_tokens = window.map_or(DEFAULT_SUMMARY_INPUT_TOKENS, |w| {
         // Reserve the complete prompt, output and 10% for estimation/wire

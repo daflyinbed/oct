@@ -1,8 +1,8 @@
 //! In-memory rule model and matching semantics.
 //!
 //! A [`Rule`] is a `permission_rules` row minus its scoping columns — the
-//! run-assembly loader decides WHICH rows a run evaluates against (project
-//! + global + future conversation scope); matching here is purely
+//! run-assembly loader decides WHICH rows a run evaluates against (project,
+//! global and future conversation scope); matching here is purely
 //! per-action.
 
 use std::path::{Path, PathBuf};

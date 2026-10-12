@@ -290,6 +290,41 @@ pub async fn insert_notification_marking_tasks(
     Ok(stored.id)
 }
 
+/// Read the durable intent, retiring it once its consuming run completed or was explicitly cancelled.
+/// Caller owns conversation occupancy, so no newer run can race this check.
+pub async fn pending_wake(pool: &SqlitePool, id: &str) -> Result<Option<String>> {
+    sqlx::query!("DELETE FROM wake_intents WHERE conversation_id = $1 AND run_id IN (SELECT id FROM agent_runs WHERE status IN ('completed', 'cancelled'))", id).execute(pool).await?;
+    Ok(sqlx::query_scalar!(
+        "SELECT message_id FROM wake_intents WHERE conversation_id = $1",
+        id
+    )
+    .fetch_optional(pool)
+    .await?)
+}
+
+/// A user cancelled while this wake attempt was still preparing. Retire
+/// only its admitted message under occupancy, including a retry whose
+/// intent still references a previous failed run.
+pub async fn cancel_preparing_wake(
+    pool: &SqlitePool,
+    conversation_id: &str,
+    message_id: &str,
+) -> Result<()> {
+    // Cancellation is settlement: releasing occupancy on a failed delete
+    // would let the drainer revive this intent with a fresh cancel token.
+    super::persist_critical(pool, || async {
+        sqlx::query!(
+            "DELETE FROM wake_intents WHERE conversation_id = $1 AND message_id = $2",
+            conversation_id,
+            message_id,
+        )
+        .execute(pool)
+        .await?;
+        Ok(())
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,7 +356,7 @@ mod tests {
         let running = create_task(
             &pool,
             NewBackgroundTask {
-                id: format!("bg-test-2"),
+                id: "bg-test-2".to_string(),
                 conversation_id: conv.id.clone(),
                 parent_run_id: None,
                 parent_call_id: "call-1".into(),
@@ -376,10 +411,15 @@ mod tests {
 
         // Deliver: message insert + notified flag in one transaction.
         let msg = Message::text(Role::User, "<task-notification>ok</task-notification>");
-        let msg_id =
-            insert_notification_marking_tasks(&pool, &conv.id, &msg, None, &[running.id.clone()])
-                .await
-                .unwrap();
+        let msg_id = insert_notification_marking_tasks(
+            &pool,
+            &conv.id,
+            &msg,
+            None,
+            std::slice::from_ref(&running.id),
+        )
+        .await
+        .unwrap();
         assert!(!msg_id.is_empty());
         assert!(
             list_pending_notifications(&pool, &conv.id)
@@ -396,7 +436,7 @@ mod tests {
         let stuck = create_task(
             &pool,
             NewBackgroundTask {
-                id: format!("bg-test-3"),
+                id: "bg-test-3".to_string(),
                 conversation_id: conv.id.clone(),
                 parent_run_id: None,
                 parent_call_id: "call-2".into(),
@@ -419,7 +459,7 @@ mod tests {
         let live = create_task(
             &pool,
             NewBackgroundTask {
-                id: format!("bg-test-4"),
+                id: "bg-test-4".to_string(),
                 conversation_id: conv.id.clone(),
                 parent_run_id: None,
                 parent_call_id: "call-3".into(),
@@ -434,39 +474,4 @@ mod tests {
         assert_eq!(listed[0].id, live.id);
         assert_eq!(listed.len(), 3);
     }
-}
-
-/// Read the durable intent, retiring it once its consuming run completed or was explicitly cancelled.
-/// Caller owns conversation occupancy, so no newer run can race this check.
-pub async fn pending_wake(pool: &SqlitePool, id: &str) -> Result<Option<String>> {
-    sqlx::query!("DELETE FROM wake_intents WHERE conversation_id = $1 AND run_id IN (SELECT id FROM agent_runs WHERE status IN ('completed', 'cancelled'))", id).execute(pool).await?;
-    Ok(sqlx::query_scalar!(
-        "SELECT message_id FROM wake_intents WHERE conversation_id = $1",
-        id
-    )
-    .fetch_optional(pool)
-    .await?)
-}
-
-/// A user cancelled while this wake attempt was still preparing. Retire
-/// only its admitted message under occupancy, including a retry whose
-/// intent still references a previous failed run.
-pub async fn cancel_preparing_wake(
-    pool: &SqlitePool,
-    conversation_id: &str,
-    message_id: &str,
-) -> Result<()> {
-    // Cancellation is settlement: releasing occupancy on a failed delete
-    // would let the drainer revive this intent with a fresh cancel token.
-    super::persist_critical(pool, || async {
-        sqlx::query!(
-            "DELETE FROM wake_intents WHERE conversation_id = $1 AND message_id = $2",
-            conversation_id,
-            message_id,
-        )
-        .execute(pool)
-        .await?;
-        Ok(())
-    })
-    .await
 }

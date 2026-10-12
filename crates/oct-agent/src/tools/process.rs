@@ -49,10 +49,10 @@ mod tests {
         let lease = child.stdin.take().unwrap();
         let pid = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                if let Ok(s) = tokio::fs::read_to_string(&pid_file).await {
-                    if let Ok(pid) = s.trim().parse::<u32>() {
-                        break pid;
-                    }
+                if let Ok(s) = tokio::fs::read_to_string(&pid_file).await
+                    && let Ok(pid) = s.trim().parse::<u32>()
+                {
+                    break pid;
                 }
                 tokio::task::yield_now().await;
             }

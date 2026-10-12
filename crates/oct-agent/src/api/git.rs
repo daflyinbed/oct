@@ -137,7 +137,8 @@ async fn output(root: &std::path::Path, args: &[&str], allow_diff_exit: bool) ->
     let result = tokio::time::timeout(Duration::from_secs(120), async {
         let (out, err) = tokio::try_join!(read_bounded(stdout), read_bounded(stderr))?;
         let status = child.wait().await.map_err(anyhow::Error::from)?;
-        if !status.success() && !(allow_diff_exit && status.code() == Some(1)) {
+        let diff_only_failure = allow_diff_exit && status.code() == Some(1);
+        if !status.success() && !diff_only_failure {
             return Err(AppError::Conflict(
                 String::from_utf8_lossy(&err).trim().to_owned(),
             ));
@@ -407,12 +408,12 @@ pub async fn get_diff(
         result = output(&root, &args, false).await?;
     } else {
         let files = files(&root).await?;
-        if let Some(path) = &query.path {
-            if !files.iter().any(|f| &f.path == path) {
-                return Err(AppError::NotFound(
-                    "Changed file not found; refresh Changes".into(),
-                ));
-            }
+        if let Some(path) = &query.path
+            && !files.iter().any(|f| &f.path == path)
+        {
+            return Err(AppError::NotFound(
+                "Changed file not found; refresh Changes".into(),
+            ));
         }
         let head = has_head(&root).await;
         for file in files
@@ -487,12 +488,12 @@ pub async fn run_action(
 async fn action(root: &std::path::Path, request: GitActionRequest) -> ApiResult<String> {
     use GitAction::*;
     let current = files(root).await?;
-    if let Some(paths) = &request.paths {
-        if paths.is_empty() || paths.iter().any(|p| !current.iter().any(|f| &f.path == p)) {
-            return Err(AppError::BadRequest(
-                "Selection is empty or stale; refresh Changes".into(),
-            ));
-        }
+    if let Some(paths) = &request.paths
+        && (paths.is_empty() || paths.iter().any(|p| !current.iter().any(|f| &f.path == p)))
+    {
+        return Err(AppError::BadRequest(
+            "Selection is empty or stale; refresh Changes".into(),
+        ));
     }
     let selected: Vec<_> = current
         .iter()
@@ -507,10 +508,10 @@ async fn action(root: &std::path::Path, request: GitActionRequest) -> ApiResult<
             continue;
         }
         paths.push(file.path.as_str());
-        if !matches!(request.action, Stage) {
-            if let Some(old) = &file.original_path {
-                paths.push(old.as_str());
-            }
+        if !matches!(request.action, Stage)
+            && let Some(old) = &file.original_path
+        {
+            paths.push(old.as_str());
         }
     }
     let mut args = match request.action {

@@ -10,7 +10,10 @@ export function splitLines(text: string): string[] {
 }
 
 // 行级 LCS diff；过大输入退化为整块替换，避免 LCS 表过大
-export function buildDiffRows(oldLines: string[], newLines: string[]): DiffRow[] {
+export function buildDiffRows(
+  oldLines: string[],
+  newLines: string[],
+): DiffRow[] {
   const rows: DiffRow[] = [];
   const n = oldLines.length;
   const m = newLines.length;

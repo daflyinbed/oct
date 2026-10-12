@@ -143,7 +143,7 @@ async fn before_user_preserves_identity_backup_retry_and_read_only_contract() {
         let data = if endpoint == "messages" {
             json!({"content":"forbidden", "provider_spec":"mock-llm:test-model"})
         } else {
-            serde_json::to_value(&request(revision, &first.id, ForkSide::Before)).unwrap()
+            serde_json::to_value(request(revision, &first.id, ForkSide::Before)).unwrap()
         };
         assert_error(
             app.post_json(
@@ -523,7 +523,7 @@ async fn pending_background_work_and_wake_block_without_mutating_history() {
         &id,
         &Message::text(Role::User, "notification"),
         Some(&json!({"kind":"task_notification"})),
-        &[task.id.clone()],
+        std::slice::from_ref(&task.id),
     )
     .await
     .unwrap();

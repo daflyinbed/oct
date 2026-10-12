@@ -311,7 +311,6 @@
 
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
-import type { Component } from "vue";
 import IconFilePen from "~icons/lucide/file-pen";
 import IconFilePenLine from "~icons/lucide/file-pen-line";
 import IconFileText from "~icons/lucide/file-text";
@@ -326,6 +325,7 @@ import BashTaskCard from "./BashTaskCard.vue";
 import { buildDiffRows, splitLines } from "./toolDiff";
 import type { DiffRow } from "./toolDiff";
 import type { ToolCallPart } from "@/composables/useChat";
+import type { Component } from "vue";
 
 const props = defineProps<{
   part: ToolCallPart;
