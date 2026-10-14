@@ -6,7 +6,13 @@
       {
         "name": "execution_epoch",
         "ordinal": 0,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "execution_epoch"
+          }
+        }
       }
     ],
     "parameters": {

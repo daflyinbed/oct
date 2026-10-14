@@ -6,77 +6,167 @@
       {
         "name": "id",
         "ordinal": 0,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "id"
+          }
+        }
       },
       {
         "name": "conversation_id",
         "ordinal": 1,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "conversation_messages",
+            "name": "conversation_id"
+          }
+        }
       },
       {
         "name": "role",
         "ordinal": 2,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "role"
+          }
+        }
       },
       {
         "name": "parts_json",
         "ordinal": 3,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "parts_json"
+          }
+        }
       },
       {
         "name": "details_json",
         "ordinal": 4,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "details_json"
+          }
+        }
       },
       {
         "name": "ordering",
         "ordinal": 5,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "conversation_messages",
+            "name": "ordering"
+          }
+        }
       },
       {
         "name": "provider_id",
         "ordinal": 6,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "provider_id"
+          }
+        }
       },
       {
         "name": "model_id",
         "ordinal": 7,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "model_id"
+          }
+        }
       },
       {
         "name": "input_tokens",
         "ordinal": 8,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "input_tokens"
+          }
+        }
       },
       {
         "name": "output_tokens",
         "ordinal": 9,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "output_tokens"
+          }
+        }
       },
       {
         "name": "reasoning_tokens",
         "ordinal": 10,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "reasoning_tokens"
+          }
+        }
       },
       {
         "name": "supersedes_message_id",
         "ordinal": 11,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "supersedes_message_id"
+          }
+        }
       },
       {
         "name": "appended_at_revision",
         "ordinal": 12,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "conversation_messages",
+            "name": "appended_at_revision"
+          }
+        }
       },
       {
         "name": "swapped_at_revision",
         "ordinal": 13,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "conversation_messages",
+            "name": "swapped_at_revision"
+          }
+        }
       },
       {
         "name": "created_at",
         "ordinal": 14,
-        "type_info": "Datetime"
+        "type_info": "Datetime",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "created_at"
+          }
+        }
       }
     ],
     "parameters": {

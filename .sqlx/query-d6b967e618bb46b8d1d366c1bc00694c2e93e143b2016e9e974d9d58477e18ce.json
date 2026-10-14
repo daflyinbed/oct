@@ -6,7 +6,13 @@
       {
         "name": "tool_call",
         "ordinal": 0,
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "models",
+            "name": "tool_call"
+          }
+        }
       }
     ],
     "parameters": {

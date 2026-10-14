@@ -6,72 +6,156 @@
       {
         "name": "id",
         "ordinal": 0,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "background_tasks",
+            "name": "id"
+          }
+        }
       },
       {
         "name": "conversation_id",
         "ordinal": 1,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "background_tasks",
+            "name": "conversation_id"
+          }
+        }
       },
       {
         "name": "parent_run_id",
         "ordinal": 2,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "background_tasks",
+            "name": "parent_run_id"
+          }
+        }
       },
       {
         "name": "parent_call_id",
         "ordinal": 3,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "background_tasks",
+            "name": "parent_call_id"
+          }
+        }
       },
       {
         "name": "command",
         "ordinal": 4,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "background_tasks",
+            "name": "command"
+          }
+        }
       },
       {
         "name": "working_dir",
         "ordinal": 5,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "background_tasks",
+            "name": "working_dir"
+          }
+        }
       },
       {
         "name": "status",
         "ordinal": 6,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "background_tasks",
+            "name": "status"
+          }
+        }
       },
       {
         "name": "exit_code",
         "ordinal": 7,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "background_tasks",
+            "name": "exit_code"
+          }
+        }
       },
       {
         "name": "output_path",
         "ordinal": 8,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "background_tasks",
+            "name": "output_path"
+          }
+        }
       },
       {
         "name": "output_bytes",
         "ordinal": 9,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "background_tasks",
+            "name": "output_bytes"
+          }
+        }
       },
       {
         "name": "error",
         "ordinal": 10,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "background_tasks",
+            "name": "error"
+          }
+        }
       },
       {
         "name": "notified",
         "ordinal": 11,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "background_tasks",
+            "name": "notified"
+          }
+        }
       },
       {
         "name": "created_at",
         "ordinal": 12,
-        "type_info": "Datetime"
+        "type_info": "Datetime",
+        "origin": {
+          "Table": {
+            "table": "background_tasks",
+            "name": "created_at"
+          }
+        }
       },
       {
         "name": "finished_at",
         "ordinal": 13,
-        "type_info": "Datetime"
+        "type_info": "Datetime",
+        "origin": {
+          "Table": {
+            "table": "background_tasks",
+            "name": "finished_at"
+          }
+        }
       }
     ],
     "parameters": {

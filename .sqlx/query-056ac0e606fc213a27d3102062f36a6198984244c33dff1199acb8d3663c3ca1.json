@@ -6,7 +6,13 @@
       {
         "name": "project_id",
         "ordinal": 0,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mcp_servers",
+            "name": "project_id"
+          }
+        }
       }
     ],
     "parameters": {

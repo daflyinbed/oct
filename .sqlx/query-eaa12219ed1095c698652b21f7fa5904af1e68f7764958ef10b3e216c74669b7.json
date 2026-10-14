@@ -6,92 +6,200 @@
       {
         "name": "id",
         "ordinal": 0,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "conversations",
+            "name": "id"
+          }
+        }
       },
       {
         "name": "project_id",
         "ordinal": 1,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "conversations",
+            "name": "project_id"
+          }
+        }
       },
       {
         "name": "title",
         "ordinal": 2,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "conversations",
+            "name": "title"
+          }
+        }
       },
       {
         "name": "title_source",
         "ordinal": 3,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "conversations",
+            "name": "title_source"
+          }
+        }
       },
       {
         "name": "kind",
         "ordinal": 4,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "conversations",
+            "name": "kind"
+          }
+        }
       },
       {
         "name": "parent_conversation_id",
         "ordinal": 5,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "conversations",
+            "name": "parent_conversation_id"
+          }
+        }
       },
       {
         "name": "root_conversation_id",
         "ordinal": 6,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "conversations",
+            "name": "root_conversation_id"
+          }
+        }
       },
       {
         "name": "agent_type",
         "ordinal": 7,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "conversations",
+            "name": "agent_type"
+          }
+        }
       },
       {
         "name": "permission_mode",
         "ordinal": 8,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "conversations",
+            "name": "permission_mode"
+          }
+        }
       },
       {
         "name": "origin_kind",
         "ordinal": 9,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "conversations",
+            "name": "origin_kind"
+          }
+        }
       },
       {
         "name": "history_epoch",
         "ordinal": 10,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "conversations",
+            "name": "history_epoch"
+          }
+        }
       },
       {
         "name": "backup_of_conversation_id",
         "ordinal": 11,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "conversations",
+            "name": "backup_of_conversation_id"
+          }
+        }
       },
       {
         "name": "backup_at_revision",
         "ordinal": 12,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "conversations",
+            "name": "backup_at_revision"
+          }
+        }
       },
       {
         "name": "forked_from_conversation_id",
         "ordinal": 13,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "conversations",
+            "name": "forked_from_conversation_id"
+          }
+        }
       },
       {
         "name": "forked_at_message_id",
         "ordinal": 14,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "conversations",
+            "name": "forked_at_message_id"
+          }
+        }
       },
       {
         "name": "forked_at_revision",
         "ordinal": 15,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "conversations",
+            "name": "forked_at_revision"
+          }
+        }
       },
       {
         "name": "created_at",
         "ordinal": 16,
-        "type_info": "Datetime"
+        "type_info": "Datetime",
+        "origin": {
+          "Table": {
+            "table": "conversations",
+            "name": "created_at"
+          }
+        }
       },
       {
         "name": "updated_at",
         "ordinal": 17,
-        "type_info": "Datetime"
+        "type_info": "Datetime",
+        "origin": {
+          "Table": {
+            "table": "conversations",
+            "name": "updated_at"
+          }
+        }
       }
     ],
     "parameters": {

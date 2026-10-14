@@ -6,22 +6,46 @@
       {
         "name": "source_conversation_id",
         "ordinal": 0,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "conversation_fork_operations",
+            "name": "source_conversation_id"
+          }
+        }
       },
       {
         "name": "result_conversation_id",
         "ordinal": 1,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "conversation_fork_operations",
+            "name": "result_conversation_id"
+          }
+        }
       },
       {
         "name": "request_json",
         "ordinal": 2,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "conversation_fork_operations",
+            "name": "request_json"
+          }
+        }
       },
       {
         "name": "response_json",
         "ordinal": 3,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "conversation_fork_operations",
+            "name": "response_json"
+          }
+        }
       }
     ],
     "parameters": {

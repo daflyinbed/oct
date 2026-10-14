@@ -6,22 +6,46 @@
       {
         "name": "message_id",
         "ordinal": 0,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "conversation_messages",
+            "name": "message_id"
+          }
+        }
       },
       {
         "name": "parts_json",
         "ordinal": 1,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "parts_json"
+          }
+        }
       },
       {
         "name": "ordering",
         "ordinal": 2,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "conversation_messages",
+            "name": "ordering"
+          }
+        }
       },
       {
         "name": "appended_at_revision",
         "ordinal": 3,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "conversation_messages",
+            "name": "appended_at_revision"
+          }
+        }
       }
     ],
     "parameters": {

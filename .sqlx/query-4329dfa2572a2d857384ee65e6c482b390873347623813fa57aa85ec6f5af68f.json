@@ -6,102 +6,222 @@
       {
         "name": "id",
         "ordinal": 0,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "id"
+          }
+        }
       },
       {
         "name": "conversation_id",
         "ordinal": 1,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "conversation_id"
+          }
+        }
       },
       {
         "name": "kind",
         "ordinal": 2,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "kind"
+          }
+        }
       },
       {
         "name": "parent_run_id",
         "ordinal": 3,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "parent_run_id"
+          }
+        }
       },
       {
         "name": "root_run_id",
         "ordinal": 4,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "root_run_id"
+          }
+        }
       },
       {
         "name": "parent_tool_call_id",
         "ordinal": 5,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "parent_tool_call_id"
+          }
+        }
       },
       {
         "name": "status",
         "ordinal": 6,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "status"
+          }
+        }
       },
       {
         "name": "execution_epoch",
         "ordinal": 7,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "execution_epoch"
+          }
+        }
       },
       {
         "name": "history_epoch",
         "ordinal": 8,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "history_epoch"
+          }
+        }
       },
       {
         "name": "provider_id",
         "ordinal": 9,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "provider_id"
+          }
+        }
       },
       {
         "name": "model_id",
         "ordinal": 10,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "model_id"
+          }
+        }
       },
       {
         "name": "context_window",
         "ordinal": 11,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "context_window"
+          }
+        }
       },
       {
         "name": "agent_config_json",
         "ordinal": 12,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "agent_config_json"
+          }
+        }
       },
       {
         "name": "error",
         "ordinal": 13,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "error"
+          }
+        }
       },
       {
         "name": "final_message_id",
         "ordinal": 14,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "final_message_id"
+          }
+        }
       },
       {
         "name": "input_tokens",
         "ordinal": 15,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "input_tokens"
+          }
+        }
       },
       {
         "name": "output_tokens",
         "ordinal": 16,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "output_tokens"
+          }
+        }
       },
       {
         "name": "description",
         "ordinal": 17,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "description"
+          }
+        }
       },
       {
         "name": "started_at",
         "ordinal": 18,
-        "type_info": "Datetime"
+        "type_info": "Datetime",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "started_at"
+          }
+        }
       },
       {
         "name": "finished_at",
         "ordinal": 19,
-        "type_info": "Datetime"
+        "type_info": "Datetime",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "finished_at"
+          }
+        }
       }
     ],
     "parameters": {

@@ -6,12 +6,24 @@
       {
         "name": "refresh_token",
         "ordinal": 0,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mcp_server_tokens",
+            "name": "refresh_token"
+          }
+        }
       },
       {
         "name": "expires_at",
         "ordinal": 1,
-        "type_info": "Datetime"
+        "type_info": "Datetime",
+        "origin": {
+          "Table": {
+            "table": "mcp_server_tokens",
+            "name": "expires_at"
+          }
+        }
       }
     ],
     "parameters": {
