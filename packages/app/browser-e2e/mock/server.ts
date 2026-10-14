@@ -66,12 +66,7 @@ export interface StepHang {
 }
 
 export type ScriptStep =
-  | StepEvents
-  | StepRaw
-  | StepComment
-  | StepGate
-  | StepStatus
-  | StepHang;
+  StepEvents | StepRaw | StepComment | StepGate | StepStatus | StepHang;
 
 export interface Scenario {
   settings?: components["schemas"]["AppSettings"];

@@ -48,8 +48,7 @@
         </h3>
         <pre
           class="whitespace-pre-wrap border border-danger-6 rounded-md bg-danger-1 px-2.5 py-2 text-[11.5px] text-danger-10 font-mono"
-          >{{ server.error ?? "未知错误" }}</pre
-        >
+          >{{ server.error ?? "未知错误" }}</pre>
       </template>
 
       <!-- 已连接：加载到的工具清单（原始服务端名与描述） -->
@@ -183,8 +182,7 @@
               <pre
                 v-else-if="resourceContent?.text != null"
                 class="max-h-[320px] overflow-auto whitespace-pre-wrap rounded-md bg-neutral-1 px-2.5 py-2 text-[11.5px] text-neutral-10 font-mono"
-                >{{ resourceContent.text }}</pre
-              >
+                >{{ resourceContent.text }}</pre>
               <p
                 v-else-if="resourceContent?.blob_base64 != null"
                 class="text-[11.5px] text-faint"

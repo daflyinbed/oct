@@ -5,12 +5,7 @@ import { useProjects } from "./useProjects";
 import type { DiffSelection } from "./useGit";
 
 export type TabKind =
-  | "chat"
-  | "file"
-  | "diff"
-  | "git-graph"
-  | "mcp"
-  | "subagent";
+  "chat" | "file" | "diff" | "git-graph" | "mcp" | "subagent";
 
 export interface WorkspaceTab {
   /** 稳定唯一键：`chat:<conversationId>`、`file:<projectId>:<path>`、`diff:<key>`… */

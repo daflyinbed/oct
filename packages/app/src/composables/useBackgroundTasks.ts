@@ -9,11 +9,7 @@ import type { MaybeRefOrGetter } from "vue";
 // ---------------------------------------------------------------------------
 
 export type BackgroundTaskStatus =
-  | "running"
-  | "completed"
-  | "failed"
-  | "cancelled"
-  | "lost";
+  "running" | "completed" | "failed" | "cancelled" | "lost";
 
 const BACKGROUND_TASK_STATUSES: readonly BackgroundTaskStatus[] = [
   "running",

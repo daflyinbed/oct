@@ -330,7 +330,7 @@ describe("fetchMessages 历史回放", () => {
         // 同批已完成配对的调用不受影响
         storedMessage(
           "assistant",
-          String.raw`[{"ToolCall":{"id":"c2","name":"list_dir","arguments":"{}"}}]`,
+          '[{"ToolCall":{"id":"c2","name":"list_dir","arguments":"{}"}}]',
         ),
         storedMessage(
           "tool",
@@ -886,7 +886,7 @@ describe("attachRun 重连重放", () => {
           storedMessage("user", '[{"Text":"run 的问题"}]', { id: "u2" }),
           storedMessage(
             "assistant",
-            String.raw`[{"ToolCall":{"id":"c1","name":"read_file","arguments":"{}"}}]`,
+            '[{"ToolCall":{"id":"c1","name":"read_file","arguments":"{}"}}]',
             { id: "a2" },
           ),
         ],
@@ -2278,11 +2278,11 @@ describe("审批", () => {
       data: [
         storedMessage(
           "assistant",
-          String.raw`[{"ToolCall":{"id":"c2","name":"write_file","arguments":"{}"}}]`,
+          '[{"ToolCall":{"id":"c2","name":"write_file","arguments":"{}"}}]',
         ),
         storedMessage(
           "tool",
-          String.raw`[{"ToolResult":{"call_id":"c2","content":"被拒绝","is_error":true}}]`,
+          '[{"ToolResult":{"call_id":"c2","content":"被拒绝","is_error":true}}]',
           { details: { kind: "permission_denied" } },
         ),
       ],

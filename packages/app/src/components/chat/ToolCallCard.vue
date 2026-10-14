@@ -247,8 +247,7 @@
               v-else
               class="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md px-2.5 py-1.5 text-[11.5px] leading-[1.55] font-mono"
               :class="blockClassOf(block.kind)"
-              >{{ block.text }}</pre
-            >
+              >{{ block.text }}</pre>
           </template>
         </div>
 
@@ -282,8 +281,7 @@
             <pre
               v-if="originalText !== null"
               class="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface px-2.5 py-1.5 text-[11.5px] text-neutral-10 leading-[1.55] font-mono"
-              >{{ originalText }}</pre
-            >
+              >{{ originalText }}</pre>
             <div v-else class="text-[11px] text-faint font-mono">
               {{ part.content }}
             </div>
@@ -297,8 +295,7 @@
                   ? 'bg-danger-1 text-danger-10'
                   : 'bg-surface text-neutral-10'
               "
-              >{{ part.content }}</pre
-            >
+              >{{ part.content }}</pre>
             <p v-if="isTruncated" class="mt-1 text-[11px] text-faint">
               此内容已返回给模型（含截断）
             </p>

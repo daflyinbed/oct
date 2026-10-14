@@ -177,9 +177,10 @@ const timeGroups = computed(() => {
   const matched = filter.value.trim() ? flat.filter(matchesFilter) : flat;
   return groupThreadsByUpdatedAt(matched).map((group) => ({
     label: group.label,
-    nodes: group.conversations.map(
-      (conv): ThreadNode => ({ conv, children: [] }),
-    ),
+    nodes: group.conversations.map((conv): ThreadNode => ({
+      conv,
+      children: [],
+    })),
   }));
 });
 

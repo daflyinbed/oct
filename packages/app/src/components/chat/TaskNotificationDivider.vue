@@ -57,8 +57,7 @@
         <pre
           v-if="task.tail"
           class="mt-1 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface px-2.5 py-1.5 text-[11px] text-dim leading-[1.5] font-mono"
-          >{{ task.tail }}</pre
-        >
+          >{{ task.tail }}</pre>
         <p v-if="task.error" class="mt-1 text-[11px] text-danger-10">
           {{ task.error }}
         </p>

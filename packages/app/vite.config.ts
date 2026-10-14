@@ -23,9 +23,7 @@ export default defineConfig({
     proxy: backendProxy,
   },
   plugins: [
-    VueRouter({
-      /* options */
-    }),
+    VueRouter({/* options */}),
     vue(),
     UnoCSS(),
     Components({

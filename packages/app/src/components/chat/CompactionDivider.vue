@@ -21,8 +21,7 @@
     <div v-if="open" class="border-t border-line-soft px-3 py-2">
       <pre
         class="max-h-[280px] overflow-auto whitespace-pre-wrap break-words text-[12px] text-dim leading-[1.5] font-sans"
-        >{{ part.summary }}</pre
-      >
+        >{{ part.summary }}</pre>
     </div>
   </div>
 </template>

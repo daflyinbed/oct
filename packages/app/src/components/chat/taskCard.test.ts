@@ -67,7 +67,7 @@ describe("parseTaskDescription", () => {
   it("解析 arguments JSON 的 description", () => {
     expect(
       parseTaskDescription(
-        String.raw`{"description":"定位 SSE 重连 Bug","prompt":"检查 useChat…"}`,
+        '{"description":"定位 SSE 重连 Bug","prompt":"检查 useChat…"}',
       ),
     ).toBe("定位 SSE 重连 Bug");
   });
@@ -109,7 +109,7 @@ describe("resolveTaskCard（store 优先级）", () => {
 
     const state = resolveTaskCard(
       taskPart({
-        arguments: String.raw`{"description":"定位 SSE 重连 Bug","prompt":"…"}`,
+        arguments: '{"description":"定位 SSE 重连 Bug","prompt":"…"}',
       }),
       taskByCallId("call-1"),
     );

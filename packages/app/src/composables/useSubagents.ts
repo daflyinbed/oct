@@ -11,11 +11,7 @@ import type { MaybeRefOrGetter } from "vue";
 // ---------------------------------------------------------------------------
 
 export type SubagentStatus =
-  | "running"
-  | "completed"
-  | "failed"
-  | "cancelled"
-  | "lost";
+  "running" | "completed" | "failed" | "cancelled" | "lost";
 
 const SUBAGENT_STATUSES: readonly SubagentStatus[] = [
   "running",
@@ -96,15 +92,13 @@ export async function refreshSubagents(
         ? tasks.value.map((task) => [task.run_id, task] as const)
         : [],
     );
-    const snapshot = data.map(
-      (task): SubagentTask => ({
-        ...task,
-        // 生成的 DTO 里 status 是 string；按已知词表收窄（未知值按运行中
-        // 处理，与事件路径一致——宁可多显示活动，不漏 lost 待恢复）。
-        status: isSubagentStatus(task.status) ? task.status : "running",
-        activity: null,
-      }),
-    );
+    const snapshot = data.map((task): SubagentTask => ({
+      ...task,
+      // 生成的 DTO 里 status 是 string；按已知词表收窄（未知值按运行中
+      // 处理，与事件路径一致——宁可多显示活动，不漏 lost 待恢复）。
+      status: isSubagentStatus(task.status) ? task.status : "running",
+      activity: null,
+    }));
     const seen = new Set(snapshot.map((task) => task.run_id));
     tasks.value = snapshot.map((task) => {
       const current = live.get(task.run_id);

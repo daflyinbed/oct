@@ -77,8 +77,7 @@
           <pre
             v-else
             class="max-h-[60vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface px-2.5 py-1.5 text-[11.5px] text-neutral-10 leading-[1.55] font-mono"
-            >{{ output || "（无输出）" }}</pre
-          >
+            >{{ output || "（无输出）" }}</pre>
         </div>
       </DialogContent>
     </DialogPortal>
