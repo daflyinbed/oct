@@ -64,8 +64,8 @@ schemars = "1"
 # OAuth 2.0 + PKCE for http-transport MCP servers (src/oauth.rs): SHA-256 for
 # the S256 code challenge, base64url encoding of it, and URL parsing for the
 # RFC 8414 well-known candidates / authorization URL assembly.
-sha2 = "0.10"
-base64 = "0.22"
+sha2 = "0.11"
+base64 = "0.23"
 url = "2"
 # ripgrep-family library crates for the in-process grep/glob search tools
 ignore = "0.4"
@@ -81,7 +81,7 @@ libc = "0.2"
 [dev-dependencies]
 tempfile = "3"
 # Manual catalog/runtime probe reads existing OpenCode JSONC configurations.
-jsonc-parser = { version = "0.33", features = ["serde"] }
+jsonc-parser = { version = "0.34", features = ["serde"] }
 # sse_payloads() (reconnect e2e) reads response bodies incrementally, which
 # needs reqwest's stream feature — test-only enablement.
 reqwest = { version = "0.13", features = ["stream"] }

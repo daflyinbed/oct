@@ -65,7 +65,18 @@ fn cache() -> &'static Mutex<Cache> {
 }
 
 pub fn digest(value: &str) -> String {
-    format!("{:x}", Sha256::digest(value.as_bytes()))
+    hex(&Sha256::digest(value.as_bytes()))
+}
+
+/// sha2 0.11 的 digest/finalize 输出不再实现 LowerHex，手动转小写十六进制。
+fn hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0xf) as usize] as char);
+    }
+    out
 }
 
 fn identifier(value: &str) -> String {
@@ -174,7 +185,7 @@ impl Catalog {
         hash.update(RUNTIME_TYPES);
         hash.update(README);
         hash.update(serde_json::to_vec(&records)?);
-        let fingerprint = format!("{:x}", hash.finalize());
+        let fingerprint = hex(&hash.finalize());
         let hit = {
             let mut cache = cache().lock().unwrap_or_else(|p| p.into_inner());
             let found = cache

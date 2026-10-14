@@ -448,7 +448,9 @@ async fn entries(root: &std::path::Path, stash: bool) -> ApiResult<Vec<GitEntry>
     Ok(raw
         .split_terminator('\0')
         .collect::<Vec<_>>()
-        .chunks_exact(5)
+        .as_chunks::<5>()
+        .0
+        .iter()
         .map(|p| GitEntry {
             id: p[0].into(),
             short_id: p[1].into(),
