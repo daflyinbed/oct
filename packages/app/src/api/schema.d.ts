@@ -1245,13 +1245,13 @@ export interface components {
         };
         AgentOverride: {
             instructions?: string | null;
-            model?: null | components["schemas"]["ModelChoice"];
-            tools?: null | components["schemas"]["ToolChoice"];
+            model?: components["schemas"]["ModelChoice"] | null;
+            tools?: components["schemas"]["ToolChoice"] | null;
         };
         AgentPatch: {
             instructions?: string | null;
-            model?: null | components["schemas"]["ModelChoice"];
-            tools?: null | components["schemas"]["ToolChoice"];
+            model?: components["schemas"]["ModelChoice"] | null;
+            tools?: components["schemas"]["ToolChoice"] | null;
         };
         AgentSettings: {
             instructions: string;
@@ -1755,12 +1755,12 @@ export interface components {
          *     the live `tool_result` event's `details` carries).
          */
         MessageDetails: {
-            compaction?: null | components["schemas"]["CompactionMetadata"];
+            compaction?: components["schemas"]["CompactionMetadata"] | null;
             /** @description Unrecognized fields, verbatim. */
             extra?: {
                 [key: string]: unknown;
             };
-            kind?: null | components["schemas"]["KnownDetailsKind"];
+            kind?: components["schemas"]["KnownDetailsKind"] | null;
             /**
              * Format: int64
              * @description Present when `kind = "reasoning_duration"` (assistant rows).
@@ -1775,8 +1775,8 @@ export interface components {
         MessageDto: {
             /** Format: date-time */
             created_at: string;
-            details?: null | components["schemas"]["MessageDetails"];
-            fork_cut?: null | components["schemas"]["ForkCut"];
+            details?: components["schemas"]["MessageDetails"] | null;
+            fork_cut?: components["schemas"]["ForkCut"] | null;
             id: string;
             /** @description Shared history has no runtime ownership in the fork. */
             inherited?: boolean | null;
@@ -2007,7 +2007,7 @@ export interface components {
         ProjectMcpSettings: {
             code_mode_available: boolean;
             effective_mcp_tool_mode: components["schemas"]["McpToolMode"];
-            mcp_tool_mode?: null | components["schemas"]["McpToolMode"];
+            mcp_tool_mode?: components["schemas"]["McpToolMode"] | null;
         };
         /**
          * @description One rendered prompt message; `role` is `user` | `assistant`, `text` the
@@ -2172,7 +2172,7 @@ export interface components {
          *     live in-memory activity. Field names are the fixed frontend contract.
          */
         SubagentTaskDto: {
-            agent_config?: null | components["schemas"]["WorkerSnapshot"];
+            agent_config?: components["schemas"]["WorkerSnapshot"] | null;
             /** @description The child conversation id (== agent id in v1). */
             agent_id: string;
             /** Format: date-time */
@@ -2273,7 +2273,7 @@ export interface components {
         UpdateAppSettings: {
             /** @description Omitted keys are left untouched (the PUT is a partial update). */
             llm_wire_log?: boolean | null;
-            mcp_tool_mode?: null | components["schemas"]["McpToolMode"];
+            mcp_tool_mode?: components["schemas"]["McpToolMode"] | null;
         };
         UpdateConversationRequest: {
             /**
@@ -2334,7 +2334,7 @@ export interface components {
             tool_call?: boolean | null;
         };
         UpdateProjectMcpSettings: {
-            mcp_tool_mode?: null | components["schemas"]["McpToolMode"];
+            mcp_tool_mode?: components["schemas"]["McpToolMode"] | null;
         };
         UpdateProjectRequest: {
             /**

@@ -48,9 +48,9 @@ tower-http = { version = "0.7", features = [
 ] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = [ "env-filter" ] }
-utoipa = { version = "5", features = [ "axum_extras", "chrono" ] }
-utoipa-axum = "0.2"
-utoipa-scalar = { version = "0.3", features = [ "axum" ] }
+utoipa = { version = "6", features = [ "axum_extras", "chrono" ] }
+utoipa-axum = "0.3"
+utoipa-scalar = { version = "0.4", features = [ "axum" ] }
 uuid = { version = "1", features = [
   "v4",
   "serde" 
@@ -60,7 +60,7 @@ async-stream = "0.3"
 futures-core = "0.3"
 dashmap = "6"
 tokio-util = "0.7"
-schemars = "0.8"
+schemars = "1"
 # OAuth 2.0 + PKCE for http-transport MCP servers (src/oauth.rs): SHA-256 for
 # the S256 code challenge, base64url encoding of it, and URL parsing for the
 # RFC 8414 well-known candidates / authorization URL assembly.
