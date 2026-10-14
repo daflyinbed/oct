@@ -340,7 +340,7 @@
 </template>
 
 <script setup lang="ts">
-import { useLocalStorage, useNow } from "@vueuse/core";
+import { useIntervalFn, useLocalStorage, useNow } from "@vueuse/core";
 import {
   DropdownMenuContent,
   DropdownMenuItem,
@@ -445,7 +445,7 @@ const hasLostTasks = computed(() =>
 );
 
 // 运行中的耗时需要每秒走表（useNow 随组件作用域停止；BottomBar 常驻）
-const now = useNow({ interval: 1000 });
+const now = useNow({ scheduler: (update) => useIntervalFn(update, 1000) });
 
 function taskElapsed(task: SubagentTask): string {
   return formatSubagentElapsed(

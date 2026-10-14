@@ -132,7 +132,7 @@
 </template>
 
 <script setup lang="ts">
-import { useNow } from "@vueuse/core";
+import { useIntervalFn, useNow } from "@vueuse/core";
 import { computed, onMounted, ref } from "vue";
 import {
   backgroundStatusClass,
@@ -208,7 +208,7 @@ const commandLine = computed(() =>
 );
 
 // 运行中的耗时需要每秒走表；useNow 随组件作用域自动停止
-const now = useNow({ interval: 1000 });
+const now = useNow({ scheduler: (update) => useIntervalFn(update, 1000) });
 const elapsed = computed(() =>
   task.value
     ? formatSubagentElapsed(

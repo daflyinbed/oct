@@ -11,10 +11,10 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "devDependencies": {
-    "@unocss/eslint-plugin": "^66.10.5",
-    "@xwbx/eslint-config": "^0.13.0",
-    "eslint": "^10.2.0",
-    "prettier": "^3.8.3",
+    "@unocss/eslint-plugin": "^66.11.0",
+    "@xwbx/eslint-config": "^0.15.0",
+    "eslint": "^10.12.0",
+    "prettier": "^3.9.10",
     "typescript": "^5.9.3"
   }
 }

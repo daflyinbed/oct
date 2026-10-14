@@ -102,7 +102,7 @@
 </template>
 
 <script setup lang="ts">
-import { useNow } from "@vueuse/core";
+import { useIntervalFn, useNow } from "@vueuse/core";
 import { computed } from "vue";
 import { useChat } from "@/composables/useChat";
 import {
@@ -122,7 +122,7 @@ const props = defineProps<{
 
 const { pendingApprovals } = useChat();
 // 运行中的耗时需要每秒走表；useNow 随组件作用域自动停止
-const now = useNow({ interval: 1000 });
+const now = useNow({ scheduler: (update) => useIntervalFn(update, 1000) });
 
 // 任务 store 命中（live）：subagent_updated 事件落地后即可拿到
 // agent_id / 状态 / 活动；历史回放则由 details 兜底（resolveTaskCard 内）。
