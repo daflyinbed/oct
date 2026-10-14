@@ -1,21 +1,6 @@
 <template>
   <main class="workspace-panel min-w-0 flex-1 bg-background">
     <div
-      v-if="conversationId"
-      class="flex flex-none items-center justify-between gap-2 border-b border-line-soft px-7 py-1.5 text-[11.5px] text-faint"
-    >
-      <span v-if="readOnly">回退前备份 · 只读</span>
-      <span v-else-if="forkedAtRevision != null">
-        <RouterLink
-          v-if="forkedFrom"
-          :to="`/conversation/${forkedFrom}`"
-          class="text-accent-10 hover:underline"
-          >查看来源会话</RouterLink
-        >
-        <span v-else>分支会话</span> · 与来源共用工作区文件
-      </span>
-    </div>
-    <div
       v-if="forkError"
       role="alert"
       class="flex flex-none items-center gap-2 px-7 py-2 text-[12px] text-danger-10"
@@ -269,8 +254,6 @@ const props = defineProps<{
   readOnly?: boolean;
   forkBusy?: boolean;
   forkError?: string | null;
-  forkedFrom?: string | null;
-  forkedAtRevision?: number | null;
   draft?: { conversationId: string; text: string } | null;
 }>();
 const emit = defineEmits<{

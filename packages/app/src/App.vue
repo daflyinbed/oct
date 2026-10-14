@@ -238,6 +238,7 @@ const {
   closeTab,
   activateTab,
   tabTitle,
+  tabOriginKind,
 } = useTabs();
 
 const selectedConversationId = computed(() => {
@@ -367,6 +368,7 @@ const displayTabs = computed(() =>
     kind: tab.kind,
     title: tabTitle(tab),
     active: tab.id === activeTabId.value,
+    originKind: tabOriginKind(tab),
   })),
 );
 

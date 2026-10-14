@@ -78,6 +78,21 @@ export function useTabs() {
     return tab.title ?? tab.kind;
   }
 
+  /** chat 标签的来源标记（fork / revert_backup）；普通会话与其他标签为
+      null——标签条据此显示侧边栏同款的来源图标。 */
+  function tabOriginKind(tab: WorkspaceTab): string | null {
+    if (tab.kind !== "chat") return null;
+    for (const list of conversations.value.values()) {
+      const conversation = list.find((item) => item.id === tab.payload);
+      if (conversation) {
+        return conversation.origin_kind === "normal"
+          ? null
+          : conversation.origin_kind;
+      }
+    }
+    return null;
+  }
+
   return {
     tabs: readonly(tabs),
     activeTabId: readonly(activeTabId),
@@ -86,5 +101,6 @@ export function useTabs() {
     closeTab,
     activateTab,
     tabTitle,
+    tabOriginKind,
   };
 }

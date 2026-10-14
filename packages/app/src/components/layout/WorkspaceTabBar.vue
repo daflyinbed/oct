@@ -15,24 +15,7 @@
       :title="tab.title"
       @click="$emit('select', tab.id)"
     >
-      <i-lucide-message-square
-        v-if="tab.kind === 'chat'"
-        class="h-3 w-3 flex-none"
-      />
-      <i-lucide-file
-        v-else-if="tab.kind === 'file'"
-        class="h-3 w-3 flex-none"
-      />
-      <i-lucide-git-compare
-        v-else-if="tab.kind === 'diff'"
-        class="h-3 w-3 flex-none"
-      />
-      <i-lucide-plug v-else-if="tab.kind === 'mcp'" class="h-3 w-3 flex-none" />
-      <i-lucide-bot
-        v-else-if="tab.kind === 'subagent'"
-        class="h-3 w-3 flex-none"
-      />
-      <i-lucide-git-branch v-else class="h-3 w-3 flex-none" />
+      <component :is="tabIcon(tab)" class="h-3 w-3 flex-none" />
       <span class="max-w-[160px] truncate">{{ tab.title }}</span>
       <span
         class="h-4 w-4 inline-flex items-center justify-center rounded-[4px] text-faint transition-colors hover:bg-neutral-2 hover:text-neutral-10"
@@ -83,6 +66,10 @@ import {
 import IconGraph from "~icons/lucide/git-branch";
 import IconDiff from "~icons/lucide/git-compare";
 import IconChat from "~icons/lucide/message-square";
+import IconFile from "~icons/lucide/file";
+import IconPlug from "~icons/lucide/plug";
+import IconBot from "~icons/lucide/bot";
+import IconRotateCcw from "~icons/lucide/rotate-ccw";
 import type { TabKind } from "@/composables/useTabs";
 import type { Component } from "vue";
 
@@ -91,6 +78,8 @@ export interface DisplayTab {
   kind: TabKind;
   title: string;
   active: boolean;
+  /** chat 标签的来源标记：fork / revert_backup；普通会话为 null */
+  originKind?: string | null;
 }
 
 defineProps<{
@@ -104,6 +93,21 @@ defineEmits<{
 }>();
 
 export type TabAction = "add-chat" | "open-diff" | "open-graph";
+
+// 与侧边栏 ThreadItem 同款：分叉 → git-branch，回退备份 → rotate-ccw，
+// 其余按标签类型取图标
+function tabIcon(tab: DisplayTab): Component {
+  if (tab.kind === "chat") {
+    if (tab.originKind === "fork") return IconGraph;
+    if (tab.originKind === "revert_backup") return IconRotateCcw;
+    return IconChat;
+  }
+  if (tab.kind === "file") return IconFile;
+  if (tab.kind === "diff") return IconDiff;
+  if (tab.kind === "mcp") return IconPlug;
+  if (tab.kind === "subagent") return IconBot;
+  return IconGraph;
+}
 
 const addActions: {
   label: string;

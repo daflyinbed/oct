@@ -22,8 +22,6 @@
     :read-only="readOnly"
     :fork-busy="historyBusy"
     :fork-error="historyLoadError || forkError || revertError"
-    :forked-from="conversation?.forked_from_conversation_id"
-    :forked-at-revision="conversation?.forked_at_revision"
     :draft="forkDraft"
     @send="handleSendMessage"
     @stop="handleStop"
