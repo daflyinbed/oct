@@ -12,6 +12,8 @@ const selectedProviderId = ref<string | null>(null);
 const selectedModelId = ref<string | null>(null);
 /** 思考档位选择（AppSelect 的 value；null = 不带档位，走模型默认）。 */
 const selectedReasoning = ref<string | null>(null);
+/** 进行中/最近一次目录请求：深链会话加载与 App 挂载拉目录并发，水合前等它落定。 */
+let providersFetch: Promise<void> | null = null;
 
 /** models.dev `reasoning_options` 的运行时形态（后端透传的 JSON）。 */
 interface RawReasoningOptions {
@@ -32,6 +34,46 @@ function formatTokens(n: number): string {
   if (n >= 1_000_000 && n % 1_000_000 === 0) return `${n / 1_000_000}M`;
   if (n >= 1024 && n % 1024 === 0) return `${n / 1024}k`;
   return `${n}`;
+}
+
+/** `ReasoningRequestDto` → 选择器 value（`getReasoningRequest` 的逆映射）。 */
+function reasoningValueOf(dto: ReasoningRequestDto): string | null {
+  if (dto.type === "enabled") return "on";
+  if (dto.type === "effort" && dto.effort) return `effort:${dto.effort}`;
+  if (
+    dto.type === "budget_tokens" &&
+    Number.isFinite(dto.budget) &&
+    dto.budget > 0
+  ) {
+    return `budget:${dto.budget}`;
+  }
+  return null;
+}
+
+/**
+ * 历史行 `details.extra.reasoning` 的防御性收窄——落库 JSON 不信任形状，
+ * 认不出的形态按「无档位」处理（与后端 resume 的降级语义一致）。
+ */
+function asReasoningRequest(value: unknown): ReasoningRequestDto | null {
+  if (typeof value !== "object" || value === null) return null;
+  const raw = value as Record<string, unknown>;
+  if (raw.type === "enabled") return { type: "enabled" };
+  if (
+    raw.type === "effort" &&
+    typeof raw.effort === "string" &&
+    raw.effort.length > 0
+  ) {
+    return { type: "effort", effort: raw.effort };
+  }
+  if (
+    raw.type === "budget_tokens" &&
+    typeof raw.budget === "number" &&
+    Number.isFinite(raw.budget) &&
+    raw.budget > 0
+  ) {
+    return { type: "budget_tokens", budget: raw.budget };
+  }
+  return null;
 }
 
 export function useProviders() {
@@ -113,28 +155,70 @@ export function useProviders() {
     // 非空标识 default 是控件里的「默认」项：回到不带档位。
     selectedReasoning.value = value === "default" ? null : value;
   };
+
+  /**
+   * 会话加载后恢复「上一笔请求」的模型与思考档位（来源：最后一条 user
+   * 消息落库的 provider/model 与 `details.reasoning`，与后端 resume 的
+   * 恢复同源）。模型已不在目录（删除/停用）时档位失去适用上下文，一并
+   * 落回「默认」；恢复成功但档位不在当前值域时同样落「默认」。
+   */
+  const hydrateLastRequest = (
+    input: {
+      providerId: string | null;
+      modelId: string | null;
+      reasoning: unknown;
+    } | null,
+  ) => {
+    if (!input) return;
+    const provider = providers.value.find((p) => p.id === input.providerId);
+    const model = provider?.models.find(
+      (m) => m.model_id === input.modelId && m.is_enabled,
+    );
+    if (!provider || !model) {
+      selectedReasoning.value = null;
+      return;
+    }
+    selectedProviderId.value = provider.id;
+    selectedModelId.value = model.model_id;
+    const raw = asReasoningRequest(input.reasoning);
+    const value = raw && reasoningValueOf(raw);
+    selectedReasoning.value =
+      value && reasoningOptions.value.some((option) => option.value === value)
+        ? value
+        : null;
+  };
+
+  /** 目录就绪后再继续：深链首屏时本组合式可能先于 App 挂载的目录请求。 */
+  const whenProvidersReady = async () => {
+    if (providers.value.length === 0) await providersFetch;
+  };
+
   const fetchProviders = async () => {
     loading.value = true;
-    try {
-      const { data, error } = await client.GET("/api/providers");
-      if (!error && data) {
-        providers.value = data;
-        if (data.length > 0 && !selectedProviderId.value) {
-          const withKey = data.find((p) => p.api_key_set);
-          if (withKey) {
-            selectedProviderId.value = withKey.id;
-            const enabled = withKey.models.filter((m) => m.is_enabled);
-            if (enabled.length > 0) {
-              selectedModelId.value = enabled[0].model_id;
+    const request = (async () => {
+      try {
+        const { data, error } = await client.GET("/api/providers");
+        if (!error && data) {
+          providers.value = data;
+          if (data.length > 0 && !selectedProviderId.value) {
+            const withKey = data.find((p) => p.api_key_set);
+            if (withKey) {
+              selectedProviderId.value = withKey.id;
+              const enabled = withKey.models.filter((m) => m.is_enabled);
+              if (enabled.length > 0) {
+                selectedModelId.value = enabled[0].model_id;
+              }
             }
           }
         }
+      } catch {
+        // 网络异常：保持既有列表（无独立的错误视图），loading 必须复位。
+      } finally {
+        loading.value = false;
       }
-    } catch {
-      // 网络异常：保持既有列表（无独立的错误视图），loading 必须复位。
-    } finally {
-      loading.value = false;
-    }
+    })();
+    providersFetch = request;
+    return request;
   };
 
   const updateApiKey = async (providerId: string, apiKey: string) => {
@@ -293,6 +377,8 @@ export function useProviders() {
     selectProvider,
     selectModel,
     selectReasoning,
+    hydrateLastRequest,
+    whenProvidersReady,
     getProviderSpec,
     getReasoningRequest,
     enabledModels,

@@ -160,6 +160,16 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
   let activeConversationId: string | null = null;
   let historyGeneration = 0;
 
+  /**
+   * 当前会话加载成功的原始历史 DTO（display 转换前）——供会话加载后
+   * 恢复「上一笔请求」的模型与思考档位（`getLastUserRequest`）。加载中
+   * 或失败时不提供快照，避免复用其他会话或上一次加载的请求。
+   */
+  const lastHistory = ref<{
+    conversationId: string;
+    messages: ApiMessage[];
+  } | null>(null);
+
   /** 实例本地的上下文占用快照（usage 事件 + 历史播种）。 */
   const usageInputTokens = ref<number | null>(null);
   const contextRevision = ref<number | null>(null);
@@ -345,6 +355,7 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
     if (runs.select(conversationId)) {
       ++historyGeneration;
       messages.value = [];
+      lastHistory.value = null;
       serverResumable.value = false;
       sendRevision = null;
       contextRevision.value = null;
@@ -805,6 +816,7 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
     if (historyChanging) return;
     selectConversation(conversationId);
     const generation = ++historyGeneration;
+    lastHistory.value = null;
     contextRevision.value = null;
     lastFetch = { id: conversationId, at: Date.now() };
     const { data, error, response } = await client.GET(
@@ -827,6 +839,7 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
     ) {
       if (shouldReplace && !shouldReplace(data, revision)) return;
       messages.value = storedToDisplayList(data);
+      lastHistory.value = { conversationId, messages: data };
       contextRevision.value = revision;
       sendRevision = revision;
       activeConversationId = conversationId;
@@ -853,6 +866,39 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
       return;
     }
     await loadMessages(conversationId);
+  };
+
+  /**
+   * 最后一条带 provider/model 的 user 行 = 上一笔请求的模型与思考档位
+   * （`details.extra.reasoning`，与后端 resume 恢复同源）。无此类行
+   * （新会话/纯系统行）、目标会话不匹配或历史未就绪时返回 null，调用方
+   * 据此跳过水合、保持当前选择。
+   */
+  const getLastUserRequest = (
+    conversationId: string,
+  ): {
+    providerId: string;
+    modelId: string;
+    reasoning: unknown;
+  } | null => {
+    const history = lastHistory.value;
+    if (
+      disposed ||
+      activeConversationId !== conversationId ||
+      history?.conversationId !== conversationId
+    )
+      return null;
+    for (let i = history.messages.length - 1; i >= 0; i -= 1) {
+      const message = history.messages[i]!;
+      if (message.role === "user" && message.provider_id && message.model_id) {
+        return {
+          providerId: message.provider_id,
+          modelId: message.model_id,
+          reasoning: message.details?.extra?.reasoning ?? null,
+        };
+      }
+    }
+    return null;
   };
 
   /** A transport rejection does not tell us whether POST was committed.
@@ -1399,6 +1445,7 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
     pendingApprovals: readonly(pendingApprovals),
     fetchMessages,
     refreshMessages: loadMessages,
+    getLastUserRequest,
     sendMessage,
     resumeTurn,
     attachRun,

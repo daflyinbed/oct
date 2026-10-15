@@ -99,6 +99,7 @@ const {
   pendingApprovals,
   fetchMessages,
   refreshMessages,
+  getLastUserRequest,
   sendMessage,
   resumeTurn,
   attachRun,
@@ -118,6 +119,8 @@ const {
   selectProvider,
   selectModel,
   selectReasoning,
+  hydrateLastRequest,
+  whenProvidersReady,
   getProviderSpec,
   getReasoningRequest,
 } = useProviders();
@@ -172,12 +175,25 @@ function handleSetPermissionMode(mode: string) {
 // 后端跑着，从 run 起点重放事件流并继续实时增长（attach 需在历史就位
 // 后进行，重放锚点依赖 DB 消息 id）。attach 完成后再拉一次子任务快照
 // （与流内 subagent_updated 事件对账收敛）。
+// 历史就位后水合「上一笔请求」的模型与思考档位（user 消息落库值，与
+// resume 的后端恢复同源；目录竞态下先等 App 挂载的目录请求落定）。切走
+// 或卸载后旧加载失效，即使 A→B→A 回到同一 id 也不能覆盖新的选择。
 watch(
   conversationId,
-  async (id) => {
+  async (id, _previousId, onCleanup) => {
     if (!id) return;
+    let current = true;
+    onCleanup(() => {
+      current = false;
+    });
     await fetchMessages(id);
+    if (!current) return;
+    const lastRequest = getLastUserRequest(id);
+    await whenProvidersReady();
+    if (!current) return;
+    hydrateLastRequest(lastRequest);
     await attachRun(id);
+    if (!current) return;
     void refreshSubagents(id);
   },
   { immediate: true },

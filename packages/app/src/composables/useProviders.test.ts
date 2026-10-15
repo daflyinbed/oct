@@ -104,3 +104,162 @@ describe("reasoning controls", () => {
     ]);
   });
 });
+
+describe("hydrateLastRequest（上一笔请求水合）", () => {
+  const providerId = "reasoning-provider";
+
+  /** 三模型目录：model 带档位，model-b 无档位，model-c 已停用。 */
+  async function loadCatalog() {
+    const base = {
+      tool_call: true,
+      attachment: false,
+      is_enabled: true,
+      source: "custom",
+      limit_output: 8192,
+    };
+    const provider: Provider = {
+      id: providerId,
+      name: "Reasoning provider",
+      adapter_type: "anthropic",
+      api_key_set: true,
+      source: "custom",
+      created_at: "2026-10-15T00:00:00",
+      updated_at: "2026-10-15T00:00:00",
+      models: [
+        {
+          ...base,
+          model_id: "model",
+          name: "Model",
+          reasoning: true,
+          reasoning_options: [
+            { type: "effort", values: ["low", "high"] },
+            { type: "toggle" },
+            { type: "budget_tokens", min: 1024, max: 8191 },
+          ],
+        },
+        {
+          ...base,
+          model_id: "model-b",
+          name: "Model B",
+          reasoning: false,
+          reasoning_options: null,
+        },
+        {
+          ...base,
+          model_id: "model-c",
+          name: "Model C",
+          reasoning: false,
+          is_enabled: false,
+        },
+      ],
+    };
+    GET.mockResolvedValue({ data: [provider] } as never);
+    await store.fetchProviders();
+    store.selectProvider(providerId);
+  }
+
+  it("恢复上一笔请求的模型与 effort 档位", async () => {
+    await loadCatalog();
+    store.hydrateLastRequest({
+      providerId,
+      modelId: "model",
+      reasoning: { type: "effort", effort: "high" },
+    });
+    expect(store.selectedProviderId.value).toBe(providerId);
+    expect(store.selectedModelId.value).toBe("model");
+    expect(store.selectedReasoning.value).toBe("effort:high");
+    expect(store.getReasoningRequest()).toEqual({
+      type: "effort",
+      effort: "high",
+    });
+  });
+
+  it("恢复 budget 与 toggle 档位（限当前预设档）", async () => {
+    await loadCatalog();
+    store.hydrateLastRequest({
+      providerId,
+      modelId: "model",
+      reasoning: { type: "budget_tokens", budget: 4608 },
+    });
+    expect(store.selectedReasoning.value).toBe("budget:4608");
+    store.hydrateLastRequest({
+      providerId,
+      modelId: "model",
+      reasoning: { type: "enabled" },
+    });
+    expect(store.selectedReasoning.value).toBe("on");
+  });
+
+  it("档位不在当前值域（非预设 budget / 目录已删的 effort）时落回「默认」", async () => {
+    await loadCatalog();
+    store.hydrateLastRequest({
+      providerId,
+      modelId: "model",
+      reasoning: { type: "effort", effort: "ultra" },
+    });
+    expect(store.selectedReasoning.value).toBeNull();
+    store.hydrateLastRequest({
+      providerId,
+      modelId: "model",
+      reasoning: { type: "budget_tokens", budget: 2048 },
+    });
+    expect(store.selectedReasoning.value).toBeNull();
+    store.hydrateLastRequest({ providerId, modelId: "model", reasoning: null });
+    expect(store.selectedReasoning.value).toBeNull();
+  });
+
+  it("目录里已消失/停用的模型不动当前选择，档位随之失效", async () => {
+    await loadCatalog();
+    store.hydrateLastRequest({
+      providerId: "gone",
+      modelId: "x",
+      reasoning: { type: "effort", effort: "high" },
+    });
+    expect(store.selectedModelId.value).toBe("model");
+    expect(store.selectedReasoning.value).toBeNull();
+    store.hydrateLastRequest({
+      providerId,
+      modelId: "model-c",
+      reasoning: { type: "effort", effort: "high" },
+    });
+    expect(store.selectedModelId.value).toBe("model");
+    expect(store.selectedReasoning.value).toBeNull();
+  });
+
+  it.each([
+    { raw: { type: "effort" } },
+    { raw: "garbage" },
+    { raw: { type: "future", values: ["x"] } },
+    { raw: { type: "budget_tokens", budget: -1 } },
+  ])("损坏的落库 reasoning 按无档位处理", async ({ raw }) => {
+    await loadCatalog();
+    store.hydrateLastRequest({ providerId, modelId: "model", reasoning: raw });
+    expect(store.selectedReasoning.value).toBeNull();
+  });
+
+  it("null 输入（新会话无历史请求）不动选择", async () => {
+    await loadCatalog();
+    store.selectReasoning("effort:high");
+    store.hydrateLastRequest(null);
+    expect(store.selectedReasoning.value).toBe("effort:high");
+  });
+});
+
+describe("whenProvidersReady（目录竞态兜底）", () => {
+  it("等待进行中的目录请求落定后再返回", async () => {
+    let resolveGet!: (value: unknown) => void;
+    GET.mockImplementation(
+      () => new Promise((resolve) => (resolveGet = resolve)) as never,
+    );
+    const pending = store.fetchProviders();
+    const ready = store.whenProvidersReady();
+    let settled = false;
+    void ready.then(() => {
+      settled = true;
+    });
+    expect(settled).toBe(false);
+    resolveGet({ data: [] });
+    await Promise.all([pending, ready]);
+    expect(settled).toBe(true);
+  });
+});

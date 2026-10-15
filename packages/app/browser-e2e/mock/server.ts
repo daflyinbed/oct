@@ -84,6 +84,8 @@ export interface Scenario {
   conversations?: unknown[];
   /** GET /api/conversations/:id/messages 的返回体(MessageDto[])。 */
   messages?: Record<string, unknown[]>;
+  /** 按序控制历史请求的延迟或失败；队列耗尽后恢复正常历史响应。 */
+  historyReplies?: Record<string, Array<{ gate?: string; status?: number }>>;
   /** Versioned history / fork replies are explicit scripts, not a DB emulator. */
   contextRevisions?: Record<string, number>;
   /** Explicit resumability, independent of whether a scripted stream is open. */
@@ -702,6 +704,10 @@ async function handleApi(
   if (m) {
     const id = decodeURIComponent(m[1]);
     if (req.method === "GET") {
+      const reply = s.historyReplies?.[id]?.shift();
+      if (reply?.gate) await gateWait(reply.gate);
+      if (reply?.status && reply.status >= 400)
+        return sendJson(res, reply.status, { error: "History unavailable" });
       if (s.contextRevisions?.[id] != null)
         res.setHeader("X-Context-Revision", String(s.contextRevisions[id]));
       return sendJson(res, 200, s.messages?.[id] ?? []);

@@ -32,6 +32,7 @@ const {
   resumable,
   pendingApprovals,
   fetchMessages,
+  getLastUserRequest,
   sendMessage,
   resumeTurn,
   attachRun,
@@ -353,6 +354,106 @@ describe("fetchMessages 历史回放", () => {
     GET.mockResolvedValue({ data: undefined, error: {} } as never);
     await fetchMessages(nextConvId());
     expect(messages.value).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 上一笔请求水合（getLastUserRequest → useProviders.hydrateLastRequest）
+// ---------------------------------------------------------------------------
+
+describe("getLastUserRequest 上一笔请求", () => {
+  it("从尾部找最后一条带 provider/model 的 user 行（details.extra.reasoning 同源）", async () => {
+    GET.mockResolvedValue({
+      data: [
+        storedMessage("user", '[{"Text":"第一笔"}]', {
+          provider_id: "p1",
+          model_id: "m1",
+          details: { extra: { reasoning: { type: "effort", effort: "high" } } },
+        }),
+        storedMessage("assistant", '[{"Text":"答"}]', {
+          provider_id: "p1",
+          model_id: "m1",
+        }),
+        storedMessage("user", '[{"Text":"第二笔用默认档"}]', {
+          provider_id: "p2",
+          model_id: "m2",
+        }),
+      ],
+    } as never);
+
+    const conversationId = nextConvId();
+    await fetchMessages(conversationId);
+
+    expect(getLastUserRequest(conversationId)).toEqual({
+      providerId: "p2",
+      modelId: "m2",
+      reasoning: null,
+    });
+  });
+
+  it("无带 provider/model 的 user 行时返回 null", async () => {
+    GET.mockResolvedValue({
+      data: [storedMessage("assistant", '[{"Text":"hi"}]')],
+    } as never);
+    const conversationId = nextConvId();
+    await fetchMessages(conversationId);
+    expect(getLastUserRequest(conversationId)).toBeNull();
+  });
+
+  it("历史只属于当前会话，切换期间及加载失败时不沿用旧请求", async () => {
+    const session = createChatSession({ contextUsage: false });
+    GET.mockResolvedValueOnce({
+      data: [
+        storedMessage("user", "first", { provider_id: "p1", model_id: "m1" }),
+      ],
+    } as never);
+    await session.fetchMessages("first");
+    expect(session.getLastUserRequest("first")?.modelId).toBe("m1");
+    expect(session.getLastUserRequest("second")).toBeNull();
+
+    let fail!: (value: unknown) => void;
+    GET.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          fail = resolve;
+        }) as never,
+    );
+    const pending = session.fetchMessages("second");
+    expect(session.getLastUserRequest("first")).toBeNull();
+    expect(session.getLastUserRequest("second")).toBeNull();
+    fail({ error: { message: "history unavailable" } });
+    await pending;
+    expect(session.getLastUserRequest("second")).toBeNull();
+    session.dispose();
+  });
+
+  it("当前会话重新加载失败时不提供上一次历史快照", async () => {
+    const session = createChatSession({ contextUsage: false });
+    GET.mockResolvedValueOnce({
+      data: [
+        storedMessage("user", "first", { provider_id: "p1", model_id: "m1" }),
+      ],
+    } as never);
+    await session.fetchMessages("first");
+    GET.mockResolvedValueOnce({
+      error: { message: "history unavailable" },
+    } as never);
+    await session.refreshMessages("first");
+    expect(session.getLastUserRequest("first")).toBeNull();
+    session.dispose();
+  });
+
+  it("清空会话后丢弃上一笔请求", async () => {
+    const session = createChatSession({ contextUsage: false });
+    GET.mockResolvedValueOnce({
+      data: [
+        storedMessage("user", "first", { provider_id: "p1", model_id: "m1" }),
+      ],
+    } as never);
+    await session.fetchMessages("first");
+    session.clearMessages();
+    expect(session.getLastUserRequest("first")).toBeNull();
+    session.dispose();
   });
 });
 
