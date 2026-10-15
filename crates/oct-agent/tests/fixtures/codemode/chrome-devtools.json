@@ -20,9 +20,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "uid"
-        ],
+        "required": ["uid"],
         "type": "object"
       },
       "name": "click",
@@ -39,9 +37,7 @@
             "type": "number"
           }
         },
-        "required": [
-          "pageId"
-        ],
+        "required": ["pageId"],
         "type": "object"
       },
       "name": "close_page",
@@ -66,10 +62,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "from_uid",
-          "to_uid"
-        ],
+        "required": ["from_uid", "to_uid"],
         "type": "object"
       },
       "name": "drag",
@@ -83,11 +76,7 @@
         "properties": {
           "colorScheme": {
             "description": "Emulate the dark or the light mode. Set to \"auto\" to reset to the default.",
-            "enum": [
-              "dark",
-              "light",
-              "auto"
-            ],
+            "enum": ["dark", "light", "auto"],
             "type": "string"
           },
           "cpuThrottlingRate": {
@@ -106,13 +95,7 @@
           },
           "networkConditions": {
             "description": "Throttle network. Omit to disable throttling.",
-            "enum": [
-              "Offline",
-              "Slow 3G",
-              "Fast 3G",
-              "Slow 4G",
-              "Fast 4G"
-            ],
+            "enum": ["Offline", "Slow 3G", "Fast 3G", "Slow 4G", "Fast 4G"],
             "type": "string"
           },
           "userAgent": {
@@ -156,9 +139,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "function"
-        ],
+        "required": ["function"],
         "type": "object"
       },
       "name": "evaluate_script",
@@ -183,10 +164,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "uid",
-          "value"
-        ],
+        "required": ["uid", "value"],
         "type": "object"
       },
       "name": "fill",
@@ -212,10 +190,7 @@
                   "type": "string"
                 }
               },
-              "required": [
-                "uid",
-                "value"
-              ],
+              "required": ["uid", "value"],
               "type": "object"
             },
             "type": "array"
@@ -225,9 +200,7 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "elements"
-        ],
+        "required": ["elements"],
         "type": "object"
       },
       "name": "fill_form",
@@ -244,9 +217,7 @@
             "type": "number"
           }
         },
-        "required": [
-          "msgid"
-        ],
+        "required": ["msgid"],
         "type": "object"
       },
       "name": "get_console_message",
@@ -284,10 +255,7 @@
         "properties": {
           "action": {
             "description": "Whether to dismiss or accept the dialog",
-            "enum": [
-              "accept",
-              "dismiss"
-            ],
+            "enum": ["accept", "dismiss"],
             "type": "string"
           },
           "promptText": {
@@ -295,9 +263,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "action"
-        ],
+        "required": ["action"],
         "type": "object"
       },
       "name": "handle_dialog",
@@ -318,9 +284,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "uid"
-        ],
+        "required": ["uid"],
         "type": "object"
       },
       "name": "hover",
@@ -335,19 +299,13 @@
           "device": {
             "default": "desktop",
             "description": "Device to emulate.",
-            "enum": [
-              "desktop",
-              "mobile"
-            ],
+            "enum": ["desktop", "mobile"],
             "type": "string"
           },
           "mode": {
             "default": "navigation",
             "description": "\"navigation\" reloads & audits. \"snapshot\" analyzes current state.",
-            "enum": [
-              "navigation",
-              "snapshot"
-            ],
+            "enum": ["navigation", "snapshot"],
             "type": "string"
           },
           "outputDirPath": {
@@ -494,10 +452,7 @@
         "properties": {
           "handleBeforeUnload": {
             "description": "Whether to auto accept or beforeunload dialogs triggered by this navigation. Default is accept.",
-            "enum": [
-              "accept",
-              "dismiss"
-            ],
+            "enum": ["accept", "dismiss"],
             "type": "string"
           },
           "ignoreCache": {
@@ -514,12 +469,7 @@
           },
           "type": {
             "description": "Navigate the page by URL, back or forward in history, or reload.",
-            "enum": [
-              "url",
-              "back",
-              "forward",
-              "reload"
-            ],
+            "enum": ["url", "back", "forward", "reload"],
             "type": "string"
           },
           "url": {
@@ -555,9 +505,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "url"
-        ],
+        "required": ["url"],
         "type": "object"
       },
       "name": "new_page",
@@ -578,10 +526,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "insightSetId",
-          "insightName"
-        ],
+        "required": ["insightSetId", "insightName"],
         "type": "object"
       },
       "name": "performance_analyze_insight",
@@ -644,9 +589,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "key"
-        ],
+        "required": ["key"],
         "type": "object"
       },
       "name": "press_key",
@@ -667,10 +610,7 @@
             "type": "number"
           }
         },
-        "required": [
-          "width",
-          "height"
-        ],
+        "required": ["width", "height"],
         "type": "object"
       },
       "name": "resize_page",
@@ -691,9 +631,7 @@
             "type": "number"
           }
         },
-        "required": [
-          "pageId"
-        ],
+        "required": ["pageId"],
         "type": "object"
       },
       "name": "select_page",
@@ -710,9 +648,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "filePath"
-        ],
+        "required": ["filePath"],
         "type": "object"
       },
       "name": "take_heapsnapshot",
@@ -731,11 +667,7 @@
           "format": {
             "default": "png",
             "description": "Type of format to save the screenshot as. Default is \"png\"",
-            "enum": [
-              "png",
-              "jpeg",
-              "webp"
-            ],
+            "enum": ["png", "jpeg", "webp"],
             "type": "string"
           },
           "fullPage": {
@@ -793,9 +725,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "text"
-        ],
+        "required": ["text"],
         "type": "object"
       },
       "name": "type_text",
@@ -820,10 +750,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "uid",
-          "filePath"
-        ],
+        "required": ["uid", "filePath"],
         "type": "object"
       },
       "name": "upload_file",
@@ -848,9 +775,7 @@
             "type": "integer"
           }
         },
-        "required": [
-          "text"
-        ],
+        "required": ["text"],
         "type": "object"
       },
       "name": "wait_for",

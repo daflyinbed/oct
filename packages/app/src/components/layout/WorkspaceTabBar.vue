@@ -63,12 +63,12 @@ import {
   DropdownMenuRoot,
   DropdownMenuTrigger,
 } from "reka-ui";
+import IconBot from "~icons/lucide/bot";
+import IconFile from "~icons/lucide/file";
 import IconGraph from "~icons/lucide/git-branch";
 import IconDiff from "~icons/lucide/git-compare";
 import IconChat from "~icons/lucide/message-square";
-import IconFile from "~icons/lucide/file";
 import IconPlug from "~icons/lucide/plug";
-import IconBot from "~icons/lucide/bot";
 import IconRotateCcw from "~icons/lucide/rotate-ccw";
 import type { TabKind } from "@/composables/useTabs";
 import type { Component } from "vue";

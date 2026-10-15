@@ -10,9 +10,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "database"
-        ],
+        "required": ["database"],
         "type": "object"
       },
       "name": "server_health",
@@ -102,10 +100,7 @@
             "description": "Address(es) or name(s)"
           }
         },
-        "required": [
-          "queries",
-          "database"
-        ],
+        "required": ["queries", "database"],
         "type": "object"
       },
       "name": "lookup_funcs",
@@ -140,11 +135,7 @@
                           "type": "string"
                         }
                       },
-                      "required": [
-                        "addr",
-                        "name",
-                        "size"
-                      ],
+                      "required": ["addr", "name", "size"],
                       "type": "object"
                     },
                     {
@@ -156,19 +147,13 @@
                   "type": "string"
                 }
               },
-              "required": [
-                "query",
-                "fn",
-                "error"
-              ],
+              "required": ["query", "fn", "error"],
               "type": "object"
             },
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -219,10 +204,7 @@
             "description": "Convert numbers to various formats (hex, decimal, binary, ascii)"
           }
         },
-        "required": [
-          "inputs",
-          "database"
-        ],
+        "required": ["inputs", "database"],
         "type": "object"
       },
       "name": "int_convert",
@@ -288,19 +270,13 @@
                   ]
                 }
               },
-              "required": [
-                "input",
-                "result",
-                "error"
-              ],
+              "required": ["input", "result", "error"],
               "type": "object"
             },
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -359,10 +335,7 @@
             "description": "List functions with optional filtering and pagination"
           }
         },
-        "required": [
-          "queries",
-          "database"
-        ],
+        "required": ["queries", "database"],
         "type": "object"
       },
       "name": "list_funcs",
@@ -375,9 +348,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -484,10 +455,7 @@
             "description": "Richer function query (size/type/name filters + pagination)"
           }
         },
-        "required": [
-          "queries",
-          "database"
-        ],
+        "required": ["queries", "database"],
         "type": "object"
       },
       "name": "func_query",
@@ -517,11 +485,7 @@
                         "type": "integer"
                       }
                     },
-                    "required": [
-                      "addr",
-                      "name",
-                      "size"
-                    ],
+                    "required": ["addr", "name", "size"],
                     "type": "object"
                   },
                   "type": "array"
@@ -553,9 +517,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -614,10 +576,7 @@
             "description": "List global variables with optional filtering and pagination"
           }
         },
-        "required": [
-          "queries",
-          "database"
-        ],
+        "required": ["queries", "database"],
         "type": "object"
       },
       "name": "list_globals",
@@ -630,9 +589,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -702,9 +659,7 @@
                       "type": "string"
                     }
                   },
-                  "required": [
-                    "kind"
-                  ],
+                  "required": ["kind"],
                   "type": "object"
                 },
                 "type": "array"
@@ -764,19 +719,14 @@
                     "type": "string"
                   }
                 },
-                "required": [
-                  "kind"
-                ],
+                "required": ["kind"],
                 "type": "object"
               }
             ],
             "description": "Generic entity query with filtering, projection, and pagination"
           }
         },
-        "required": [
-          "queries",
-          "database"
-        ],
+        "required": ["queries", "database"],
         "type": "object"
       },
       "name": "entity_query",
@@ -826,9 +776,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -849,11 +797,7 @@
             "type": "integer"
           }
         },
-        "required": [
-          "offset",
-          "count",
-          "database"
-        ],
+        "required": ["offset", "count", "database"],
         "type": "object"
       },
       "name": "imports",
@@ -924,10 +868,7 @@
             "description": "Import query with import/module filters and pagination"
           }
         },
-        "required": [
-          "queries",
-          "database"
-        ],
+        "required": ["queries", "database"],
         "type": "object"
       },
       "name": "imports_query",
@@ -951,11 +892,7 @@
                         "type": "string"
                       }
                     },
-                    "required": [
-                      "addr",
-                      "imported_name",
-                      "module"
-                    ],
+                    "required": ["addr", "imported_name", "module"],
                     "type": "object"
                   },
                   "type": "array"
@@ -971,18 +908,13 @@
                   ]
                 }
               },
-              "required": [
-                "data",
-                "next_offset"
-              ],
+              "required": ["data", "next_offset"],
               "type": "object"
             },
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -1000,9 +932,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "database"
-        ],
+        "required": ["database"],
         "type": "object"
       },
       "name": "idb_save",
@@ -1026,10 +956,7 @@
             ]
           }
         },
-        "required": [
-          "ok",
-          "path"
-        ],
+        "required": ["ok", "path"],
         "type": "object"
       }
     },
@@ -1056,10 +983,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "pattern",
-          "database"
-        ],
+        "required": ["pattern", "database"],
         "type": "object"
       },
       "name": "find_regex",
@@ -1143,10 +1067,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "pattern",
-          "database"
-        ],
+        "required": ["pattern", "database"],
         "type": "object"
       },
       "name": "search_text",
@@ -1221,10 +1142,7 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "addr",
-          "database"
-        ],
+        "required": ["addr", "database"],
         "type": "object"
       },
       "name": "decompile",
@@ -1261,19 +1179,13 @@
                   "type": "string"
                 }
               },
-              "required": [
-                "addr",
-                "name"
-              ],
+              "required": ["addr", "name"],
               "type": "object"
             },
             "type": "array"
           }
         },
-        "required": [
-          "addr",
-          "code"
-        ],
+        "required": ["addr", "code"],
         "type": "object"
       }
     },
@@ -1305,10 +1217,7 @@
             "type": "integer"
           }
         },
-        "required": [
-          "addr",
-          "database"
-        ],
+        "required": ["addr", "database"],
         "type": "object"
       },
       "name": "disasm",
@@ -1334,10 +1243,7 @@
                           "type": "string"
                         }
                       },
-                      "required": [
-                        "name",
-                        "type"
-                      ],
+                      "required": ["name", "type"],
                       "type": "object"
                     },
                     "type": "array"
@@ -1375,10 +1281,7 @@
                                 "type": "string"
                               }
                             },
-                            "required": [
-                              "addr",
-                              "name"
-                            ],
+                            "required": ["addr", "name"],
                             "type": "object"
                           },
                           "type": "array"
@@ -1387,10 +1290,7 @@
                           "type": "string"
                         }
                       },
-                      "required": [
-                        "addr",
-                        "instruction"
-                      ],
+                      "required": ["addr", "instruction"],
                       "type": "object"
                     },
                     "type": "array"
@@ -1421,12 +1321,7 @@
                           "type": "string"
                         }
                       },
-                      "required": [
-                        "name",
-                        "offset",
-                        "size",
-                        "type"
-                      ],
+                      "required": ["name", "offset", "size", "type"],
                       "type": "object"
                     },
                     "type": "array"
@@ -1435,11 +1330,7 @@
                     "type": "string"
                   }
                 },
-                "required": [
-                  "name",
-                  "start_ea",
-                  "lines"
-                ],
+                "required": ["name", "start_ea", "lines"],
                 "type": "object"
               },
               {
@@ -1587,10 +1478,7 @@
             "description": "Function profiling query (supports name/address filters + pagination)"
           }
         },
-        "required": [
-          "queries",
-          "database"
-        ],
+        "required": ["queries", "database"],
         "type": "object"
       },
       "name": "func_profile",
@@ -1730,9 +1618,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -1815,9 +1701,7 @@
                       "type": "integer"
                     }
                   },
-                  "required": [
-                    "addr"
-                  ],
+                  "required": ["addr"],
                   "type": "object"
                 },
                 "type": "array"
@@ -1890,19 +1774,14 @@
                     "type": "integer"
                   }
                 },
-                "required": [
-                  "addr"
-                ],
+                "required": ["addr"],
                 "type": "object"
               }
             ],
             "description": "Comprehensive per-function analysis with selectable sections"
           }
         },
-        "required": [
-          "queries",
-          "database"
-        ],
+        "required": ["queries", "database"],
         "type": "object"
       },
       "name": "analyze_batch",
@@ -2214,9 +2093,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -2248,10 +2125,7 @@
             "type": "integer"
           }
         },
-        "required": [
-          "addrs",
-          "database"
-        ],
+        "required": ["addrs", "database"],
         "type": "object"
       },
       "name": "xrefs_to",
@@ -2300,11 +2174,7 @@
                                     "type": "string"
                                   }
                                 },
-                                "required": [
-                                  "addr",
-                                  "name",
-                                  "size"
-                                ],
+                                "required": ["addr", "name", "size"],
                                 "type": "object"
                               },
                               {
@@ -2316,11 +2186,7 @@
                             "type": "string"
                           }
                         },
-                        "required": [
-                          "addr",
-                          "type",
-                          "fn"
-                        ],
+                        "required": ["addr", "type", "fn"],
                         "type": "object"
                       },
                       "type": "array"
@@ -2337,9 +2203,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -2394,9 +2258,7 @@
                       "type": "string"
                     }
                   },
-                  "required": [
-                    "addr"
-                  ],
+                  "required": ["addr"],
                   "type": "object"
                 },
                 "type": "array"
@@ -2441,19 +2303,14 @@
                     "type": "string"
                   }
                 },
-                "required": [
-                  "addr"
-                ],
+                "required": ["addr"],
                 "type": "object"
               }
             ],
             "description": "Generic xref query with direction/type filters and pagination"
           }
         },
-        "required": [
-          "queries",
-          "database"
-        ],
+        "required": ["queries", "database"],
         "type": "object"
       },
       "name": "xref_query",
@@ -2488,11 +2345,7 @@
                                 "type": "string"
                               }
                             },
-                            "required": [
-                              "addr",
-                              "name",
-                              "size"
-                            ],
+                            "required": ["addr", "name", "size"],
                             "type": "object"
                           },
                           {
@@ -2567,9 +2420,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -2596,10 +2447,7 @@
                       "type": "string"
                     }
                   },
-                  "required": [
-                    "struct",
-                    "field"
-                  ],
+                  "required": ["struct", "field"],
                   "type": "object"
                 },
                 "type": "array"
@@ -2616,19 +2464,13 @@
                     "type": "string"
                   }
                 },
-                "required": [
-                  "struct",
-                  "field"
-                ],
+                "required": ["struct", "field"],
                 "type": "object"
               }
             ]
           }
         },
-        "required": [
-          "queries",
-          "database"
-        ],
+        "required": ["queries", "database"],
         "type": "object"
       },
       "name": "xrefs_to_field",
@@ -2672,11 +2514,7 @@
                                 "type": "string"
                               }
                             },
-                            "required": [
-                              "addr",
-                              "name",
-                              "size"
-                            ],
+                            "required": ["addr", "name", "size"],
                             "type": "object"
                           },
                           {
@@ -2688,11 +2526,7 @@
                         "type": "string"
                       }
                     },
-                    "required": [
-                      "addr",
-                      "type",
-                      "fn"
-                    ],
+                    "required": ["addr", "type", "fn"],
                     "type": "object"
                   },
                   "type": "array"
@@ -2704,9 +2538,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -2738,10 +2570,7 @@
             "type": "integer"
           }
         },
-        "required": [
-          "addrs",
-          "database"
-        ],
+        "required": ["addrs", "database"],
         "type": "object"
       },
       "name": "callees",
@@ -2770,11 +2599,7 @@
                             "type": "string"
                           }
                         },
-                        "required": [
-                          "addr",
-                          "name",
-                          "type"
-                        ],
+                        "required": ["addr", "name", "type"],
                         "type": "object"
                       },
                       "type": "array"
@@ -2797,9 +2622,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -2836,10 +2659,7 @@
             "description": "Byte patterns to search for (e.g. '48 8B ?? ??')"
           }
         },
-        "required": [
-          "patterns",
-          "database"
-        ],
+        "required": ["patterns", "database"],
         "type": "object"
       },
       "name": "find_bytes",
@@ -2887,9 +2707,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -2926,10 +2744,7 @@
             "type": "integer"
           }
         },
-        "required": [
-          "addrs",
-          "database"
-        ],
+        "required": ["addrs", "database"],
         "type": "object"
       },
       "name": "basic_blocks",
@@ -3015,9 +2830,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -3068,11 +2881,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "type",
-          "targets",
-          "database"
-        ],
+        "required": ["type", "targets", "database"],
         "type": "object"
       },
       "name": "find",
@@ -3137,9 +2946,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -3294,10 +3101,7 @@
             "description": "Instruction query with mnemonic/operand filters and scoped scan"
           }
         },
-        "required": [
-          "queries",
-          "database"
-        ],
+        "required": ["queries", "database"],
         "type": "object"
       },
       "name": "insn_query",
@@ -3361,11 +3165,7 @@
                                 "type": "string"
                               }
                             },
-                            "required": [
-                              "addr",
-                              "name",
-                              "size"
-                            ],
+                            "required": ["addr", "name", "size"],
                             "type": "object"
                           },
                           {
@@ -3521,10 +3321,7 @@
                         "type": "string"
                       }
                     },
-                    "required": [
-                      "start",
-                      "end"
-                    ],
+                    "required": ["start", "end"],
                     "type": "object"
                   },
                   "type": "array"
@@ -3542,9 +3339,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -3576,10 +3371,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "addrs",
-          "database"
-        ],
+        "required": ["addrs", "database"],
         "type": "object"
       },
       "name": "export_funcs",
@@ -3675,10 +3467,7 @@
                 "type": "array"
               }
             },
-            "required": [
-              "format",
-              "functions"
-            ],
+            "required": ["format", "functions"],
             "type": "object"
           },
           {
@@ -3691,10 +3480,7 @@
                 "type": "string"
               }
             },
-            "required": [
-              "format",
-              "content"
-            ],
+            "required": ["format", "content"],
             "type": "object"
           },
           {
@@ -3727,10 +3513,7 @@
                 "type": "array"
               }
             },
-            "required": [
-              "format",
-              "functions"
-            ],
+            "required": ["format", "functions"],
             "type": "object"
           }
         ],
@@ -3780,10 +3563,7 @@
             "description": "Root function addresses to start call graph traversal from"
           }
         },
-        "required": [
-          "roots",
-          "database"
-        ],
+        "required": ["roots", "database"],
         "type": "object"
       },
       "name": "callgraph",
@@ -3807,11 +3587,7 @@
                         "type": "string"
                       }
                     },
-                    "required": [
-                      "from",
-                      "to",
-                      "type"
-                    ],
+                    "required": ["from", "to", "type"],
                     "type": "object"
                   },
                   "type": "array"
@@ -3862,11 +3638,7 @@
                         ]
                       }
                     },
-                    "required": [
-                      "addr",
-                      "name",
-                      "depth"
-                    ],
+                    "required": ["addr", "name", "depth"],
                     "type": "object"
                   },
                   "type": "array"
@@ -3887,9 +3659,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -3916,10 +3686,7 @@
                       "type": "integer"
                     }
                   },
-                  "required": [
-                    "addr",
-                    "size"
-                  ],
+                  "required": ["addr", "size"],
                   "type": "object"
                 },
                 "type": "array"
@@ -3936,19 +3703,13 @@
                     "type": "integer"
                   }
                 },
-                "required": [
-                  "addr",
-                  "size"
-                ],
+                "required": ["addr", "size"],
                 "type": "object"
               }
             ]
           }
         },
-        "required": [
-          "regions",
-          "database"
-        ],
+        "required": ["regions", "database"],
         "type": "object"
       },
       "name": "get_bytes",
@@ -3982,18 +3743,13 @@
                   "type": "string"
                 }
               },
-              "required": [
-                "addr",
-                "data"
-              ],
+              "required": ["addr", "data"],
               "type": "object"
             },
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -4020,10 +3776,7 @@
                       "type": "string"
                     }
                   },
-                  "required": [
-                    "addr",
-                    "ty"
-                  ],
+                  "required": ["addr", "ty"],
                   "type": "object"
                 },
                 "type": "array"
@@ -4040,20 +3793,14 @@
                     "type": "string"
                   }
                 },
-                "required": [
-                  "addr",
-                  "ty"
-                ],
+                "required": ["addr", "ty"],
                 "type": "object"
               }
             ],
             "description": "Integer read requests (ty, addr). ty: i8/u64/i16le/i16be/etc"
           }
         },
-        "required": [
-          "queries",
-          "database"
-        ],
+        "required": ["queries", "database"],
         "type": "object"
       },
       "name": "get_int",
@@ -4083,19 +3830,13 @@
                   ]
                 }
               },
-              "required": [
-                "addr",
-                "ty",
-                "value"
-              ],
+              "required": ["addr", "ty", "value"],
               "type": "object"
             },
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -4122,10 +3863,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "addrs",
-          "database"
-        ],
+        "required": ["addrs", "database"],
         "type": "object"
       },
       "name": "get_string",
@@ -4152,18 +3890,13 @@
                   ]
                 }
               },
-              "required": [
-                "addr",
-                "value"
-              ],
+              "required": ["addr", "value"],
               "type": "object"
             },
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -4190,10 +3923,7 @@
             "description": "Global variable addresses or names to read values from"
           }
         },
-        "required": [
-          "queries",
-          "database"
-        ],
+        "required": ["queries", "database"],
         "type": "object"
       },
       "name": "get_global_value",
@@ -4220,18 +3950,13 @@
                   ]
                 }
               },
-              "required": [
-                "query",
-                "value"
-              ],
+              "required": ["query", "value"],
               "type": "object"
             },
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -4258,10 +3983,7 @@
                       "type": "string"
                     }
                   },
-                  "required": [
-                    "addr",
-                    "data"
-                  ],
+                  "required": ["addr", "data"],
                   "type": "object"
                 },
                 "type": "array"
@@ -4278,19 +4000,13 @@
                     "type": "string"
                   }
                 },
-                "required": [
-                  "addr",
-                  "data"
-                ],
+                "required": ["addr", "data"],
                 "type": "object"
               }
             ]
           }
         },
-        "required": [
-          "patches",
-          "database"
-        ],
+        "required": ["patches", "database"],
         "type": "object"
       },
       "name": "patch",
@@ -4317,18 +4033,13 @@
                   "type": "integer"
                 }
               },
-              "required": [
-                "addr",
-                "size"
-              ],
+              "required": ["addr", "size"],
               "type": "object"
             },
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -4359,11 +4070,7 @@
                       "type": "string"
                     }
                   },
-                  "required": [
-                    "addr",
-                    "ty",
-                    "value"
-                  ],
+                  "required": ["addr", "ty", "value"],
                   "type": "object"
                 },
                 "type": "array"
@@ -4384,21 +4091,14 @@
                     "type": "string"
                   }
                 },
-                "required": [
-                  "addr",
-                  "ty",
-                  "value"
-                ],
+                "required": ["addr", "ty", "value"],
                 "type": "object"
               }
             ],
             "description": "Integer write requests (ty, addr, value). value is a string; supports 0x.. and negatives"
           }
         },
-        "required": [
-          "items",
-          "database"
-        ],
+        "required": ["items", "database"],
         "type": "object"
       },
       "name": "put_int",
@@ -4428,19 +4128,13 @@
                   ]
                 }
               },
-              "required": [
-                "addr",
-                "ty",
-                "value"
-              ],
+              "required": ["addr", "ty", "value"],
               "type": "object"
             },
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -4467,10 +4161,7 @@
             "description": "C type declarations"
           }
         },
-        "required": [
-          "decls",
-          "database"
-        ],
+        "required": ["decls", "database"],
         "type": "object"
       },
       "name": "declare_type",
@@ -4493,9 +4184,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -4650,10 +4339,7 @@
             "description": "Create enums if missing and upsert enum members without destructive replacement"
           }
         },
-        "required": [
-          "queries",
-          "database"
-        ],
+        "required": ["queries", "database"],
         "type": "object"
       },
       "name": "enum_upsert",
@@ -4716,11 +4402,7 @@
                       "type": "integer"
                     }
                   },
-                  "required": [
-                    "created",
-                    "skipped",
-                    "conflicts"
-                  ],
+                  "required": ["created", "skipped", "conflicts"],
                   "type": "object"
                 }
               },
@@ -4730,9 +4412,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -4782,10 +4462,7 @@
             ]
           }
         },
-        "required": [
-          "queries",
-          "database"
-        ],
+        "required": ["queries", "database"],
         "type": "object"
       },
       "name": "read_struct",
@@ -4830,13 +4507,7 @@
                             "type": "string"
                           }
                         },
-                        "required": [
-                          "offset",
-                          "type",
-                          "name",
-                          "size",
-                          "value"
-                        ],
+                        "required": ["offset", "type", "name", "size", "value"],
                         "type": "object"
                       },
                       "type": "array"
@@ -4863,9 +4534,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -4882,10 +4551,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "filter",
-          "database"
-        ],
+        "required": ["filter", "database"],
         "type": "object"
       },
       "name": "search_structs",
@@ -4923,9 +4589,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -5040,10 +4704,7 @@
             "description": "Type catalog query with filtering, pagination, and optional relationships"
           }
         },
-        "required": [
-          "queries",
-          "database"
-        ],
+        "required": ["queries", "database"],
         "type": "object"
       },
       "name": "type_query",
@@ -5083,12 +4744,7 @@
                               "type": "string"
                             }
                           },
-                          "required": [
-                            "name",
-                            "offset",
-                            "size",
-                            "type"
-                          ],
+                          "required": ["name", "offset", "size", "type"],
                           "type": "object"
                         },
                         "type": "array"
@@ -5140,20 +4796,13 @@
                   "type": "integer"
                 }
               },
-              "required": [
-                "kind",
-                "data",
-                "next_offset",
-                "total"
-              ],
+              "required": ["kind", "data", "next_offset", "total"],
               "type": "object"
             },
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -5184,9 +4833,7 @@
                       "type": "string"
                     }
                   },
-                  "required": [
-                    "name"
-                  ],
+                  "required": ["name"],
                   "type": "object"
                 },
                 "type": "array"
@@ -5207,19 +4854,14 @@
                     "type": "string"
                   }
                 },
-                "required": [
-                  "name"
-                ],
+                "required": ["name"],
                 "type": "object"
               }
             ],
             "description": "Inspect named types and optionally include member layout"
           }
         },
-        "required": [
-          "queries",
-          "database"
-        ],
+        "required": ["queries", "database"],
         "type": "object"
       },
       "name": "type_inspect",
@@ -5272,12 +4914,7 @@
                             "type": "string"
                           }
                         },
-                        "required": [
-                          "name",
-                          "offset",
-                          "size",
-                          "type"
-                        ],
+                        "required": ["name", "offset", "size", "type"],
                         "type": "object"
                       },
                       "type": "array"
@@ -5300,9 +4937,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -5345,9 +4980,7 @@
                       "type": "string"
                     }
                   },
-                  "required": [
-                    "addr"
-                  ],
+                  "required": ["addr"],
                   "type": "object"
                 },
                 "type": "array"
@@ -5380,18 +5013,13 @@
                     "type": "string"
                   }
                 },
-                "required": [
-                  "addr"
-                ],
+                "required": ["addr"],
                 "type": "object"
               }
             ]
           }
         },
-        "required": [
-          "edits",
-          "database"
-        ],
+        "required": ["edits", "database"],
         "type": "object"
       },
       "name": "set_type",
@@ -5421,9 +5049,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -5466,9 +5092,7 @@
                           "type": "string"
                         }
                       },
-                      "required": [
-                        "addr"
-                      ],
+                      "required": ["addr"],
                       "type": "object"
                     },
                     "type": "array"
@@ -5501,9 +5125,7 @@
                         "type": "string"
                       }
                     },
-                    "required": [
-                      "addr"
-                    ],
+                    "required": ["addr"],
                     "type": "object"
                   }
                 ],
@@ -5514,9 +5136,7 @@
                 "type": "boolean"
               }
             },
-            "required": [
-              "edits"
-            ],
+            "required": ["edits"],
             "type": "object"
           },
           "database": {
@@ -5524,10 +5144,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "batch",
-          "database"
-        ],
+        "required": ["batch", "database"],
         "type": "object"
       },
       "name": "type_apply_batch",
@@ -5570,13 +5187,7 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "ok",
-          "applied",
-          "failed",
-          "stopped",
-          "results"
-        ],
+        "required": ["ok", "applied", "failed", "stopped", "results"],
         "type": "object"
       }
     },
@@ -5603,10 +5214,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "addrs",
-          "database"
-        ],
+        "required": ["addrs", "database"],
         "type": "object"
       },
       "name": "infer_types",
@@ -5652,9 +5260,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -5680,11 +5286,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "addr",
-          "name",
-          "database"
-        ],
+        "required": ["addr", "name", "database"],
         "type": "object"
       },
       "name": "add_bookmark",
@@ -5747,10 +5349,7 @@
                       "type": "string"
                     }
                   },
-                  "required": [
-                    "addr",
-                    "comment"
-                  ],
+                  "required": ["addr", "comment"],
                   "type": "object"
                 },
                 "type": "array"
@@ -5767,19 +5366,13 @@
                     "type": "string"
                   }
                 },
-                "required": [
-                  "addr",
-                  "comment"
-                ],
+                "required": ["addr", "comment"],
                 "type": "object"
               }
             ]
           }
         },
-        "required": [
-          "items",
-          "database"
-        ],
+        "required": ["items", "database"],
         "type": "object"
       },
       "name": "set_comments",
@@ -5796,17 +5389,13 @@
                   "type": "string"
                 }
               },
-              "required": [
-                "addr"
-              ],
+              "required": ["addr"],
               "type": "object"
             },
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -5841,10 +5430,7 @@
                       "type": "string"
                     }
                   },
-                  "required": [
-                    "addr",
-                    "comment"
-                  ],
+                  "required": ["addr", "comment"],
                   "type": "object"
                 },
                 "type": "array"
@@ -5869,19 +5455,13 @@
                     "type": "string"
                   }
                 },
-                "required": [
-                  "addr",
-                  "comment"
-                ],
+                "required": ["addr", "comment"],
                 "type": "object"
               }
             ]
           }
         },
-        "required": [
-          "items",
-          "database"
-        ],
+        "required": ["items", "database"],
         "type": "object"
       },
       "name": "append_comments",
@@ -5907,17 +5487,13 @@
                   "type": "boolean"
                 }
               },
-              "required": [
-                "addr"
-              ],
+              "required": ["addr"],
               "type": "object"
             },
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -5944,10 +5520,7 @@
                       "type": "string"
                     }
                   },
-                  "required": [
-                    "addr",
-                    "asm"
-                  ],
+                  "required": ["addr", "asm"],
                   "type": "object"
                 },
                 "type": "array"
@@ -5964,19 +5537,13 @@
                     "type": "string"
                   }
                 },
-                "required": [
-                  "addr",
-                  "asm"
-                ],
+                "required": ["addr", "asm"],
                 "type": "object"
               }
             ]
           }
         },
-        "required": [
-          "items",
-          "database"
-        ],
+        "required": ["items", "database"],
         "type": "object"
       },
       "name": "patch_asm",
@@ -5993,17 +5560,13 @@
                   "type": "string"
                 }
               },
-              "required": [
-                "addr"
-              ],
+              "required": ["addr"],
               "type": "object"
             },
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -6034,10 +5597,7 @@
                           "type": "string"
                         }
                       },
-                      "required": [
-                        "old",
-                        "new"
-                      ],
+                      "required": ["old", "new"],
                       "type": "object"
                     },
                     "type": "array"
@@ -6054,10 +5614,7 @@
                         "type": "string"
                       }
                     },
-                    "required": [
-                      "old",
-                      "new"
-                    ],
+                    "required": ["old", "new"],
                     "type": "object"
                   }
                 ],
@@ -6082,10 +5639,7 @@
                           "type": "string"
                         }
                       },
-                      "required": [
-                        "addr",
-                        "name"
-                      ],
+                      "required": ["addr", "name"],
                       "type": "object"
                     },
                     "type": "array"
@@ -6102,10 +5656,7 @@
                         "type": "string"
                       }
                     },
-                    "required": [
-                      "addr",
-                      "name"
-                    ],
+                    "required": ["addr", "name"],
                     "type": "object"
                   }
                 ],
@@ -6130,11 +5681,7 @@
                           "type": "string"
                         }
                       },
-                      "required": [
-                        "func_addr",
-                        "old",
-                        "new"
-                      ],
+                      "required": ["func_addr", "old", "new"],
                       "type": "object"
                     },
                     "type": "array"
@@ -6155,11 +5702,7 @@
                         "type": "string"
                       }
                     },
-                    "required": [
-                      "func_addr",
-                      "old",
-                      "new"
-                    ],
+                    "required": ["func_addr", "old", "new"],
                     "type": "object"
                   }
                 ],
@@ -6184,11 +5727,7 @@
                           "type": "string"
                         }
                       },
-                      "required": [
-                        "func_addr",
-                        "old",
-                        "new"
-                      ],
+                      "required": ["func_addr", "old", "new"],
                       "type": "object"
                     },
                     "type": "array"
@@ -6209,11 +5748,7 @@
                         "type": "string"
                       }
                     },
-                    "required": [
-                      "func_addr",
-                      "old",
-                      "new"
-                    ],
+                    "required": ["func_addr", "old", "new"],
                     "type": "object"
                   }
                 ],
@@ -6232,10 +5767,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "batch",
-          "database"
-        ],
+        "required": ["batch", "database"],
         "type": "object"
       },
       "name": "rename",
@@ -6544,10 +6076,7 @@
             ]
           }
         },
-        "required": [
-          "items",
-          "database"
-        ],
+        "required": ["items", "database"],
         "type": "object"
       },
       "name": "define_func",
@@ -6585,9 +6114,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -6637,10 +6164,7 @@
             ]
           }
         },
-        "required": [
-          "items",
-          "database"
-        ],
+        "required": ["items", "database"],
         "type": "object"
       },
       "name": "define_code",
@@ -6678,9 +6202,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -6738,10 +6260,7 @@
             ]
           }
         },
-        "required": [
-          "items",
-          "database"
-        ],
+        "required": ["items", "database"],
         "type": "object"
       },
       "name": "undefine",
@@ -6779,9 +6298,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -6823,9 +6340,7 @@
             "description": "List of {addr: function-entry-EA} ops, or a single op. Omit / pass empty list to recompile every function."
           }
         },
-        "required": [
-          "database"
-        ],
+        "required": ["database"],
         "type": "object"
       },
       "name": "force_recompile",
@@ -6900,10 +6415,7 @@
             "description": "Operand-typing ops. Equivalent to GUI 'Y' (struct offset) or 'O' (offset) operations."
           }
         },
-        "required": [
-          "items",
-          "database"
-        ],
+        "required": ["items", "database"],
         "type": "object"
       },
       "name": "set_op_type",
@@ -6935,9 +6447,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -6996,10 +6506,7 @@
             "description": "Data-creation ops. Each {addr, type, name?} replaces existing data items at addr with a fresh symbol of the given type."
           }
         },
-        "required": [
-          "items",
-          "database"
-        ],
+        "required": ["items", "database"],
         "type": "object"
       },
       "name": "make_data",
@@ -7034,9 +6541,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -7063,10 +6568,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "addrs",
-          "database"
-        ],
+        "required": ["addrs", "database"],
         "type": "object"
       },
       "name": "stack_frame",
@@ -7101,12 +6603,7 @@
                             "type": "string"
                           }
                         },
-                        "required": [
-                          "name",
-                          "offset",
-                          "size",
-                          "type"
-                        ],
+                        "required": ["name", "offset", "size", "type"],
                         "type": "object"
                       },
                       "type": "array"
@@ -7117,18 +6614,13 @@
                   ]
                 }
               },
-              "required": [
-                "addr",
-                "vars"
-              ],
+              "required": ["addr", "vars"],
               "type": "object"
             },
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -7163,12 +6655,7 @@
                       "type": "string"
                     }
                   },
-                  "required": [
-                    "addr",
-                    "offset",
-                    "name",
-                    "ty"
-                  ],
+                  "required": ["addr", "offset", "name", "ty"],
                   "type": "object"
                 },
                 "type": "array"
@@ -7193,21 +6680,13 @@
                     "type": "string"
                   }
                 },
-                "required": [
-                  "addr",
-                  "offset",
-                  "name",
-                  "ty"
-                ],
+                "required": ["addr", "offset", "name", "ty"],
                 "type": "object"
               }
             ]
           }
         },
-        "required": [
-          "items",
-          "database"
-        ],
+        "required": ["items", "database"],
         "type": "object"
       },
       "name": "declare_stack",
@@ -7227,18 +6706,13 @@
                   "type": "string"
                 }
               },
-              "required": [
-                "addr",
-                "name"
-              ],
+              "required": ["addr", "name"],
               "type": "object"
             },
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -7265,10 +6739,7 @@
                       "type": "string"
                     }
                   },
-                  "required": [
-                    "addr",
-                    "name"
-                  ],
+                  "required": ["addr", "name"],
                   "type": "object"
                 },
                 "type": "array"
@@ -7285,19 +6756,13 @@
                     "type": "string"
                   }
                 },
-                "required": [
-                  "addr",
-                  "name"
-                ],
+                "required": ["addr", "name"],
                 "type": "object"
               }
             ]
           }
         },
-        "required": [
-          "items",
-          "database"
-        ],
+        "required": ["items", "database"],
         "type": "object"
       },
       "name": "delete_stack",
@@ -7317,18 +6782,13 @@
                   "type": "string"
                 }
               },
-              "required": [
-                "addr",
-                "name"
-              ],
+              "required": ["addr", "name"],
               "type": "object"
             },
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -7346,9 +6806,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "database"
-        ],
+        "required": ["database"],
         "type": "object"
       },
       "name": "survey_binary",
@@ -7399,11 +6857,7 @@
                   "type": "integer"
                 }
               },
-              "required": [
-                "addr",
-                "name",
-                "ordinal"
-              ],
+              "required": ["addr", "name", "ordinal"],
               "type": "object"
             },
             "type": "array"
@@ -7425,11 +6879,7 @@
                       "type": "string"
                     }
                   },
-                  "required": [
-                    "addr",
-                    "name",
-                    "module"
-                  ],
+                  "required": ["addr", "name", "module"],
                   "type": "object"
                 },
                 "type": "array"
@@ -7448,11 +6898,7 @@
                       "type": "string"
                     }
                   },
-                  "required": [
-                    "addr",
-                    "name",
-                    "module"
-                  ],
+                  "required": ["addr", "name", "module"],
                   "type": "object"
                 },
                 "type": "array"
@@ -7471,11 +6917,7 @@
                       "type": "string"
                     }
                   },
-                  "required": [
-                    "addr",
-                    "name",
-                    "module"
-                  ],
+                  "required": ["addr", "name", "module"],
                   "type": "object"
                 },
                 "type": "array"
@@ -7494,11 +6936,7 @@
                       "type": "string"
                     }
                   },
-                  "required": [
-                    "addr",
-                    "name",
-                    "module"
-                  ],
+                  "required": ["addr", "name", "module"],
                   "type": "object"
                 },
                 "type": "array"
@@ -7517,11 +6955,7 @@
                       "type": "string"
                     }
                   },
-                  "required": [
-                    "addr",
-                    "name",
-                    "module"
-                  ],
+                  "required": ["addr", "name", "module"],
                   "type": "object"
                 },
                 "type": "array"
@@ -7540,11 +6974,7 @@
                       "type": "string"
                     }
                   },
-                  "required": [
-                    "addr",
-                    "name",
-                    "module"
-                  ],
+                  "required": ["addr", "name", "module"],
                   "type": "object"
                 },
                 "type": "array"
@@ -7609,11 +7039,7 @@
                   "type": "integer"
                 }
               },
-              "required": [
-                "addr",
-                "string",
-                "xref_count"
-              ],
+              "required": ["addr", "string", "xref_count"],
               "type": "object"
             },
             "type": "array"
@@ -7674,13 +7100,7 @@
                   "type": "string"
                 }
               },
-              "required": [
-                "name",
-                "start",
-                "end",
-                "size",
-                "permissions"
-              ],
+              "required": ["name", "start", "end", "size", "permissions"],
               "type": "object"
             },
             "type": "array"
@@ -7740,10 +7160,7 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "addr",
-          "database"
-        ],
+        "required": ["addr", "database"],
         "type": "object"
       },
       "name": "analyze_function",
@@ -7773,10 +7190,7 @@
                 "type": "integer"
               }
             },
-            "required": [
-              "count",
-              "cyclomatic_complexity"
-            ],
+            "required": ["count", "cyclomatic_complexity"],
             "type": "object"
           },
           "callees": {
@@ -7889,10 +7303,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "addrs",
-          "database"
-        ],
+        "required": ["addrs", "database"],
         "type": "object"
       },
       "name": "analyze_component",
@@ -7975,11 +7386,7 @@
                       "type": "string"
                     }
                   },
-                  "required": [
-                    "from",
-                    "to",
-                    "name"
-                  ],
+                  "required": ["from", "to", "name"],
                   "type": "object"
                 },
                 "type": "array"
@@ -7991,10 +7398,7 @@
                 "type": "array"
               }
             },
-            "required": [
-              "nodes",
-              "edges"
-            ],
+            "required": ["nodes", "edges"],
             "type": "object"
           },
           "internal_only": {
@@ -8020,11 +7424,7 @@
                   "type": "string"
                 }
               },
-              "required": [
-                "addr",
-                "name",
-                "accessed_by"
-              ],
+              "required": ["addr", "name", "accessed_by"],
               "type": "object"
             },
             "type": "array"
@@ -8066,10 +7466,7 @@
             "type": "integer"
           }
         },
-        "required": [
-          "addr",
-          "database"
-        ],
+        "required": ["addr", "database"],
         "type": "object"
       },
       "name": "trace_data_flow",
@@ -8096,11 +7493,7 @@
                   "type": "string"
                 }
               },
-              "required": [
-                "from",
-                "to",
-                "type"
-              ],
+              "required": ["from", "to", "type"],
               "type": "object"
             },
             "type": "array"
@@ -8210,10 +7603,7 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "addrs",
-          "database"
-        ],
+        "required": ["addrs", "database"],
         "type": "object"
       },
       "name": "make_signature",
@@ -8256,20 +7646,13 @@
                   "type": "boolean"
                 }
               },
-              "required": [
-                "query",
-                "addr",
-                "signature",
-                "format"
-              ],
+              "required": ["query", "addr", "signature", "format"],
               "type": "object"
             },
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -8311,10 +7694,7 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "addrs",
-          "database"
-        ],
+        "required": ["addrs", "database"],
         "type": "object"
       },
       "name": "make_signature_for_function",
@@ -8364,21 +7744,13 @@
                   ]
                 }
               },
-              "required": [
-                "query",
-                "addr",
-                "name",
-                "signature",
-                "format"
-              ],
+              "required": ["query", "addr", "name", "signature", "format"],
               "type": "object"
             },
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -8409,11 +7781,7 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "start",
-          "end",
-          "database"
-        ],
+        "required": ["start", "end", "database"],
         "type": "object"
       },
       "name": "make_signature_for_range",
@@ -8453,12 +7821,7 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "query",
-          "addr",
-          "signature",
-          "format"
-        ],
+        "required": ["query", "addr", "signature", "format"],
         "type": "object"
       }
     },
@@ -8500,10 +7863,7 @@
             "type": "integer"
           }
         },
-        "required": [
-          "addrs",
-          "database"
-        ],
+        "required": ["addrs", "database"],
         "type": "object"
       },
       "name": "find_xref_signatures",
@@ -8546,19 +7906,13 @@
                   "type": "integer"
                 }
               },
-              "required": [
-                "query",
-                "addr",
-                "signatures"
-              ],
+              "required": ["query", "addr", "signatures"],
               "type": "object"
             },
             "type": "array"
           }
         },
-        "required": [
-          "result"
-        ],
+        "required": ["result"],
         "type": "object"
       }
     },
@@ -8601,9 +7955,7 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "input_path"
-        ],
+        "required": ["input_path"],
         "type": "object"
       },
       "name": "idb_open",

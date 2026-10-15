@@ -44,16 +44,16 @@ cargo build --workspace --features oct-codemode/runtime --release  # 含代码�
 
 ## 配置
 
-| 环境变量 | 作用 |
-| --- | --- |
-| `DATABASE_URL` | SQLite 位置（默认 `$XDG_DATA_HOME/oct/oct.db`，目录 0700、库文件 0600） |
-| `OCT_PORT` | serve 端口（默认 3000） |
-| `OCT_CODEMODE_WORKER` | 显式指定 `oct-codemode-worker` 路径（默认在 oct-agent 同目录/相邻目录找） |
-| `OCT_EXEC_DIR` | 后台任务输出目录（默认 db 目录下 `exec/`） |
-| `OCT_LLM_WIRE_LOG=off` | LLM wire 日志进程级硬关 |
-| `OCT_LLM_WIRE_DIR` | wire 日志目录（默认 db 目录下 `llm-wire/`） |
-| `OCT_LLM_WIRE_FIELD_MAX` | 单字段截断上限（0 = 关闭） |
-| `SQLX_OFFLINE=true` | 编译用 `.sqlx/` 缓存（不连库） |
+| 环境变量                 | 作用                                                                      |
+| ------------------------ | ------------------------------------------------------------------------- |
+| `DATABASE_URL`           | SQLite 位置（默认 `$XDG_DATA_HOME/oct/oct.db`，目录 0700、库文件 0600）   |
+| `OCT_PORT`               | serve 端口（默认 3000）                                                   |
+| `OCT_CODEMODE_WORKER`    | 显式指定 `oct-codemode-worker` 路径（默认在 oct-agent 同目录/相邻目录找） |
+| `OCT_EXEC_DIR`           | 后台任务输出目录（默认 db 目录下 `exec/`）                                |
+| `OCT_LLM_WIRE_LOG=off`   | LLM wire 日志进程级硬关                                                   |
+| `OCT_LLM_WIRE_DIR`       | wire 日志目录（默认 db 目录下 `llm-wire/`）                               |
+| `OCT_LLM_WIRE_FIELD_MAX` | 单字段截断上限（0 = 关闭）                                                |
+| `SQLX_OFFLINE=true`      | 编译用 `.sqlx/` 缓存（不连库）                                            |
 
 仓库 `.env` 是纯编译期配置（sqlx 宏加载），运行时不读取。`exec/`、`llm-wire/`、`codemode/` 运行时产物自动跟 db 目录走。
 

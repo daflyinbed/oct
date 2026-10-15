@@ -1,0 +1,20 @@
+# 生成物与本地目录（对齐 .gitignore）：由工具重新生成或运行时写入，不参与 prettier
+/target/
+dist/
+.vitest/
+docs/
+/exec/
+/llm-wire/
+/codemode/
+packages/oct-design/
+
+# pnpm 生成的锁文件
+pnpm-lock.yaml
+
+# cargo sqlx prepare 生成的编译期查询缓存
+.sqlx/
+
+# 前端生成文件：generate-api / unplugin 输出，不保证 prettier 格式
+packages/app/src/api/schema.d.ts
+packages/app/src/components.d.ts
+packages/app/typed-router.d.ts

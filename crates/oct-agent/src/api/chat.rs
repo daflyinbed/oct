@@ -243,12 +243,13 @@ pub async fn send_message(
     if let Some(request_id) = req.client_request_id.as_ref() {
         user_details.insert("client_request_id".into(), serde_json::json!(request_id));
     }
-    if let Some(reasoning) = req.reasoning.as_ref() {
-        if let Ok(value) = serde_json::to_value(reasoning) {
-            user_details.insert("reasoning".into(), value);
-        }
+    if let Some(reasoning) = req.reasoning.as_ref()
+        && let Ok(value) = serde_json::to_value(reasoning)
+    {
+        user_details.insert("reasoning".into(), value);
     }
-    let user_details = (!user_details.is_empty()).then(|| serde_json::Value::Object(user_details));
+    let user_details =
+        (!user_details.is_empty()).then_some(serde_json::Value::Object(user_details));
     let stored_user = msg_db::insert_message(
         &state.pool,
         &id,

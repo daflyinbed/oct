@@ -154,7 +154,7 @@ it("用户消息回退保留原会话，回填草稿、创建只读备份并可�
   );
   expect(sent?.body).toMatchObject({ expected_revision: 5 });
   await mounted!.router.push("/conversation/backup");
-  await expect.poll(chatText).toContain("回退前备份 · 只读");
+  await expect.poll(chatText).toContain("此会话是回退前的只读备份。");
   await expect.poll(chatText).toContain("被撤销的回答");
   await expect
     .element(page.getByPlaceholder(COMPOSER_SELECTOR))

@@ -39,6 +39,8 @@ async function boot(cut: ForkCut, draft: string | null, inherited = rows) {
   await resetMock();
   const branch = {
     ...conversationFixture("branch", "p1", "原会话（分支）"),
+    // 真实 fork API 会把 origin_kind 置为 "fork"（侧栏行/标签页据此显示来源标识）
+    origin_kind: "fork",
     forked_from_conversation_id: "c1",
     forked_at_revision: inherited.length,
   };
@@ -82,7 +84,7 @@ async function boot(cut: ForkCut, draft: string | null, inherited = rows) {
   await expect.element(page.getByTitle("从这条回复后分支")).toBeEnabled();
 }
 
-it("当前会话分支加入侧栏、展示来源，并能独立继续发送", async () => {
+it("当前会话分支加入侧栏并带分叉标记，并能独立继续发送", async () => {
   const cut = {
     kind: "message",
     message_id: "a1",
@@ -93,10 +95,8 @@ it("当前会话分支加入侧栏、展示来源，并能独立继续发送", a
   await expect
     .poll(() => mounted?.router.currentRoute.value.path)
     .toBe("/conversation/branch");
-  await expect.poll(chatText).toContain("与来源共用工作区文件");
-  await expect
-    .element(page.getByRole("link", { name: "查看来源会话" }))
-    .toBeInTheDocument();
+  // 顶部 banner 已移除：分叉标识现为侧栏行的 title 提示（分叉对话）
+  await expect.element(page.getByTitle("分叉对话")).toBeInTheDocument();
   await expect
     .poll(() => document.querySelector("aside")?.textContent)
     .toContain("原会话（分支）");
@@ -117,24 +117,24 @@ it("当前会话分支加入侧栏、展示来源，并能独立继续发送", a
   await expect.poll(chatText).not.toContain("分支新回复");
 });
 
-it("删除来源后开放的分支立即移除来源链接，并保留分支标识", async () => {
+it("删除来源后开放的分支退回侧栏顶层，并保留分叉标记", async () => {
   await boot({ kind: "message", message_id: "a1", side: "after" }, null);
   await page.getByTitle("从这条回复后分支").click();
   await expect
     .poll(() => mounted?.router.currentRoute.value.path)
     .toBe("/conversation/branch");
-  await expect
-    .element(page.getByRole("link", { name: "查看来源会话" }))
-    .toBeInTheDocument();
+  // 分叉挂来源行之下、带分叉标记；来源行按精确名定位（「原会话（分支）」不含其内）
+  const sidebarRow = (name: string) =>
+    page.getByRole("complementary").getByRole("button", { name, exact: true });
+  await expect.element(page.getByTitle("分叉对话")).toBeInTheDocument();
+  await expect.element(sidebarRow("原会话")).toBeInTheDocument();
 
   // The sidebar has no delete control yet; exercise its public store operation.
   await useProjects().deleteConversation("p1", "c1");
 
-  await expect
-    .element(page.getByRole("link", { name: "查看来源会话" }))
-    .not.toBeInTheDocument();
-  await expect.poll(chatText).toContain("分支会话");
-  await expect.poll(chatText).toContain("与来源共用工作区文件");
+  // 来源行从侧栏消失，分叉退回顶层但仍带分叉标记
+  await expect.element(sidebarRow("原会话")).not.toBeInTheDocument();
+  await expect.element(page.getByTitle("分叉对话")).toBeInTheDocument();
   await expect.poll(chatText).toContain("原回复");
   expect(mounted?.router.currentRoute.value.path).toBe("/conversation/branch");
   const requests = await getRequests();
@@ -286,6 +286,7 @@ async function bootAbort(cut: ForkCut = { kind: "head" }) {
         response: {
           conversation: {
             ...conversationFixture("abort-branch", "p1", "中断会话（分支）"),
+            origin_kind: "fork",
             forked_from_conversation_id: "c1",
             forked_at_revision: 3,
           },

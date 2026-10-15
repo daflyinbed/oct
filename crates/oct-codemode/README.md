@@ -32,7 +32,11 @@ bash scripts/package-code-mode.sh                 # release 打包（组件 + SH
 
 ```ts
 import { tool_read_file, tool_execute_command } from "./builtin/tools.js";
-const file = await tool_read_file({ path: "Cargo.toml", start_line: 1, end_line: 20 });
+const file = await tool_read_file({
+  path: "Cargo.toml",
+  start_line: 1,
+  end_line: 20,
+});
 const command = await tool_execute_command({ command: "git status --short" });
 text({ file: file.text, status: command.text });
 ```

@@ -12,13 +12,13 @@ oct 的前端：Vue 3 + TypeScript + Vite 8 + UnoCSS（OKLCH design tokens）。
 
 ## 技术栈
 
-| 关注点 | 选择 |
-| --- | --- |
-| API 客户端 | `openapi-fetch` + 生成的 `src/api/schema.d.ts`（类型安全，后端 OpenAPI 是唯一事实源） |
-| Composables | `@vueuse/core` + 本地 `src/composables/` |
-| 组件自动导入 | `unplugin-vue-components` / `unplugin-icons` |
-| UI 原语 | reka-ui（dialog、popover、dropdown、splitter…） |
-| 样式 | UnoCSS |
+| 关注点       | 选择                                                                                  |
+| ------------ | ------------------------------------------------------------------------------------- |
+| API 客户端   | `openapi-fetch` + 生成的 `src/api/schema.d.ts`（类型安全，后端 OpenAPI 是唯一事实源） |
+| Composables  | `@vueuse/core` + 本地 `src/composables/`                                              |
+| 组件自动导入 | `unplugin-vue-components` / `unplugin-icons`                                          |
+| UI 原语      | reka-ui（dialog、popover、dropdown、splitter…）                                       |
+| 样式         | UnoCSS                                                                                |
 
 ## 命令（从仓库根执行）
 
