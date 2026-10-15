@@ -1,5 +1,5 @@
 ---
-source: tests/anthropic/fixtures.rs
+source: crates/oct-llm-provider/tests/anthropic/fixtures.rs
 expression: events
 ---
 - Usage:
@@ -54,6 +54,10 @@ expression: events
 - ReasoningDelta: " the"
 - ReasoningDelta: " user"
 - ReasoningDelta: "."
+- ReasoningBlock:
+    Signed:
+      text: "The function returned the weather data for Shanghai:\n- Temperature: 28°C\n- Condition: Cloudy\n- Location: Shanghai\n\nI should present this information in a clear and readable way to the user."
+      signature: 2692fc4792034cb6b72d6c9c
 - TextDelta: The
 - TextDelta: " current"
 - TextDelta: " weather"

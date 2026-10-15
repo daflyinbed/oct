@@ -158,6 +158,9 @@ pub struct RootRunRequest {
     /// How long the conversation sat idle BEFORE this run started — the
     /// microcompact idle trigger.
     pub idle: Option<Duration>,
+    /// 用户为本次 run 选择的思考档位（send 请求携带；resume 从 user 消息
+    /// details 恢复；wake 等内部启动为 `None`）。
+    pub reasoning: Option<oct_llm_provider::core::ReasoningRequest>,
     /// Whether to attach the `task` delegation tool: root runs of kind
     /// `chat` conversations get it; resumed roots included. Workers never
     /// do (depth <= 1 is enforced server-side on top).
@@ -455,8 +458,20 @@ impl RunService {
             view,
             context_window,
             idle,
+            reasoning,
             attach_task_tool,
         } = req;
+
+        let max_output_tokens = if model.info().provider_name == "anthropic" {
+            crate::db::models::get_model(&self.pool, &provider_id, &model_id)
+                .await
+                .map_err(AppError::from)?
+                .and_then(|row| row.limit_output)
+                .and_then(|limit| u32::try_from(limit).ok())
+                .filter(|limit| *limit > 0)
+        } else {
+            None
+        };
 
         // The run row lands before anything is spawned: a run that never
         // settles (crash) is identifiable from persistence alone, and the
@@ -704,6 +719,8 @@ impl RunService {
             system_prompt: prompt,
             context_window,
             idle,
+            reasoning,
+            max_output_tokens,
             permission: gate,
             prompt_env_refresh: Some(self.prompt_env_refresh(&conversation_id)),
             prompt_generation: prompt_env.generation,
@@ -996,6 +1013,8 @@ impl RunService {
             system_prompt: prompt,
             context_window,
             idle: None,
+            reasoning: None,
+            max_output_tokens: None,
             permission: gate,
             prompt_env_refresh: Some(self.prompt_env_refresh(&root_conversation_id)),
             prompt_generation: prompt_env.generation,

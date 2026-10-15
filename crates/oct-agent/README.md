@@ -5,7 +5,7 @@ oct 的后端服务 crate：Axum REST/SSE API + agent loop 运行时。既是 li
 ## CLI 子命令
 
 1. **`serve`**（默认）：启动 API 服务器。`--port` / `OCT_PORT`（默认 3000）
-2. **`seed`**：从 <https://models.dev/api.json> 拉取模型目录 upsert 进数据库（source=`seeded`，自定义 provider/model 保留）
+2. **`seed`**：从 <https://models.dev/api.json> 拉取模型目录 upsert 进数据库（source=`seeded`，自定义 provider/model 保留）。思考控制项数组（`reasoning_options`：effort / toggle / budget_tokens，可同时存在）与输入输出模态一并落库；发送消息时可带 `reasoning` 档位（`POST …/messages`），后端按模型值域校验并翻译成 wire 参数：Anthropic 使用 `thinking` 与 `output_config.effort`，OpenAI 兼容适配器目前仅支持 `reasoning_effort`（开关/预算会明确拒绝，界面不展示）。选择随真实 user 消息持久化，resume 会跳过压缩标记恢复；Anthropic 思考签名与脱敏块随历史保存，前缀绑定模型续传时按请求前缀指纹过滤失效块，不修改原始历史
 
 ## 模块地图
 
@@ -19,6 +19,7 @@ oct 的后端服务 crate：Axum REST/SSE API + agent loop 运行时。既是 li
 - `mcp/` — `McpManager`（连接对账/目录）、OAuth 凭据
 - `db/` — sqlx 数据层（compile-time checked 查询）
 - `context.rs` — token 估算与 loop 运行态 `ContextState`
+- `reasoning.rs` — models.dev `reasoning_options` 的解析与用户档位校验
 
 ## 数据库
 

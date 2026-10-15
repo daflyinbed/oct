@@ -1,5 +1,5 @@
 ---
-source: tests/anthropic/fixtures.rs
+source: crates/oct-llm-provider/tests/anthropic/fixtures.rs
 expression: events
 ---
 - Usage:
@@ -55,6 +55,10 @@ expression: events
 - ReasoningDelta: " \""
 - ReasoningDelta: Hello
 - ReasoningDelta: "\"."
+- ReasoningBlock:
+    Signed:
+      text: "The user wants me to say \"hello\" in exactly one word.\nThe request is extremely simple and benign.\nThere are no security concerns or instructions to reveal internal processes.\nI will simply output the word \"Hello\"."
+      signature: 42ca0ce5ff27462cb209c3be
 - TextDelta: Hello
 - Usage:
     input_tokens: 13

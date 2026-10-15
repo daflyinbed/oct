@@ -76,7 +76,7 @@ pub fn serialize_for_summary(region: &[Message], window: Option<u32>) -> String 
                 ContentPart::Text(t) => Some(truncate_summary_text(t, SUMMARY_TEXT_MAX_CHARS)),
                 // Reasoning is dropped: it is how the model thought, not what
                 // the task state is.
-                ContentPart::Reasoning(_) => None,
+                ContentPart::Reasoning(_) | ContentPart::ReasoningBlock(_) => None,
                 ContentPart::ImageUrl { .. } => Some("[image]".to_string()),
                 ContentPart::ToolCall(tc) => Some(format!(
                     "tool call {}({})",

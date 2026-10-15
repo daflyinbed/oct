@@ -312,6 +312,97 @@ fn anthropic_model(
         .unwrap()
 }
 
+#[tokio::test]
+async fn anthropic_reasoning_provenance_survives_reload_and_filters_edited_prefixes() {
+    let content = serde_json::json!([
+        {"type":"thinking", "thinking":"summary", "signature":"signed-prefix"},
+        {"type":"redacted_thinking", "data":"redacted-prefix"},
+        {"type":"text", "text":"answer"},
+    ]);
+    let response_body = |content: serde_json::Value| {
+        serde_json::json!({
+            "id":"msg-bound", "type":"message", "role":"assistant", "model":"claude-opus-5-5",
+            "content":content, "stop_reason":"end_turn", "usage":{"input_tokens":1,"output_tokens":1},
+        }).to_string()
+    };
+    let transcript = concat!(
+        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"summary\",\"signature\":\"signed-prefix\"}}\n\n",
+        "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"redacted_thinking\",\"data\":\"redacted-prefix\"}}\n\n",
+        "data: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+        "data: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"text\",\"text\":\"answer\"}}\n\n",
+        "data: {\"type\":\"content_block_stop\",\"index\":2}\n\n",
+        "data: {\"type\":\"message_stop\"}\n\n",
+    );
+    for streaming in [false, true] {
+        let first = if streaming {
+            MockResponse::sse_split(transcript, &[])
+        } else {
+            MockResponse::json(200, response_body(content.clone()))
+        };
+        let mut responses = vec![first];
+        responses.extend((0..4).map(|_| {
+            MockResponse::json(
+                200,
+                response_body(serde_json::json!([{"type":"text", "text":"ok"}])),
+            )
+        }));
+        let server = spawn_server(responses).await;
+        let provider = AnthropicProvider::new(server.url(), Some("test-key".into()));
+        let model = provider.chat_model("claude-opus-5-5").unwrap();
+        let mut request = chat_request();
+        request
+            .messages
+            .insert(0, Message::text(Role::System, "original instructions"));
+        let assistant = if streaming {
+            let events = collect(model.stream(request.clone()).await.unwrap()).await;
+            let parts = events
+                .into_iter()
+                .filter_map(|event| match event.unwrap() {
+                    StreamEvent::ReasoningBlock(block) => Some(ContentPart::ReasoningBlock(block)),
+                    StreamEvent::TextDelta(text) => Some(ContentPart::Text(text)),
+                    _ => None,
+                })
+                .collect();
+            Message::new(Role::Assistant, parts)
+        } else {
+            model.generate(request.clone()).await.unwrap().message
+        };
+        let stored = serde_json::to_string(&assistant).unwrap();
+        assert!(stored.contains("prefix_fingerprint"));
+        // A new model instance and a deserialized message stand in for a
+        // process restart; replay cannot depend on an in-memory adapter cache.
+        let assistant = serde_json::from_str(&stored).unwrap();
+        let model = provider.chat_model("claude-opus-5-5").unwrap();
+        request.messages.push(assistant);
+        request.messages.push(Message::text(Role::User, "continue"));
+        model.generate(request.clone()).await.unwrap();
+        assert_eq!(
+            server.captured()[1].body_json()["messages"][1]["content"],
+            content
+        );
+
+        for edit in 0..3 {
+            let mut edited = request.clone();
+            match edit {
+                0 => edited.messages[0] = Message::text(Role::System, "updated instructions"),
+                1 => edited.tools[0].description = Some("updated tool".into()),
+                _ => edited.messages[1] = Message::text(Role::User, "compacted history"),
+            }
+            model.generate(edited).await.unwrap();
+            let body = server.captured().last().unwrap().body_json();
+            assert_eq!(
+                body["messages"][1]["content"],
+                serde_json::json!([content[2]])
+            );
+            assert!(!body.to_string().contains("prefix_fingerprint"));
+            // The default thinking setting is preserved, including models
+            // whose default is already adaptive; replay adds no beta fields.
+            assert!(body.get("thinking").is_none());
+        }
+    }
+}
+
 /// The DB-driven resolution path: a `ConnectionConfig` built from provider
 /// row fields must override the family's own defaults outright — requests
 /// land at the row's base URL carrying the row's key, never at the default

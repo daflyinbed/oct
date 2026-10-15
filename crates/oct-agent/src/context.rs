@@ -56,6 +56,12 @@ fn estimate_part(part: &oct_llm_provider::core::ContentPart) -> u64 {
     use oct_llm_provider::core::ContentPart;
     match part {
         ContentPart::Text(s) | ContentPart::Reasoning(s) => estimate_str(s),
+        ContentPart::ReasoningBlock(block) => match block {
+            oct_llm_provider::core::ReasoningBlock::Signed {
+                text, signature, ..
+            } => estimate_str(text) + estimate_str(signature),
+            oct_llm_provider::core::ReasoningBlock::Redacted { data, .. } => estimate_str(data),
+        },
         // The loop never produces images; URL length is a harmless proxy.
         ContentPart::ImageUrl { url } => 64 + estimate_str(url),
         ContentPart::ToolCall(tc) => {

@@ -28,6 +28,7 @@ import type {
   ToolCallPart,
 } from "./chat/display";
 import type { RunOwner } from "./chat/run";
+import type { components } from "@/api/schema";
 import type { SubagentUpdatedEventData } from "@/composables/useSubagents";
 
 export * from "./chat/display";
@@ -895,6 +896,7 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
     conversationId: string,
     content: string,
     providerSpec?: string | null,
+    reasoning?: components["schemas"]["ReasoningRequestDto"] | null,
   ) => {
     if (!content.trim()) return;
     const owner = beginRun(conversationId);
@@ -945,9 +947,11 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
         client_request_id: string;
         provider_spec?: string;
         expected_revision?: number;
+        reasoning?: components["schemas"]["ReasoningRequestDto"];
       } = { content, client_request_id: clientRequestId };
       if (expectedRevision != null) body.expected_revision = expectedRevision;
       if (providerSpec) body.provider_spec = providerSpec;
+      if (reasoning) body.reasoning = reasoning;
       const res = await fetch(`/api/conversations/${conversationId}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

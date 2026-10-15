@@ -313,6 +313,11 @@ pub struct ChatCompletionRequest {
     pub presence_penalty: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frequency_penalty: Option<f32>,
+    /// OpenAI 系的思考档位（low/medium/high/...）。仅 `Effort` 型档位可表达；
+    /// toggle/budget 型在各家 openai-compatible 服务上没有统一字段，adapter
+    /// 明确拒绝这些请求；厂商专有参数仍可直接使用 `provider_options`。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reasoning_effort: Option<String>,
     #[serde(flatten)]
     pub provider_options: Value,
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]

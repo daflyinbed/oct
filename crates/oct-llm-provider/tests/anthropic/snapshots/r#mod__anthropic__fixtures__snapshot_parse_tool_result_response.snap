@@ -1,11 +1,14 @@
 ---
-source: tests/anthropic/fixtures.rs
+source: crates/oct-llm-provider/tests/anthropic/fixtures.rs
 expression: response
 ---
 message:
   role: Assistant
   parts:
-    - Reasoning: "I received the weather information for Beijing from the function. The response indicates it's 25°C and Sunny in Beijing. I should present this information clearly to the user."
+    - ReasoningBlock:
+        Signed:
+          text: "I received the weather information for Beijing from the function. The response indicates it's 25°C and Sunny in Beijing. I should present this information clearly to the user."
+          signature: a6ab3d4c96284b3fb9e2ab67
     - Text: The weather in Beijing is currently **25°C** and **Sunny**.
 finish_reason: Stop
 usage:

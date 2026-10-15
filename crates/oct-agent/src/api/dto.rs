@@ -66,6 +66,11 @@ impl From<&ContentPart> for MessagePart {
         match part {
             ContentPart::Text(text) => MessagePart::Text { text: text.clone() },
             ContentPart::Reasoning(text) => MessagePart::Reasoning { text: text.clone() },
+            ContentPart::ReasoningBlock(block) => MessagePart::Reasoning {
+                // Signatures and encrypted redactions are protocol state,
+                // not presentation text returned by the history API.
+                text: block.text().unwrap_or("[redacted]").to_string(),
+            },
             ContentPart::ImageUrl { url } => MessagePart::ImageUrl { url: url.clone() },
             ContentPart::ToolCall(call) => MessagePart::ToolCall {
                 id: call.id.clone(),

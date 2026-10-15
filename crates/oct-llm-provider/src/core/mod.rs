@@ -6,8 +6,8 @@ pub mod tool;
 pub mod usage;
 
 pub use error::ModelError;
-pub use message::{ContentPart, Message, Role};
-pub use options::GenerateOptions;
+pub use message::{ContentPart, Message, ReasoningBlock, Role};
+pub use options::{GenerateOptions, ReasoningRequest};
 pub use stream::{FinishReason, StreamEvent};
 pub use tool::{ToolCall, ToolChoice, ToolResult, ToolResultImage, ToolSpec};
 pub use usage::Usage;

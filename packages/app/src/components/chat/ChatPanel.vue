@@ -160,6 +160,21 @@
             @update:model-value="(v: string) => $emit('selectModel', v)"
           />
 
+          <!-- 思考档位：跟随当前模型的 reasoning_options；「默认」= 不带档位 -->
+          <AppSelect
+            v-if="reasoningOptions.length > 0"
+            :model-value="selectedReasoning ?? 'default'"
+            :options="[
+              { value: 'default', label: '默认' },
+              ...reasoningOptions,
+            ]"
+            placeholder="思考"
+            title="思考档位"
+            align="end"
+            trigger-class="max-w-[96px] text-dim"
+            @update:model-value="(v: string) => $emit('selectReasoning', v)"
+          />
+
           <!-- agent 运行中切换为停止按钮 -->
           <button
             v-if="sending"
@@ -245,6 +260,10 @@ const props = defineProps<{
   providers: readonly ProviderResponse[];
   selectedProviderId: string | null;
   selectedModelId: string | null;
+  /** 当前模型的思考档位选项（reasoning=false 或无数据时为空，不渲染控件）。 */
+  reasoningOptions: readonly { value: string; label: string }[];
+  /** 选中的思考档位（null = 「默认」，不带 reasoning 字段发送）。 */
+  selectedReasoning: string | null;
   /** 当前会话的待决审批（approval_requested 事件 / pending 快照）。 */
   approvals: readonly PendingApproval[];
   /** 会话当前的工具权限模式（default/accept_edits/bypass）。 */
@@ -266,6 +285,8 @@ const emit = defineEmits<{
   reload: [];
   selectProvider: [providerId: string];
   selectModel: [modelId: string];
+  /** 思考档位选择（default = 回到「默认」）。 */
+  selectReasoning: [value: string];
   /** 审批卡决定：交页面层调 decideApproval。 */
   decideApproval: [
     approvalId: string,

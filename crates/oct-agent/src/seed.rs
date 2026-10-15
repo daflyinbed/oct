@@ -30,6 +30,10 @@ struct ModelEntry {
     family: Option<String>,
     #[serde(default)]
     reasoning: bool,
+    /// models.dev 的思考控制项数组（effort/toggle/budget_tokens，可同时存在）。
+    /// 存原始 JSON 而非类型化枚举：models.dev 未来加新形态只影响新数据，
+    /// 不会让整个 seed 反序列化失败；值域校验在 API 层做。
+    reasoning_options: Option<serde_json::Value>,
     #[serde(default)]
     tool_call: bool,
     #[serde(default)]
@@ -149,6 +153,11 @@ pub async fn run(database_url: &str) -> Result<()> {
                 .and_then(|m| m.output.as_ref())
                 .map(|v| serde_json::to_string(v).unwrap_or_default());
 
+            let reasoning_options = model
+                .reasoning_options
+                .as_ref()
+                .map(|v| serde_json::to_string(v).unwrap_or_default());
+
             let cost_input = model.cost.as_ref().and_then(|c| c.input);
             let cost_output = model.cost.as_ref().and_then(|c| c.output);
             let cost_cache_read = model.cost.as_ref().and_then(|c| c.cache_read);
@@ -163,10 +172,11 @@ pub async fn run(database_url: &str) -> Result<()> {
 
             if existing_model > 0 {
                 sqlx::query!(
-                    "UPDATE models SET name = $1, family = $2, reasoning = $3, tool_call = $4, attachment = $5, structured_output = $6, temperature = $7, knowledge = $8, release_date = $9, open_weights = $10, cost_input = $11, cost_output = $12, cost_cache_read = $13, cost_cache_write = $14, limit_context = $15, limit_output = $16, modalities_input = $17, modalities_output = $18 WHERE id = $19",
+                    "UPDATE models SET name = $1, family = $2, reasoning = $3, reasoning_options = $4, tool_call = $5, attachment = $6, structured_output = $7, temperature = $8, knowledge = $9, release_date = $10, open_weights = $11, cost_input = $12, cost_output = $13, cost_cache_read = $14, cost_cache_write = $15, limit_context = $16, limit_output = $17, modalities_input = $18, modalities_output = $19 WHERE id = $20",
                     model.name,
                     model.family,
                     model.reasoning,
+                    reasoning_options,
                     model.tool_call,
                     model.attachment,
                     model.structured_output,
@@ -189,13 +199,14 @@ pub async fn run(database_url: &str) -> Result<()> {
                 .context(format!("Failed to update model '{}'", model_row_id))?;
             } else {
                 sqlx::query!(
-                    "INSERT INTO models (id, provider_id, model_id, name, family, reasoning, tool_call, attachment, structured_output, temperature, knowledge, release_date, open_weights, cost_input, cost_output, cost_cache_read, cost_cache_write, limit_context, limit_output, modalities_input, modalities_output, source, is_enabled, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, 'seeded', true, $22)",
+                    "INSERT INTO models (id, provider_id, model_id, name, family, reasoning, reasoning_options, tool_call, attachment, structured_output, temperature, knowledge, release_date, open_weights, cost_input, cost_output, cost_cache_read, cost_cache_write, limit_context, limit_output, modalities_input, modalities_output, source, is_enabled, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, 'seeded', true, $23)",
                     model_row_id,
                     provider.id,
                     model.id,
                     model.name,
                     model.family,
                     model.reasoning,
+                    reasoning_options,
                     model.tool_call,
                     model.attachment,
                     model.structured_output,

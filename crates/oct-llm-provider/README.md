@@ -12,6 +12,8 @@ LLM provider 抽象层 crate：统一的 ChatModel/Embedding 接口、provider �
 - `transport.rs` — reqwest 传输（工作区统一 reqwest 0.13）
 - `wire.rs` + `wire/retention.rs` — LLM wire 日志（见下）
 
+Anthropic 的签名思考块与脱敏块携带本地请求前缀指纹，随消息保存但不发送给模型。对于执行前缀绑定的模型，code mode SDK 路径、指令、工具或历史变化后，适配器仅在请求副本中过滤失效块；前缀不变的工具循环继续原样续传，数据库保留原始历史。旧记录缺少指纹时在这些模型上保守省略思考块；旧模型的手动思考续传保持兼容。实现见 `providers/anthropic/replay.rs`。
+
 ## LLM wire 日志
 
 每个 LLM HTTP 交互的原始 wire 记录：精确请求体 + 每个 framing SSE 事件块 + 流结束/错误，一条一事件的 JSONL，按对话拆文件 `{db目录}/llm-wire/{conversation_id}.jsonl`（无会话上下文落 `_orphan.jsonl`）。单文件 16 MiB 轮转，目录总量 256 MiB；单字段默认 1 MiB 截断标 `truncated`。

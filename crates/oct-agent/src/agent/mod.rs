@@ -281,6 +281,13 @@ pub struct AgentContext {
     /// later would always look "just active"). Drives microcompact's idle
     /// entry; `None`/short values mean waterline-only.
     pub idle: Option<std::time::Duration>,
+    /// Run 的思考档位（send 请求携带并随 user 消息持久化，resume 恢复）。
+    /// 子代理与内部模型调用（title/compact/wake）恒为 `None`：只有用户的
+    /// 根会话携带档位，adapter 负责翻译成各家 wire 参数。
+    pub reasoning: Option<oct_llm_provider::core::ReasoningRequest>,
+    /// Anthropic's total output ceiling from the model catalog, including
+    /// thinking tokens. Other adapters retain their existing defaults.
+    pub max_output_tokens: Option<u32>,
     /// The run's permission gate: every tool call passes
     /// `check` before `execute`. Assembled by the RunService (root and
     /// subagent runs alike) from the persisted rules, the conversation's

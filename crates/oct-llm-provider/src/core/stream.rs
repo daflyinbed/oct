@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::core::message::ReasoningBlock;
 use crate::core::tool::{ToolCall, ToolResult};
 use crate::core::usage::Usage;
 
@@ -17,6 +18,9 @@ pub enum FinishReason {
 pub enum StreamEvent {
     TextDelta(String),
     ReasoningDelta(String),
+    /// Completed authenticated block, following its display deltas. The
+    /// consumer replaces the unsigned display text with this durable block.
+    ReasoningBlock(ReasoningBlock),
     ToolCallDelta {
         call_id: String,
         name: Option<String>,

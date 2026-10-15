@@ -211,7 +211,11 @@ pub async fn run_agent_loop(
         let request = ChatRequest {
             messages: context.messages_for_request(),
             tools: tool_specs.clone(),
-            options: GenerateOptions::default(),
+            options: GenerateOptions {
+                reasoning: ctx.reasoning.clone(),
+                max_output_tokens: ctx.max_output_tokens,
+                ..GenerateOptions::default()
+            },
         };
 
         // The request-establishment await must respond to cancellation too:
@@ -257,6 +261,9 @@ pub async fn run_agent_loop(
 
         let mut current_text = String::new();
         let mut reasoning_text = String::new();
+        // Preserve block order, including authenticated reasoning. Display
+        // deltas become a durable signed block when the adapter completes it.
+        let mut assistant_parts: Vec<ContentPart> = Vec::new();
         let mut reasoning_started_at: Option<Instant> = None;
         let mut reasoning_ended_at: Option<Instant> = None;
         let mut pending_tool_calls: Vec<ToolCall> = Vec::new();
@@ -289,19 +296,35 @@ pub async fn run_agent_loop(
                     // that follows it.
                     if reasoning_started_at.is_some()
                         && reasoning_ended_at.is_none()
-                        && !matches!(event, Ok(StreamEvent::ReasoningDelta(_)))
+                        && !matches!(event, Ok(StreamEvent::ReasoningDelta(_) | StreamEvent::ReasoningBlock(_)))
                     {
                         reasoning_ended_at = Some(Instant::now());
                     }
                     match event {
                         Ok(StreamEvent::TextDelta(text)) => {
                             current_text.push_str(&text);
+                            if let Some(ContentPart::Text(previous)) = assistant_parts.last_mut() {
+                                previous.push_str(&text);
+                            } else if !text.is_empty() {
+                                assistant_parts.push(ContentPart::Text(text.clone()));
+                            }
                             handle.hub.publish(AgentEvent::TextDelta(text));
                         }
                         Ok(StreamEvent::ReasoningDelta(text)) => {
                             reasoning_started_at.get_or_insert_with(Instant::now);
                             reasoning_text.push_str(&text);
+                            if let Some(ContentPart::Reasoning(previous)) = assistant_parts.last_mut() {
+                                previous.push_str(&text);
+                            } else if !text.is_empty() {
+                                assistant_parts.push(ContentPart::Reasoning(text.clone()));
+                            }
                             handle.hub.publish(AgentEvent::ReasoningDelta(text));
+                        }
+                        Ok(StreamEvent::ReasoningBlock(block)) => {
+                            if matches!(assistant_parts.last(), Some(ContentPart::Reasoning(_))) {
+                                assistant_parts.pop();
+                            }
+                            assistant_parts.push(ContentPart::ReasoningBlock(block));
                         }
                         Ok(StreamEvent::ToolCallDelta {
                             call_id,
@@ -317,6 +340,7 @@ pub async fn run_agent_loop(
                             });
                         }
                         Ok(StreamEvent::ToolCall(tc)) => {
+                            assistant_parts.push(ContentPart::ToolCall(tc.clone()));
                             pending_tool_calls.push(tc);
                         }
                         Ok(StreamEvent::Usage(usage)) => {
@@ -396,7 +420,6 @@ pub async fn run_agent_loop(
             );
         }
 
-        let mut assistant_parts: Vec<ContentPart> = Vec::new();
         let mut reasoning_details = reasoning_started_at
             .filter(|_| !reasoning_text.is_empty())
             .map(|started| {
@@ -416,17 +439,8 @@ pub async fn run_agent_loop(
         // and is correctly rejected by the new entry).
         reasoning_details["prompt_generation"] = json!(ctx.prompt_generation);
         let reasoning_details = Some(reasoning_details);
-        if !reasoning_text.is_empty() {
-            assistant_parts.push(ContentPart::Reasoning(reasoning_text));
-        }
-        if !current_text.is_empty() {
-            // Cloned (not moved): the run-outcome bookkeeping below still
-            // needs this round's text for the final-message record.
-            assistant_parts.push(ContentPart::Text(current_text.clone()));
-        }
-        for tc in &pending_tool_calls {
-            assistant_parts.push(ContentPart::ToolCall(tc.clone()));
-        }
+        // Parts were assembled while streaming; current_text remains available
+        // for the run-outcome bookkeeping and final-message record below.
 
         let has_content = !assistant_parts.is_empty();
         let has_tool_calls = !pending_tool_calls.is_empty()

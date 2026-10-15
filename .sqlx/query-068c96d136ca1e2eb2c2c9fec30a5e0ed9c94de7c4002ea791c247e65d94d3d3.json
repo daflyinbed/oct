@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, provider_id, model_id, name, family, reasoning, tool_call, attachment, structured_output, temperature, knowledge, release_date, open_weights, cost_input, cost_output, cost_cache_read, cost_cache_write, limit_context, limit_output, modalities_input, modalities_output, source, is_enabled, created_at FROM models WHERE is_enabled = true ORDER BY provider_id, created_at ASC",
+  "query": "SELECT id, provider_id, model_id, name, family, reasoning, reasoning_options, tool_call, attachment, structured_output, temperature, knowledge, release_date, open_weights, cost_input, cost_output, cost_cache_read, cost_cache_write, limit_context, limit_output, modalities_input, modalities_output, source, is_enabled, created_at FROM models WHERE provider_id = $1 ORDER BY created_at ASC",
   "describe": {
     "columns": [
       {
@@ -70,8 +70,19 @@
         }
       },
       {
-        "name": "tool_call",
+        "name": "reasoning_options",
         "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "models",
+            "name": "reasoning_options"
+          }
+        }
+      },
+      {
+        "name": "tool_call",
+        "ordinal": 7,
         "type_info": "Bool",
         "origin": {
           "Table": {
@@ -82,7 +93,7 @@
       },
       {
         "name": "attachment",
-        "ordinal": 7,
+        "ordinal": 8,
         "type_info": "Bool",
         "origin": {
           "Table": {
@@ -93,7 +104,7 @@
       },
       {
         "name": "structured_output",
-        "ordinal": 8,
+        "ordinal": 9,
         "type_info": "Bool",
         "origin": {
           "Table": {
@@ -104,7 +115,7 @@
       },
       {
         "name": "temperature",
-        "ordinal": 9,
+        "ordinal": 10,
         "type_info": "Bool",
         "origin": {
           "Table": {
@@ -115,7 +126,7 @@
       },
       {
         "name": "knowledge",
-        "ordinal": 10,
+        "ordinal": 11,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -126,7 +137,7 @@
       },
       {
         "name": "release_date",
-        "ordinal": 11,
+        "ordinal": 12,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -137,7 +148,7 @@
       },
       {
         "name": "open_weights",
-        "ordinal": 12,
+        "ordinal": 13,
         "type_info": "Bool",
         "origin": {
           "Table": {
@@ -148,7 +159,7 @@
       },
       {
         "name": "cost_input",
-        "ordinal": 13,
+        "ordinal": 14,
         "type_info": "Float",
         "origin": {
           "Table": {
@@ -159,7 +170,7 @@
       },
       {
         "name": "cost_output",
-        "ordinal": 14,
+        "ordinal": 15,
         "type_info": "Float",
         "origin": {
           "Table": {
@@ -170,7 +181,7 @@
       },
       {
         "name": "cost_cache_read",
-        "ordinal": 15,
+        "ordinal": 16,
         "type_info": "Float",
         "origin": {
           "Table": {
@@ -181,7 +192,7 @@
       },
       {
         "name": "cost_cache_write",
-        "ordinal": 16,
+        "ordinal": 17,
         "type_info": "Float",
         "origin": {
           "Table": {
@@ -192,7 +203,7 @@
       },
       {
         "name": "limit_context",
-        "ordinal": 17,
+        "ordinal": 18,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -203,7 +214,7 @@
       },
       {
         "name": "limit_output",
-        "ordinal": 18,
+        "ordinal": 19,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -214,7 +225,7 @@
       },
       {
         "name": "modalities_input",
-        "ordinal": 19,
+        "ordinal": 20,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -225,7 +236,7 @@
       },
       {
         "name": "modalities_output",
-        "ordinal": 20,
+        "ordinal": 21,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -236,7 +247,7 @@
       },
       {
         "name": "source",
-        "ordinal": 21,
+        "ordinal": 22,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -247,7 +258,7 @@
       },
       {
         "name": "is_enabled",
-        "ordinal": 22,
+        "ordinal": 23,
         "type_info": "Bool",
         "origin": {
           "Table": {
@@ -258,7 +269,7 @@
       },
       {
         "name": "created_at",
-        "ordinal": 23,
+        "ordinal": 24,
         "type_info": "Datetime",
         "origin": {
           "Table": {
@@ -269,7 +280,7 @@
       }
     ],
     "parameters": {
-      "Right": 0
+      "Right": 1
     },
     "nullable": [
       false,
@@ -278,6 +289,7 @@
       false,
       true,
       false,
+      true,
       false,
       false,
       false,
@@ -298,5 +310,5 @@
       false
     ]
   },
-  "hash": "b74fa0d7fb6d47e25d7b19daefc15ab00dd24a6d3a99c6ba73efa9cf6cc1cfee"
+  "hash": "068c96d136ca1e2eb2c2c9fec30a5e0ed9c94de7c4002ea791c247e65d94d3d3"
 }

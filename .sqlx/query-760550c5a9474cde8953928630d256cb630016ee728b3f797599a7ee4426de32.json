@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT m.details_json FROM conversation_messages cm JOIN messages m ON m.id = cm.message_id WHERE cm.conversation_id = $1 AND m.role = 'user' AND CASE WHEN json_valid(m.details_json) THEN COALESCE(json_extract(m.details_json, '$.kind'), '') != 'compaction' ELSE true END ORDER BY cm.ordering DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "details_json",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "details_json"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "760550c5a9474cde8953928630d256cb630016ee728b3f797599a7ee4426de32"
+}

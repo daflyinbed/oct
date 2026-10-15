@@ -191,6 +191,8 @@ impl BackgroundTaskManager {
                 // The notification itself is the activity; the idle
                 // microcompact trigger is meaningless here.
                 idle: None,
+                // 后台唤醒不是用户回合：不携带思考档位。
+                reasoning: None,
                 attach_task_tool: true,
             })
             .await?;

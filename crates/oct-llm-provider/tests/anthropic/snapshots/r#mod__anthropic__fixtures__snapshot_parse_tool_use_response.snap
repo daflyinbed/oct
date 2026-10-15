@@ -1,11 +1,14 @@
 ---
-source: tests/anthropic/fixtures.rs
+source: crates/oct-llm-provider/tests/anthropic/fixtures.rs
 expression: response
 ---
 message:
   role: Assistant
   parts:
-    - Reasoning: "The user is asking about the weather in Beijing. I have a function called \"get_weather\" that can get the current weather for a location. The required parameter is \"location\" and the user has provided \"Beijing\" as the location. I should use this function to get the weather information."
+    - ReasoningBlock:
+        Signed:
+          text: "The user is asking about the weather in Beijing. I have a function called \"get_weather\" that can get the current weather for a location. The required parameter is \"location\" and the user has provided \"Beijing\" as the location. I should use this function to get the weather information."
+          signature: 3d5f0f11a8a1409b8fd1edb1
     - Text: "I'll check the current weather in Beijing for you."
     - ToolCall:
         id: call_99dad8ea8e3342f6b85aa4ed

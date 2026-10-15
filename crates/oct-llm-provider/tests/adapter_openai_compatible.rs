@@ -90,6 +90,7 @@ fn maps_chat_request_to_openai_wire_request() {
             n: None,
             presence_penalty: None,
             frequency_penalty: None,
+            reasoning: None,
             provider_options: Default::default(),
         },
     };
@@ -716,4 +717,46 @@ fn text_only_tool_results_add_no_extra_messages() {
     let wire = wire_model().to_wire_request(&req).unwrap();
     assert_eq!(wire.messages.len(), 3);
     assert_eq!(wire.messages[2].role, "tool");
+}
+
+#[test]
+fn reasoning_effort_maps_to_wire_field() {
+    let req = ChatRequest {
+        messages: vec![Message::text(Role::User, "hi")],
+        tools: vec![],
+        options: GenerateOptions {
+            reasoning: Some(oct_llm_provider::core::ReasoningRequest::Effort {
+                effort: "high".to_string(),
+            }),
+            ..GenerateOptions::default()
+        },
+    };
+
+    let wire = wire_model().to_wire_request(&req).unwrap();
+    assert_eq!(wire.reasoning_effort.as_deref(), Some("high"));
+    let body = serde_json::to_value(&wire).unwrap();
+    assert_eq!(body["reasoning_effort"], json!("high"));
+}
+
+#[test]
+fn reasoning_toggle_and_budget_are_explicitly_unsupported() {
+    // openai-compatible 协议没有 toggle/budget 的统一字段：必须明确拒绝，
+    // 不能让调用方误以为选择已生效（厂商专有控制仍可走 provider_options）。
+    for reasoning in [
+        Some(oct_llm_provider::core::ReasoningRequest::Enabled),
+        Some(oct_llm_provider::core::ReasoningRequest::BudgetTokens { budget: 4_096 }),
+    ] {
+        let req = ChatRequest {
+            messages: vec![Message::text(Role::User, "hi")],
+            tools: vec![],
+            options: GenerateOptions {
+                reasoning,
+                ..GenerateOptions::default()
+            },
+        };
+        assert!(matches!(
+            wire_model().to_wire_request(&req),
+            Err(oct_llm_provider::core::ModelError::Unsupported(_))
+        ));
+    }
 }

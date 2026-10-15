@@ -95,6 +95,7 @@ pub struct AppState {
         mcp::ReadResourceRequest,
         mcp::ReadResourceResponse,
         chat::SendMessageRequest,
+        chat::ReasoningRequestDto,
         chat::RunningStatus,
         chat::CompactQuery,
         chat::CompactResult,

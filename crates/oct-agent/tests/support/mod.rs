@@ -338,6 +338,8 @@ pub async fn spawn_agent_with_gate(
         system_prompt: "test system prompt".to_string(),
         context_window,
         idle,
+        reasoning: None,
+        max_output_tokens: None,
         permission,
         prompt_env_refresh: None,
         prompt_generation: 0,
@@ -653,6 +655,25 @@ impl TestApp {
             serde_json::json!({
                 "content": content,
                 "provider_spec": provider_spec,
+            }),
+        )
+        .await
+    }
+
+    /// [`Self::send_message_with`] 加思考档位（reasoning 端到端测试用）。
+    pub async fn send_message_reasoning(
+        &self,
+        conv_id: &str,
+        content: &str,
+        provider_spec: &str,
+        reasoning: serde_json::Value,
+    ) -> reqwest::Response {
+        self.post_json(
+            &format!("/api/conversations/{conv_id}/messages"),
+            serde_json::json!({
+                "content": content,
+                "provider_spec": provider_spec,
+                "reasoning": reasoning,
             }),
         )
         .await

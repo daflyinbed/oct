@@ -1,6 +1,13 @@
 //! Provider stream normalization and tool-call accumulation.
 use super::*;
 
+#[derive(Default)]
+pub(super) struct AnthropicStreamState {
+    tool_state: HashMap<usize, AnthropicToolAccumulator>,
+    reasoning_state: std::collections::BTreeMap<usize, AnthropicContentBlock>,
+    stop_reason: Option<String>,
+}
+
 pub fn aggregate_anthropic_stream(events: &[StreamEvent]) -> Option<Usage> {
     events.iter().rev().find_map(|event| match event {
         StreamEvent::Usage(usage) => Some(usage.clone()),
@@ -9,30 +16,21 @@ pub fn aggregate_anthropic_stream(events: &[StreamEvent]) -> Option<Usage> {
 }
 
 pub fn parse_anthropic_sse_event(event: &str) -> Result<Vec<StreamEvent>, ModelError> {
-    parse_anthropic_sse_event_with_state(event, &mut HashMap::new(), &mut None)
+    parse_anthropic_sse_event_with_state(event, &mut AnthropicStreamState::default())
 }
 
 pub fn parse_anthropic_sse_transcript(transcript: &str) -> Result<Vec<StreamEvent>, ModelError> {
     let mut decoder = SseDecoder::new();
-    let mut tool_state = HashMap::new();
-    let mut stop_reason = None;
+    let mut state = AnthropicStreamState::default();
     let mut events = Vec::new();
 
     // The transcript comes from a &str, so events are valid UTF-8 by
     // construction and decoding cannot fail.
     for event in decoder.push(transcript.as_bytes())? {
-        events.extend(parse_anthropic_sse_event_with_state(
-            &event,
-            &mut tool_state,
-            &mut stop_reason,
-        )?);
+        events.extend(parse_anthropic_sse_event_with_state(&event, &mut state)?);
     }
     for event in decoder.finish()? {
-        events.extend(parse_anthropic_sse_event_with_state(
-            &event,
-            &mut tool_state,
-            &mut stop_reason,
-        )?);
+        events.extend(parse_anthropic_sse_event_with_state(&event, &mut state)?);
     }
 
     Ok(events)
@@ -40,8 +38,7 @@ pub fn parse_anthropic_sse_transcript(transcript: &str) -> Result<Vec<StreamEven
 
 pub(super) fn parse_anthropic_sse_event_with_state(
     event: &str,
-    tool_state: &mut HashMap<usize, AnthropicToolAccumulator>,
-    stop_reason: &mut Option<String>,
+    state: &mut AnthropicStreamState,
 ) -> Result<Vec<StreamEvent>, ModelError> {
     let mut data_lines = Vec::new();
     for line in event.lines() {
@@ -58,20 +55,24 @@ pub(super) fn parse_anthropic_sse_event_with_state(
     let stream_event: AnthropicStreamEvent = serde_json::from_str(&payload)
         .map_err(|err| ModelError::transport(format!("invalid anthropic stream chunk: {err}")))?;
 
-    normalize_anthropic_stream_event_with_state(stream_event, tool_state, stop_reason)
+    normalize_anthropic_stream_event_with_state(stream_event, state)
 }
 
 pub fn normalize_anthropic_stream_event(
     event: AnthropicStreamEvent,
 ) -> Result<Vec<StreamEvent>, ModelError> {
-    normalize_anthropic_stream_event_with_state(event, &mut HashMap::new(), &mut None)
+    normalize_anthropic_stream_event_with_state(event, &mut AnthropicStreamState::default())
 }
 
 pub(super) fn normalize_anthropic_stream_event_with_state(
     event: AnthropicStreamEvent,
-    tool_state: &mut HashMap<usize, AnthropicToolAccumulator>,
-    stop_reason: &mut Option<String>,
+    state: &mut AnthropicStreamState,
 ) -> Result<Vec<StreamEvent>, ModelError> {
+    let AnthropicStreamState {
+        tool_state,
+        reasoning_state,
+        stop_reason,
+    } = state;
     let mut events = Vec::new();
 
     match event {
@@ -99,6 +100,9 @@ pub(super) fn normalize_anthropic_stream_event_with_state(
             events.push(StreamEvent::Usage(delta_usage));
         }
         AnthropicStreamEvent::MessageStop => {
+            for block in std::mem::take(reasoning_state).into_values() {
+                events.push(completed_reasoning(block)?);
+            }
             for (index, acc) in std::mem::take(tool_state) {
                 if !acc.emitted && (acc.name.is_some() || !acc.arguments.is_empty()) {
                     events.push(StreamEvent::ToolCall(crate::core::ToolCall {
@@ -129,10 +133,14 @@ pub(super) fn normalize_anthropic_stream_event_with_state(
                     },
                 );
             }
-            AnthropicContentBlock::Thinking(thinking_block)
-                if !thinking_block.thinking.is_empty() =>
-            {
-                events.push(StreamEvent::ReasoningDelta(thinking_block.thinking));
+            AnthropicContentBlock::Thinking(thinking_block) => {
+                if !thinking_block.thinking.is_empty() {
+                    events.push(StreamEvent::ReasoningDelta(thinking_block.thinking.clone()));
+                }
+                reasoning_state.insert(index, AnthropicContentBlock::Thinking(thinking_block));
+            }
+            block @ AnthropicContentBlock::RedactedThinking(_) => {
+                reasoning_state.insert(index, block);
             }
             AnthropicContentBlock::Text(text_block) if !text_block.text.is_empty() => {
                 events.push(StreamEvent::TextDelta(text_block.text));
@@ -158,10 +166,34 @@ pub(super) fn normalize_anthropic_stream_event_with_state(
                     });
                 }
                 AnthropicContentBlockDelta::ThinkingDelta { thinking } => {
+                    let block = reasoning_state.entry(index).or_insert_with(|| {
+                        AnthropicContentBlock::Thinking(AnthropicThinkingBlock {
+                            thinking: String::new(),
+                            signature: None,
+                            prefix_fingerprint: None,
+                        })
+                    });
+                    if let AnthropicContentBlock::Thinking(block) = block {
+                        block.thinking.push_str(&thinking);
+                    }
                     events.push(StreamEvent::ReasoningDelta(thinking));
                 }
-                AnthropicContentBlockDelta::SignatureDelta { signature: _ } => {
-                    // Signature is for multi-turn thinking continuity, we don't expose it
+                AnthropicContentBlockDelta::SignatureDelta { signature } => {
+                    // Preserve the opaque signature for tool-loop continuity;
+                    // it travels in the completed block, never as display text.
+                    let block = reasoning_state.entry(index).or_insert_with(|| {
+                        AnthropicContentBlock::Thinking(AnthropicThinkingBlock {
+                            thinking: String::new(),
+                            signature: None,
+                            prefix_fingerprint: None,
+                        })
+                    });
+                    if let AnthropicContentBlock::Thinking(block) = block {
+                        block
+                            .signature
+                            .get_or_insert_with(String::new)
+                            .push_str(&signature);
+                    }
                 }
                 AnthropicContentBlockDelta::CitationsDelta { citation: _ } => {
                     // Citations are not exposed in our current API
@@ -169,6 +201,9 @@ pub(super) fn normalize_anthropic_stream_event_with_state(
             }
         }
         AnthropicStreamEvent::ContentBlockStop { index } => {
+            if let Some(block) = reasoning_state.remove(&index) {
+                events.push(completed_reasoning(block)?);
+            }
             if let Some(acc) = tool_state.remove(&index)
                 && !acc.emitted
                 && (acc.name.is_some() || !acc.arguments.is_empty())
@@ -186,6 +221,13 @@ pub(super) fn normalize_anthropic_stream_event_with_state(
     }
 
     Ok(events)
+}
+
+fn completed_reasoning(block: AnthropicContentBlock) -> Result<StreamEvent, ModelError> {
+    let ContentPart::ReasoningBlock(block) = parse_anthropic_content_block(block)? else {
+        unreachable!("the reasoning accumulator contains only thinking/redacted blocks")
+    };
+    Ok(StreamEvent::ReasoningBlock(block))
 }
 #[cfg(test)]
 mod sse_tests {
@@ -217,8 +259,7 @@ mod sse_tests {
 
         for size in 1..transcript.len() {
             let mut decoder = SseDecoder::new();
-            let mut tool_state = HashMap::new();
-            let mut stop_reason = None;
+            let mut state = AnthropicStreamState::default();
             let mut got = Vec::new();
             for chunk in transcript.as_bytes().chunks(size) {
                 for event in decoder
@@ -226,12 +267,8 @@ mod sse_tests {
                     .unwrap_or_else(|err| panic!("chunk size {size}: {err}"))
                 {
                     got.extend(
-                        parse_anthropic_sse_event_with_state(
-                            &event,
-                            &mut tool_state,
-                            &mut stop_reason,
-                        )
-                        .unwrap_or_else(|err| panic!("chunk size {size}: {err}")),
+                        parse_anthropic_sse_event_with_state(&event, &mut state)
+                            .unwrap_or_else(|err| panic!("chunk size {size}: {err}")),
                     );
                 }
             }
@@ -240,7 +277,7 @@ mod sse_tests {
                 .unwrap_or_else(|err| panic!("chunk size {size}: {err}"))
             {
                 got.extend(
-                    parse_anthropic_sse_event_with_state(&event, &mut tool_state, &mut stop_reason)
+                    parse_anthropic_sse_event_with_state(&event, &mut state)
                         .unwrap_or_else(|err| panic!("chunk size {size}: {err}")),
                 );
             }

@@ -4486,3 +4486,598 @@ async fn llm_wire_log_settings_toggle_controls_sink_live() {
         .unwrap();
     assert_eq!(end["outcome"], "eof");
 }
+
+// --- Reasoning levels (models.dev reasoning_options) end to end -------------
+
+/// effort 档位经 send 请求 → agent loop → openai_compatible wire。
+#[tokio::test]
+async fn reasoning_effort_reaches_openai_compatible_wire() {
+    let app = TestApp::new().await;
+    let llm_server = llm::spawn_llm_mock(vec![LlmTurn::Complete(vec![
+        text_chunk("done"),
+        finish_chunk("stop"),
+    ])])
+    .await;
+    app.register_llm_provider(&llm_server).await;
+    let project_id = app.create_project().await;
+    let conv_id = app.create_conversation(&project_id).await;
+
+    let resp = app
+        .send_message_reasoning(
+            &conv_id,
+            "hi",
+            "mock-llm:test-model",
+            serde_json::json!({"type": "effort", "effort": "high"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 200);
+    let events = app.read_sse(resp).await;
+    assert_eq!(*event_types(&events).last().unwrap(), "finish");
+
+    let requests = llm_server.requests();
+    assert!(!requests.is_empty(), "the mock saw the chat request");
+    let body = &requests[0];
+    assert_eq!(body["reasoning_effort"], serde_json::json!("high"));
+}
+
+/// 档位校验：models 行 reasoning=false 或 effort 不在 values 里 → 400，
+/// 不发任何请求。
+#[tokio::test]
+async fn reasoning_level_validated_against_models_row() {
+    let app = TestApp::new().await;
+    let llm_server = llm::spawn_llm_mock(vec![]).await;
+    app.register_llm_provider(&llm_server).await;
+    let project_id = app.create_project().await;
+    let conv_id = app.create_conversation(&project_id).await;
+
+    // mock-llm 行没有 models 行（custom provider 不自动建）：校验放行——
+    // 这里给带 reasoning_options 的行造一条，走严格路径。
+    let resp = app
+        .post_json(
+            "/api/providers/mock-llm/models",
+            serde_json::json!({
+                "model_id": "picky",
+                "name": "Picky",
+                "reasoning": true,
+                "reasoning_options": r#"[{"type":"effort","values":["low","high"]}]"#,
+            }),
+        )
+        .await;
+    assert_eq!(resp.status(), 201);
+
+    // 不在 values 里的档位 → 400
+    let resp = app
+        .send_message_reasoning(
+            &conv_id,
+            "hi",
+            "mock-llm:picky",
+            serde_json::json!({"type": "effort", "effort": "medium"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 400);
+    assert!(llm_server.requests().is_empty(), "no request may leave");
+
+    // reasoning=false 的模型拒绝任何档位
+    let resp = app
+        .post_json(
+            "/api/providers/mock-llm/models",
+            serde_json::json!({
+                "model_id": "dumb",
+                "name": "Dumb",
+                "reasoning": false,
+            }),
+        )
+        .await;
+    assert_eq!(resp.status(), 201);
+    let resp = app
+        .send_message_reasoning(
+            &conv_id,
+            "hi",
+            "mock-llm:dumb",
+            serde_json::json!({"type": "enabled"}),
+        )
+        .await;
+    assert_eq!(resp.status(), 400);
+    assert!(llm_server.requests().is_empty());
+
+    // 即便目录声明了这些控制，OpenAI-compatible 适配器也不能静默忽略。
+    let resp = app
+        .post_json(
+            "/api/providers/mock-llm/models",
+            serde_json::json!({
+                "model_id":"switchable", "name":"Switchable", "reasoning":true,
+                "reasoning_options":r#"[{"type":"toggle"},{"type":"budget_tokens","min":1024}]"#,
+            }),
+        )
+        .await;
+    assert_eq!(resp.status(), 201);
+    for reasoning in [
+        serde_json::json!({"type":"enabled"}),
+        serde_json::json!({"type":"budget_tokens","budget":4096}),
+    ] {
+        let resp = app
+            .send_message_reasoning(&conv_id, "hi", "mock-llm:switchable", reasoning)
+            .await;
+        assert_eq!(resp.status(), 400);
+    }
+    assert!(stored_messages(&app, &conv_id).await.is_empty());
+}
+
+#[tokio::test]
+async fn reasoning_toggle_uses_adaptive_thinking_for_current_anthropic_models() {
+    for model_id in ["claude-sonnet-5", "claude-haiku-5-5"] {
+        let app = TestApp::new().await;
+        let mock = anthropic_llm::AnthropicMock::spawn(vec![anthropic_llm::AnthropicTurn::Text(
+            "done".into(),
+        )])
+        .await;
+        insert_provider_row(&app, "anthropic", "anthropic", &mock.url, "sk-test").await;
+        let response = app
+            .post_json(
+                "/api/providers/anthropic/models",
+                serde_json::json!({
+                    "model_id":model_id, "name":model_id, "reasoning":true,
+                    "reasoning_options":r#"[{"type":"toggle"},{"type":"effort","values":["low","medium","high","xhigh","max"]}]"#,
+                    "limit_output":128000,
+                }),
+            )
+            .await;
+        assert_eq!(response.status(), 201);
+        let project_id = app.create_project().await;
+        let conv_id = app.create_conversation(&project_id).await;
+
+        let response = app
+            .send_message_reasoning(
+                &conv_id,
+                "hi",
+                &format!("anthropic:{model_id}"),
+                serde_json::json!({"type":"enabled"}),
+            )
+            .await;
+        assert_eq!(response.status(), 200);
+        let events = app.read_sse(response).await;
+        assert_eq!(events.last().unwrap()["type"], "finish", "{events:?}");
+        let requests = mock.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].body["thinking"],
+            serde_json::json!({"type":"adaptive", "display":"summarized"}),
+            "{model_id}",
+        );
+    }
+}
+
+/// budget_tokens 档位 → anthropic thinking 块；思考开启时 temperature 被丢弃。
+#[tokio::test]
+async fn reasoning_budget_reaches_anthropic_thinking_wire() {
+    let app = TestApp::new().await;
+    let mock = anthropic_llm::AnthropicMock::spawn(vec![anthropic_llm::AnthropicTurn::Text(
+        "thoughtful".to_string(),
+    )])
+    .await;
+    insert_provider_row(&app, "anthropic", "anthropic", &mock.url, "sk-test").await;
+
+    let resp = app
+        .post_json(
+            "/api/providers/anthropic/models",
+            serde_json::json!({
+                "model_id":"claude-test", "name":"Claude test", "reasoning":true,
+                "reasoning_options":r#"[{"type":"budget_tokens","min":1024}]"#,
+                "limit_output":32768,
+            }),
+        )
+        .await;
+    assert_eq!(resp.status(), 201);
+
+    let project_id = app.create_project().await;
+    let conv_id = app.create_conversation(&project_id).await;
+
+    for budget in [512, 32768] {
+        let response = app
+            .send_message_reasoning(
+                &conv_id,
+                "invalid budget",
+                "anthropic:claude-test",
+                serde_json::json!({"type":"budget_tokens","budget":budget}),
+            )
+            .await;
+        assert_eq!(response.status(), 400);
+    }
+    assert!(mock.requests().is_empty());
+
+    let resp = app
+        .send_message_reasoning(
+            &conv_id,
+            "hi",
+            "anthropic:claude-test",
+            serde_json::json!({"type": "budget_tokens", "budget": 16384}),
+        )
+        .await;
+    assert_eq!(resp.status(), 200);
+    let events = app.read_sse(resp).await;
+    assert_eq!(*event_types(&events).last().unwrap(), "finish");
+
+    let captured = mock.requests();
+    assert!(!captured.is_empty());
+    let body = &captured[0].body;
+    assert_eq!(body["thinking"]["type"], serde_json::json!("enabled"));
+    assert_eq!(body["thinking"]["budget_tokens"], serde_json::json!(16384));
+    assert_eq!(body["max_tokens"], 32768);
+    assert!(body.get("temperature").is_none());
+}
+
+#[tokio::test]
+async fn reasoning_signed_blocks_survive_anthropic_tool_loop_and_history_reload() {
+    let app = TestApp::new().await;
+    let content = vec![
+        serde_json::json!({"type":"thinking","thinking":"Inspect the directory", "signature":"signature-first"}),
+        serde_json::json!({"type":"redacted_thinking","data":"encrypted-redaction"}),
+        serde_json::json!({"type":"text","text":"I will list the files."}),
+        serde_json::json!({"type":"thinking","thinking":"", "signature":"signature-omitted"}),
+        serde_json::json!({"type":"tool_use","id":"call-1","name":"list_dir","input":{"path":"."}}),
+    ];
+    let mock = anthropic_llm::AnthropicMock::spawn(vec![
+        anthropic_llm::AnthropicTurn::Blocks {
+            content: content.clone(),
+            stop_reason: "tool_use".into(),
+        },
+        anthropic_llm::AnthropicTurn::Text("done".into()),
+        anthropic_llm::AnthropicTurn::Text("another turn".into()),
+    ])
+    .await;
+    insert_provider_row(&app, "anthropic", "anthropic", &mock.url, "sk-test").await;
+    let project_id = app.create_project().await;
+    let conv_id = app.create_conversation(&project_id).await;
+    app.set_permission_mode(&project_id, &conv_id, "bypass")
+        .await;
+
+    let response = app
+        .send_message_reasoning(
+            &conv_id,
+            "inspect",
+            "anthropic:claude-sonnet-4-6",
+            serde_json::json!({"type":"effort","effort":"low"}),
+        )
+        .await;
+    let events = app.read_sse(response).await;
+    assert_eq!(events.last().unwrap()["type"], "finish", "{events:?}");
+    assert_eq!(text_of(&events), "I will list the files.done");
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].body["output_config"]["effort"], "low");
+    assert!(requests[0].body["thinking"].get("effort").is_none());
+    let assistant = requests[1].body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["role"] == "assistant")
+        .unwrap();
+    assert_eq!(assistant["content"], serde_json::json!(content));
+
+    // A new run rebuilds context from SQLite; opaque blocks must survive
+    // serialization too, while the presentation API shows only readable text.
+    let history = stored_messages(&app, &conv_id).await;
+    let presented = serde_json::to_string(&history).unwrap();
+    assert!(!presented.contains("signature-first"));
+    assert!(!presented.contains("encrypted-redaction"));
+    assert_eq!(history[1]["parts"][0]["text"], "Inspect the directory");
+    assert_eq!(history[1]["parts"][1]["text"], "[redacted]");
+    let response = app
+        .send_message_with(&conv_id, "again", "anthropic:claude-sonnet-4-6")
+        .await;
+    assert_eq!(
+        app.read_sse(response).await.last().unwrap()["type"],
+        "finish"
+    );
+    let requests = mock.requests();
+    let assistant = requests[2].body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["role"] == "assistant")
+        .unwrap();
+    assert_eq!(assistant["content"], serde_json::json!(content));
+}
+
+#[tokio::test]
+async fn reasoning_replay_survives_instruction_prefix_changes() {
+    assert_reasoning_replay_after_prompt_change(false).await;
+}
+
+#[cfg(feature = "code-mode-tests")]
+#[tokio::test]
+async fn reasoning_replay_survives_code_mode_new_runs() {
+    assert!(
+        oct_codemode::worker_path().is_some(),
+        "Build oct-codemode-worker with --features runtime before enabling code-mode-tests"
+    );
+    assert_reasoning_replay_after_prompt_change(true).await;
+}
+
+async fn assert_reasoning_replay_after_prompt_change(code_mode: bool) {
+    // Default thinking on newer models must be as resumable as an explicit
+    // effort selection. Each case starts with an unchanged tool-use loop.
+    for reasoning in [
+        Some(serde_json::json!({"type":"effort", "effort":"high"})),
+        None,
+    ] {
+        let app = TestApp::new().await;
+        let content = vec![
+            serde_json::json!({"type":"thinking", "thinking":"Inspect the workspace", "signature":"bound-signature"}),
+            serde_json::json!({"type":"redacted_thinking", "data":"bound-redaction"}),
+            serde_json::json!({"type":"tool_use", "id":"list-1", "name":"list_dir", "input":{"path":"."}}),
+        ];
+        let next_content = vec![
+            serde_json::json!({"type":"thinking", "thinking":"Continue with the new prefix", "signature":"new-bound-signature"}),
+            serde_json::json!({"type":"tool_use", "id":"list-2", "name":"list_dir", "input":{"path":"."}}),
+        ];
+        let mock = anthropic_llm::AnthropicMock::spawn_with_prefix_binding(vec![
+            anthropic_llm::AnthropicTurn::Blocks {
+                content: content.clone(),
+                stop_reason: "tool_use".into(),
+            },
+            anthropic_llm::AnthropicTurn::Text("done".into()),
+            anthropic_llm::AnthropicTurn::Blocks {
+                content: next_content.clone(),
+                stop_reason: "tool_use".into(),
+            },
+            anthropic_llm::AnthropicTurn::Text("another turn".into()),
+        ])
+        .await;
+        insert_provider_row(&app, "anthropic", "anthropic", &mock.url, "sk-test").await;
+        let project = app.create_project().await;
+        let conversation = app.create_conversation(&project).await;
+        app.set_permission_mode(&project, &conversation, "bypass")
+            .await;
+        if code_mode {
+            assert_eq!(
+                app.put_json("/api/settings", serde_json::json!({"mcp_tool_mode":"code"}))
+                    .await
+                    .status(),
+                200
+            );
+        }
+        let mut body = serde_json::json!({
+            "content":"inspect", "provider_spec":"anthropic:claude-opus-5-5",
+        });
+        if let Some(reasoning) = reasoning {
+            body["reasoning"] = reasoning;
+        }
+        let path = format!("/api/conversations/{conversation}/messages");
+        let response = app.post_json(&path, &body).await;
+        assert_eq!(response.status(), 200);
+        let events = app.read_sse(response).await;
+        assert_eq!(events.last().unwrap()["type"], "finish", "{events:?}");
+        let requests = mock.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].body["system"], requests[1].body["system"]);
+        assert_eq!(
+            requests[1].body["messages"][1]["content"],
+            serde_json::json!(content)
+        );
+
+        if !code_mode {
+            std::fs::write(
+                app.dir.path().join("AGENTS.md"),
+                "Use the new project conventions.",
+            )
+            .unwrap();
+            assert_eq!(
+                app.post_json(
+                    &format!("/api/conversations/{conversation}/instructions/reload"),
+                    serde_json::json!({}),
+                )
+                .await
+                .status(),
+                200
+            );
+        }
+        body["content"] = serde_json::json!("continue");
+        let response = app.post_json(&path, &body).await;
+        assert_eq!(response.status(), 200);
+        let events = app.read_sse(response).await;
+        assert_eq!(events.last().unwrap()["type"], "finish", "{events:?}");
+        let requests = mock.requests();
+        assert_eq!(requests.len(), 4);
+        assert_ne!(requests[0].body["system"], requests[2].body["system"]);
+        assert_eq!(requests[2].body["system"], requests[3].body["system"]);
+        if code_mode {
+            for request in &requests {
+                assert!(request.body["system"].as_str().unwrap().contains("/sdk"));
+            }
+        }
+        let assistant = requests[2].body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["role"] == "assistant")
+            .unwrap();
+        assert_eq!(assistant["content"], serde_json::json!([content[2]]));
+        let next_assistant = requests[3].body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|message| message["role"] == "assistant")
+            .unwrap();
+        assert_eq!(next_assistant["content"], serde_json::json!(next_content));
+        // Filtering affects only the wire: immutable persisted history
+        // retains the original blocks and their durable request provenance.
+        let history = msg_db::list_messages(&app.pool, &conversation)
+            .await
+            .unwrap();
+        assert!(history[1].parts_json.contains("bound-signature"));
+        assert!(history[1].parts_json.contains("bound-redaction"));
+        assert!(history[1].parts_json.contains("prefix_fingerprint"));
+    }
+}
+
+#[tokio::test]
+async fn reasoning_replay_survives_compaction_prefix_changes() {
+    let app = TestApp::new().await;
+    let mock = anthropic_llm::AnthropicMock::spawn_with_prefix_binding(vec![
+        anthropic_llm::AnthropicTurn::Blocks {
+            content: vec![
+                serde_json::json!({"type":"thinking", "thinking":"task state", "signature":"before-compaction"}),
+                serde_json::json!({"type":"redacted_thinking", "data":"redacted-before-compaction"}),
+                serde_json::json!({"type":"text", "text":"keep this answer"}),
+            ],
+            stop_reason: "end_turn".into(),
+        },
+        anthropic_llm::AnthropicTurn::Text("summary of the earlier history".into()),
+        anthropic_llm::AnthropicTurn::Text("continued after compaction".into()),
+    ])
+    .await;
+    insert_provider_row(&app, "anthropic", "anthropic", &mock.url, "sk-test").await;
+    let project = app.create_project().await;
+    let conversation = app.create_conversation(&project).await;
+    // Enough history for a real manual compaction, with the signed answer
+    // fitting in the verbatim tail rather than being summarized away.
+    for index in 0..12 {
+        msg_db::insert_message(
+            &app.pool,
+            &conversation,
+            &Message::text(
+                if index % 2 == 0 {
+                    Role::User
+                } else {
+                    Role::Assistant
+                },
+                "x".repeat(32_000),
+            ),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    let response = app
+        .send_message_with(&conversation, "work", "anthropic:claude-opus-5-5")
+        .await;
+    let events = app.read_sse(response).await;
+    assert_eq!(events.last().unwrap()["type"], "finish", "{events:?}");
+    let compacted = app
+        .post_json(
+            &format!("/api/conversations/{conversation}/compact"),
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(compacted.status(), 200);
+    assert!(
+        compacted.json::<Value>().await.unwrap()["compacted_messages"]
+            .as_u64()
+            .unwrap()
+            >= 6
+    );
+    let response = app
+        .send_message_with(&conversation, "continue", "anthropic:claude-opus-5-5")
+        .await;
+    let events = app.read_sse(response).await;
+    assert_eq!(events.last().unwrap()["type"], "finish", "{events:?}");
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 3);
+    let parts: Vec<_> = requests[2].body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|message| message["content"].as_array().unwrap())
+        .collect();
+    assert!(parts.iter().any(|part| part["text"] == "keep this answer"));
+    assert!(
+        parts
+            .iter()
+            .all(|part| part["type"] != "thinking" && part["type"] != "redacted_thinking")
+    );
+    let history = msg_db::list_messages(&app.pool, &conversation)
+        .await
+        .unwrap();
+    assert!(
+        history
+            .iter()
+            .any(|message| message.parts_json.contains("before-compaction"))
+    );
+}
+
+#[tokio::test]
+async fn reasoning_resume_restores_real_user_choice_past_compaction_marker() {
+    let app = TestApp::new().await;
+    let mock = llm::spawn_llm_mock(vec![LlmTurn::Complete(vec![
+        text_chunk("resumed"),
+        finish_chunk("stop"),
+    ])])
+    .await;
+    app.register_llm_provider(&mock).await;
+    let project_id = app.create_project().await;
+    let conv_id = app.create_conversation(&project_id).await;
+    msg_db::insert_message(
+        &app.pool,
+        &conv_id,
+        &Message::text(Role::User, "continue the task"),
+        Some("mock-llm"),
+        Some("test-model"),
+        Some(&serde_json::json!({"reasoning":{"type":"effort","effort":"high"}})),
+    )
+    .await
+    .unwrap();
+    let assistant = msg_db::insert_message(
+        &app.pool,
+        &conv_id,
+        &Message::new(
+            Role::Assistant,
+            vec![ContentPart::ToolCall(ToolCall {
+                id: "interrupted-call".into(),
+                name: "read_file".into(),
+                arguments: r#"{"path":"a.txt"}"#.into(),
+            })],
+        ),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let marker = oct_agent::agent::compact::build_marker_message("the task so far");
+    let details = oct_agent::agent::compact::marker_details(
+        oct_agent::agent::CompactionTrigger::Auto,
+        7,
+        100,
+        50,
+    );
+    msg_db::insert_message_at_ordering(
+        &app.pool,
+        &conv_id,
+        &marker,
+        None,
+        None,
+        Some(&details),
+        assistant.ordering,
+    )
+    .await
+    .unwrap();
+
+    let response = app.resume(&conv_id).await;
+    assert_eq!(response.status(), 200);
+    let events = app.read_sse(response).await;
+    assert_eq!(events.last().unwrap()["type"], "finish", "{events:?}");
+    assert_eq!(mock.requests()[0]["reasoning_effort"], "high");
+
+    // A later real user with no choice must reset to default, not inherit
+    // an older request just because its details are absent.
+    msg_db::insert_message(
+        &app.pool,
+        &conv_id,
+        &Message::text(Role::User, "new task"),
+        Some("mock-llm"),
+        Some("test-model"),
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(
+        msg_db::get_last_user_details(&app.pool, &conv_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}

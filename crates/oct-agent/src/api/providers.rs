@@ -34,14 +34,27 @@ pub struct ModelSummary {
     pub name: String,
     pub family: Option<String>,
     pub reasoning: bool,
+    /// models.dev 的思考控制项数组（`[{"type":"effort","values":[...]}]` 等），
+    /// 已解析为 JSON；NULL/损坏 → None。前端据此渲染档位选择。
+    pub reasoning_options: Option<serde_json::Value>,
     pub tool_call: bool,
     pub attachment: bool,
+    /// 输入模态列表（`["text","image",...]`），已解析为 JSON。
+    pub modalities_input: Option<serde_json::Value>,
+    /// 输出模态列表，已解析为 JSON。
+    pub modalities_output: Option<serde_json::Value>,
     pub limit_context: Option<i64>,
     pub limit_output: Option<i64>,
     pub cost_input: Option<f64>,
     pub cost_output: Option<f64>,
     pub is_enabled: bool,
     pub source: String,
+}
+
+/// DB TEXT 列里存的 JSON → `Value`；空/损坏 → `None`（透传原始字符串对
+/// 前端没有意义）。
+fn parse_json_column(raw: &Option<String>) -> Option<serde_json::Value> {
+    raw.as_deref().and_then(|s| serde_json::from_str(s).ok())
 }
 
 fn to_provider_response(p: &db::Provider, models: Vec<ModelSummary>) -> ProviderResponse {
@@ -65,8 +78,11 @@ fn model_to_summary(m: &model_db::Model) -> ModelSummary {
         name: m.name.clone(),
         family: m.family.clone(),
         reasoning: m.reasoning,
+        reasoning_options: parse_json_column(&m.reasoning_options),
         tool_call: m.tool_call,
         attachment: m.attachment,
+        modalities_input: parse_json_column(&m.modalities_input),
+        modalities_output: parse_json_column(&m.modalities_output),
         limit_context: m.limit_context,
         limit_output: m.limit_output,
         cost_input: m.cost_input,

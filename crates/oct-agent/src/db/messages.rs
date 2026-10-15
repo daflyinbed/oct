@@ -530,6 +530,24 @@ pub async fn get_last_provider_spec(
     }))
 }
 
+/// 最近一条非压缩标记的 user 消息 details_json（解析失败/缺失 → `None`）。
+/// resume 从这里恢复被中断回合的思考档位；标记虽然也是 user，不能覆盖用户选择。
+pub async fn get_last_user_details(
+    pool: &SqlitePool,
+    conversation_id: &str,
+) -> Result<Option<serde_json::Value>> {
+    let details_json: Option<Option<String>> = sqlx::query_scalar!(
+        "SELECT m.details_json FROM conversation_messages cm JOIN messages m ON m.id = cm.message_id WHERE cm.conversation_id = $1 AND m.role = 'user' AND CASE WHEN json_valid(m.details_json) THEN COALESCE(json_extract(m.details_json, '$.kind'), '') != 'compaction' ELSE true END ORDER BY cm.ordering DESC LIMIT 1",
+        conversation_id,
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(details_json
+        .flatten()
+        .and_then(|raw| serde_json::from_str(&raw).ok()))
+}
+
 /// Ids of assistant ToolCalls that have no matching ToolResult anywhere in
 /// the conversation — the persisted history of a run interrupted mid-tool
 /// (e.g. backend crash). Sending that history to a provider as-is is a

@@ -1449,6 +1449,7 @@ export interface components {
             name: string;
             open_weights?: boolean | null;
             reasoning?: boolean | null;
+            reasoning_options?: string | null;
             release_date?: string | null;
             structured_output?: boolean | null;
             temperature?: boolean | null;
@@ -1880,6 +1881,11 @@ export interface components {
             open_weights: boolean;
             provider_id: string;
             reasoning: boolean;
+            /**
+             * @description models.dev 的思考档位原始 JSON（effort/toggle/budget_tokens），
+             *     NULL = 无档位信息（custom 模型、老数据）。解析与校验在 API 层。
+             */
+            reasoning_options?: string | null;
             release_date?: string | null;
             source: string;
             structured_output: boolean;
@@ -1907,9 +1913,18 @@ export interface components {
             limit_context?: number | null;
             /** Format: int64 */
             limit_output?: number | null;
+            /** @description 输入模态列表（`["text","image",...]`），已解析为 JSON。 */
+            modalities_input?: unknown;
+            /** @description 输出模态列表，已解析为 JSON。 */
+            modalities_output?: unknown;
             model_id: string;
             name: string;
             reasoning: boolean;
+            /**
+             * @description models.dev 的思考控制项数组（`[{"type":"effort","values":[...]}]` 等），
+             *     已解析为 JSON；NULL/损坏 → None。前端据此渲染档位选择。
+             */
+            reasoning_options?: unknown;
             source: string;
             tool_call: boolean;
         };
@@ -2054,6 +2069,19 @@ export interface components {
             /** @description Text contents joined with newlines; `null` for blob reads. */
             text?: string | null;
         };
+        ReasoningRequestDto: {
+            effort: string;
+            /** @enum {string} */
+            type: "effort";
+        } | {
+            /** @enum {string} */
+            type: "enabled";
+        } | {
+            /** Format: int32 */
+            budget: number;
+            /** @enum {string} */
+            type: "budget_tokens";
+        };
         /**
          * @description Request body of `POST /mcp/servers/{id}/prompts/{name}`: the prompt
          *     argument values (all strings, matching the MCP spec's prompt arguments).
@@ -2094,6 +2122,7 @@ export interface components {
             /** Format: int64 */
             expected_revision?: number | null;
             provider_spec: string;
+            reasoning?: components["schemas"]["ReasoningRequestDto"] | null;
         };
         SettingSources: {
             instructions: string;
@@ -2328,6 +2357,7 @@ export interface components {
             name?: string | null;
             open_weights?: boolean | null;
             reasoning?: boolean | null;
+            reasoning_options?: string | null;
             release_date?: string | null;
             structured_output?: boolean | null;
             temperature?: boolean | null;

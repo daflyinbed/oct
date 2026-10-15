@@ -1,16 +1,118 @@
-import { readonly, ref, shallowReadonly } from "vue";
+import { computed, readonly, ref, shallowReadonly } from "vue";
 import client from "@/api/client";
 import type { components } from "@/api/schema";
 
 type ProviderResponse = components["schemas"]["ProviderResponse"];
 type ModelSummary = components["schemas"]["ModelSummary"];
+type ReasoningRequestDto = components["schemas"]["ReasoningRequestDto"];
 
 const providers = ref<ProviderResponse[]>([]);
 const loading = ref(false);
 const selectedProviderId = ref<string | null>(null);
 const selectedModelId = ref<string | null>(null);
+/** 思考档位选择（AppSelect 的 value；null = 不带档位，走模型默认）。 */
+const selectedReasoning = ref<string | null>(null);
+
+/** models.dev `reasoning_options` 的运行时形态（后端透传的 JSON）。 */
+interface RawReasoningOptions {
+  type?: unknown;
+  values?: unknown;
+  min?: unknown;
+  max?: unknown;
+}
+
+function asRawReasoningOptions(value: unknown): RawReasoningOptions | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return null;
+  return value as RawReasoningOptions;
+}
+
+/** token 数 → 「8k / 1M」风格标签。 */
+function formatTokens(n: number): string {
+  if (n >= 1_000_000 && n % 1_000_000 === 0) return `${n / 1_000_000}M`;
+  if (n >= 1024 && n % 1024 === 0) return `${n / 1024}k`;
+  return `${n}`;
+}
 
 export function useProviders() {
+  /**
+   * 当前模型的思考档位选项。解析 `reasoning_options`：
+   * - effort → values 列表（原文档位名，直接透传给 wire）
+   * - toggle → 单一「开」选项
+   * - budget_tokens → min/中点/max 三个预设档（对齐 opencode 的两三档做法，
+   *   不做自由输入）
+   * - 目录是控制项数组，可同时支持多种控制；兼容旧自定义模型的单个对象。
+   * - 未知/空配置不猜测档位；openai_compatible 只展示可发送的 effort。
+   */
+  const reasoningOptions = computed(() => {
+    const provider = providers.value.find(
+      (p) => p.id === selectedProviderId.value,
+    );
+    const model = provider?.models.find(
+      (m) => m.model_id === selectedModelId.value,
+    );
+    if (!model || !model.reasoning) return [];
+    const rawOptions = Array.isArray(model.reasoning_options)
+      ? model.reasoning_options
+      : [model.reasoning_options];
+    const options = rawOptions.flatMap((value) => {
+      const raw = asRawReasoningOptions(value);
+      if (raw?.type === "effort" && Array.isArray(raw.values)) {
+        const values = raw.values.filter(
+          (v): v is string => typeof v === "string" && v.length > 0,
+        );
+        if (values.length > 0) {
+          return values.map((v) => ({ value: `effort:${v}`, label: v }));
+        }
+      }
+      if (provider?.adapter_type !== "anthropic") return [];
+      if (raw?.type === "toggle") return [{ value: "on", label: "开" }];
+      if (raw?.type === "budget_tokens") {
+        const min =
+          typeof raw.min === "number" ? Math.max(1024, raw.min) : 1024;
+        const outputLimit = model.limit_output ?? 8192;
+        const max = Math.min(
+          typeof raw.max === "number" ? raw.max : min * 8,
+          outputLimit - 1,
+        );
+        if (max < min) return [];
+        const mid = Math.round((min + max) / 2);
+        const budgets = [...new Set([min, mid, max])];
+        return budgets.map((b) => ({
+          value: `budget:${b}`,
+          label: formatTokens(b),
+        }));
+      }
+      return [];
+    });
+    return options.filter(
+      (option, index) =>
+        options.findIndex((other) => other.value === option.value) === index,
+    );
+  });
+
+  /** 选中档位 → 请求体 JSON（`null` = 本次请求不带 reasoning 字段）。 */
+  const getReasoningRequest = (): ReasoningRequestDto | null => {
+    const sel = selectedReasoning.value;
+    if (!sel || !reasoningOptions.value.some((option) => option.value === sel))
+      return null;
+    if (sel === "on") return { type: "enabled" };
+    if (sel.startsWith("effort:")) {
+      return { type: "effort", effort: sel.slice("effort:".length) };
+    }
+    if (sel.startsWith("budget:")) {
+      const budget = Number(sel.slice("budget:".length));
+      return Number.isFinite(budget) && budget > 0
+        ? { type: "budget_tokens", budget }
+        : null;
+    }
+    return null;
+  };
+
+  const selectReasoning = (value: string) => {
+    // 非空标识 default 是控件里的「默认」项：回到不带档位。
+    selectedReasoning.value = value === "default" ? null : value;
+  };
   const fetchProviders = async () => {
     loading.value = true;
     try {
@@ -146,6 +248,8 @@ export function useProviders() {
 
   const selectProvider = (providerId: string) => {
     selectedProviderId.value = providerId;
+    // 换 provider/model 后档位值域不同：回到「默认」。
+    selectedReasoning.value = null;
     const provider = providers.value.find((p) => p.id === providerId);
     if (provider) {
       const enabled = provider.models.filter((m) => m.is_enabled);
@@ -157,6 +261,7 @@ export function useProviders() {
 
   const selectModel = (modelId: string) => {
     selectedModelId.value = modelId;
+    selectedReasoning.value = null;
   };
 
   const getProviderSpec = (): string | null => {
@@ -175,6 +280,8 @@ export function useProviders() {
     loading: readonly(loading),
     selectedProviderId: readonly(selectedProviderId),
     selectedModelId: readonly(selectedModelId),
+    reasoningOptions,
+    selectedReasoning: readonly(selectedReasoning),
     fetchProviders,
     updateApiKey,
     getApiKey,
@@ -185,7 +292,9 @@ export function useProviders() {
     createModel,
     selectProvider,
     selectModel,
+    selectReasoning,
     getProviderSpec,
+    getReasoningRequest,
     enabledModels,
   };
 }

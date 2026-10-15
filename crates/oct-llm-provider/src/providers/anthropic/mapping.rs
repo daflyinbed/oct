@@ -22,12 +22,25 @@ pub(super) fn map_anthropic_message(
             ContentPart::ImageUrl { url } => AnthropicContentBlock::Image(AnthropicImageBlock {
                 source: anthropic_image_source(url),
             }),
-            ContentPart::Reasoning(text) => {
-                AnthropicContentBlock::Thinking(AnthropicThinkingBlock {
-                    thinking: text.clone(),
-                    signature: None,
-                })
-            }
+            // Legacy/other-provider reasoning has no Anthropic signature.
+            // Do not fabricate an unauthenticated thinking block on replay.
+            ContentPart::Reasoning(_) => continue,
+            ContentPart::ReasoningBlock(crate::core::ReasoningBlock::Signed {
+                text,
+                signature,
+                prefix_fingerprint,
+            }) => AnthropicContentBlock::Thinking(AnthropicThinkingBlock {
+                thinking: text.clone(),
+                signature: Some(signature.clone()),
+                prefix_fingerprint: prefix_fingerprint.clone(),
+            }),
+            ContentPart::ReasoningBlock(crate::core::ReasoningBlock::Redacted {
+                data,
+                prefix_fingerprint,
+            }) => AnthropicContentBlock::RedactedThinking(AnthropicRedactedThinkingBlock {
+                data: data.clone(),
+                prefix_fingerprint: prefix_fingerprint.clone(),
+            }),
             ContentPart::ToolCall(call) => AnthropicContentBlock::ToolUse(AnthropicToolUseBlock {
                 id: call.id.clone(),
                 name: call.name.clone(),
@@ -168,11 +181,23 @@ pub(super) fn parse_anthropic_content_block(
                 images: Vec::new(),
             }))
         }
-        AnthropicContentBlock::Thinking(thinking_block) => {
-            Ok(ContentPart::Reasoning(thinking_block.thinking))
-        }
-        AnthropicContentBlock::RedactedThinking(redacted_block) => Ok(ContentPart::Reasoning(
-            format!("[redacted: {}]", redacted_block.data),
+        AnthropicContentBlock::Thinking(thinking_block) => Ok(ContentPart::ReasoningBlock(
+            crate::core::ReasoningBlock::Signed {
+                text: thinking_block.thinking,
+                signature: thinking_block
+                    .signature
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| {
+                        ModelError::provider("anthropic thinking block is missing its signature")
+                    })?,
+                prefix_fingerprint: thinking_block.prefix_fingerprint,
+            },
+        )),
+        AnthropicContentBlock::RedactedThinking(redacted_block) => Ok(ContentPart::ReasoningBlock(
+            crate::core::ReasoningBlock::Redacted {
+                data: redacted_block.data,
+                prefix_fingerprint: redacted_block.prefix_fingerprint,
+            },
         )),
         AnthropicContentBlock::Image(_) => {
             Err(ModelError::provider("unexpected image block in response"))

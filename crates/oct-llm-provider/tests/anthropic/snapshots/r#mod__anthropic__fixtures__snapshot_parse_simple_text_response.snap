@@ -1,11 +1,14 @@
 ---
-source: tests/anthropic/fixtures.rs
+source: crates/oct-llm-provider/tests/anthropic/fixtures.rs
 expression: response
 ---
 message:
   role: Assistant
   parts:
-    - Reasoning: "1.  **Analyze the Request:** The user wants me to say \"world\" in one word.\n2.  **Identify the Target Word:** The word is \"world\".\n3.  **Constraint Check:** \"In one word.\"\n4.  **Formulate Output:** The most direct response is simply the word itself.\n5.  **Final Decision:** Output \"World\"."
+    - ReasoningBlock:
+        Signed:
+          text: "1.  **Analyze the Request:** The user wants me to say \"world\" in one word.\n2.  **Identify the Target Word:** The word is \"world\".\n3.  **Constraint Check:** \"In one word.\"\n4.  **Formulate Output:** The most direct response is simply the word itself.\n5.  **Final Decision:** Output \"World\"."
+          signature: 5443e27cf34c4e4bae8d4244
     - Text: World
 finish_reason: Stop
 usage:

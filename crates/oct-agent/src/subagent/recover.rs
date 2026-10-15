@@ -63,6 +63,9 @@ pub struct RecoveryJob {
     pub model_id: String,
     pub context_window: Option<u32>,
     pub idle: Option<Duration>,
+    /// 恢复的父 run 沿用被中断回合的思考档位（resume_turn 从 user 消息
+    /// details 里读出）；中途中断的对话不应静默改变思考行为。
+    pub reasoning: Option<oct_llm_provider::core::ReasoningRequest>,
     /// The dangling call ids found by the eligibility probe.
     pub dangling: Vec<String>,
 }
@@ -149,6 +152,7 @@ async fn orchestrate_inner(job: RecoveryJob) -> Result<()> {
         model_id,
         context_window,
         idle,
+        reasoning,
         dangling: _,
     } = job;
     runs.run_root_with_guard(RootRunRequest {
@@ -161,6 +165,7 @@ async fn orchestrate_inner(job: RecoveryJob) -> Result<()> {
         view,
         context_window,
         idle,
+        reasoning,
         attach_task_tool: true,
     })
     .await

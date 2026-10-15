@@ -12,6 +12,9 @@ pub struct Model {
     pub name: String,
     pub family: Option<String>,
     pub reasoning: bool,
+    /// models.dev 的思考档位原始 JSON（effort/toggle/budget_tokens），
+    /// NULL = 无档位信息（custom 模型、老数据）。解析与校验在 API 层。
+    pub reasoning_options: Option<String>,
     pub tool_call: bool,
     pub attachment: bool,
     pub structured_output: bool,
@@ -38,6 +41,7 @@ pub struct CreateModelRequest {
     pub name: String,
     pub family: Option<String>,
     pub reasoning: Option<bool>,
+    pub reasoning_options: Option<String>,
     pub tool_call: Option<bool>,
     pub attachment: Option<bool>,
     pub structured_output: Option<bool>,
@@ -60,6 +64,7 @@ pub struct UpdateModelRequest {
     pub name: Option<String>,
     pub family: Option<String>,
     pub reasoning: Option<bool>,
+    pub reasoning_options: Option<String>,
     pub tool_call: Option<bool>,
     pub attachment: Option<bool>,
     pub structured_output: Option<bool>,
@@ -81,7 +86,7 @@ pub struct UpdateModelRequest {
 pub async fn list_models_by_provider(pool: &SqlitePool, provider_id: &str) -> Result<Vec<Model>> {
     let rows = sqlx::query_as!(
         Model,
-        "SELECT id, provider_id, model_id, name, family, reasoning, tool_call, attachment, structured_output, temperature, knowledge, release_date, open_weights, cost_input, cost_output, cost_cache_read, cost_cache_write, limit_context, limit_output, modalities_input, modalities_output, source, is_enabled, created_at FROM models WHERE provider_id = $1 ORDER BY created_at ASC",
+        "SELECT id, provider_id, model_id, name, family, reasoning, reasoning_options, tool_call, attachment, structured_output, temperature, knowledge, release_date, open_weights, cost_input, cost_output, cost_cache_read, cost_cache_write, limit_context, limit_output, modalities_input, modalities_output, source, is_enabled, created_at FROM models WHERE provider_id = $1 ORDER BY created_at ASC",
         provider_id,
     )
     .fetch_all(pool)
@@ -93,7 +98,7 @@ pub async fn list_models_by_provider(pool: &SqlitePool, provider_id: &str) -> Re
 pub async fn list_enabled_models(pool: &SqlitePool) -> Result<Vec<Model>> {
     let rows = sqlx::query_as!(
         Model,
-        "SELECT id, provider_id, model_id, name, family, reasoning, tool_call, attachment, structured_output, temperature, knowledge, release_date, open_weights, cost_input, cost_output, cost_cache_read, cost_cache_write, limit_context, limit_output, modalities_input, modalities_output, source, is_enabled, created_at FROM models WHERE is_enabled = true ORDER BY provider_id, created_at ASC"
+        "SELECT id, provider_id, model_id, name, family, reasoning, reasoning_options, tool_call, attachment, structured_output, temperature, knowledge, release_date, open_weights, cost_input, cost_output, cost_cache_read, cost_cache_write, limit_context, limit_output, modalities_input, modalities_output, source, is_enabled, created_at FROM models WHERE is_enabled = true ORDER BY provider_id, created_at ASC"
     )
     .fetch_all(pool)
     .await?;
@@ -108,7 +113,7 @@ pub async fn get_model(
 ) -> Result<Option<Model>> {
     let row = sqlx::query_as!(
         Model,
-        "SELECT id, provider_id, model_id, name, family, reasoning, tool_call, attachment, structured_output, temperature, knowledge, release_date, open_weights, cost_input, cost_output, cost_cache_read, cost_cache_write, limit_context, limit_output, modalities_input, modalities_output, source, is_enabled, created_at FROM models WHERE provider_id = $1 AND model_id = $2",
+        "SELECT id, provider_id, model_id, name, family, reasoning, reasoning_options, tool_call, attachment, structured_output, temperature, knowledge, release_date, open_weights, cost_input, cost_output, cost_cache_read, cost_cache_write, limit_context, limit_output, modalities_input, modalities_output, source, is_enabled, created_at FROM models WHERE provider_id = $1 AND model_id = $2",
         provider_id,
         model_id,
     )
@@ -134,13 +139,14 @@ pub async fn create_model(
     let open_weights = req.open_weights.unwrap_or(false);
 
     sqlx::query!(
-        "INSERT INTO models (id, provider_id, model_id, name, family, reasoning, tool_call, attachment, structured_output, temperature, knowledge, release_date, open_weights, cost_input, cost_output, cost_cache_read, cost_cache_write, limit_context, limit_output, modalities_input, modalities_output, source) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, 'custom')",
+        "INSERT INTO models (id, provider_id, model_id, name, family, reasoning, reasoning_options, tool_call, attachment, structured_output, temperature, knowledge, release_date, open_weights, cost_input, cost_output, cost_cache_read, cost_cache_write, limit_context, limit_output, modalities_input, modalities_output, source) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, 'custom')",
         id,
         provider_id,
         req.model_id,
         req.name,
         req.family,
         reasoning,
+        req.reasoning_options,
         tool_call,
         attachment,
         structured_output,
@@ -167,6 +173,7 @@ pub async fn create_model(
         name: req.name.clone(),
         family: req.family.clone(),
         reasoning,
+        reasoning_options: req.reasoning_options.clone(),
         tool_call,
         attachment,
         structured_output,
@@ -202,6 +209,10 @@ pub async fn update_model(
     let name = req.name.as_deref().unwrap_or(&existing.name);
     let family = req.family.as_deref().or(existing.family.as_deref());
     let reasoning = req.reasoning.unwrap_or(existing.reasoning);
+    let reasoning_options = req
+        .reasoning_options
+        .as_deref()
+        .or(existing.reasoning_options.as_deref());
     let tool_call = req.tool_call.unwrap_or(existing.tool_call);
     let attachment = req.attachment.unwrap_or(existing.attachment);
     let structured_output = req.structured_output.unwrap_or(existing.structured_output);
@@ -229,10 +240,11 @@ pub async fn update_model(
     let is_enabled = req.is_enabled.unwrap_or(existing.is_enabled);
 
     let result: sqlx::sqlite::SqliteQueryResult = sqlx::query!(
-        "UPDATE models SET name = $1, family = $2, reasoning = $3, tool_call = $4, attachment = $5, structured_output = $6, temperature = $7, knowledge = $8, release_date = $9, open_weights = $10, cost_input = $11, cost_output = $12, cost_cache_read = $13, cost_cache_write = $14, limit_context = $15, limit_output = $16, modalities_input = $17, modalities_output = $18, is_enabled = $19 WHERE provider_id = $20 AND model_id = $21",
+        "UPDATE models SET name = $1, family = $2, reasoning = $3, reasoning_options = $4, tool_call = $5, attachment = $6, structured_output = $7, temperature = $8, knowledge = $9, release_date = $10, open_weights = $11, cost_input = $12, cost_output = $13, cost_cache_read = $14, cost_cache_write = $15, limit_context = $16, limit_output = $17, modalities_input = $18, modalities_output = $19, is_enabled = $20 WHERE provider_id = $21 AND model_id = $22",
         name,
         family,
         reasoning,
+        reasoning_options,
         tool_call,
         attachment,
         structured_output,

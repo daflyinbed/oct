@@ -51,7 +51,6 @@ declare module 'vue' {
     ILucideExternalLink: typeof import('~icons/lucide/external-link')['default']
     ILucideEye: typeof import('~icons/lucide/eye')['default']
     ILucideEyeOff: typeof import('~icons/lucide/eye-off')['default']
-    ILucideFile: typeof import('~icons/lucide/file')['default']
     ILucideFiles: typeof import('~icons/lucide/files')['default']
     ILucideFileWarning: typeof import('~icons/lucide/file-warning')['default']
     ILucideFolder: typeof import('~icons/lucide/folder')['default']

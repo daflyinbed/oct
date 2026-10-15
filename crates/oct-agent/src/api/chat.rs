@@ -23,6 +23,31 @@ use crate::db::{conversations as conv_db, messages as msg_db, projects as projec
 use crate::runtime::RootRunRequest;
 use crate::subagent::{RecoveryJob, orchestrate};
 
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ReasoningRequestDto {
+    /// 档位字符串（low/medium/high/...，按模型 reasoning_options.values 校验）。
+    Effort { effort: String },
+    /// toggle 型模型：开启思考。
+    Enabled,
+    /// 显式思考 token 预算（budget_tokens 型模型）。
+    BudgetTokens { budget: u32 },
+}
+
+impl ReasoningRequestDto {
+    fn to_core(&self) -> oct_llm_provider::core::ReasoningRequest {
+        match self.clone() {
+            ReasoningRequestDto::Effort { effort } => {
+                oct_llm_provider::core::ReasoningRequest::Effort { effort }
+            }
+            ReasoningRequestDto::Enabled => oct_llm_provider::core::ReasoningRequest::Enabled,
+            ReasoningRequestDto::BudgetTokens { budget } => {
+                oct_llm_provider::core::ReasoningRequest::BudgetTokens { budget }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SendMessageRequest {
     pub content: String,
@@ -30,6 +55,9 @@ pub struct SendMessageRequest {
     pub expected_revision: Option<i64>,
     /// Opaque client receipt used to reconcile a send whose response was lost.
     pub client_request_id: Option<String>,
+    /// 本次回合的思考档位。校验通过后随 user 消息 details 持久化（resume
+    /// 恢复用），并在 agent loop 的每次模型请求上生效。
+    pub reasoning: Option<ReasoningRequestDto>,
 }
 
 /// Whether an agent run is currently active for a conversation.
@@ -75,6 +103,64 @@ fn ensure_not_managed(conversation: &conv_db::Conversation) -> Result<(), AppErr
 
 // Send preparation rejects dangling managed delegations before repairing
 // ordinary tool calls; the application preparation module owns that rule.
+/// 校验请求携带的思考档位与 models 表的记录一致——fail fast（400），
+/// 避免档位落到 wire 层才被 provider 拒绝。DB 缺少目录元数据时仍校验
+/// adapter 支持范围与预算上限，但不猜测 effort 的合法值。
+async fn validate_reasoning(
+    state: &AppState,
+    provider_id: &str,
+    model_id: &str,
+    reasoning: &ReasoningRequestDto,
+) -> Result<(), AppError> {
+    if !matches!(reasoning, ReasoningRequestDto::Effort { .. }) {
+        let provider = crate::db::providers::get_provider(&state.pool, provider_id)
+            .await
+            .map_err(AppError::from)?;
+        if provider.is_none_or(|p| p.adapter_type != "anthropic") {
+            return Err(AppError::BadRequest(
+                "此 provider 的适配器仅支持 effort 档位，暂不支持思考开关或 token 预算".into(),
+            ));
+        }
+    }
+    if let ReasoningRequestDto::BudgetTokens { budget } = reasoning
+        && *budget < 1024
+    {
+        return Err(AppError::BadRequest(
+            "Anthropic 思考预算必须至少为 1024".into(),
+        ));
+    }
+    let row = crate::db::models::get_model(&state.pool, provider_id, model_id)
+        .await
+        .map_err(AppError::from)?;
+    if let ReasoningRequestDto::BudgetTokens { budget } = reasoning {
+        let limit = row
+            .as_ref()
+            .and_then(|row| row.limit_output)
+            .filter(|limit| *limit > 0)
+            .unwrap_or(8192);
+        if i64::from(*budget) >= limit {
+            return Err(AppError::BadRequest(
+                "Anthropic 思考预算必须小于模型的输出上限".into(),
+            ));
+        }
+    }
+    let Some(row) = row else {
+        return Ok(());
+    };
+    if !row.reasoning {
+        return Err(AppError::BadRequest(format!(
+            "模型 {provider_id}:{model_id} 不支持思考（reasoning），请移除思考档位"
+        )));
+    }
+    if let Some(raw) = &row.reasoning_options
+        && let Err(message) =
+            crate::reasoning::ReasoningOptions::parse(raw).validate(&reasoning.to_core())
+    {
+        return Err(AppError::BadRequest(message));
+    }
+    Ok(())
+}
+
 #[utoipa::path(
     post,
     path = "/conversations/{id}/messages",
@@ -128,6 +214,9 @@ pub async fn send_message(
         .ok_or_else(|| AppError::NotFound("Project not found".into()))?;
 
     let (chat_model, provider_id, model_id) = resolve_model(&state, &req.provider_spec).await?;
+    if let Some(reasoning) = &req.reasoning {
+        validate_reasoning(&state, &provider_id, &model_id, reasoning).await?;
+    }
     let context_window =
         resolve_context_window(&state, chat_model.as_ref(), &provider_id, &model_id).await;
 
@@ -148,10 +237,18 @@ pub async fn send_message(
     crate::runtime::preparation::prepare_history(&state.runs, &id).await?;
 
     let user_msg = Message::text(Role::User, &req.content);
-    let user_details = req
-        .client_request_id
-        .as_ref()
-        .map(|request_id| serde_json::json!({ "client_request_id": request_id }));
+    // details 随 user 消息落库：client_request_id 供前端对账，reasoning
+    // 供 resume 恢复本回合的思考档位（中途中断不静默改变行为）。
+    let mut user_details = serde_json::Map::new();
+    if let Some(request_id) = req.client_request_id.as_ref() {
+        user_details.insert("client_request_id".into(), serde_json::json!(request_id));
+    }
+    if let Some(reasoning) = req.reasoning.as_ref() {
+        if let Ok(value) = serde_json::to_value(reasoning) {
+            user_details.insert("reasoning".into(), value);
+        }
+    }
+    let user_details = (!user_details.is_empty()).then(|| serde_json::Value::Object(user_details));
     let stored_user = msg_db::insert_message(
         &state.pool,
         &id,
@@ -262,6 +359,7 @@ pub async fn send_message(
             view,
             context_window,
             idle,
+            reasoning: req.reasoning.as_ref().map(|dto| dto.to_core()),
             // Chat conversations get the delegation tool (their workers then
             // never do — depth <= 1, enforced again at registration).
             attach_task_tool: conversation.kind == "chat",
@@ -353,6 +451,15 @@ pub async fn resume_turn(
     let context_window =
         resolve_context_window(&state, chat_model.as_ref(), &provider_id, &model_id).await;
 
+    // Restore the interrupted turn's reasoning level from the trailing user
+    // message's details — the resumed request must not silently drop thinking
+    // mid-conversation. Malformed stored values degrade to None (no level).
+    let reasoning = msg_db::get_last_user_details(&state.pool, &id)
+        .await
+        .map_err(AppError::from)?
+        .and_then(|details| details.get("reasoning").cloned())
+        .and_then(|value| serde_json::from_value(value).ok());
+
     // Idle captured before any repair writes below (see send_message).
     let idle = conversation_idle(&state, &id).await;
 
@@ -385,6 +492,7 @@ pub async fn resume_turn(
         model_id,
         context_window,
         idle,
+        reasoning,
         dangling,
     }));
 

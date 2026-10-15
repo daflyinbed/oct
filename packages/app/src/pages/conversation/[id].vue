@@ -7,6 +7,8 @@
     :providers="providers"
     :selected-provider-id="selectedProviderId"
     :selected-model-id="selectedModelId"
+    :reasoning-options="reasoningOptions"
+    :selected-reasoning="selectedReasoning"
     :approvals="approvals"
     :permission-mode="permissionMode"
     :fork-enabled="
@@ -30,6 +32,7 @@
     @reload="handleReload"
     @select-provider="selectProvider"
     @select-model="selectModel"
+    @select-reasoning="selectReasoning"
     @decide-approval="handleDecideApproval"
     @set-permission-mode="handleSetPermissionMode"
     @fork="handleFork"
@@ -110,9 +113,13 @@ const {
   providers,
   selectedProviderId,
   selectedModelId,
+  reasoningOptions,
+  selectedReasoning,
   selectProvider,
   selectModel,
+  selectReasoning,
   getProviderSpec,
+  getReasoningRequest,
 } = useProviders();
 
 // --- 审批：当前会话的 pending 分桶喂给 ApprovalBanner -----------------------
@@ -184,7 +191,12 @@ async function handleSendMessage(content: string) {
     revertSelection.value
   )
     return;
-  await sendMessage(conversationId.value, content, getProviderSpec());
+  await sendMessage(
+    conversationId.value,
+    content,
+    getProviderSpec(),
+    getReasoningRequest(),
+  );
 }
 
 async function handleFork(cut: ForkCut) {

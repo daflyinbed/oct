@@ -1,5 +1,5 @@
 ---
-source: tests/anthropic/fixtures.rs
+source: crates/oct-llm-provider/tests/anthropic/fixtures.rs
 expression: events
 ---
 - Usage:
@@ -61,6 +61,10 @@ expression: events
 - ReasoningDelta: " function"
 - ReasoningDelta: " call"
 - ReasoningDelta: "."
+- ReasoningBlock:
+    Signed:
+      text: "The user is asking for the weather in Shenzhen. I have a get_weather function available that takes a location parameter. The user has provided \"Shenzhen\" as the location, so I have all the required parameters to make the function call."
+      signature: 1054eb40430f4907921af21f
 - TextDelta: I
 - TextDelta: "'ll"
 - TextDelta: " check"

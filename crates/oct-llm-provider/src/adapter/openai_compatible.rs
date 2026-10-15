@@ -108,6 +108,15 @@ impl OpenAiCompatibleChatModel {
 
         let tools = req.tools.iter().map(map_tool).collect();
         let tool_choice = req.options.tool_choice.as_ref().map(map_tool_choice);
+        let reasoning_effort = match req.options.reasoning.as_ref() {
+            Some(crate::core::ReasoningRequest::Effort { effort }) => Some(effort.clone()),
+            Some(_) => {
+                return Err(ModelError::unsupported(
+                    "this OpenAI-compatible adapter supports only reasoning effort; toggle and token budgets require provider-specific mappings",
+                ));
+            }
+            None => None,
+        };
         let response_format =
             req.options
                 .json_schema
@@ -131,6 +140,7 @@ impl OpenAiCompatibleChatModel {
             n: req.options.n,
             presence_penalty: req.options.presence_penalty,
             frequency_penalty: req.options.frequency_penalty,
+            reasoning_effort,
             provider_options: req.options.provider_options.clone(),
             stream: false,
             stream_options: None,

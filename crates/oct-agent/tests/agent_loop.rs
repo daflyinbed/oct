@@ -1014,6 +1014,8 @@ async fn tool_event_overflow_stops_before_compaction_or_another_model_request() 
         system_prompt: "test system prompt".into(),
         context_window: Some(8192),
         idle: None,
+        reasoning: None,
+        max_output_tokens: None,
         permission: oct_agent::permissions::gate::PermissionGate::permissive(),
         prompt_env_refresh: None,
         prompt_generation: 0,
@@ -3828,6 +3830,7 @@ async fn run_root_turn(
         view,
         context_window: Some(window),
         idle: None,
+        reasoning: None,
         attach_task_tool: false,
     })
     .await

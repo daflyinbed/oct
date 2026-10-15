@@ -157,6 +157,13 @@ pub(super) fn map_message(message: &Message) -> Result<ChatCompletionRequestMess
             ContentPart::Reasoning(text) => {
                 reasoning_parts.push(text.clone());
             }
+            ContentPart::ReasoningBlock(block) => {
+                // A model switch can reuse the visible text, but opaque
+                // signatures and redacted data belong to their own protocol.
+                if let Some(text) = block.text() {
+                    reasoning_parts.push(text.to_string());
+                }
+            }
             ContentPart::ToolCall(call) => {
                 tool_calls.push(RequestMessageToolCall {
                     id: call.id.clone(),

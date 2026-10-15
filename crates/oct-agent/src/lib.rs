@@ -7,6 +7,7 @@ pub mod db;
 pub mod mcp;
 pub mod oauth;
 pub mod permissions;
+pub mod reasoning;
 pub mod runtime;
 pub mod seed;
 pub mod subagent;

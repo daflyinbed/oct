@@ -7,7 +7,8 @@ use serde_json::{Map, Value};
 use std::collections::HashMap;
 
 use crate::core::{
-    ContentPart, FinishReason, Message, ModelError, Role, StreamEvent, ToolResult, Usage,
+    ContentPart, FinishReason, Message, ModelError, ReasoningRequest, Role, StreamEvent,
+    ToolResult, Usage,
 };
 use crate::model::{ChatModel, ChatRequest, ChatResponse, ChatStream};
 use crate::provider::{ConnectionConfig, ModelCapabilities, ModelInfo, ModelLimits, Provider};
@@ -192,11 +193,15 @@ struct AnthropicThinkingBlock {
     thinking: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     signature: Option<String>,
+    #[serde(skip)]
+    prefix_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AnthropicRedactedThinkingBlock {
     data: String,
+    #[serde(skip)]
+    prefix_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -263,6 +268,7 @@ struct AnthropicThinkingConfig {
     thinking_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     budget_tokens: Option<u32>,
+    // Effort belongs to output_config, not to the thinking object.
     #[serde(skip_serializing_if = "Option::is_none")]
     display: Option<String>,
 }
@@ -292,9 +298,13 @@ struct AnthropicWireRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<AnthropicThinkingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    output_config: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
     #[serde(flatten)]
     other: Map<String, Value>,
+    #[serde(skip)]
+    reasoning_prefix: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -473,6 +483,87 @@ impl AnthropicChatModel {
         Ok(headers)
     }
 
+    fn supports_adaptive_thinking(&self) -> bool {
+        let model = self.info.model_id.replace('.', "-");
+        let Some((_, name)) = model.split_once("claude-") else {
+            // Unknown Anthropic-compatible models keep their manual budget.
+            return false;
+        };
+        if name == "mythos-preview" || name.starts_with("mythos-preview-") {
+            return true;
+        }
+        // Accept both current family-first names and older version-first
+        // names, including provider prefixes and dated model IDs. A date
+        // cannot be a u8, so a Claude 4 date suffix is not a minor version.
+        let mut version = name.split('-');
+        let Some(major) = version.find_map(|part| part.parse::<u8>().ok()) else {
+            return false;
+        };
+        let minor = version
+            .next()
+            .and_then(|part| part.parse::<u8>().ok())
+            .unwrap_or(0);
+        major > 4 || (major == 4 && minor >= 6)
+    }
+
+    /// `GenerateOptions::reasoning` → anthropic `thinking` 块。
+    /// - BudgetTokens → `{"type":"enabled","budget_tokens":n}`
+    /// - Effort → adaptive thinking（`display:"summarized"`）；Opus 4.5 仍用 enabled
+    /// - Enabled → 支持 adaptive 的模型使用 adaptive；旧模型使用 enabled +
+    ///   保守默认预算（预算必须 ≥1024 且 < max_tokens）
+    fn map_thinking(
+        &self,
+        req: &ChatRequest,
+        max_output: u32,
+    ) -> Result<Option<AnthropicThinkingConfig>, ModelError> {
+        let Some(reasoning) = req.options.reasoning.as_ref() else {
+            return Ok(None);
+        };
+        let use_adaptive = match reasoning {
+            ReasoningRequest::Enabled => self.supports_adaptive_thinking(),
+            ReasoningRequest::Effort { .. } => {
+                !self.info.model_id.contains("claude-opus-4-5")
+                    && !self.info.model_id.contains("claude-opus-4.5")
+            }
+            ReasoningRequest::BudgetTokens { .. } => false,
+        };
+        let thinking = match reasoning {
+            ReasoningRequest::BudgetTokens { budget } => {
+                if *budget < 1024 || *budget >= max_output {
+                    return Err(ModelError::unsupported(
+                        "anthropic thinking budget must be at least 1024 and smaller than max_tokens",
+                    ));
+                }
+                AnthropicThinkingConfig {
+                    thinking_type: "enabled".to_string(),
+                    budget_tokens: Some(*budget),
+                    display: None,
+                }
+            }
+            ReasoningRequest::Enabled | ReasoningRequest::Effort { .. } if use_adaptive => {
+                AnthropicThinkingConfig {
+                    thinking_type: "adaptive".to_string(),
+                    budget_tokens: None,
+                    display: Some("summarized".to_string()),
+                }
+            }
+            ReasoningRequest::Enabled | ReasoningRequest::Effort { .. } => {
+                if max_output <= 1024 {
+                    return Err(ModelError::unsupported(
+                        "anthropic thinking requires max_tokens greater than 1024",
+                    ));
+                }
+                let budget = (max_output / 2).clamp(1_024, 16_000).min(max_output - 1);
+                AnthropicThinkingConfig {
+                    thinking_type: "enabled".to_string(),
+                    budget_tokens: Some(budget),
+                    display: None,
+                }
+            }
+        };
+        Ok(Some(thinking))
+    }
+
     fn to_wire_request(&self, req: &ChatRequest) -> Result<AnthropicWireRequest, ModelError> {
         let mut system_text = String::new();
         let mut messages = Vec::new();
@@ -497,7 +588,12 @@ impl AnthropicChatModel {
                 continue;
             }
 
-            messages.push(map_anthropic_message(message)?);
+            let mapped = map_anthropic_message(message)?;
+            // An old reasoning-only row can become empty when its unsigned
+            // reasoning is omitted. Empty assistant content is not valid wire.
+            if !mapped.content.is_empty() {
+                messages.push(mapped);
+            }
         }
 
         let system = if system_text.is_empty() {
@@ -512,27 +608,61 @@ impl AnthropicChatModel {
             .as_ref()
             .map(map_anthropic_tool_choice);
 
-        Ok(AnthropicWireRequest {
+        let max_output = req
+            .options
+            .max_output_tokens
+            .or(self.info.limits.max_output_tokens)
+            .unwrap_or(8192);
+        let thinking = self.map_thinking(req, max_output)?;
+        let mut other = req
+            .options
+            .provider_options
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        let output_config =
+            if let Some(ReasoningRequest::Effort { effort }) = &req.options.reasoning {
+                let mut config = other
+                    .remove("output_config")
+                    .unwrap_or_else(|| Value::Object(Map::new()));
+                config
+                    .as_object_mut()
+                    .ok_or_else(|| {
+                        ModelError::unsupported("anthropic output_config must be an object")
+                    })?
+                    .insert("effort".into(), Value::String(effort.clone()));
+                Some(config)
+            } else {
+                None
+            };
+        // Extended thinking 与 temperature≠1 互斥（API 400）——思考开启时
+        // 丢弃 temperature，让思考档位优先。
+        let temperature = if thinking.is_some() {
+            None
+        } else {
+            req.options.temperature
+        };
+
+        let mut wire = AnthropicWireRequest {
             model: self.info.model_id.clone(),
             messages,
             system,
-            temperature: req.options.temperature,
+            temperature,
             top_p: req.options.top_p,
             top_k: None,
-            max_tokens: req.options.max_output_tokens,
+            max_tokens: Some(max_output),
             stop_sequences: req.options.stop_sequences.clone(),
             tools: req.tools.iter().map(map_anthropic_tool).collect(),
             tool_choice,
             metadata: None,
-            thinking: None,
+            thinking,
+            output_config,
             stream: None,
-            other: req
-                .options
-                .provider_options
-                .as_object()
-                .cloned()
-                .unwrap_or_default(),
-        })
+            other,
+            reasoning_prefix: String::new(),
+        };
+        replay::prepare(&mut wire)?;
+        Ok(wire)
     }
 }
 
@@ -582,7 +712,13 @@ impl ChatModel for AnthropicChatModel {
             ModelError::transport(message)
         })?;
 
-        map_anthropic_response(payload)
+        let mut response = map_anthropic_response(payload)?;
+        for part in &mut response.message.parts {
+            if let ContentPart::ReasoningBlock(block) = part {
+                block.bind_prefix(&wire.reasoning_prefix);
+            }
+        }
+        Ok(response)
     }
 
     async fn stream(&self, req: ChatRequest) -> Result<ChatStream, ModelError> {
@@ -616,6 +752,7 @@ impl ChatModel for AnthropicChatModel {
             }
         };
 
+        let reasoning_prefix = wire.reasoning_prefix;
         let byte_stream = response.bytes_stream();
         let stream = try_stream! {
             // The generator is polled by the consumer, NOT inside the
@@ -625,8 +762,7 @@ impl ChatModel for AnthropicChatModel {
             // the dropped-mid-flight (cancellation) case via Drop.
             let ctx = ctx;
             let mut decoder = SseDecoder::new();
-            let mut tool_state: HashMap<usize, AnthropicToolAccumulator> = HashMap::new();
-            let mut stop_reason: Option<String> = None;
+            let mut state = stream::AnthropicStreamState::default();
             let guard = wire::StreamEndGuard::new(ctx.clone());
             futures_util::pin_mut!(byte_stream);
 
@@ -643,7 +779,7 @@ impl ChatModel for AnthropicChatModel {
                 })? {
                     wire::log_sse(&ctx, guard.next_seq(), &event);
                     guard.count();
-                    for normalized in parse_anthropic_sse_with_wire(&event, &ctx, &guard, &mut tool_state, &mut stop_reason)? {
+                    for normalized in parse_anthropic_sse_with_wire(&event, &ctx, &guard, &mut state, &reasoning_prefix)? {
                         yield normalized;
                     }
                 }
@@ -655,7 +791,7 @@ impl ChatModel for AnthropicChatModel {
             })? {
                 wire::log_sse(&ctx, guard.next_seq(), &event);
                 guard.count();
-                for normalized in parse_anthropic_sse_with_wire(&event, &ctx, &guard, &mut tool_state, &mut stop_reason)? {
+                for normalized in parse_anthropic_sse_with_wire(&event, &ctx, &guard, &mut state, &reasoning_prefix)? {
                     yield normalized;
                 }
             }
@@ -673,13 +809,19 @@ fn parse_anthropic_sse_with_wire(
     event: &str,
     ctx: &wire::WireCtx,
     guard: &wire::StreamEndGuard,
-    tool_state: &mut HashMap<usize, AnthropicToolAccumulator>,
-    stop_reason: &mut Option<String>,
+    state: &mut stream::AnthropicStreamState,
+    reasoning_prefix: &str,
 ) -> Result<Vec<StreamEvent>, ModelError> {
-    parse_anthropic_sse_event_with_state(event, tool_state, stop_reason).inspect_err(|err| {
+    let mut events = parse_anthropic_sse_event_with_state(event, state).inspect_err(|err| {
         wire::log_error(ctx, "parse", None, &err.to_string(), None);
         guard.mark_error();
-    })
+    })?;
+    for event in &mut events {
+        if let StreamEvent::ReasoningBlock(block) = event {
+            block.bind_prefix(reasoning_prefix);
+        }
+    }
+    Ok(events)
 }
 
 impl Provider for AnthropicProvider {
@@ -723,6 +865,285 @@ impl Provider for AnthropicProvider {
 }
 
 mod mapping;
+mod replay;
 mod stream;
 pub use mapping::*;
 pub use stream::*;
+
+#[cfg(test)]
+mod reasoning_tests {
+    use super::*;
+    use crate::core::{GenerateOptions, Message, ReasoningRequest, Role};
+    use crate::model::ChatRequest;
+    use crate::provider::{ModelInfo, ModelLimits};
+
+    fn model() -> AnthropicChatModel {
+        AnthropicChatModel::new(
+            ModelInfo::new("anthropic", "claude-sonnet-4-6").with_limits(ModelLimits {
+                max_input_tokens: Some(200_000),
+                max_output_tokens: Some(8_192),
+                max_total_tokens: Some(200_000),
+            }),
+            AnthropicConfig {
+                base_url: "http://localhost:1".to_string(),
+                api_key: Some("test".to_string()),
+            },
+            reqwest::Client::new(),
+        )
+    }
+
+    fn wire_req(reasoning: Option<ReasoningRequest>) -> AnthropicWireRequest {
+        model()
+            .to_wire_request(&ChatRequest {
+                messages: vec![Message::text(Role::User, "hi")],
+                tools: vec![],
+                options: GenerateOptions {
+                    reasoning,
+                    temperature: Some(0.5),
+                    ..GenerateOptions::default()
+                },
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn budget_tokens_maps_to_enabled_thinking() {
+        let wire = wire_req(Some(ReasoningRequest::BudgetTokens { budget: 4_096 }));
+        let thinking = wire.thinking.expect("thinking present");
+        assert_eq!(thinking.thinking_type, "enabled");
+        assert_eq!(thinking.budget_tokens, Some(4_096));
+        // thinking 与 temperature≠1 互斥：temperature 必须被丢弃
+        assert_eq!(wire.temperature, None);
+    }
+
+    #[test]
+    fn effort_maps_to_adaptive_thinking() {
+        let wire = wire_req(Some(ReasoningRequest::Effort {
+            effort: "high".to_string(),
+        }));
+        let thinking = wire.thinking.expect("thinking present");
+        assert_eq!(thinking.thinking_type, "adaptive");
+        assert_eq!(wire.output_config.as_ref().unwrap()["effort"], "high");
+        assert_eq!(thinking.budget_tokens, None);
+        assert_eq!(thinking.display.as_deref(), Some("summarized"));
+    }
+
+    #[test]
+    fn enabled_uses_adaptive_thinking_on_supported_claude_models() {
+        for id in [
+            "claude-sonnet-4-6",
+            "claude-opus-4-6",
+            "claude-opus-4-7",
+            "claude-sonnet-5",
+            "claude-haiku-5-5",
+            "claude-opus-5-5",
+            "claude-fable-5-1",
+            "claude-mythos-preview",
+            "anthropic.claude-haiku-5-5-v1:0",
+            "claude-haiku-5.5",
+        ] {
+            let mut model = model();
+            model.info.model_id = id.into();
+            let request = ChatRequest {
+                messages: vec![Message::text(Role::User, "hi")],
+                options: GenerateOptions {
+                    reasoning: Some(ReasoningRequest::Enabled),
+                    temperature: Some(0.5),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let body = serde_json::to_value(model.to_wire_request(&request).unwrap()).unwrap();
+            assert_eq!(
+                body["thinking"],
+                serde_json::json!({"type":"adaptive", "display":"summarized"}),
+                "{id}",
+            );
+            assert!(body.get("output_config").is_none(), "{id}");
+            assert!(body.get("temperature").is_none(), "{id}");
+        }
+    }
+
+    #[test]
+    fn legacy_enabled_maps_to_default_budget_within_output_limit() {
+        for id in [
+            "claude-opus-4-5",
+            "claude-opus-4-5-20251101",
+            "claude-sonnet-4-20250514",
+            "claude-haiku-4-5",
+            "claude-3-7-sonnet-20250219",
+            "anthropic.claude-opus-4-5-v1:0",
+            "claude-opus-4.5",
+            "compatible-model",
+        ] {
+            let mut model = model();
+            model.info.model_id = id.into();
+            let request = ChatRequest {
+                options: GenerateOptions {
+                    reasoning: Some(ReasoningRequest::Enabled),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let thinking = model.to_wire_request(&request).unwrap().thinking.unwrap();
+            assert_eq!(thinking.thinking_type, "enabled", "{id}");
+            // 8192 输出上限 → 4096 预算（< max_tokens，≥1024）
+            assert_eq!(thinking.budget_tokens, Some(4_096), "{id}");
+        }
+    }
+
+    #[test]
+    fn no_reasoning_leaves_thinking_off_and_temperature_intact() {
+        let wire = wire_req(None);
+        assert!(wire.thinking.is_none());
+        assert_eq!(wire.temperature, Some(0.5));
+    }
+
+    #[test]
+    fn adaptive_thinking_serializes_effort_in_output_config() {
+        let wire = wire_req(Some(ReasoningRequest::Effort {
+            effort: "low".to_string(),
+        }));
+        let body = serde_json::to_value(&wire).unwrap();
+        assert_eq!(
+            body["thinking"],
+            serde_json::json!({"type": "adaptive", "display": "summarized"})
+        );
+        assert_eq!(body["output_config"]["effort"], "low");
+        assert_eq!(body["max_tokens"], 8192);
+    }
+
+    #[test]
+    fn manual_thinking_budget_must_fit_the_total_output_ceiling() {
+        for budget in [512, 8192, 8193] {
+            let request = ChatRequest {
+                options: GenerateOptions {
+                    reasoning: Some(ReasoningRequest::BudgetTokens { budget }),
+                    max_output_tokens: Some(8192),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            assert!(matches!(
+                model().to_wire_request(&request),
+                Err(ModelError::Unsupported(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn legacy_opus_effort_uses_manual_thinking_and_preserves_output_settings() {
+        let mut model = model();
+        model.info.model_id = "claude-opus-4-5".into();
+        let request = ChatRequest {
+            options: GenerateOptions {
+                reasoning: Some(ReasoningRequest::Effort {
+                    effort: "low".into(),
+                }),
+                provider_options: serde_json::json!({"output_config":{"format":{"type":"json_schema"}}}),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let body = serde_json::to_value(model.to_wire_request(&request).unwrap()).unwrap();
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["output_config"]["effort"], "low");
+        assert_eq!(body["output_config"]["format"]["type"], "json_schema");
+    }
+
+    #[test]
+    fn generate_reasoning_blocks_survive_serialization_and_request_mapping() {
+        let content = serde_json::json!([
+            {"type":"thinking","thinking":"visible summary","signature":"opaque-signature"},
+            {"type":"redacted_thinking","data":"opaque-redaction"},
+            {"type":"text","text":"answer"},
+        ]);
+        let response = parse_anthropic_generate_body(&serde_json::json!({
+            "id":"msg-test","type":"message","role":"assistant","model":"claude-sonnet-4-6",
+            "content":content,"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1},
+        }).to_string()).unwrap();
+        let restored =
+            serde_json::from_str(&serde_json::to_string(&response.message).unwrap()).unwrap();
+        let request = ChatRequest {
+            messages: vec![restored],
+            ..Default::default()
+        };
+        let body = serde_json::to_value(model().to_wire_request(&request).unwrap()).unwrap();
+        assert_eq!(body["messages"][0]["content"], content);
+    }
+
+    #[test]
+    fn legacy_reasoning_without_provenance_is_filtered_only_for_bound_models() {
+        let legacy: Message = serde_json::from_value(serde_json::json!({
+            "role":"Assistant", "parts":[
+                {"ReasoningBlock":{"Signed":{"text":"old summary", "signature":"old-signature"}}},
+                {"ReasoningBlock":{"Redacted":{"data":"old-redaction"}}},
+            ],
+        }))
+        .unwrap();
+        let request = ChatRequest {
+            messages: vec![
+                Message::text(Role::User, "hi"),
+                legacy,
+                Message::text(Role::User, "continue"),
+            ],
+            ..Default::default()
+        };
+        for id in [
+            "claude-opus-5-5",
+            "anthropic.claude-sonnet-5-5-v1:0",
+            "claude-haiku-5.5",
+            "claude-fable-5-1",
+        ] {
+            let mut model = model();
+            model.info.model_id = id.into();
+            let wire = model.to_wire_request(&request).unwrap();
+            assert_eq!(wire.messages.len(), 2, "{id}");
+            assert!(
+                wire.messages
+                    .iter()
+                    .all(|message| !message.content.is_empty())
+            );
+            assert!(wire.thinking.is_none());
+        }
+        // Manual thinking on older models still needs the complete blocks,
+        // including rows written before request provenance was recorded.
+        let mut manual = request;
+        manual.options.reasoning = Some(ReasoningRequest::BudgetTokens { budget: 4096 });
+        let wire = model().to_wire_request(&manual).unwrap();
+        assert_eq!(wire.messages.len(), 3);
+        assert_eq!(wire.messages[1].content.len(), 2);
+        assert_eq!(wire.thinking.unwrap().thinking_type, "enabled");
+    }
+
+    #[test]
+    fn unsigned_thinking_stream_fails_before_it_can_be_replayed() {
+        let transcript = concat!(
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"summary\"}}\n\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        );
+        assert!(parse_anthropic_sse_transcript(transcript).is_err());
+    }
+
+    #[test]
+    fn legacy_unsigned_reasoning_never_becomes_empty_wire_content() {
+        let request = ChatRequest {
+            messages: vec![
+                Message::text(Role::User, "hi"),
+                Message::new(
+                    Role::Assistant,
+                    vec![ContentPart::Reasoning("old summary".into())],
+                ),
+                Message::text(Role::User, "continue"),
+            ],
+            ..Default::default()
+        };
+        let wire = model().to_wire_request(&request).unwrap();
+        assert_eq!(wire.messages.len(), 2);
+        assert!(
+            wire.messages
+                .iter()
+                .all(|message| !message.content.is_empty())
+        );
+    }
+}
