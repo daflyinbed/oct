@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT EXISTS(SELECT 1 FROM message_assets WHERE asset_id = $1) AS \"present!: bool\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "present!: bool",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "4b2be9d5f5ee227001bb1ce94be75c3cb3d1b47ccbeaffd1a236eee269ab0404"
+}

@@ -90,6 +90,13 @@ pub struct MicroTarget {
 /// result part is a non-error non-placeholder (the savings then come from
 /// the whole row).
 pub fn select_targets(messages: &[Message]) -> Vec<MicroTarget> {
+    select_targets_with_modalities(messages, &crate::modality::InputModalities::Unknown)
+}
+
+fn select_targets_with_modalities(
+    messages: &[Message],
+    modalities: &crate::modality::InputModalities,
+) -> Vec<MicroTarget> {
     // The trailing round (results the model just consumed) is untouchable.
     let round_start = compact::last_round_start(messages);
 
@@ -124,8 +131,10 @@ pub fn select_targets(messages: &[Message]) -> Vec<MicroTarget> {
             Some(MicroTarget {
                 index: i,
                 call_id,
-                savings: compact::estimate_message(msg)
-                    .saturating_sub(compact::estimate_message(&copy)),
+                savings: crate::context::estimate_message_with_modalities(msg, modalities)
+                    .saturating_sub(crate::context::estimate_message_with_modalities(
+                        &copy, modalities,
+                    )),
             })
         })
         .collect();
@@ -217,7 +226,22 @@ pub async fn run_microcompaction(
         .iter()
         .map(|e| e.message.clone())
         .collect();
-    let targets = select_targets(&conversation);
+    let mut targets = select_targets_with_modalities(&conversation, context.input_modalities());
+    if let Some(projection) = context.projection() {
+        for target in &mut targets {
+            if let Some(entry) = projection.entry(context.conversation()[target.index].ordering) {
+                target.savings =
+                    entry
+                        .estimated_tokens
+                        .saturating_sub(crate::context::estimate_message(&cleared_copy(
+                            &conversation[target.index],
+                        )));
+            }
+        }
+        if targets.iter().map(|target| target.savings).sum::<u64>() < MIN_SAVINGS_TOKENS {
+            return MicroAttempt::Nothing;
+        }
+    }
     if targets.is_empty() {
         return MicroAttempt::Nothing;
     }
@@ -336,6 +360,28 @@ mod tests {
         // The OLDEST results are selected: c0, c1, c2.
         let ids: Vec<&str> = targets.iter().map(|t| t.call_id.as_str()).collect();
         assert_eq!(ids, vec!["c0", "c1", "c2"]);
+    }
+
+    #[test]
+    fn gated_images_do_not_make_a_tiny_clear_batch_look_worthwhile() {
+        let mut messages = history_with_results(6, "screenshot");
+        for message in &mut messages {
+            for part in &mut message.parts {
+                if let ContentPart::ToolResult(result) = part {
+                    result.images = vec![
+                        oct_llm_provider::core::ToolResultImage {
+                            mime_type: "image/png".into(),
+                            data: "AAAA".into(),
+                        };
+                        4
+                    ];
+                }
+            }
+        }
+        assert_eq!(select_targets(&messages).len(), 1);
+        let text_only =
+            crate::modality::InputModalities::Known(vec![crate::modality::Modality::Text]);
+        assert!(select_targets_with_modalities(&messages, &text_only).is_empty());
     }
 
     #[test]

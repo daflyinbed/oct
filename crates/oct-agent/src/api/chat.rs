@@ -9,8 +9,6 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use utoipa::ToSchema;
 
-use oct_llm_provider::core::{Message, Role};
-
 use super::AppState;
 use super::dto;
 use super::error::{ApiResult, AppError};
@@ -58,6 +56,10 @@ pub struct SendMessageRequest {
     /// 本次回合的思考档位。校验通过后随 user 消息 details 持久化（resume
     /// 恢复用），并在 agent loop 的每次模型请求上生效。
     pub reasoning: Option<ReasoningRequestDto>,
+    /// 随消息发送的附件：先经 `POST …/attachments` 上传得到的 staged id。
+    /// 图片以 `oct-attachment://` 引用进 ImageUrl part（请求装配时才水合），
+    /// 文本文件直接内联成 Text part。缺省/空 = 无附件。
+    pub attachment_ids: Option<Vec<String>>,
 }
 
 /// Whether an agent run is currently active for a conversation.
@@ -236,30 +238,33 @@ pub async fn send_message(
     // are appended, keeping the tool batch consecutive for the provider.
     crate::runtime::preparation::prepare_history(&state.runs, &id).await?;
 
-    let user_msg = Message::text(Role::User, &req.content);
-    // details 随 user 消息落库：client_request_id 供前端对账，reasoning
-    // 供 resume 恢复本回合的思考档位（中途中断不静默改变行为）。
-    let mut user_details = serde_json::Map::new();
-    if let Some(request_id) = req.client_request_id.as_ref() {
-        user_details.insert("client_request_id".into(), serde_json::json!(request_id));
+    // One application operation owns the publication lease, frozen snapshots
+    // and atomic ticket/message/ownership commit. Filesystem IO finishes before
+    // the SQLite write transaction, and every failed claim remains retryable.
+    let prepared = state
+        .runs
+        .attachments
+        .prepare_message(
+            &id,
+            &req.content,
+            req.attachment_ids.as_deref().unwrap_or_default(),
+            context_window,
+        )
+        .await
+        .map_err(super::attachments::service_error)?;
+    // Receipt and reasoning are durable request metadata, independent of the
+    // typed user body/attachments assembled by the attachment service.
+    let mut details = serde_json::json!({});
+    if let Some(request_id) = &req.client_request_id {
+        details["client_request_id"] = serde_json::json!(request_id);
     }
-    if let Some(reasoning) = req.reasoning.as_ref()
-        && let Ok(value) = serde_json::to_value(reasoning)
-    {
-        user_details.insert("reasoning".into(), value);
+    if let Some(reasoning) = &req.reasoning {
+        details["reasoning"] = serde_json::to_value(reasoning).map_err(anyhow::Error::from)?;
     }
-    let user_details =
-        (!user_details.is_empty()).then_some(serde_json::Value::Object(user_details));
-    let stored_user = msg_db::insert_message(
-        &state.pool,
-        &id,
-        &user_msg,
-        Some(&provider_id),
-        Some(&model_id),
-        user_details.as_ref(),
-    )
-    .await
-    .map_err(AppError::from)?;
+    let stored_user = prepared
+        .commit(&provider_id, &model_id, details)
+        .await
+        .map_err(super::attachments::service_error)?;
 
     // Record the run boundary on the (already live) session entry: the user
     // message row is the divide between DB history and this run's event log.

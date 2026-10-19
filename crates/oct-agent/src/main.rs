@@ -106,6 +106,19 @@ async fn run_server(
         pool.clone(),
         exec_dir,
     ));
+    // Chat attachments: bytes under `{db_dir}/attachments/`, staged rows in
+    // the `attachments` table. `OCT_ATTACHMENT_DIR` relocates the tree; the
+    // startup sweep reclaims staged-but-never-sent uploads (TTL) and files
+    // no live message references anymore.
+    let attachments_dir = std::env::var("OCT_ATTACHMENT_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| db_dir.join("attachments"));
+    let attachments = Arc::new(oct_agent::attachments::AttachmentService::new(
+        attachments_dir,
+        pool.clone(),
+    ));
+    attachments.ensure_root().await?;
+    attachments.sweep().await;
     let runs = Arc::new(oct_agent::runtime::RunService {
         lifecycle: Default::default(),
         pool: pool.clone(),
@@ -115,6 +128,7 @@ async fn run_server(
         file_locks: dashmap::DashMap::new(),
         subagents: subagents.clone(),
         background: background.clone(),
+        attachments: attachments.clone(),
         approvals: Arc::new(oct_agent::permissions::registry::ApprovalRegistry::new()),
         gates: Arc::new(dashmap::DashMap::new()),
         prompt_envs: Arc::new(dashmap::DashMap::new()),

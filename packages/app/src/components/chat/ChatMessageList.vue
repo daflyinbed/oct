@@ -77,6 +77,9 @@ watch(
         size += part.tasks.length;
       } else if (part.kind === "text" || part.kind === "reasoning") {
         size += part.text.length;
+      } else if (part.kind === "image" || part.kind === "file") {
+        // 附件缩略图/文件链接有固定高度，不参与文本增长估算。
+        size += 0;
       } else {
         size += part.arguments.length + part.liveOutput.droppedChars;
         for (const seg of part.liveOutput.segments) {

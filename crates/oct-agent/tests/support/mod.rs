@@ -298,15 +298,18 @@ pub async fn spawn_agent_full(
         context_window,
         idle,
         oct_agent::permissions::gate::PermissionGate::permissive(),
+        oct_agent::modality::InputModalities::Unknown,
     )
     .await
 }
 
-/// [`spawn_agent_full`] with the run's permission gate supplied by the test:
-/// permission suites park their ScriptedModel turns on the
-/// gate's approval flow and answer through the very registry the gate
-/// holds.
-#[allow(clippy::too_many_arguments)] // Supervisor/spawner entry: each argument is a distinct
+/// [`spawn_agent_full`] with the run's permission gate and the model's input
+/// modalities supplied by the test: permission suites park their
+/// ScriptedModel turns on the gate's approval flow and answer through the
+/// very registry the gate holds; modalities drive the request-time image
+/// gate (`Unknown` = allow everything, the behavior without catalog data).
+#[allow(clippy::too_many_arguments)]
+// Supervisor/spawner entry: each argument is a distinct
 // input of the operation; a param struct would only shuffle names.
 pub async fn spawn_agent_with_gate(
     model: ScriptedModel,
@@ -317,6 +320,7 @@ pub async fn spawn_agent_with_gate(
     context_window: Option<u32>,
     idle: Option<Duration>,
     permission: std::sync::Arc<oct_agent::permissions::gate::PermissionGate>,
+    modalities: oct_agent::modality::InputModalities,
 ) -> (RunHandle, SubscribeStream) {
     let cancel = CancellationToken::new();
     let handle = RunHandle {
@@ -339,7 +343,9 @@ pub async fn spawn_agent_with_gate(
         context_window,
         idle,
         reasoning: None,
+        input_modalities: modalities,
         max_output_tokens: None,
+        attachments: None,
         permission,
         prompt_env_refresh: None,
         prompt_generation: 0,
@@ -404,6 +410,8 @@ pub struct TestApp {
     /// lets tests inspect the active-task registry and shrink the output
     /// limit for watchdog coverage.
     pub background: Arc<oct_agent::runtime::background::BackgroundTaskManager>,
+    /// The server's shared store, including publication/sweep coordination.
+    pub attachments: Arc<oct_agent::attachments::AttachmentService>,
     http: reqwest::Client,
 }
 
@@ -474,6 +482,10 @@ impl TestApp {
             pool.clone(),
             dir.path().join("exec"),
         ));
+        let attachments = Arc::new(oct_agent::attachments::AttachmentService::new(
+            dir.path().join("attachments"),
+            pool.clone(),
+        ));
         let runs = Arc::new(oct_agent::runtime::RunService {
             lifecycle: Default::default(),
             pool: pool.clone(),
@@ -483,6 +495,7 @@ impl TestApp {
             file_locks: dashmap::DashMap::new(),
             subagents: subagents.clone(),
             background: background.clone(),
+            attachments: attachments.clone(),
             approvals: Arc::new(oct_agent::permissions::registry::ApprovalRegistry::new()),
             gates: Arc::new(dashmap::DashMap::new()),
             prompt_envs: Arc::new(dashmap::DashMap::new()),
@@ -515,6 +528,7 @@ impl TestApp {
             pool,
             mcp,
             background,
+            attachments,
             http: reqwest::Client::new(),
         }
     }
@@ -558,6 +572,30 @@ impl TestApp {
     pub async fn http_delete(&self, path: &str) -> reqwest::Response {
         self.http
             .delete(format!("{}{path}", self.base_url))
+            .send()
+            .await
+            .expect("request should not fail at transport level")
+    }
+
+    /// POST multipart/form-data (the attachment upload endpoint).
+    pub async fn post_multipart(
+        &self,
+        path: &str,
+        form: reqwest::multipart::Form,
+    ) -> reqwest::Response {
+        self.http
+            .post(format!("{}{path}", self.base_url))
+            .multipart(form)
+            .send()
+            .await
+            .expect("request should not fail at transport level")
+    }
+
+    /// GET returning the raw response (non-JSON endpoints, e.g. attachment
+    /// bytes with their own content type).
+    pub async fn get_raw(&self, path: &str) -> reqwest::Response {
+        self.http
+            .get(format!("{}{path}", self.base_url))
             .send()
             .await
             .expect("request should not fail at transport level")

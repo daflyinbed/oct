@@ -18,7 +18,9 @@
 //!   for the REST files API (`api/files.rs`), a surface that has no permission
 //!   gate of its own.
 
+use dashmap::DashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use super::ToolOutput;
 
@@ -28,6 +30,7 @@ pub struct WorkspaceRoots {
     primary: PathBuf,
     additional: Vec<PathBuf>,
     read_only: Vec<PathBuf>,
+    resources: Arc<DashMap<String, PathBuf>>,
 }
 
 /// A resolved tool path plus its workspace classification.
@@ -49,6 +52,7 @@ impl WorkspaceRoots {
             primary,
             additional,
             read_only: Vec::new(),
+            resources: Arc::new(DashMap::new()),
         }
     }
 
@@ -56,6 +60,14 @@ impl WorkspaceRoots {
     /// never changes write containment or the relative-path anchor.
     pub fn with_read_only_root(mut self, root: PathBuf) -> Self {
         self.read_only.push(root);
+        self
+    }
+
+    /// Logical runtime resources resolve through the same classifier and
+    /// permission rules as absolute paths. The shared registry also learns
+    /// about assets produced by tools later in the current run.
+    pub fn with_resource_paths(mut self, resources: Arc<DashMap<String, PathBuf>>) -> Self {
+        self.resources = resources;
         self
     }
 
@@ -99,7 +111,14 @@ impl WorkspaceRoots {
     /// Absolute requests are taken as-is; relative requests are joined onto
     /// the primary root.
     pub fn resolve_path(&self, requested: &str) -> Result<ResolvedPath, ToolOutput> {
-        let candidate = if Path::new(requested).is_absolute() {
+        if requested.starts_with("oct-attachment://") && !self.resources.contains_key(requested) {
+            return Err(ToolOutput::error(format!(
+                "Unknown attachment resource: {requested}"
+            )));
+        }
+        let candidate = if let Some(resource) = self.resources.get(requested) {
+            resource.value().clone()
+        } else if Path::new(requested).is_absolute() {
             PathBuf::from(requested)
         } else {
             self.primary.join(requested)
@@ -133,7 +152,14 @@ impl WorkspaceRoots {
     /// Nothing is rejected here — outside-workspace writes and writes through
     /// symlinks are the permission layer's call.
     pub fn resolve_write_path(&self, requested: &str) -> Result<ResolvedPath, ToolOutput> {
-        let candidate = if Path::new(requested).is_absolute() {
+        if requested.starts_with("oct-attachment://") && !self.resources.contains_key(requested) {
+            return Err(ToolOutput::error(format!(
+                "Unknown attachment resource: {requested}"
+            )));
+        }
+        let candidate = if let Some(resource) = self.resources.get(requested) {
+            resource.value().clone()
+        } else if Path::new(requested).is_absolute() {
             PathBuf::from(requested)
         } else {
             self.primary.join(requested)

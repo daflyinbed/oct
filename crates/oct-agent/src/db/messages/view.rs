@@ -86,20 +86,48 @@ pub async fn view_from_snapshot(
 
     let anchor = match anchor {
         Some((mi, row)) => {
-            let tokens = cow_adjusted_anchor_tokens(tx, &kept, &messages, row).await?;
+            let details = row
+                .details_json
+                .as_deref()
+                .and_then(|d| serde_json::from_str::<serde_json::Value>(d).ok());
+            // Old rows predate input gating and included every image. Do not
+            // resolve mutable model catalog data to reconstruct a past request.
+            let input_modalities = details
+                .as_ref()
+                .and_then(|d| d.get("input_modalities"))
+                .and_then(|value| serde_json::from_value(value.clone()).ok())
+                .unwrap_or(crate::modality::InputModalities::Unknown);
+            let mut projection = details
+                .as_ref()
+                .and_then(|details| details.get("projection"))
+                .and_then(|value| {
+                    serde_json::from_value::<crate::context::projection::ProjectionSnapshot>(
+                        value.clone(),
+                    )
+                    .ok()
+                });
+            let tokens = cow_adjusted_anchor_tokens(
+                tx,
+                &kept,
+                &messages,
+                row,
+                &input_modalities,
+                &mut projection,
+            )
+            .await?;
             // The prompt generation this request ran under (stamped by the
             // loop into details_json); absent on rows predating the feature
             // → 0 = unknown, accepted by no environment.
-            let prompt_generation = row
-                .details_json
-                .as_deref()
-                .and_then(|d| serde_json::from_str::<serde_json::Value>(d).ok())
+            let prompt_generation = details
+                .as_ref()
                 .and_then(|d| d.get("prompt_generation").and_then(|v| v.as_u64()))
                 .unwrap_or(0);
             Some(UsageAnchor {
                 tokens,
                 message_index: mi,
                 prompt_generation,
+                input_modalities,
+                projection,
             })
         }
         None => None,
@@ -122,6 +150,8 @@ async fn cow_adjusted_anchor_tokens(
     kept: &[&StoredMessage],
     messages: &[Message],
     anchor_row: &StoredMessage,
+    input_modalities: &crate::modality::InputModalities,
+    projection: &mut Option<crate::context::projection::ProjectionSnapshot>,
 ) -> Result<u64> {
     let tokens =
         (anchor_row.input_tokens.unwrap_or(0) + anchor_row.output_tokens.unwrap_or(0)) as u64;
@@ -163,7 +193,20 @@ async fn cow_adjusted_anchor_tokens(
         else {
             continue;
         };
-        savings += estimate_message(&original).saturating_sub(estimate_message(current));
+        let before = projection
+            .as_ref()
+            .and_then(|snapshot| snapshot.entry(r.ordering))
+            .map(|entry| entry.estimated_tokens)
+            .unwrap_or_else(|| {
+                crate::context::estimate_message_with_modalities(&original, input_modalities)
+            });
+        savings += before.saturating_sub(crate::context::estimate_message_with_modalities(
+            current,
+            input_modalities,
+        ));
+        if let Some(projection) = projection {
+            projection.clear(r.ordering, current);
+        }
     }
     Ok(tokens.saturating_sub(savings))
 }

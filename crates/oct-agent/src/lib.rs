@@ -1,10 +1,13 @@
 pub mod agent;
 pub mod agent_settings;
 pub mod api;
+pub mod attachment_types;
+pub mod attachments;
 pub mod codemode;
 pub mod context;
 pub mod db;
 pub mod mcp;
+pub mod modality;
 pub mod oauth;
 pub mod permissions;
 pub mod reasoning;

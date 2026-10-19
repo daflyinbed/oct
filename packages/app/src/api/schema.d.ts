@@ -4,6 +4,26 @@
  */
 
 export interface paths {
+    "/api/attachments/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 已发送附件的字节读取：前端 `<img>` 与预览直连。内容按 id 寻址、永不
+         *     变更，缓存头直接给 immutable。
+         */
+        get: operations["get_attachment"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/background-tasks/{id}/cancel": {
         parameters: {
             query?: never;
@@ -81,6 +101,42 @@ export interface paths {
          *     the replay log.
          */
         post: operations["decide_approval"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/conversations/{id}/attachments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["upload_attachment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/conversations/{id}/attachments/{attachment_id}/copy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restore a history draft without reusing an already claimed id. The copy
+         *     owns its bytes and staged row, so deleting the source cannot invalidate it.
+         */
+        post: operations["copy_attachment"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1296,6 +1352,22 @@ export interface components {
          */
         ApprovalOutcome: "approved" | "denied" | "cancelled" | "expired";
         /**
+         * @description An upload endpoint returns a ticket id; a committed message/draft returns
+         *     an immutable asset id. Both are accepted by the byte-read endpoint.
+         */
+        AttachmentDto: {
+            filename: string;
+            id: string;
+            mime_type: string;
+            /** Format: int64 */
+            size_bytes: number;
+        };
+        /** @description OpenAPI 文档形态（真实请求是 multipart 的单一 `file` 字段）。 */
+        AttachmentUploadDoc: {
+            /** Format: binary */
+            file: string;
+        };
+        /**
          * @description One background task row as the API serves it. For a `running` row the
          *     `output_bytes` field is refreshed from the live output file (the row
          *     only carries the final size once settled).
@@ -1556,6 +1628,8 @@ export interface components {
             conversation: components["schemas"]["Conversation"];
             cut: components["schemas"]["ForkCut"];
             draft?: string | null;
+            /** @description Sent source attachments to copy into the destination's staging queue. */
+            draft_attachments?: components["schemas"]["AttachmentDto"][];
         };
         /** @enum {string} */
         ForkSide: "before" | "after";
@@ -1802,6 +1876,7 @@ export interface components {
              *     cleared copy superseded (exactly one hop).
              */
             supersedes_message_id?: string | null;
+            user_content?: components["schemas"]["UserContentDto"] | null;
         };
         /** @description One message part of the messages API, tagged by `type`. */
         MessagePart: {
@@ -2109,6 +2184,7 @@ export interface components {
             conversation: components["schemas"]["Conversation"];
             cut: components["schemas"]["ForkCut"];
             draft?: string | null;
+            draft_attachments?: components["schemas"]["AttachmentDto"][];
         };
         /** @description Whether an agent run is currently active for a conversation. */
         RunningStatus: {
@@ -2116,6 +2192,12 @@ export interface components {
             running: boolean;
         };
         SendMessageRequest: {
+            /**
+             * @description 随消息发送的附件：先经 `POST …/attachments` 上传得到的 staged id。
+             *     图片以 `oct-attachment://` 引用进 ImageUrl part（请求装配时才水合），
+             *     文本文件直接内联成 Text part。缺省/空 = 无附件。
+             */
+            attachment_ids?: string[] | null;
             /** @description Opaque client receipt used to reconcile a send whose response was lost. */
             client_request_id?: string | null;
             content: string;
@@ -2381,6 +2463,14 @@ export interface components {
             doc_url?: string | null;
             name?: string | null;
         };
+        /**
+         * @description Human-authored content and attachment identity, without model-only frozen
+         *     snapshot text. The history UI and draft restoration share this contract.
+         */
+        UserContentDto: {
+            attachments: components["schemas"]["AttachmentDto"][];
+            body: string;
+        };
         WorkerSnapshot: {
             agent_type: string;
             /** Format: int32 */
@@ -2403,6 +2493,36 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    get_attachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Attachment ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Attachment bytes */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": unknown;
+                };
+            };
+            /** @description Unknown attachment or missing file */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     cancel_background_task: {
         parameters: {
             query?: never;
@@ -2534,6 +2654,101 @@ export interface operations {
             };
             /** @description Conversation not found, or the approval is unknown / already resolved */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    upload_attachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Conversation ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Single `file` field; filename and Content-Type come from the browser */
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["AttachmentUploadDoc"];
+            };
+        };
+        responses: {
+            /** @description Staged attachment (referenced by id in the next send_message) */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachmentDto"];
+                };
+            };
+            /** @description No file field, unsupported type (v1: images and UTF-8 text only), or over the size limit */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Conversation not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Managed subagent session or read-only (revert backup) conversation */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    copy_attachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Target conversation ID */
+                id: string;
+                /** @description Sent source attachment ID */
+                attachment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description New staged attachment in the target conversation */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachmentDto"];
+                };
+            };
+            /** @description Source attachment is not sent or its bytes changed */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Conversation or source attachment not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Managed or read-only conversation */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

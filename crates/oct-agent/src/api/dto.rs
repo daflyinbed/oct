@@ -170,6 +170,16 @@ fn parse_details(details_json: Option<&str>) -> Option<MessageDetails> {
         return None;
     };
     let mut extra = map.clone();
+    // Request snapshots/provenance are consumed by domain/runtime code. The
+    // public history contract carries only human content and attachment ids.
+    for key in [
+        "user_content",
+        "projection",
+        "input_modalities",
+        "prompt_generation",
+    ] {
+        extra.remove(key);
+    }
     let kind = match map.get("kind").and_then(Value::as_str) {
         Some("compaction") => {
             extra.remove("kind");
@@ -249,6 +259,26 @@ fn extra_without(
         .collect()
 }
 
+/// Human-authored content and attachment identity, without model-only frozen
+/// snapshot text. The history UI and draft restoration share this contract.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct UserContentDto {
+    pub body: String,
+    pub attachments: Vec<crate::attachment_types::AttachmentDto>,
+}
+impl From<crate::attachment_types::UserContent> for UserContentDto {
+    fn from(content: crate::attachment_types::UserContent) -> Self {
+        Self {
+            body: content.body,
+            attachments: content
+                .attachments
+                .into_iter()
+                .map(|attachment| attachment.asset)
+                .collect(),
+        }
+    }
+}
+
 /// One message row of the messages API: the stored content parsed into
 /// typed parts plus the row's identity, usage and membership-relevant
 /// fields. `parts_json`/`details_json` never leave the backend.
@@ -257,6 +287,8 @@ pub struct MessageDto {
     pub id: String,
     pub role: String,
     pub parts: Vec<MessagePart>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_content: Option<UserContentDto>,
     pub details: Option<MessageDetails>,
     /// Timeline slot within the conversation. `None` on original-content
     /// responses (a superseded row no longer has a membership slot).
@@ -285,6 +317,15 @@ impl MessageDto {
             id: row.id.clone(),
             role: row.role.clone(),
             parts: parse_parts(&row.parts_json),
+            user_content: (row.role == "user")
+                .then(|| {
+                    crate::attachment_types::UserContent::from_stored(
+                        &row.parts_json,
+                        row.details_json.as_deref(),
+                    )
+                    .map(Into::into)
+                })
+                .flatten(),
             details: parse_details(row.details_json.as_deref()),
             ordering: Some(row.ordering),
             provider_id: row.provider_id.clone(),
@@ -307,6 +348,15 @@ impl MessageDto {
             id: row.id.clone(),
             role: row.role.clone(),
             parts: parse_parts(&row.parts_json),
+            user_content: (row.role == "user")
+                .then(|| {
+                    crate::attachment_types::UserContent::from_stored(
+                        &row.parts_json,
+                        row.details_json.as_deref(),
+                    )
+                    .map(Into::into)
+                })
+                .flatten(),
             details: parse_details(row.details_json.as_deref()),
             ordering: None,
             provider_id: None,

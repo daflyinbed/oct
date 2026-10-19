@@ -1,3 +1,4 @@
+pub mod attachments;
 pub mod background;
 pub mod conversations;
 pub mod history;

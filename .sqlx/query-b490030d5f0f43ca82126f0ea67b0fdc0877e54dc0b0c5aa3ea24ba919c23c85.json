@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM staged_uploads WHERE asset_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "b490030d5f0f43ca82126f0ea67b0fdc0877e54dc0b0c5aa3ea24ba919c23c85"
+}

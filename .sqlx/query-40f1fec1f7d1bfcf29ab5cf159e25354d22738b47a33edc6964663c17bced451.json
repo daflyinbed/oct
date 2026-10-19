@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, storage_key FROM attachment_assets",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "attachment_assets",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "storage_key",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "attachment_assets",
+            "name": "storage_key"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "40f1fec1f7d1bfcf29ab5cf159e25354d22738b47a33edc6964663c17bced451"
+}

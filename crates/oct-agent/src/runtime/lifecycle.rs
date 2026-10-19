@@ -82,6 +82,11 @@ impl RunService {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => tracing::warn!("Cannot remove code mode artifacts for {id}: {error}"),
             }
+            // The attachment sweep is reference-driven and GLOBAL (rows have
+            // no FK cascade — fork-shared content rows outlive the deleted
+            // conversation), so one pass after any deletion reclaims exactly
+            // the rows/files nothing references anymore.
+            self.attachments.sweep().await;
         }
         Ok(deleted)
     }

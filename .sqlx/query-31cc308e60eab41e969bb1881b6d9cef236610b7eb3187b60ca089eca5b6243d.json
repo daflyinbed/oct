@@ -1,0 +1,146 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, storage_key, mime_type, size_bytes, model_storage_key, model_mime_type, model_size_bytes, width, height, normalizer_version, created_at FROM attachment_assets",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "attachment_assets",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "storage_key",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "attachment_assets",
+            "name": "storage_key"
+          }
+        }
+      },
+      {
+        "name": "mime_type",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "attachment_assets",
+            "name": "mime_type"
+          }
+        }
+      },
+      {
+        "name": "size_bytes",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "attachment_assets",
+            "name": "size_bytes"
+          }
+        }
+      },
+      {
+        "name": "model_storage_key",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "attachment_assets",
+            "name": "model_storage_key"
+          }
+        }
+      },
+      {
+        "name": "model_mime_type",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "attachment_assets",
+            "name": "model_mime_type"
+          }
+        }
+      },
+      {
+        "name": "model_size_bytes",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "attachment_assets",
+            "name": "model_size_bytes"
+          }
+        }
+      },
+      {
+        "name": "width",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "attachment_assets",
+            "name": "width"
+          }
+        }
+      },
+      {
+        "name": "height",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "attachment_assets",
+            "name": "height"
+          }
+        }
+      },
+      {
+        "name": "normalizer_version",
+        "ordinal": 9,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "attachment_assets",
+            "name": "normalizer_version"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 10,
+        "type_info": "Datetime",
+        "origin": {
+          "Table": {
+            "table": "attachment_assets",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "31cc308e60eab41e969bb1881b6d9cef236610b7eb3187b60ca089eca5b6243d"
+}

@@ -33,7 +33,8 @@ pub mod write;
 pub struct ToolImage {
     /// MIME type of the image, e.g. `image/png`.
     pub mime_type: String,
-    /// Base64-encoded image bytes.
+    /// Base64 from a tool, or an immutable oct-attachment:// reference after
+    /// ingress normalization. Only base64 crosses the provider boundary.
     pub data: String,
 }
 

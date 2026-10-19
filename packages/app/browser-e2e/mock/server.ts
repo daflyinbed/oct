@@ -86,6 +86,15 @@ export interface Scenario {
   messages?: Record<string, unknown[]>;
   /** 按序控制历史请求的延迟或失败；队列耗尽后恢复正常历史响应。 */
   historyReplies?: Record<string, Array<{ gate?: string; status?: number }>>;
+  /** 每次上传/草稿附件复制的显式响应，gate 可暂停响应以测试取消和队列切换。 */
+  attachmentReplies?: Record<
+    string,
+    Array<{
+      status: number;
+      body: components["schemas"]["AttachmentDto"] | { error: string };
+      gate?: string;
+    }>
+  >;
   /** Versioned history / fork replies are explicit scripts, not a DB emulator. */
   contextRevisions?: Record<string, number>;
   /** Explicit resumability, independent of whether a scripted stream is open. */
@@ -262,6 +271,10 @@ const RE_PROJECT_CONVERSATIONS = /^\/api\/projects\/([^/]+)\/conversations$/;
 const RE_CONVERSATION_DELETE =
   /^\/api\/projects\/([^/]+)\/conversations\/([^/]+)$/;
 const RE_CONVERSATION_MESSAGES = /^\/api\/conversations\/([^/]+)\/messages$/;
+const RE_CONVERSATION_ATTACHMENTS =
+  /^\/api\/conversations\/([^/]+)\/attachments$/;
+const RE_CONVERSATION_ATTACHMENT_COPY =
+  /^\/api\/conversations\/([^/]+)\/attachments\/([^/]+)\/copy$/;
 const RE_CONVERSATION_REVERT = /^\/api\/conversations\/([^/]+)\/revert$/;
 const RE_CONVERSATION_FORK = /^\/api\/conversations\/([^/]+)\/fork$/;
 const RE_CONVERSATION_CANCEL = /^\/api\/conversations\/([^/]+)\/cancel$/;
@@ -673,7 +686,17 @@ async function handleApi(
     return sendJson(res, 200, result);
   }
 
-  // GET|POST /api/conversations/:id/messages
+  // Uploads and history-draft copies both create staged attachment DTOs.
+  m =
+    pathname.match(RE_CONVERSATION_ATTACHMENTS) ??
+    pathname.match(RE_CONVERSATION_ATTACHMENT_COPY);
+  if (m && req.method === "POST") {
+    const reply = s.attachmentReplies?.[decodeURIComponent(m[1])]?.shift();
+    if (!reply)
+      return sendJson(res, 500, { error: "Missing attachment upload reply" });
+    if (reply.gate) await gateWait(reply.gate);
+    return sendJson(res, reply.status, reply.body);
+  }
   m = pathname.match(RE_APPROVALS);
   if (m && req.method === "GET") {
     return sendJson(res, 200, s.approvals?.[decodeURIComponent(m[1])] ?? []);

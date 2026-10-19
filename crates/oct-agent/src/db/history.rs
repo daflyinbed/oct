@@ -11,6 +11,7 @@ use super::{
     messages::{self, StoredMessage},
 };
 use crate::{
+    attachment_types::AttachmentDto,
     context::details_kind,
     error::{AppError, AppResult},
 };
@@ -43,6 +44,9 @@ pub struct ForkResponse {
     pub context_revision: i64,
     pub cut: ForkCut,
     pub draft: Option<String>,
+    /// Sent source attachments to copy into the destination's staging queue.
+    #[serde(default)]
+    pub draft_attachments: Vec<AttachmentDto>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -60,6 +64,8 @@ pub struct RevertResponse {
     pub backup: Conversation,
     pub cut: ForkCut,
     pub draft: Option<String>,
+    #[serde(default)]
+    pub draft_attachments: Vec<AttachmentDto>,
 }
 
 pub async fn replay_revert(
@@ -215,6 +221,7 @@ async fn revert_once(
         backup,
         cut: request.cut.clone(),
         draft: normalized.draft,
+        draft_attachments: normalized.draft_attachments,
     };
     let request_json = serde_json::to_string(request).map_err(anyhow::Error::from)?;
     let response_json = serde_json::to_string(&response).map_err(anyhow::Error::from)?;
@@ -363,6 +370,7 @@ pub async fn fork(
         prefix,
         cut_revision,
         draft,
+        draft_attachments,
         target,
     } = normalize(&mut tx, &rows, revision, &request.cut).await?;
     let title = request
@@ -396,6 +404,7 @@ pub async fn fork(
         context_revision: cut_revision,
         cut: request.cut.clone(),
         draft,
+        draft_attachments,
     };
     let request_json = serde_json::to_string(request).map_err(anyhow::Error::from)?;
     let response_json = serde_json::to_string(&response).map_err(anyhow::Error::from)?;
@@ -409,6 +418,7 @@ struct NormalizedHistory {
     prefix: Vec<StoredMessage>,
     cut_revision: i64,
     draft: Option<String>,
+    draft_attachments: Vec<AttachmentDto>,
     target: Option<String>,
 }
 
@@ -419,6 +429,7 @@ async fn normalize(
     revision: i64,
     cut: &ForkCut,
 ) -> AppResult<NormalizedHistory> {
+    let mut draft_attachments = Vec::new();
     let (length, cut_revision, draft, target) = match cut {
         ForkCut::Head => {
             if rows
@@ -446,16 +457,28 @@ async fn normalize(
             }
             match side {
                 ForkSide::Before => {
-                    let text = row
-                        .to_message()?
-                        .parts
-                        .iter()
-                        .filter_map(|part| match part {
-                            ContentPart::Text(text) => Some(text.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
+                    let content = crate::attachment_types::UserContent::from_stored(
+                        &row.parts_json,
+                        row.details_json.as_deref(),
+                    );
+                    let text = if let Some(content) = content {
+                        draft_attachments = content
+                            .attachments
+                            .into_iter()
+                            .map(|att| att.asset)
+                            .collect();
+                        content.body
+                    } else {
+                        row.to_message()?
+                            .parts
+                            .iter()
+                            .filter_map(|part| match part {
+                                ContentPart::Text(text) => Some(text.as_str()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    };
                     (
                         index,
                         row.appended_at_revision - 1,
@@ -514,6 +537,7 @@ async fn normalize(
         prefix,
         cut_revision,
         draft,
+        draft_attachments,
         target,
     })
 }

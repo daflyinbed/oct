@@ -1,5 +1,21 @@
 <template>
-  <main class="workspace-panel min-w-0 flex-1 bg-background">
+  <main
+    class="workspace-panel relative min-w-0 flex-1 bg-background"
+    @dragenter="onDragEnter"
+    @dragover="onDragOver"
+    @dragleave="onDragLeave"
+    @drop="onDrop"
+  >
+    <!-- 拖拽遮罩：文件拖入整个面板时点亮（ZCode 的全 pane 提示同款） -->
+    <div
+      v-if="dragDepth > 0"
+      class="pointer-events-none absolute inset-0 z-50 flex items-center justify-center bg-accent-1/70 backdrop-blur-sm"
+    >
+      <span
+        class="rounded-full bg-accent-7 px-4 py-1.5 text-[13px] text-white shadow"
+        >松开以添加附件</span
+      >
+    </div>
     <div
       v-if="forkError"
       role="alert"
@@ -87,6 +103,14 @@
       >
         <!-- 斜杠命令菜单：输入以 / 开头时浮于输入框上方（分组：内置命令
              + 各 MCP server 的 prompts） -->
+        <!-- 附件 chips：上传中/失败的即态都浮在输入框上方 -->
+        <AttachmentChips
+          v-if="attachmentItems.length > 0 || attachmentNotice"
+          :items="attachmentItems"
+          :notice="attachmentNotice"
+          @remove="removeAttachment"
+          @retry="retryAttachment"
+        />
         <SlashMenu
           v-if="slashOpen"
           :groups="slashGroups"
@@ -187,8 +211,8 @@
           <button
             v-else
             class="ml-1 h-7 w-7 flex items-center justify-center rounded-[7px] bg-accent-7 text-white transition-[filter] disabled:opacity-50 hover:brightness-110"
-            :disabled="!conversationId || forkBusy"
-            title="发送（Enter）"
+            :disabled="!conversationId || forkBusy || !attachmentsReady"
+            :title="attachmentsReady ? '发送（Enter）' : '等待附件上传完成'"
             @click="handleSend"
           >
             <i-lucide-arrow-up class="h-3.5 w-3.5" />
@@ -219,6 +243,7 @@ import {
   watch,
 } from "vue";
 import AppSelect from "@/components/ui/AppSelect.vue";
+import { useAttachments } from "@/composables/useAttachments";
 import { useMcpPromptComposer } from "@/composables/useMcpPromptComposer";
 import { useMcpStatus } from "@/composables/useMcpStatus";
 import { PERMISSION_MODE_OPTIONS } from "@/composables/useProjects";
@@ -231,11 +256,16 @@ import {
   slashQueryOf,
 } from "@/composables/useSlashCommands";
 import ApprovalBanner from "./ApprovalBanner.vue";
+import AttachmentChips from "./AttachmentChips.vue";
 import ChatMessageList from "./ChatMessageList.vue";
 import ContextRing from "./ContextRing.vue";
 import PromptArgsDialog from "./PromptArgsDialog.vue";
 import SlashMenu from "./SlashMenu.vue";
 import type { components } from "@/api/schema";
+import type {
+  ComposerDraft,
+  ReadyAttachment,
+} from "@/composables/chat/attachments";
 import type {
   ApprovalDecision,
   DisplayMessage,
@@ -273,10 +303,15 @@ const props = defineProps<{
   readOnly?: boolean;
   forkBusy?: boolean;
   forkError?: string | null;
-  draft?: { conversationId: string; text: string } | null;
+  draft?: ComposerDraft | null;
 }>();
 const emit = defineEmits<{
-  send: [content: string];
+  /** 收到后端确认才清空正文与附件；拒绝时保留草稿。 */
+  send: [
+    content: string,
+    attachments: ReadyAttachment[],
+    onAccepted: () => void,
+  ];
   stop: [];
   resume: [];
   /** /compact 命令：请求手动压缩当前会话。 */
@@ -302,6 +337,62 @@ const emit = defineEmits<{
 
 const inputMessage = ref("");
 const inputEl = ref<HTMLTextAreaElement | null>(null);
+
+// ---------------------------------------------------------------------------
+// 附件：拖拽入队即传（ZCode 的「选完即传，发送只带 ready 引用」）；
+// 发送门禁 = 全部 ready；ready 时空文本也允许发送。
+// ---------------------------------------------------------------------------
+const {
+  items: attachmentItems,
+  notice: attachmentNotice,
+  allReady: attachmentsReady,
+  addFiles,
+  restoreDraft: restoreDraftAttachments,
+  remove: removeAttachment,
+  retry: retryAttachment,
+  clearReady,
+  readyPayload,
+  reset: resetAttachments,
+} = useAttachments(() => props.conversationId);
+
+let composerGeneration = 0;
+watch(
+  () => props.conversationId,
+  () => {
+    composerGeneration += 1;
+    resetAttachments();
+  },
+);
+onBeforeUnmount(() => {
+  composerGeneration += 1;
+  resetAttachments();
+});
+
+/** 只有 OS 文件拖拽（types 含 "Files"）才点亮遮罩，文本拖拽不理会。 */
+function dragHasFiles(event: DragEvent): boolean {
+  return Array.from(event.dataTransfer?.types ?? []).includes("Files");
+}
+const dragDepth = ref(0);
+function onDragEnter(event: DragEvent) {
+  if (!dragHasFiles(event)) return;
+  dragDepth.value += 1;
+}
+function onDragOver(event: DragEvent) {
+  if (dragDepth.value === 0) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+}
+function onDragLeave() {
+  if (dragDepth.value > 0) dragDepth.value -= 1;
+}
+function onDrop(event: DragEvent) {
+  dragDepth.value = 0;
+  const files = event.dataTransfer?.files;
+  if (!files || files.length === 0) return;
+  event.preventDefault();
+  if (!props.conversationId || props.readOnly) return;
+  addFiles(files);
+}
 /** 带参 prompt 的参数表单状态（非 null 即显示 Dialog）。 */
 const argsPrompt = ref<{
   serverId: string;
@@ -319,7 +410,9 @@ watch(
   () => props.draft,
   async (draft) => {
     if (!draft || draft.conversationId !== props.conversationId) return;
+    composerGeneration += 1;
     inputMessage.value = draft.text;
+    restoreDraftAttachments(draft.attachments ?? []);
     await nextTick();
     inputEl.value?.focus();
   },
@@ -349,26 +442,35 @@ const modelOptions = computed(() =>
 
 function handleSend() {
   if (
-    !inputMessage.value.trim() ||
     !props.conversationId ||
     props.sending ||
     props.forkBusy ||
     props.readOnly
   )
     return;
+  // 上传未就绪不发（按钮已禁用，这里兜底键盘路径）。
+  if (!attachmentsReady.value) return;
+  const text = inputMessage.value;
+  const payload = readyPayload();
+  if (!text.trim() && payload.length === 0) return;
   // 斜杠命令拦截（v1 精确匹配）：/compact、/reload 不作为消息发送。
-  if (inputMessage.value.trim() === "/compact") {
+  if (text.trim() === "/compact") {
     inputMessage.value = "";
     emit("compact");
     return;
   }
-  if (inputMessage.value.trim() === "/reload") {
+  if (text.trim() === "/reload") {
     inputMessage.value = "";
     emit("reload");
     return;
   }
-  emit("send", inputMessage.value);
-  inputMessage.value = "";
+  const generation = composerGeneration;
+  emit("send", text, payload, () => {
+    // 旧会话的确认不得清掉切换后新写的草稿或新上传的附件。
+    if (generation !== composerGeneration) return;
+    if (inputMessage.value === text) inputMessage.value = "";
+    clearReady(payload);
+  });
 }
 
 // ---------------------------------------------------------------------------

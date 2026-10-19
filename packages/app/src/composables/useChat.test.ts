@@ -2520,6 +2520,202 @@ describe("stream failure recovery", () => {
   );
 });
 
+it("optimistic messages distinguish image and text attachments", async () => {
+  const session = createChatSession({ contextUsage: false });
+  let resolveResponse!: (response: Response) => void;
+  const response = new Promise<Response>((resolve) => {
+    resolveResponse = resolve;
+  });
+  const request = vi.fn().mockReturnValue(response);
+  vi.stubGlobal("fetch", request);
+  const sending = session.sendMessage("attachments", "Read these", null, null, [
+    { attachmentId: "image-1", filename: "shot.png", mimeType: "image/png" },
+    { attachmentId: "text-1", filename: "notes.txt", mimeType: "text/plain" },
+  ]);
+  try {
+    expect(session.messages.value[0]?.parts).toEqual([
+      { kind: "text", text: "Read these" },
+      { kind: "image", attachmentId: "image-1", filename: "shot.png" },
+      { kind: "file", attachmentId: "text-1", filename: "notes.txt" },
+    ]);
+    const body = JSON.parse(request.mock.calls[0]![1].body);
+    expect(body.attachment_ids).toEqual(["image-1", "text-1"]);
+  } finally {
+    resolveResponse(sse([finishEvent]));
+    await sending;
+    session.dispose();
+  }
+});
+
+describe("send acceptance", () => {
+  beforeEach(() => {
+    GET.mockResolvedValue({ data: [] } as never);
+  });
+
+  it("confirms once when the response opens, before the stream finishes", async () => {
+    const session = createChatSession({ contextUsage: false });
+    const accepted = vi.fn();
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    let resolveResponse!: (response: Response) => void;
+    const response = new Promise<Response>((resolve) => {
+      resolveResponse = resolve;
+    });
+    vi.stubGlobal("fetch", vi.fn().mockReturnValue(response));
+    const sending = session.sendMessage(
+      "acceptance",
+      "hello",
+      null,
+      null,
+      [],
+      accepted,
+    );
+    try {
+      expect(accepted).not.toHaveBeenCalled();
+      resolveResponse(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              stream = controller;
+            },
+          }),
+          { headers: { "Content-Type": "text/event-stream" } },
+        ),
+      );
+      await vi.waitFor(() => expect(accepted).toHaveBeenCalledTimes(1));
+      expect(session.sending.value).toBe(true);
+    } finally {
+      stream.enqueue(
+        new TextEncoder().encode(`data: ${JSON.stringify(finishEvent)}\n\n`),
+      );
+      stream.close();
+      await sending;
+      session.dispose();
+    }
+    expect(accepted).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([400, 409, 500])(
+    "does not confirm a rejected send (HTTP %s)",
+    async (status) => {
+      const session = createChatSession({ contextUsage: false });
+      const accepted = vi.fn();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(new Response("rejected", { status })),
+      );
+      await session.sendMessage(
+        "rejected-acceptance",
+        "keep draft",
+        null,
+        null,
+        [],
+        accepted,
+      );
+      expect(accepted).not.toHaveBeenCalled();
+      session.dispose();
+    },
+  );
+
+  it("does not confirm an old response after the user switches conversation", async () => {
+    const session = createChatSession({ contextUsage: false });
+    const accepted = vi.fn();
+    let resolveResponse!: (response: Response) => void;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockReturnValue(
+        new Promise<Response>((resolve) => {
+          resolveResponse = resolve;
+        }),
+      ),
+    );
+    const sending = session.sendMessage(
+      "old-acceptance",
+      "old draft",
+      null,
+      null,
+      [],
+      accepted,
+    );
+    await session.fetchMessages("new-acceptance");
+    resolveResponse(sse([finishEvent]));
+    await sending;
+    expect(accepted).not.toHaveBeenCalled();
+    session.dispose();
+  });
+
+  it.each([409, 500, 502])(
+    "confirms committed attachments after HTTP %s and exposes resume",
+    async (status) => {
+      const session = createChatSession({ contextUsage: false });
+      let clientRequestId: string | undefined;
+      const persisted = storedMessage("user", "read notes", {
+        id: "committed-attachment-user",
+        details: {
+          extra: {
+            attachments: [
+              { id: "text-1", filename: "notes.txt", mime_type: "text/plain" },
+            ],
+          },
+        },
+      });
+      GET.mockImplementation(async (path) => {
+        if (path === "/api/conversations/{id}/run")
+          return { data: { running: false, resumable: true } } as never;
+        if (path === "/api/conversations/{id}/messages") {
+          persisted.details!.extra!.client_request_id = clientRequestId;
+          return {
+            data: [persisted],
+            response: new Response(null, {
+              headers: { "X-Context-Revision": "1" },
+            }),
+          } as never;
+        }
+        return { data: [] } as never;
+      });
+      const request = vi.fn<typeof fetch>(async (_path, init) => {
+        clientRequestId = JSON.parse(init!.body as string).client_request_id;
+        return new Response(
+          JSON.stringify({ code: "internal", error: "run preparation failed" }),
+          { status },
+        );
+      });
+      vi.stubGlobal("fetch", request);
+      const accepted = vi.fn();
+      try {
+        await session.sendMessage(
+          "committed-error",
+          "read notes",
+          null,
+          null,
+          [
+            {
+              attachmentId: "text-1",
+              filename: "notes.txt",
+              mimeType: "text/plain",
+            },
+          ],
+          accepted,
+        );
+        expect(accepted).toHaveBeenCalledTimes(1);
+        expect(request).toHaveBeenCalledTimes(1);
+        expect(session.messages.value.map((message) => message.id)).toEqual([
+          persisted.id,
+        ]);
+        expect(session.messages.value[0]?.parts).toContainEqual({
+          kind: "file",
+          attachmentId: "text-1",
+          filename: "notes.txt",
+        });
+        expect(session.contextRevision.value).toBe(1);
+        expect(session.resumable.value).toBe(true);
+        expect(session.sending.value).toBe(false);
+      } finally {
+        session.dispose();
+      }
+    },
+  );
+});
+
 describe("failed sends with versioned history", () => {
   it.each(["idle", "running", "resumable"] as const)(
     "an unrelated %s history change cannot erase an uncertain send",
@@ -2559,8 +2755,17 @@ describe("failed sends with versioned history", () => {
         throw new TypeError("connection reset before delivery");
       });
       vi.stubGlobal("fetch", request);
+      const accepted = vi.fn();
       try {
-        await session.sendMessage("uncertain-send", "keep this draft");
+        await session.sendMessage(
+          "uncertain-send",
+          "keep this draft",
+          null,
+          null,
+          [],
+          accepted,
+        );
+        expect(accepted).not.toHaveBeenCalled();
         expect(session.messages.value.map((message) => message.id)).toContain(
           "before",
         );
@@ -2630,7 +2835,16 @@ describe("failed sends with versioned history", () => {
           ]);
         });
       vi.stubGlobal("fetch", request);
-      await session.sendMessage("lost-response", "accepted request");
+      const accepted = vi.fn();
+      await session.sendMessage(
+        "lost-response",
+        "accepted request",
+        null,
+        null,
+        [],
+        accepted,
+      );
+      expect(accepted).toHaveBeenCalledTimes(1);
       expect(clientRequestId).toEqual(expect.any(String));
       expect(
         request.mock.calls.filter(([path]) => path.endsWith("/messages")),
@@ -2746,7 +2960,9 @@ describe("failed sends with versioned history", () => {
         expected_revision: 4,
       });
     }
-    expect(GET).toHaveBeenCalledTimes(1);
+    // Receipt probes without this request's id must not replace the stale
+    // snapshot or authorize history actions against an unrelated revision.
+    expect(session.contextRevision.value).toBeNull();
 
     GET.mockResolvedValue({
       data: [storedMessage("assistant", "reverted branch")],

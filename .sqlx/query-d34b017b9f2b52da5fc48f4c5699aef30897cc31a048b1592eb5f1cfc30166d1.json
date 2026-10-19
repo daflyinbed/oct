@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO staged_uploads (id, conversation_id, filename, mime_type, size_bytes, state, asset_id) SELECT $1,$2,$3,$4,$5,'staged',$6 WHERE EXISTS (SELECT 1 FROM conversations WHERE id = $2 AND origin_kind != 'revert_backup')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "d34b017b9f2b52da5fc48f4c5699aef30897cc31a048b1592eb5f1cfc30166d1"
+}

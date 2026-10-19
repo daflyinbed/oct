@@ -12,8 +12,8 @@ use oct_llm_provider::core::{ContentPart, Message, Role, ToolResult};
 
 // The LLM view snapshot and its anchor type live in the neutral `context`
 // module (shared with the agent loop); re-exported here for existing paths.
+use crate::context::details_kind;
 pub use crate::context::{COMPACTION_MARKER_KIND, LlmView, UsageAnchor};
-use crate::context::{details_kind, estimate_message};
 
 /// One stored message as seen from a conversation: the pure content row
 /// (`messages`) joined with its timeline slot (`conversation_messages`).
@@ -57,6 +57,20 @@ impl StoredMessage {
             "tool" => Role::Tool,
             other => anyhow::bail!("Unknown role: {other}"),
         };
+        if role == Role::User
+            && let Some(content) = crate::attachment_types::UserContent::from_stored(
+                &self.parts_json,
+                self.details_json.as_deref(),
+            )
+        {
+            // Only v2 rows have a canonical frozen snapshot. Legacy rows
+            // retain their original request bytes through the v1 reader.
+            let details: Value =
+                serde_json::from_str(self.details_json.as_deref().unwrap_or("{}"))?;
+            if details.get("user_content").is_some() {
+                return Ok(content.to_message());
+            }
+        }
         let parts: Vec<ContentPart> = serde_json::from_str(&self.parts_json)?;
         Ok(Message { role, parts })
     }
@@ -146,6 +160,8 @@ async fn append_row(
     )
     .execute(&mut *tx)
     .await?;
+
+    super::attachments::index_message_assets(tx, &f.id, message, details).await?;
 
     Ok(StoredMessage {
         id: f.id,
@@ -406,6 +422,8 @@ pub async fn apply_cow_swaps(
         )
         .execute(&mut *tx)
         .await?;
+        super::attachments::index_message_assets(&mut tx, &f.id, &swap.copy, swap.details.as_ref())
+            .await?;
         let updated = sqlx::query!(
             "UPDATE conversation_messages SET message_id = $1, swapped_at_revision = $2 WHERE conversation_id = $3 AND message_id = $4",
             f.id,

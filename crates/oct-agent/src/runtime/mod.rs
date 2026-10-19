@@ -118,6 +118,11 @@ pub struct RunService {
     /// Background bash task registry/lifecycle: same two-phase
     /// wiring — the manager starts wake runs through this service.
     pub background: Arc<background::BackgroundTaskManager>,
+    /// Chat attachment store: the run assembly grants its directory to the
+    /// file tools as a read-only root (uploaded files are readable by the
+    /// model), conversation deletion sweeps it, and the request assembly
+    /// hydrates `oct-attachment://` references through it.
+    pub attachments: Arc<crate::attachments::AttachmentService>,
     /// Pending tool-approval registry: every gate of this
     /// service parks its Ask arms here; one registry process-wide is all
     /// the decide endpoint needs.
@@ -418,6 +423,23 @@ impl RunService {
             .filter(|w| *w > 0)
     }
 
+    /// Input modalities of the resolved model from the models table
+    /// (`modalities_input`, seeded from models.dev or set on custom models).
+    /// No row / NULL / unparsable → `Unknown`, which keeps the historical
+    /// allow-everything gating behavior.
+    pub async fn resolve_input_modalities(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+    ) -> crate::modality::InputModalities {
+        crate::db::models::get_model(&self.pool, provider_id, model_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|row| crate::modality::InputModalities::parse(row.modalities_input.as_deref()))
+            .unwrap_or(crate::modality::InputModalities::Unknown)
+    }
+
     /// Create the run's persistence row, subscribe to its event hub,
     /// assemble the agent context, and hand the whole run to the supervisor.
     /// The SSE response stream is live from the very first event. On any
@@ -502,6 +524,16 @@ impl RunService {
 
         let (roots, additional) = workspace_roots(&project);
         let mut roots = roots.with_read_only_root(self.background.exec_dir().to_path_buf());
+        // Uploaded chat attachments are readable by the model (text files
+        // beyond the inline budget point here explicitly).
+        roots = roots
+            .with_read_only_root(self.attachments.root().to_path_buf())
+            .with_resource_paths(
+                self.attachments
+                    .resource_paths()
+                    .await
+                    .map_err(|error| AppError::Internal(anyhow::anyhow!(error)))?,
+            );
         // Frozen prompt environment (repo instruction block + MCP tool
         // identities), keyed by the root conversation: the first assembly
         // reads the files and snapshots the live MCP set; clean hits reuse
@@ -720,7 +752,9 @@ impl RunService {
             context_window,
             idle,
             reasoning,
+            input_modalities: self.resolve_input_modalities(&provider_id, &model_id).await,
             max_output_tokens,
+            attachments: Some(self.attachments.clone()),
             permission: gate,
             prompt_env_refresh: Some(self.prompt_env_refresh(&conversation_id)),
             prompt_generation: prompt_env.generation,
@@ -777,10 +811,11 @@ impl RunService {
             parent_env,
             project,
             model,
-            // The provider/model ids already live on the run row's snapshot;
-            // the child context itself records them via its history rows.
-            provider_id: _,
-            model_id: _,
+            // The child's own model identity: the modalities lookup below
+            // gates tool-result images per THIS model (they also live on
+            // the run row's snapshot).
+            provider_id,
+            model_id,
         } = req;
 
         self.set_start_message_id(&conversation_id, &start_message_id);
@@ -828,6 +863,14 @@ impl RunService {
             .map(|snapshot| snapshot.tool_mode)
             .unwrap_or_default();
         let mut roots = roots.with_read_only_root(self.background.exec_dir().to_path_buf());
+        roots = roots
+            .with_read_only_root(self.attachments.root().to_path_buf())
+            .with_resource_paths(
+                self.attachments
+                    .resource_paths()
+                    .await
+                    .map_err(|error| AppError::Internal(anyhow::anyhow!(error)))?,
+            );
         if tool_mode == crate::codemode::McpToolMode::Code {
             roots = roots
                 .with_read_only_root(self.codemode_root().join(&conversation_id).join(&run_id));
@@ -1014,7 +1057,9 @@ impl RunService {
             context_window,
             idle: None,
             reasoning: None,
+            input_modalities: self.resolve_input_modalities(&provider_id, &model_id).await,
             max_output_tokens: None,
+            attachments: Some(self.attachments.clone()),
             permission: gate,
             prompt_env_refresh: Some(self.prompt_env_refresh(&root_conversation_id)),
             prompt_generation: prompt_env.generation,

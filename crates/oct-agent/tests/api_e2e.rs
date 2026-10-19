@@ -3526,9 +3526,17 @@ async fn cancelled_run_settles_row_and_re_send_works() {
 
     let first = app.send_message(&conv_id, "slow one").await;
     assert_eq!(first.status(), 200);
+    let mut stream = sse_payloads(first);
+    // Observe the first mock turn before cancellation, so a later send cannot
+    // accidentally consume the still-queued hanging response.
+    let pre = next_event(&mut stream).await.expect("first text delta");
+    assert_eq!(pre["type"], "text_delta");
     let cancel = app.cancel(&conv_id).await;
     assert_eq!(cancel.status(), 200);
-    let events = app.read_sse(first).await;
+    let mut events = vec![pre];
+    while let Some(event) = next_event(&mut stream).await {
+        events.push(event);
+    }
     assert_eq!(*event_types(&events).last().unwrap(), "cancelled");
 
     // The interrupted attempt settled cancelled; no assistant row had been

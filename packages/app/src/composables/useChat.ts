@@ -29,6 +29,7 @@ import type {
 } from "./chat/display";
 import type { RunOwner } from "./chat/run";
 import type { components } from "@/api/schema";
+import type { ReadyAttachment } from "@/composables/chat/attachments";
 import type { SubagentUpdatedEventData } from "@/composables/useSubagents";
 
 export * from "./chat/display";
@@ -816,8 +817,12 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
     if (historyChanging) return;
     selectConversation(conversationId);
     const generation = ++historyGeneration;
-    lastHistory.value = null;
-    contextRevision.value = null;
+    // Receipt probes are conditional replacements. Preserve the current
+    // snapshot unless this request's durable receipt actually confirms them.
+    if (!shouldReplace) {
+      lastHistory.value = null;
+      contextRevision.value = null;
+    }
     lastFetch = { id: conversationId, at: Date.now() };
     const { data, error, response } = await client.GET(
       "/api/conversations/{id}/messages",
@@ -901,13 +906,15 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
     return null;
   };
 
-  /** A transport rejection does not tell us whether POST was committed.
+  /** A transport rejection or HTTP error does not tell us whether POST committed:
+   * run preparation can fail after the message and attachment claims land.
    * Reconcile execution and history before releasing the view; never replay
    * the send. Only this request's persisted receipt can replace its draft;
    * unrelated runs, notifications and even identical text are insufficient. */
   async function reconcileUncertainSend(
     owner: RunOwner,
     clientRequestId: string,
+    onAccepted: () => void,
   ): Promise<boolean> {
     let running = false;
     let confirmed = false;
@@ -935,7 +942,9 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
     } catch {
       // An unreachable backend keeps the draft/error available for the user.
     }
-    return runs.owns(owner) && running && confirmed;
+    if (!runs.owns(owner) || !confirmed) return false;
+    onAccepted();
+    return running;
   }
 
   const sendMessage = async (
@@ -943,8 +952,12 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
     content: string,
     providerSpec?: string | null,
     reasoning?: components["schemas"]["ReasoningRequestDto"] | null,
+    /** 已上传就绪的附件（useAttachments 的 ready chip）；随消息认领。 */
+    attachments?: ReadonlyArray<ReadyAttachment>,
+    /** SSE 建立或 receipt 对账确认持久化后调用一次，供 composer 清空草稿。 */
+    onAccepted?: () => void,
   ) => {
-    if (!content.trim()) return;
+    if (!content.trim() && !(attachments && attachments.length > 0)) return;
     const owner = beginRun(conversationId);
     if (!owner) return;
     const expectedRevision = contextRevision.value ?? sendRevision;
@@ -953,6 +966,11 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
       .getRandomValues(new Uint32Array(4))
       .join("-");
     let accepted = false;
+    const confirmAccepted = () => {
+      if (accepted) return;
+      accepted = true;
+      onAccepted?.();
+    };
     let reconnect = false;
     let failed = false;
     activeConversationId = conversationId;
@@ -967,12 +985,25 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
       m.parts.some((p) => p.kind === "tool_call" && p.status === "interrupted"),
     );
 
+    // 乐观气泡与历史一致：正文在前，附件按 MIME 显示图片或文件链接。
+    // 文本附件的内联正文等待后端装配，客户端不读取 File 内容。
+    const pendingParts: DisplayPart[] = [];
+    if (content.trim()) pendingParts.push({ kind: "text", text: content });
+    for (const att of attachments ?? []) {
+      pendingParts.push({
+        kind: att.mimeType.toLowerCase().startsWith("image/")
+          ? "image"
+          : "file",
+        attachmentId: att.attachmentId,
+        filename: att.filename,
+      });
+    }
     messages.value = [
       ...messages.value,
       {
         id: `pending-${Date.now()}`,
         role: "user",
-        parts: [{ kind: "text", text: content }],
+        parts: pendingParts,
       },
     ];
 
@@ -994,10 +1025,14 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
         provider_spec?: string;
         expected_revision?: number;
         reasoning?: components["schemas"]["ReasoningRequestDto"];
+        attachment_ids?: string[];
       } = { content, client_request_id: clientRequestId };
       if (expectedRevision != null) body.expected_revision = expectedRevision;
       if (providerSpec) body.provider_spec = providerSpec;
       if (reasoning) body.reasoning = reasoning;
+      if (attachments && attachments.length > 0) {
+        body.attachment_ids = attachments.map((att) => att.attachmentId);
+      }
       const res = await fetch(`/api/conversations/${conversationId}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1011,7 +1046,7 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
         throw new Error(`HTTP ${res.status}`);
       }
 
-      accepted = true;
+      confirmAccepted();
       if (
         generation === historyGeneration &&
         activeConversationId === conversationId
@@ -1026,8 +1061,12 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
       failed = true;
       reconnect = accepted;
       showRunFailure(owner, failureText ?? "Failed to send message.");
-      if (!accepted && failureText == null && runs.owns(owner)) {
-        reconnect = await reconcileUncertainSend(owner, clientRequestId);
+      if (!accepted && runs.owns(owner)) {
+        reconnect = await reconcileUncertainSend(
+          owner,
+          clientRequestId,
+          confirmAccepted,
+        );
       }
     } finally {
       await finalizeRun(

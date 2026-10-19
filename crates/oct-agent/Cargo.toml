@@ -23,7 +23,7 @@ reqwest = { version = "0.13", features = ["json", "form"] }
 # No default features: debug builds read the folder at runtime, release builds
 # bake the files in via include_bytes.
 rust-embed = "8.12"
-axum = "0.8"
+axum = { version = "0.8", features = ["multipart"] }
 chrono = { version = "0.4", features = [ "serde" ] }
 futures-util = "0.3"
 serde = { version = "1", features = [ "derive" ] }
@@ -59,13 +59,15 @@ async-trait = "0.1"
 async-stream = "0.3"
 futures-core = "0.3"
 dashmap = "6"
-tokio-util = "0.7"
+tokio-util = { version = "0.7", features = ["io"] }
 schemars = "1"
 # OAuth 2.0 + PKCE for http-transport MCP servers (src/oauth.rs): SHA-256 for
 # the S256 code challenge, base64url encoding of it, and URL parsing for the
 # RFC 8414 well-known candidates / authorization URL assembly.
 sha2 = "0.11"
 base64 = "0.23"
+# Decode once at ingress; stable bounded derivatives are shared by all requests.
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 url = "2"
 # ripgrep-family library crates for the in-process grep/glob search tools
 ignore = "0.4"
@@ -83,8 +85,9 @@ tempfile = "3"
 # Manual catalog/runtime probe reads existing OpenCode JSONC configurations.
 jsonc-parser = { version = "0.34", features = ["serde"] }
 # sse_payloads() (reconnect e2e) reads response bodies incrementally, which
-# needs reqwest's stream feature — test-only enablement.
-reqwest = { version = "0.13", features = ["stream"] }
+# needs reqwest's stream feature — test-only enablement. multipart drives
+# the attachment upload endpoint.
+reqwest = { version = "0.13", features = ["stream", "multipart"] }
 # start_paused for the tools/list_changed debounce tests: paused-clock
 # auto-advance replaces sleep-based waiting ("tests forbid sleep as a sync
 # primitive"). Test-only; not part of the production feature set.

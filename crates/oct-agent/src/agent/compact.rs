@@ -81,10 +81,10 @@ pub const MIN_MESSAGES_BEFORE_CUT: usize = 6;
 /// blows the token budget.
 pub fn find_cut_point(messages: &[Message], tail_keep: u64) -> Option<usize> {
     // Largest suffix that fits the tail budget: walk from the end until one
-    // more message would overflow. `messages.len()` (keep everything) is the
-    // default when the whole conversation fits.
+    // more message would overflow. Zero means the whole conversation fits
+    // and there is no prefix worth summarizing.
     let mut acc = 0u64;
-    let mut budget_cut = messages.len();
+    let mut budget_cut = 0;
     for i in (0..messages.len()).rev() {
         let cost = estimate_message(&messages[i]);
         if acc + cost > tail_keep {
@@ -95,9 +95,10 @@ pub fn find_cut_point(messages: &[Message], tail_keep: u64) -> Option<usize> {
     }
 
     // Minimum tail: the last round (trailing tool results + the assistant
-    // that issued the calls). The model cannot continue without the results
-    // it just asked for.
-    let min_cut = last_round_start(messages);
+    // that issued the calls), or at least the latest message. An oversized
+    // user attachment must stay verbatim without preventing prefix compaction.
+    // The model cannot continue without the results it just asked for.
+    let min_cut = last_round_start(messages).min(messages.len().saturating_sub(1));
 
     // Budget cut must not go past the minimum tail (budget too small for the
     // last round → keep the round anyway), then advance to a legal boundary.
@@ -425,7 +426,7 @@ pub async fn run_auto_compaction(
     // Marker at the cut slot, tail shifted +1, anchor reset — the same
     // mutations the DB transaction performed, applied to the in-run view.
     context.apply_compaction(outcome.rebuilt);
-    CompactAttempt::Done(outcome.est_after)
+    CompactAttempt::Done(context.estimate(tool_specs))
 }
 
 #[cfg(test)]
@@ -577,6 +578,17 @@ mod tests {
     fn cut_point_too_short_returns_none() {
         let msgs = [user("a"), assistant("b"), user("c"), assistant("d")];
         assert_eq!(find_cut_point(&msgs, 1_000), None);
+    }
+
+    #[test]
+    fn cut_point_preserves_oversized_latest_message_but_skips_history_that_fits() {
+        let mut messages = vec![user("small"); MIN_MESSAGES_BEFORE_CUT];
+        messages.push(user(&"x".repeat(8_000)));
+        assert_eq!(
+            find_cut_point(&messages, 1_200),
+            Some(MIN_MESSAGES_BEFORE_CUT)
+        );
+        assert_eq!(find_cut_point(&messages, 16_000), None);
     }
 
     #[test]

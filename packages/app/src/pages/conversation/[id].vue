@@ -69,6 +69,10 @@ import {
 } from "@/composables/useProjects";
 import { useProviders } from "@/composables/useProviders";
 import { refreshSubagents } from "@/composables/useSubagents";
+import type {
+  ComposerDraft,
+  ReadyAttachment,
+} from "@/composables/chat/attachments";
 import type { ForkCut } from "@/composables/chat/display";
 import type { ApprovalDecision } from "@/composables/useChat";
 
@@ -86,7 +90,7 @@ const revertSelection = ref<{
   removedCount: number;
   preview: string;
 } | null>(null);
-const forkDraft = ref<{ conversationId: string; text: string } | null>(null);
+const forkDraft = ref<ComposerDraft | null>(null);
 const conversationId = computed(
   () => (route.params as { id?: string }).id ?? "",
 );
@@ -199,7 +203,11 @@ watch(
   { immediate: true },
 );
 
-async function handleSendMessage(content: string) {
+async function handleSendMessage(
+  content: string,
+  attachments: ReadyAttachment[] = [],
+  onAccepted?: () => void,
+) {
   if (
     !conversationId.value ||
     historyBusy.value ||
@@ -212,6 +220,8 @@ async function handleSendMessage(content: string) {
     content,
     getProviderSpec(),
     getReasoningRequest(),
+    attachments,
+    onAccepted,
   );
 }
 
@@ -233,6 +243,7 @@ async function handleFork(cut: ForkCut) {
   forkDraft.value = {
     conversationId: result.conversation.id,
     text: result.draft ?? "",
+    attachments: result.draft_attachments,
   };
 }
 
@@ -327,6 +338,7 @@ async function confirmRevert() {
       forkDraft.value = {
         conversationId: selection.source,
         text: result.draft ?? "",
+        attachments: result.draft_attachments,
       };
   } finally {
     const current = conversationId.value;

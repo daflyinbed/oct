@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT OR IGNORE INTO message_assets (message_id, asset_id) SELECT $1,id FROM attachment_assets WHERE id = $2 OR id = (SELECT asset_id FROM staged_uploads WHERE id = $2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "379d20d54b1fe0387c68e94b3ae50e2c80085c320831413c1dd34abc988fc179"
+}

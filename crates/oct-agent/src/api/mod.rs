@@ -1,5 +1,6 @@
 pub mod agent_settings;
 pub mod approvals;
+pub mod attachments;
 pub mod background;
 pub mod chat;
 pub mod conversations;
@@ -21,7 +22,7 @@ use sqlx::SqlitePool;
 use std::sync::Arc;
 use tower_http::services::ServeDir;
 use utoipa::OpenApi;
-use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::router::{OpenApiRouter, UtoipaMethodRouterExt};
 use utoipa_scalar::{Scalar, Servable};
 
 use crate::agent::RunHandle;
@@ -39,6 +40,8 @@ pub struct AppState {
     /// occupancy, agent_runs persistence and loop supervision. Holds clones
     /// of the `Arc`s above — `sessions` in particular is the SAME instance,
     /// so the reconnect/status endpoints keep observing the same occupancy.
+    /// Upload/read/send endpoints use this service's attachment component too:
+    /// hydration, read-only roots and sweeps have one shared lifecycle owner.
     pub runs: Arc<RunService>,
     /// Process-wide MCP connection manager: reconciled against the enabled
     /// `mcp_servers` rows on every chat turn, and read by the MCP list/get
@@ -125,6 +128,8 @@ pub struct AppState {
         files::FileContent,
         files::FileEntry,
         files::FileEntryKind,
+        attachments::AttachmentDto,
+        attachments::AttachmentUploadDoc,
         providers::ProviderResponse,
         providers::ModelSummary,
         providers::ApiKeyResponse,
@@ -240,6 +245,16 @@ fn api_routes(state: AppState) -> OpenApiRouter<AppState> {
         .routes(utoipa_axum::routes!(chat::cancel_agent))
         .routes(utoipa_axum::routes!(chat::resume_turn))
         .routes(utoipa_axum::routes!(chat::compact_conversation))
+        // Attachments: multipart upload (per-route body limit — the axum
+        // default 2MB would cap every upload otherwise) + byte reads
+        .routes(utoipa_axum::routes!(attachments::upload_attachment).layer(
+            axum::extract::DefaultBodyLimit::max(
+                (crate::attachments::MAX_ATTACHMENT_BYTES as u64
+                    + crate::attachments::MULTIPART_OVERHEAD_SLACK) as usize,
+            ),
+        ))
+        .routes(utoipa_axum::routes!(attachments::get_attachment))
+        .routes(utoipa_axum::routes!(attachments::copy_attachment))
         // Frozen prompt environment refresh (repo instructions + MCP set)
         .routes(utoipa_axum::routes!(chat::reload_instructions))
         // Run reconnection (frontend refresh while a run is in flight)

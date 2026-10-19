@@ -11,8 +11,12 @@
 //! the next [`LlmView`] reload in lockstep, so both sides compute the same
 //! effective messages, orderings and anchor.
 
+pub mod projection;
+
+use projection::ProjectionSnapshot;
 use serde_json::Value;
 
+use crate::modality::{self, InputModalities};
 use oct_llm_provider::core::{Message, Role, ToolSpec};
 
 // ======================================================================
@@ -41,18 +45,31 @@ pub const PER_MESSAGE_OVERHEAD_TOKENS: u64 = 4;
 /// Per tool-call/result pairing overhead.
 pub const PER_TOOL_PART_OVERHEAD_TOKENS: u64 = 8;
 
-/// Flat per-image estimate for tool results carrying images (base64 MCP
-/// attachments). Base64 length ÷ 4 would wildly over-count (a 1 MB image is
+/// Flat per-image estimate for user attachments and tool results. Base64
+/// length ÷ 4 would wildly over-count (a 1 MB image is
 /// ~343k "tokens" by chars); the real cost of an image to a provider scales
 /// with its pixels, so a flat value in the oh-my-pi / ZCode ballpark is the
 /// honest heuristic.
-pub const TOOL_IMAGE_ESTIMATE_TOKENS: u64 = 1_200;
+pub const IMAGE_ESTIMATE_TOKENS: u64 = 1_200;
+/// Compatibility name for callers estimating tool-result images.
+pub const TOOL_IMAGE_ESTIMATE_TOKENS: u64 = IMAGE_ESTIMATE_TOKENS;
 
 pub fn estimate_message(msg: &Message) -> u64 {
-    PER_MESSAGE_OVERHEAD_TOKENS + msg.parts.iter().map(estimate_part).sum::<u64>()
+    estimate_message_with_modalities(msg, &InputModalities::Unknown)
 }
 
-fn estimate_part(part: &oct_llm_provider::core::ContentPart) -> u64 {
+/// Estimate the request-side projection without hydrating references or
+/// cloning base64 bytes. The persisted parts remain untouched.
+pub fn estimate_message_with_modalities(msg: &Message, modalities: &InputModalities) -> u64 {
+    PER_MESSAGE_OVERHEAD_TOKENS
+        + msg
+            .parts
+            .iter()
+            .map(|part| estimate_part(part, modalities))
+            .sum::<u64>()
+}
+
+fn estimate_part(part: &oct_llm_provider::core::ContentPart, modalities: &InputModalities) -> u64 {
     use oct_llm_provider::core::ContentPart;
     match part {
         ContentPart::Text(s) | ContentPart::Reasoning(s) => estimate_str(s),
@@ -62,15 +79,24 @@ fn estimate_part(part: &oct_llm_provider::core::ContentPart) -> u64 {
             } => estimate_str(text) + estimate_str(signature),
             oct_llm_provider::core::ReasoningBlock::Redacted { data, .. } => estimate_str(data),
         },
-        // The loop never produces images; URL length is a harmless proxy.
-        ContentPart::ImageUrl { url } => 64 + estimate_str(url),
+        // Lightweight attachment refs, hosted URLs and hydrated data URLs
+        // all represent images with the same budget, independent of URL length.
+        ContentPart::ImageUrl { url } => modality::omitted_image_note(url, modalities)
+            .map(estimate_str)
+            .unwrap_or(IMAGE_ESTIMATE_TOKENS),
         ContentPart::ToolCall(tc) => {
             PER_TOOL_PART_OVERHEAD_TOKENS + estimate_str(&tc.name) + estimate_str(&tc.arguments)
         }
         ContentPart::ToolResult(tr) => {
+            let content = modality::gated_tool_result_content(tr, modalities)
+                .unwrap_or_else(|| tool_result_text(&tr.content));
             PER_TOOL_PART_OVERHEAD_TOKENS
-                + estimate_str(&tool_result_text(&tr.content))
-                + tr.images.len() as u64 * TOOL_IMAGE_ESTIMATE_TOKENS
+                + estimate_str(&content)
+                + tr.images
+                    .iter()
+                    .filter(|image| modalities.allows(&image.mime_type))
+                    .count() as u64
+                    * IMAGE_ESTIMATE_TOKENS
         }
     }
 }
@@ -163,6 +189,10 @@ pub struct UsageAnchor {
     /// different generation was measured under a different system prompt and
     /// must not drive the anchored estimate, which excludes the prompt.
     pub prompt_generation: u64,
+    /// Snapshot of the input gate that produced these provider tokens. COW
+    /// replay must not charge savings for images that request never included.
+    pub input_modalities: InputModalities,
+    pub projection: Option<ProjectionSnapshot>,
 }
 
 /// The model-visible view of a conversation plus the estimation anchor:
@@ -209,10 +239,17 @@ pub struct ContextState {
     system_prompt: String,
     entries: Vec<ContextEntry>,
     anchor: Option<UsageAnchor>,
+    input_modalities: InputModalities,
+    projection: Option<ProjectionSnapshot>,
 }
 
 impl ContextState {
     pub fn new(system_prompt: String, view: LlmView) -> Self {
+        let input_modalities = view
+            .anchor
+            .as_ref()
+            .map(|anchor| anchor.input_modalities.clone())
+            .unwrap_or(InputModalities::Unknown);
         Self {
             system_prompt,
             entries: view
@@ -222,7 +259,45 @@ impl ContextState {
                 .map(|(message, ordering)| ContextEntry { message, ordering })
                 .collect(),
             anchor: view.anchor,
+            input_modalities,
+            projection: None,
         }
+    }
+
+    /// A changed input gate changes the request's prefix just as a changed
+    /// prompt does; its old usage cannot account for the new projection.
+    pub fn with_input_modalities(mut self, modalities: InputModalities) -> Self {
+        if self
+            .anchor
+            .as_ref()
+            .is_some_and(|anchor| anchor.input_modalities != modalities)
+        {
+            self.anchor = None;
+        }
+        self.input_modalities = modalities;
+        self
+    }
+
+    /// The final request projection is also the estimator's source of truth.
+    /// An unmeasured/changed prefix cannot borrow an older provider usage.
+    pub fn apply_projection(&mut self, projection: ProjectionSnapshot) {
+        if self.anchor.as_ref().is_some_and(|anchor| {
+            anchor
+                .projection
+                .as_ref()
+                .is_none_or(|old| !old.accepts_prefix(&projection))
+        }) {
+            self.anchor = None;
+        }
+        self.projection = Some(projection);
+    }
+
+    pub fn projection(&self) -> Option<&ProjectionSnapshot> {
+        self.projection.as_ref()
+    }
+
+    pub fn input_modalities(&self) -> &InputModalities {
+        &self.input_modalities
     }
 
     pub fn system_prompt(&self) -> &str {
@@ -249,11 +324,37 @@ impl ContextState {
 
     /// Estimated context of the next request (see [`estimate_view`]).
     pub fn estimate(&self, tool_specs: &[ToolSpec]) -> u64 {
-        estimate_view(
+        if let Some(projection) = &self.projection {
+            let cost = |entry: &ContextEntry| {
+                projection
+                    .entry(entry.ordering)
+                    .map(|entry| entry.estimated_tokens)
+                    .unwrap_or_else(|| {
+                        estimate_message_with_modalities(&entry.message, &self.input_modalities)
+                    })
+            };
+            return match &self.anchor {
+                Some(anchor) if anchor.message_index < self.entries.len() => {
+                    anchor.tokens
+                        + self.entries[anchor.message_index + 1..]
+                            .iter()
+                            .map(cost)
+                            .sum::<u64>()
+                }
+                _ => {
+                    PER_MESSAGE_OVERHEAD_TOKENS
+                        + estimate_str(&self.system_prompt)
+                        + estimate_tool_specs(tool_specs)
+                        + self.entries.iter().map(cost).sum::<u64>()
+                }
+            };
+        }
+        estimate_view_with_modalities(
             &self.entries,
             Some(&self.system_prompt),
             tool_specs,
             self.anchor.as_ref(),
+            &self.input_modalities,
         )
     }
 
@@ -277,6 +378,7 @@ impl ContextState {
     pub fn apply_compaction(&mut self, rebuilt: Vec<ContextEntry>) {
         self.entries = rebuilt;
         self.anchor = None;
+        self.projection = None;
     }
 
     /// Commit this request's reported usage as the anchor on the LAST entry
@@ -290,29 +392,54 @@ impl ContextState {
                 tokens,
                 message_index: index,
                 prompt_generation,
+                input_modalities: self.input_modalities.clone(),
+                projection: self.projection.clone(),
             });
         }
     }
 
     /// Rewrite the tool-result parts of the given entries to the placeholder
-    /// content (images cleared) and deduct each saving from the anchor when
+    /// content (images cleared) and deduct its request-side saving from the anchor when
     /// the entry sat before it: a cleared result counted inside the anchor's
     /// provider tokens must be subtracted, while results after the anchor
     /// only shrink the local increment (automatic once rewritten).
     pub fn apply_clears(&mut self, cleared: &[(usize, u64)], placeholder: &str) {
-        if let Some(anchor) = self.anchor.as_mut() {
-            for (index, savings) in cleared {
-                if *index < anchor.message_index {
-                    anchor.tokens = anchor.tokens.saturating_sub(*savings);
-                }
-            }
-        }
         for (index, _) in cleared {
+            let before = self
+                .anchor
+                .as_ref()
+                .filter(|anchor| *index < anchor.message_index)
+                .map(|anchor| {
+                    anchor
+                        .projection
+                        .as_ref()
+                        .and_then(|p| p.entry(self.entries[*index].ordering))
+                        .map(|entry| entry.estimated_tokens)
+                        .unwrap_or_else(|| {
+                            estimate_message_with_modalities(
+                                &self.entries[*index].message,
+                                &anchor.input_modalities,
+                            )
+                        })
+                });
             for part in &mut self.entries[*index].message.parts {
                 if let oct_llm_provider::core::ContentPart::ToolResult(tr) = part {
                     tr.content = Value::String(placeholder.to_string());
                     tr.images.clear();
                 }
+            }
+            if let (Some(before), Some(anchor)) = (before, self.anchor.as_mut()) {
+                let after = estimate_message_with_modalities(
+                    &self.entries[*index].message,
+                    &anchor.input_modalities,
+                );
+                anchor.tokens = anchor.tokens.saturating_sub(before.saturating_sub(after));
+                if let Some(projection) = &mut anchor.projection {
+                    projection.clear(self.entries[*index].ordering, &self.entries[*index].message);
+                }
+            }
+            if let Some(projection) = &mut self.projection {
+                projection.clear(self.entries[*index].ordering, &self.entries[*index].message);
             }
         }
     }
@@ -330,11 +457,29 @@ pub fn estimate_view(
     tool_specs: &[ToolSpec],
     anchor: Option<&UsageAnchor>,
 ) -> u64 {
+    estimate_view_with_modalities(
+        entries,
+        system,
+        tool_specs,
+        anchor,
+        anchor
+            .map(|a| &a.input_modalities)
+            .unwrap_or(&InputModalities::Unknown),
+    )
+}
+
+fn estimate_view_with_modalities(
+    entries: &[ContextEntry],
+    system: Option<&str>,
+    tool_specs: &[ToolSpec],
+    anchor: Option<&UsageAnchor>,
+    modalities: &InputModalities,
+) -> u64 {
     match anchor {
         Some(a) if a.message_index < entries.len() => {
             let after = entries[a.message_index + 1..]
                 .iter()
-                .map(|e| estimate_message(&e.message))
+                .map(|e| estimate_message_with_modalities(&e.message, modalities))
                 .sum::<u64>();
             a.tokens + after
         }
@@ -342,7 +487,10 @@ pub fn estimate_view(
             let system_tokens = system
                 .map(|s| PER_MESSAGE_OVERHEAD_TOKENS + estimate_str(s))
                 .unwrap_or(0);
-            let messages: u64 = entries.iter().map(|e| estimate_message(&e.message)).sum();
+            let messages: u64 = entries
+                .iter()
+                .map(|e| estimate_message_with_modalities(&e.message, modalities))
+                .sum();
             system_tokens + messages + estimate_tool_specs(tool_specs)
         }
     }
@@ -351,7 +499,102 @@ pub fn estimate_view(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oct_llm_provider::core::{ContentPart, ToolResult};
+    use crate::modality::Modality;
+    use oct_llm_provider::core::{ContentPart, ToolResult, ToolResultImage};
+
+    #[test]
+    fn image_cost_is_independent_of_storage_and_base64_length() {
+        for url in [
+            "oct-attachment://00000000-0000-0000-0000-000000000000".to_string(),
+            "https://example.com/image.png".to_string(),
+            format!("data:image/png;base64,{}", "A".repeat(1024 * 1024)),
+        ] {
+            let message = Message {
+                role: Role::User,
+                parts: vec![ContentPart::ImageUrl { url }],
+            };
+            assert_eq!(
+                estimate_message(&message),
+                PER_MESSAGE_OVERHEAD_TOKENS + IMAGE_ESTIMATE_TOKENS
+            );
+            let text_only = InputModalities::Known(vec![Modality::Text]);
+            let gated = modality::gate_request_messages(vec![message.clone()], &text_only);
+            assert_eq!(
+                estimate_message_with_modalities(&message, &text_only),
+                estimate_message(&gated[0])
+            );
+        }
+    }
+
+    #[test]
+    fn tool_image_estimate_matches_the_request_projection() {
+        for content in [
+            serde_json::json!("screenshot"),
+            serde_json::json!({"ok": true}),
+        ] {
+            let message = Message {
+                role: Role::Tool,
+                parts: vec![ContentPart::ToolResult(ToolResult {
+                    call_id: "c1".into(),
+                    content,
+                    is_error: false,
+                    images: vec![
+                        ToolResultImage {
+                            mime_type: "image/png".into(),
+                            data: "AAAA".into(),
+                        },
+                        ToolResultImage {
+                            mime_type: "video/mp4".into(),
+                            data: "BBBB".into(),
+                        },
+                    ],
+                })],
+            };
+            for modalities in [
+                InputModalities::Unknown,
+                InputModalities::Known(vec![Modality::Text]),
+                InputModalities::Known(vec![Modality::Image]),
+            ] {
+                let gated = modality::gate_request_messages(vec![message.clone()], &modalities);
+                assert_eq!(
+                    estimate_message_with_modalities(&message, &modalities),
+                    estimate_message(&gated[0])
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn changing_input_modalities_invalidates_the_old_usage_anchor() {
+        let mut state = ContextState::new(
+            String::new(),
+            LlmView {
+                messages: vec![Message {
+                    role: Role::User,
+                    parts: vec![ContentPart::ImageUrl {
+                        url: "oct-attachment://image".into(),
+                    }],
+                }],
+                orderings: vec![1],
+                anchor: None,
+            },
+        )
+        .with_input_modalities(InputModalities::Known(vec![Modality::Text]));
+        state.set_anchor(100, 7);
+        assert_eq!(
+            state.anchor().unwrap().input_modalities,
+            InputModalities::Known(vec![Modality::Text])
+        );
+        let state = state.with_input_modalities(InputModalities::Known(vec![
+            Modality::Text,
+            Modality::Image,
+        ]));
+        assert!(state.anchor().is_none());
+        assert_eq!(
+            state.estimate(&[]),
+            2 * PER_MESSAGE_OVERHEAD_TOKENS + IMAGE_ESTIMATE_TOKENS
+        );
+    }
 
     fn user(text: &str) -> Message {
         Message::text(Role::User, text)
@@ -491,6 +734,8 @@ mod tests {
             tokens: 500,
             message_index: 1,
             prompt_generation: 7,
+            input_modalities: InputModalities::Unknown,
+            projection: None,
         };
         assert_eq!(
             estimate_view(&entries, Some(system), &specs, Some(&anchor)),

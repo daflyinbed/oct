@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT asset_id AS \"asset_id!\" FROM message_assets UNION SELECT asset_id AS \"asset_id!\" FROM staged_uploads WHERE state = 'staged' AND created_at >= $1",
+  "describe": {
+    "columns": [
+      {
+        "name": "asset_id!",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "message_assets",
+            "name": "asset_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "108e803414d46727264959331f372d9b90ff4bc7e9b70750dae8cb57d882f5dd"
+}

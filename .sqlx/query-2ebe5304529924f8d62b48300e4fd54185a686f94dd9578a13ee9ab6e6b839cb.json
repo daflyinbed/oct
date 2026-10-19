@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM staged_uploads WHERE state = 'staged' AND created_at < $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "2ebe5304529924f8d62b48300e4fd54185a686f94dd9578a13ee9ab6e6b839cb"
+}

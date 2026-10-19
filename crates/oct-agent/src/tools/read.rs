@@ -39,7 +39,7 @@ struct ReadFileDetails {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct ReadFileArgs {
-    /// Path to the file to read (relative to working directory or absolute)
+    /// Path to read: relative/absolute filesystem path or oct-attachment:// resource reference
     path: String,
     /// Start line number (1-indexed, inclusive). Omit to start from beginning.
     start_line: Option<usize>,
@@ -56,7 +56,7 @@ impl AgentTool for ReadFileTool {
     fn description(&self) -> &str {
         "Read the contents of a file. Returns the file content with line numbers. \
          Use start_line and end_line to read a specific range. Background command \
-         output_file paths are readable here; prefer read_file or grep over shell commands."
+         output_file paths and oct-attachment:// references are readable here; prefer read_file or grep over shell commands."
     }
 
     fn input_schema(&self) -> serde_json::Value {

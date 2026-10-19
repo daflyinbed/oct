@@ -16,6 +16,8 @@ use crate::agent::micro::{self, MicroAttempt};
 use crate::agent::{
     AgentContext, AgentEvent, MicrocompactTrigger, RunHandle, RunOutcome, RunStatus, RunUsage,
 };
+use crate::attachments::RequestAssembler;
+use crate::context::projection::MediaPolicy;
 use crate::context::{ContextState, LlmView};
 use crate::db::messages as msg_db;
 use crate::tools;
@@ -66,7 +68,8 @@ pub async fn run_agent_loop(
     // The run's mutable view of the conversation: system prompt + ordered
     // entries + usage anchor, kept in lockstep with the DB by construction
     // (see the `context` module doc).
-    let mut context = ContextState::new(ctx.system_prompt.clone(), view);
+    let mut context = ContextState::new(ctx.system_prompt.clone(), view)
+        .with_input_modalities(ctx.input_modalities.clone());
 
     // Auto-compaction bookkeeping: `compact_floor` is the estimated context
     // right after the last compaction this run — re-triggering requires
@@ -94,6 +97,43 @@ pub async fn run_agent_loop(
         .map(|t| tools::to_tool_spec(t.as_ref()))
         .collect();
 
+    let assembler = RequestAssembler::new(ctx.attachments.as_deref(), MediaPolicy::default());
+    // Projection failures settle the run while retaining its durable user/tool
+    // history. No provider call is made with an oversized or unmeasured prefix.
+    macro_rules! assemble_request {
+        () => {{
+            let mut plan = match assembler.plan(&context).await {
+                Ok(plan) => plan,
+                Err(error) => {
+                    let message = error.to_string();
+                    handle.hub.publish(AgentEvent::Error(message.clone()));
+                    return interrupted_outcome(
+                        RunStatus::Failed,
+                        last_assistant.is_some(),
+                        Some(message),
+                        last_assistant,
+                        usage_opt(usage_seen, &usage_total),
+                    );
+                }
+            };
+            let messages = tokio::select! {
+                messages = assembler.materialize(&mut plan) => messages,
+                _ = handle.cancel.cancelled() => {
+                    handle.hub.publish(AgentEvent::Cancelled);
+                    return interrupted_outcome(
+                        RunStatus::Cancelled,
+                        last_assistant.is_some(),
+                        None,
+                        last_assistant,
+                        usage_opt(usage_seen, &usage_total),
+                    );
+                }
+            };
+            context.apply_projection(plan.snapshot);
+            messages
+        }};
+    }
+
     loop {
         if handle.cancel.is_cancelled() {
             handle.hub.publish(AgentEvent::Cancelled);
@@ -119,6 +159,12 @@ pub async fn run_agent_loop(
             );
         }
 
+        // Missing files must be resolved before validating the anchor and
+        // testing maintenance thresholds. A metadata-only plan may differ
+        // from an unchanged, already measured missing-file omission.
+        let initial_messages = assemble_request!();
+        let mut view_changed = false;
+
         // Turn-top maintenance — BEFORE the request, so both the first turn
         // of an over-long conversation and every tool round in between are
         // covered. Usage arriving during a stream only refreshes the anchor:
@@ -143,11 +189,13 @@ pub async fn run_agent_loop(
             )
             .await
             {
-                MicroAttempt::Done(_) | MicroAttempt::Nothing => {}
+                MicroAttempt::Done(_) => view_changed = true,
+                MicroAttempt::Nothing => {}
                 MicroAttempt::Failed => micro_disabled = true,
             }
         }
 
+        let mut compacted = false;
         if let Some(window) = ctx.context_window {
             let threshold = compact::trigger_threshold(window);
             let tail_keep = compact::tail_keep_tokens(window);
@@ -167,7 +215,10 @@ pub async fn run_agent_loop(
                 )
                 .await
                 {
-                    MicroAttempt::Done(est_after) => est = est_after,
+                    MicroAttempt::Done(est_after) => {
+                        est = est_after;
+                        view_changed = true;
+                    }
                     MicroAttempt::Nothing => {}
                     MicroAttempt::Failed => micro_disabled = true,
                 }
@@ -190,7 +241,11 @@ pub async fn run_agent_loop(
                 )
                 .await;
                 match attempt {
-                    CompactAttempt::Done(floor) => compact_floor = floor,
+                    CompactAttempt::Done(floor) => {
+                        compact_floor = floor;
+                        compacted = true;
+                        view_changed = true;
+                    }
                     CompactAttempt::Nothing => {}
                     CompactAttempt::Failed => auto_compact_disabled = true,
                     CompactAttempt::Cancelled => {
@@ -208,8 +263,20 @@ pub async fn run_agent_loop(
             }
         }
 
+        // Reuse the hydrated request unless maintenance rewrote history.
+        // Release the old bytes before materializing a replacement, keeping
+        // both the final request and estimator on the same selected projection.
+        let request_messages = if view_changed {
+            drop(initial_messages);
+            assemble_request!()
+        } else {
+            initial_messages
+        };
+        if compacted {
+            compact_floor = context.estimate(&tool_specs);
+        }
         let request = ChatRequest {
-            messages: context.messages_for_request(),
+            messages: request_messages,
             tools: tool_specs.clone(),
             options: GenerateOptions {
                 reasoning: ctx.reasoning.clone(),
@@ -438,6 +505,10 @@ pub async fn run_agent_loop(
         // request completing after a `/reload` keeps the OLD generation here
         // and is correctly rejected by the new entry).
         reasoning_details["prompt_generation"] = json!(ctx.prompt_generation);
+        // Keep the request's input gate with its usage: later COW replay
+        // must deduct only content that THIS model actually received.
+        reasoning_details["input_modalities"] = json!(ctx.input_modalities);
+        reasoning_details["projection"] = json!(context.projection());
         let reasoning_details = Some(reasoning_details);
         // Parts were assembled while streaming; current_text remains available
         // for the run-outcome bookkeeping and final-message record below.
@@ -584,7 +655,7 @@ pub async fn run_agent_loop(
 
         let mut completed: HashSet<usize> = HashSet::new();
 
-        loop {
+        'tool_results: loop {
             tokio::select! {
                 result = futures.join_next() => {
                     match result {
@@ -595,6 +666,18 @@ pub async fn run_agent_loop(
                             // the closing ToolResult arrives.
                             contexts[idx].flush();
 
+                            // Normalize and externalize media once, regardless
+                            // of which tool transport produced the output.
+                            let prepared = if let Some(service) = &ctx.attachments {
+                                tokio::select! {
+                                    prepared = service.prepare_tool_result(&conv_id, &tc.id, output.clone()) => Some(prepared),
+                                    _ = handle.cancel.cancelled() => {
+                                        futures.shutdown().await;
+                                        break 'tool_results;
+                                    }
+                                }
+                            } else { None };
+                            let output = prepared.as_ref().map(|prepared| prepared.output.clone()).unwrap_or(output);
                             let result_event = AgentEvent::ToolResult {
                                 call_id: tc.id.clone(),
                                 content: output.content.clone(),
@@ -603,7 +686,7 @@ pub async fn run_agent_loop(
                                 details: output.details.clone(),
                             };
 
-                            let tool_msg = Message {
+                            let tool_msg = prepared.as_ref().map(|prepared| prepared.message.clone()).unwrap_or_else(|| Message {
                                 role: Role::Tool,
                                 parts: vec![ContentPart::ToolResult(ToolResult {
                                     call_id: tc.id.clone(),
@@ -619,18 +702,17 @@ pub async fn run_agent_loop(
                                         .map(From::from)
                                         .collect(),
                                 })],
-                            };
+                            });
                             // details are UI-only: persisted in their own
                             // column, never inside parts_json.
-                            let ordering = match crate::db::persist_critical(&ctx.pool, || msg_db::insert_message(
-                                &ctx.pool,
-                                &conv_id,
-                                &tool_msg,
-                                None,
-                                None,
-                                output.details.as_ref(),
-                            ))
-                            .await
+                            let persisted = if let Some(prepared) = &prepared {
+                                crate::db::persist_critical(&ctx.pool, || prepared.commit()).await
+                            } else {
+                                crate::db::persist_critical(&ctx.pool, || msg_db::insert_message(
+                                    &ctx.pool, &conv_id, &tool_msg, None, None, output.details.as_ref(),
+                                )).await
+                            };
+                            let ordering = match persisted
                             {
                                 Ok(stored) => stored.ordering,
                                 Err(e) => {

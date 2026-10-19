@@ -52,6 +52,24 @@ export interface TextPart {
   text: string;
 }
 
+/**
+ * 用户消息里的图片附件（后端 ImageUrl part 的展示形态）：气泡里渲染缩
+ * 略图，点击新标签页看原图。attachmentId 指向 `/api/attachments/{id}`；
+ * filename 来自消息 details（旧行缺失时为 null）。
+ */
+export interface ImagePart {
+  kind: "image";
+  attachmentId: string;
+  filename: string | null;
+}
+
+/** 文本附件保留文件链接，不能以 img 加载其字节。 */
+export interface FilePart {
+  kind: "file";
+  attachmentId: string;
+  filename: string | null;
+}
+
 export interface ToolCallPart {
   kind: "tool_call";
   callId: string;
@@ -148,6 +166,8 @@ export interface TaskNotificationPart {
 
 export type DisplayPart =
   | TextPart
+  | ImagePart
+  | FilePart
   | ToolCallPart
   | ReasoningPart
   | CompactionPart
@@ -489,8 +509,58 @@ export function storedToDisplayList(stored: ApiMessage[]): DisplayMessage[] {
         parts: [],
         forkCut: m.fork_cut,
       };
+      if (m.user_content) {
+        if (m.user_content.body) pushText(msg, m.user_content.body);
+        for (const attachment of m.user_content.attachments) {
+          msg.parts.push({
+            kind: attachment.mime_type.toLowerCase().startsWith("image/")
+              ? "image"
+              : "file",
+            attachmentId: attachment.id,
+            filename: attachment.filename,
+          });
+        }
+        out.push(msg);
+        lastAssistant = null;
+        continue;
+      }
       for (const part of m.parts) {
         if (part.type === "text") pushText(msg, part.text);
+      }
+      // 附件元数据包含图片与文本文件：按 MIME 区分缩略图与文件链接。
+      // 旧行缺少 MIME 时使用 ImageUrl 引用判定；缺失元数据的图片也补回。
+      const imageIds = m.parts.flatMap((part) =>
+        part.type === "image_url" && part.url.startsWith("oct-attachment://")
+          ? [part.url.slice("oct-attachment://".length)]
+          : [],
+      );
+      const displayedIds = new Set<string>();
+      const atts = m.details?.extra?.attachments;
+      if (Array.isArray(atts)) {
+        for (const att of atts) {
+          if (
+            att === null ||
+            typeof att !== "object" ||
+            typeof att.id !== "string" ||
+            !att.id
+          )
+            continue;
+          const id = att.id;
+          const isImage =
+            typeof att.mime_type === "string"
+              ? att.mime_type.toLowerCase().startsWith("image/")
+              : imageIds.includes(id);
+          msg.parts.push({
+            kind: isImage ? "image" : "file",
+            attachmentId: id,
+            filename: typeof att.filename === "string" ? att.filename : null,
+          });
+          displayedIds.add(id);
+        }
+      }
+      for (const id of imageIds) {
+        if (id && !displayedIds.has(id))
+          msg.parts.push({ kind: "image", attachmentId: id, filename: null });
       }
       out.push(msg);
       lastAssistant = null;

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE staged_uploads SET state = 'sent' WHERE id = $1 AND conversation_id = $2 AND state = 'staged' AND created_at >= datetime('now', '-24 hours')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "15867a60764b9091f1a50e90e257eed753a04029aa43ad92bf537b6d353d0b5b"
+}

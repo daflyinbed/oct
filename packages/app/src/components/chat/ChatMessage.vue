@@ -13,16 +13,61 @@
     class="flex flex-col items-end gap-1"
   >
     <div
-      class="max-w-[75%] whitespace-pre-wrap break-words border border-line-soft rounded-xl bg-panel px-3.5 py-2 text-[13px] text-neutral-10 leading-[1.55]"
+      class="max-w-[75%] border border-line-soft rounded-xl bg-panel px-3.5 py-2 text-[13px] text-neutral-10"
     >
-      <template v-for="(part, i) in message.parts" :key="`t-${i}`">
-        {{ part.kind === "text" ? part.text : ""
-        }}<span
-          v-if="message.isStreaming && i === message.parts.length - 1"
-          class="animate-pulse"
-          >▌</span
+      <div class="flex flex-col gap-1.5">
+        <div
+          v-if="hasText"
+          class="whitespace-pre-wrap break-words leading-[1.55]"
         >
-      </template>
+          <template v-for="(part, i) in message.parts" :key="`t-${i}`">
+            <template v-if="part.kind === 'text'">{{ part.text }}</template>
+            <span
+              v-if="
+                message.isStreaming &&
+                part.kind === 'text' &&
+                i === lastTextIndex
+              "
+              class="animate-pulse"
+              >▌</span
+            >
+          </template>
+        </div>
+        <!-- 图片附件：缩略图（点击新标签页看原图） -->
+        <div v-if="imageParts.length > 0" class="flex flex-wrap gap-1.5">
+          <a
+            v-for="part in imageParts"
+            :key="part.attachmentId"
+            :href="attachmentUrl(part.attachmentId)"
+            target="_blank"
+            rel="noopener"
+            class="block max-w-[240px]"
+            :title="part.filename ?? undefined"
+          >
+            <img
+              :src="attachmentUrl(part.attachmentId)"
+              :alt="part.filename ?? '附件图片'"
+              loading="lazy"
+              class="max-h-44 w-auto border border-line-soft rounded-lg"
+            />
+          </a>
+        </div>
+        <!-- 文本附件：文件链接在新标签页以纯文本查看。 -->
+        <div v-if="fileParts.length > 0" class="flex flex-wrap gap-1.5">
+          <a
+            v-for="part in fileParts"
+            :key="part.attachmentId"
+            :href="attachmentUrl(part.attachmentId)"
+            target="_blank"
+            rel="noopener"
+            class="max-w-[240px] min-w-0 flex items-center gap-1.5 border border-line-soft rounded-lg px-2 py-1.5 text-accent-10 hover:underline"
+            :title="part.filename ?? '附件文件'"
+          >
+            <i-lucide-file-text class="h-4 w-4 flex-none" />
+            <span class="truncate">{{ part.filename ?? "附件文件" }}</span>
+          </a>
+        </div>
+      </div>
     </div>
     <div v-if="!message.isStreaming" class="flex items-center gap-0.5">
       <button
@@ -97,13 +142,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import CompactionDivider from "./CompactionDivider.vue";
 import MarkdownText from "./MarkdownText.vue";
 import TaskCard from "./TaskCard.vue";
 import TaskNotificationDivider from "./TaskNotificationDivider.vue";
 import ThinkingCard from "./ThinkingCard.vue";
 import ToolCallCard from "./ToolCallCard.vue";
+import type { FilePart, ImagePart } from "@/composables/chat/display";
 import type {
   CompactionPart,
   DisplayMessage,
@@ -111,13 +157,16 @@ import type {
   TaskNotificationPart,
 } from "@/composables/useChat";
 
-defineProps<{
+// --- 用户气泡的附件（图片区显示缩略图，文本文件显示链接） ---
+
+const props = defineProps<{
   message: DisplayMessage;
   /** 「查看原文」（microcompact 副本回查）需要会话作用域。 */
   conversationId: string | null;
   forkEnabled?: boolean;
   revertEnabled?: boolean;
 }>();
+
 defineEmits<{
   fork: [cut: import("@/composables/chat/display").ForkCut];
   revert: [cut: import("@/composables/chat/display").ForkCut];
@@ -129,6 +178,28 @@ const ACTION_BUTTON_CLASS =
 
 const copied = ref(false);
 let copiedTimer: ReturnType<typeof setTimeout> | undefined;
+
+const imageParts = computed(() =>
+  props.message.parts.filter(
+    (part): part is ImagePart => part.kind === "image",
+  ),
+);
+const fileParts = computed(() =>
+  props.message.parts.filter((part): part is FilePart => part.kind === "file"),
+);
+const hasText = computed(() =>
+  props.message.parts.some((part) => part.kind === "text"),
+);
+/** 流式光标永远落在最后一个 text part 上（附件 parts 在其后）。 */
+const lastTextIndex = computed(() => {
+  for (let i = props.message.parts.length - 1; i >= 0; i -= 1) {
+    if (props.message.parts[i]!.kind === "text") return i;
+  }
+  return -1;
+});
+function attachmentUrl(attachmentId: string): string {
+  return `/api/attachments/${attachmentId}`;
+}
 
 /** 复制正文：取全部 text part（助手侧即 markdown 源文）。 */
 function messageText(message: DisplayMessage): string {

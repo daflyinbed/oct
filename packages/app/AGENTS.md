@@ -10,8 +10,9 @@
 
 ## 目录
 
-- `src/composables/`: `useChat.ts`（`createChatSession()` 工厂——主面板单例 `useChat()` 之外,子代理面板持有实例化会话状态:`attachSubagent`/`dispose`/`contextUsage:false`；`chat/run.ts` 统一 conversationId + generation 所有权与 begin/finalize，切会话主动 abort 视图订阅，旧事件/旧 finally 不得写消息/usage/busy；审批快照带请求序号与事件版本守卫）, `useSubagents.ts`（根会话任务 store:快照+`subagent_updated` upsert/epoch 去重,TaskCard 与底部指示器共用）, `useProjects.ts`, `useProviders.ts`, `useSettings.ts`（含 wire 日志开关）, `useAgentSettings.ts`（worker/title 配置）, `useMcpServers.ts` + `useMcpServerForm.ts` + `useMcpStatus.ts` + `useMcpPromptComposer.ts`, `useSlashCommands.ts`（斜杠命令菜单）, `useBackgroundTasks.ts`（后台 bash 任务快照 store:列表轮询(存在非终态且页面可见时 2s)+cancel upsert+唤醒 run 宽限窗探测）, `useContextUsage.ts`（上下文占用指示器）, `useGit.ts`（Changes 面板：status/diff/history/stashes/actions）, `useFileTree.ts` + `useFileContent.ts`（文件树/文件预览）, `useConversationFork.ts` / `useConversationRevert.ts`, `useTabs.ts`（工作区标签页）
+- `src/composables/`: `useChat.ts`（`createChatSession()` 工厂——主面板单例 `useChat()` 之外,子代理面板持有实例化会话状态:`attachSubagent`/`dispose`/`contextUsage:false`；`chat/run.ts` 统一 conversationId + generation 所有权与 begin/finalize，切会话主动 abort 视图订阅，旧事件/旧 finally 不得写消息/usage/busy；审批快照带请求序号与事件版本守卫）, `useSubagents.ts`（根会话任务 store:快照+`subagent_updated` upsert/epoch 去重,TaskCard 与底部指示器共用）, `useProjects.ts`, `useProviders.ts`, `useSettings.ts`（含 wire 日志开关）, `useAgentSettings.ts`（worker/title 配置）, `useMcpServers.ts` + `useMcpServerForm.ts` + `useMcpStatus.ts` + `useMcpPromptComposer.ts`, `useSlashCommands.ts`（斜杠命令菜单）, `useAttachments.ts`（聊天附件上传队列:入队即传(XHR 进度+并发2)/chip 状态机/发送门禁=全部 ready；fork/revert 草稿签发目标会话的新 staged ticket（共享资产字节），失败可重试、切会话取消；UI 在 `ChatPanel` 拖拽 + `AttachmentChips`）, `useBackgroundTasks.ts`（后台 bash 任务快照 store:列表轮询(存在非终态且页面可见时 2s)+cancel upsert+唤醒 run 宽限窗探测）, `useContextUsage.ts`（上下文占用指示器）, `useGit.ts`（Changes 面板：status/diff/history/stashes/actions）, `useFileTree.ts` + `useFileContent.ts`（文件树/文件预览）, `useConversationFork.ts` / `useConversationRevert.ts`, `useTabs.ts`（工作区标签页）
 - `src/components/`: `chat/`（含 BashTaskCard 后台任务卡/TaskNotificationDivider 通知分隔条/ApprovalBanner/输出查看 Dialog）, `subagent/`（TaskCard/子代理面板）, `changes/`（Git Changes）, `diff/`, `file-tree/`, `views/`（标签页视图）, `layout/`, `ui/`, `settings/`（含 `agents`/`mcp`/`permissions`/`provider` 子面板）, `sidebar/`
+- `src/composables/chat/attachments.ts` 是发送/草稿的共享附件类型；历史展示优先用 `MessageDto.user_content.body/attachments`，不显示模型用的固定文本快照。旧历史 fallback 集中在 `chat/display.ts`。
 - `src/api/`: `client.ts` (openapi-fetch), `schema.d.ts` (auto-generated)
 
 ## 单元测试
@@ -19,6 +20,7 @@
 - vitest 测试与源码同目录（`src/**/*.test.ts`）。独立 `vitest.config.ts`，node 环境，不加载 vue/unocss 插件。
 - 测 composable 时优先经公开 API 驱动：mock `@/api/client`（REST）与全局 `fetch`（SSE），不导出私有函数。
 - `useChat` 的 SSE mock：用 `ReadableStream` 构造 `Response`，可按任意字符串切块模拟网络分片。
+- 发送失败（含 HTTP 错误）不等于消息未提交：按 `client_request_id` 回执对账后才清空 composer 的正文/附件。回执探测仅在确认时替换历史，未确认不得清掉已有快照与 revision；run 装配失败但消息已落库时走 resume，不重发已认领附件。历史草稿恢复按 `draft_attachments` 复制附件，正文不重复内联文件内容；恢复后的服务端缩略图 URL 不走 objectURL revoke。
 
 ## 浏览器 e2e（拦截层）
 

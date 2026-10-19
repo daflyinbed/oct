@@ -1015,7 +1015,9 @@ async fn tool_event_overflow_stops_before_compaction_or_another_model_request() 
         context_window: Some(8192),
         idle: None,
         reasoning: None,
+        input_modalities: oct_agent::modality::InputModalities::Unknown,
         max_output_tokens: None,
+        attachments: None,
         permission: oct_agent::permissions::gate::PermissionGate::permissive(),
         prompt_env_refresh: None,
         prompt_generation: 0,
@@ -1165,6 +1167,120 @@ async fn mcp_tool_image_result_flows_through_to_the_model_and_persistence() {
         }
         other => panic!("expected ToolResult part, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn text_only_model_gates_tool_images_out_of_the_request_not_the_history() {
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+
+    let listing = vec![fake_tool("shot", Some("takes a screenshot"))];
+    let fake = Arc::new(FakeMcpConnection::new(listing.clone()).with_result(
+        "shot",
+        McpCallResult {
+            text: "screenshot captured".to_string(),
+            images: vec![McpImage {
+                mime_type: "image/png".to_string(),
+                data: "c2NyZWVuc2hvdDE=".to_string(),
+            }],
+            structured_json: None,
+            is_error: false,
+        },
+    ));
+    let manager = McpManager::default();
+    manager.insert_connection_for_test("srv-fake", "fake", None, fake.clone(), listing);
+
+    let mut all_tools = tools::default_tools(tools::workspace::WorkspaceRoots::new(
+        env.dir.path().to_path_buf(),
+        vec![],
+    ));
+    all_tools.extend(manager.tools_for_run(None));
+
+    let model = ScriptedModel::new(vec![
+        Turn::Stream(vec![
+            tool_call("call-1", "mcp__fake__shot", json!({})),
+            finish(FinishReason::ToolCalls),
+        ]),
+        Turn::Stream(vec![
+            text("seen"),
+            usage(500, 50),
+            finish(FinishReason::Stop),
+        ]),
+    ]);
+    let observer = model.observer();
+
+    let view = db::messages::LlmView {
+        messages: vec![oct_llm_provider::core::Message::text(
+            Role::User,
+            "take the screenshot",
+        )],
+        orderings: vec![1],
+        anchor: None,
+    };
+    let (_handle, mut rx) = spawn_agent_with_gate(
+        model,
+        all_tools,
+        env.pool.clone(),
+        &conv_id,
+        view,
+        None,
+        None,
+        oct_agent::permissions::gate::PermissionGate::permissive(),
+        oct_agent::modality::InputModalities::Known(vec![oct_agent::modality::Modality::Text]),
+    )
+    .await;
+    let events = collect_events(&mut rx, is_terminal).await;
+
+    // The live event and the persisted row keep the image: gating is a
+    // request-time view, storage and UI must not lose data.
+    match events
+        .iter()
+        .find(|e| matches!(e, AgentEvent::ToolResult { .. }))
+    {
+        Some(AgentEvent::ToolResult { images, .. }) => assert_eq!(images.len(), 1),
+        other => panic!("expected ToolResult, got {other:?}"),
+    }
+    let replayed = db::messages::load_messages_for_llm(&env.pool, &conv_id)
+        .await
+        .unwrap();
+    let stored_tool = replayed
+        .iter()
+        .find(|m| m.role == Role::Tool)
+        .expect("persisted tool message");
+    match &stored_tool.parts[0] {
+        ContentPart::ToolResult(ToolResult { images, .. }) => assert_eq!(images.len(), 1),
+        other => panic!("expected ToolResult part, got {other:?}"),
+    }
+
+    // The feed-back request to the model replaced the image with a note.
+    let second = &observer.requests()[1];
+    let tool_message = second
+        .messages
+        .iter()
+        .find(|m| m.role == Role::Tool)
+        .expect("tool message in the second request");
+    match &tool_message.parts[0] {
+        ContentPart::ToolResult(ToolResult {
+            content, images, ..
+        }) => {
+            assert!(images.is_empty(), "image must not reach a text-only model");
+            assert_eq!(
+                content,
+                &serde_json::json!(
+                    "screenshot captured\n[1 image attachment omitted: this model does not accept image input]"
+                )
+            );
+        }
+        other => panic!("expected ToolResult part, got {other:?}"),
+    }
+
+    let reloaded = db::messages::load_llm_view(&env.pool, &conv_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        reloaded.anchor.unwrap().input_modalities,
+        oct_agent::modality::InputModalities::Known(vec![oct_agent::modality::Modality::Text])
+    );
 }
 
 #[tokio::test]
@@ -1485,6 +1601,68 @@ async fn auto_compaction_replaces_history_persists_marker_and_streams_events() {
     assert_eq!(marker_row.id, *summary_message_id);
 }
 
+#[tokio::test]
+async fn image_attachment_budget_triggers_compaction_before_the_first_request() {
+    let env = TestEnv::new().await;
+    let conv = new_conversation(&env.pool, env.dir.path()).await;
+    for _ in 0..3 {
+        for role in [Role::User, Role::Assistant] {
+            db::messages::insert_message(
+                &env.pool,
+                &conv,
+                &Message::text(role, "x".repeat(2000)),
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+    }
+    let images = Message {
+        role: Role::User,
+        parts: (0..8)
+            .map(|_| ContentPart::ImageUrl {
+                url: oct_agent::attachments::attachment_url(&uuid::Uuid::new_v4().to_string()),
+            })
+            .collect(),
+    };
+    db::messages::insert_message(&env.pool, &conv, &images, None, None, None)
+        .await
+        .unwrap();
+    let model = ScriptedModel::new(vec![Turn::Stream(vec![
+        text("done"),
+        finish(FinishReason::Stop),
+    ])]);
+    model.push_generation(Ok("Earlier discussion summarized".into()));
+    let observer = model.observer();
+    let (_handle, mut events) = support::spawn_agent_with(
+        model,
+        Vec::new(),
+        env.pool.clone(),
+        &conv,
+        db::messages::load_llm_view(&env.pool, &conv).await.unwrap(),
+        Some(12_000),
+    )
+    .await;
+    let events = collect_events(&mut events, is_terminal).await;
+    let compacted = events
+        .iter()
+        .position(|event| matches!(event, AgentEvent::Compacted { .. }))
+        .expect("image budget must trigger compaction");
+    let output = events
+        .iter()
+        .position(|event| matches!(event, AgentEvent::TextDelta(_)))
+        .unwrap();
+    assert!(compacted < output);
+    assert_eq!(observer.generate_requests().len(), 1);
+    assert_eq!(
+        observer.requests()[0].messages.last().unwrap().parts,
+        images.parts
+    );
+    assert_eq!(*events.last().unwrap(), AgentEvent::Finish);
+}
+
 /// Map an event to its serde tag for ordering assertions.
 fn event_name(e: &AgentEvent) -> &'static str {
     match e {
@@ -1781,6 +1959,21 @@ use oct_agent::db::messages::CowSwap;
 
 const CLEARED_PLACEHOLDER: &str = "[Old tool result content cleared]";
 
+/// Seed usage provenance explicitly: these tests exercise measured v2
+/// anchors, while unversioned legacy anchors are intentionally discarded.
+async fn measured_projection_details(pool: &sqlx::SqlitePool, conv_id: &str) -> serde_json::Value {
+    let context = oct_agent::context::ContextState::new(
+        "test system prompt".into(),
+        msg_db::load_llm_view(pool, conv_id).await.unwrap(),
+    );
+    let assembler = oct_agent::attachments::RequestAssembler::new(
+        None,
+        oct_agent::context::projection::MediaPolicy::default(),
+    );
+    let projection = assembler.plan(&context).await.unwrap().snapshot;
+    json!({ "projection": projection, "input_modalities": oct_agent::modality::InputModalities::Unknown, "prompt_generation": 0 })
+}
+
 /// Alternating user/assistant rounds plus a trailing user message, seeded
 /// INTO the DB (unlike `compact_history`, which only builds an in-memory
 /// view). The last assistant carries usage so it becomes the provider
@@ -1797,13 +1990,14 @@ async fn seed_db_history(pool: &sqlx::SqlitePool, conv_id: &str, rounds: usize) 
         )
         .await
         .unwrap();
+        let details = measured_projection_details(pool, conv_id).await;
         let assistant = msg_db::insert_message(
             pool,
             conv_id,
             &Message::text(Role::Assistant, format!("old-assistant-{i}")),
             None,
             None,
-            None,
+            Some(&details),
         )
         .await
         .unwrap();
@@ -2091,6 +2285,110 @@ async fn cow_swap_after_anchor_deducts_tokens_across_reload() {
         stable.anchor.as_ref().unwrap().tokens,
         after.anchor.as_ref().unwrap().tokens
     );
+}
+
+#[tokio::test]
+async fn cow_image_savings_use_the_anchor_gate_in_memory_and_after_reload() {
+    use oct_agent::context::{ContextState, estimate_message_with_modalities};
+    use oct_agent::modality::{InputModalities, Modality, gate_request_messages};
+
+    for modalities in [
+        InputModalities::Known(vec![Modality::Text]),
+        InputModalities::Known(vec![Modality::Text, Modality::Image]),
+        InputModalities::Unknown,
+    ] {
+        let env = TestEnv::new().await;
+        let conv = new_conversation(&env.pool, env.dir.path()).await;
+        let original = Message {
+            role: Role::Tool,
+            parts: vec![ContentPart::ToolResult(ToolResult {
+                call_id: "shot".into(),
+                content: json!("screenshot"),
+                is_error: false,
+                images: vec![
+                    ToolResultImage {
+                        mime_type: "image/png".into(),
+                        data: "AAAA".into()
+                    };
+                    4
+                ],
+            })],
+        };
+        let history = [
+            Message::text(Role::User, "go"),
+            Message {
+                role: Role::Assistant,
+                parts: vec![ContentPart::ToolCall(ToolCall {
+                    id: "shot".into(),
+                    name: "screenshot".into(),
+                    arguments: "{}".into(),
+                })],
+            },
+            original.clone(),
+        ];
+        for message in &history {
+            msg_db::insert_message(&env.pool, &conv, message, None, None, None)
+                .await
+                .unwrap();
+        }
+        // Missing metadata covers legacy anchors that saw every image.
+        let details = (modalities != InputModalities::Unknown)
+            .then(|| json!({"input_modalities": modalities}));
+        let anchor = msg_db::insert_message(
+            &env.pool,
+            &conv,
+            &Message::text(Role::Assistant, "done"),
+            None,
+            None,
+            details.as_ref(),
+        )
+        .await
+        .unwrap();
+        let tokens = if modalities == InputModalities::Known(vec![Modality::Text]) {
+            3000u64
+        } else {
+            8000
+        };
+        msg_db::update_message_usage(&env.pool, &anchor.id, Some(tokens as u32), Some(0), None)
+            .await
+            .unwrap();
+        let before = msg_db::load_llm_view(&env.pool, &conv).await.unwrap();
+        assert_eq!(before.anchor.as_ref().unwrap().input_modalities, modalities);
+        let mut context =
+            ContextState::new(String::new(), before).with_input_modalities(modalities.clone());
+        let copy = micro::cleared_copy(&original);
+        let projected = gate_request_messages(vec![original.clone()], &modalities);
+        let savings = compact::estimate_message(&projected[0])
+            .saturating_sub(compact::estimate_message(&copy));
+        assert_eq!(
+            savings,
+            estimate_message_with_modalities(&original, &modalities)
+                .saturating_sub(estimate_message_with_modalities(&copy, &modalities))
+        );
+        // Deliberately pass raw savings: the anchor must recompute using its
+        // own snapshot rather than trust a caller's different projection.
+        let raw_savings =
+            compact::estimate_message(&original).saturating_sub(compact::estimate_message(&copy));
+        context.apply_clears(&[(2, raw_savings)], micro::PLACEHOLDER_CONTENT);
+        msg_db::apply_cow_swaps(
+            &env.pool,
+            &conv,
+            &[CowSwap {
+                call_id: "shot".into(),
+                copy,
+                details: None,
+            }],
+        )
+        .await
+        .unwrap();
+        let reloaded = msg_db::load_llm_view(&env.pool, &conv).await.unwrap();
+        assert_eq!(reloaded.anchor.as_ref().unwrap().tokens, tokens - savings);
+        assert_eq!(context.anchor(), reloaded.anchor.as_ref());
+        assert!(
+            reloaded.anchor.unwrap().tokens > 2900,
+            "gated images must not zero the anchor"
+        );
+    }
 }
 
 /// COW swap that happened BEFORE the anchor's request: the anchor's usage
@@ -2845,7 +3143,8 @@ async fn microcompact_anchor_mixed_deduction_matches_reload() {
     seed.push(Message::text(Role::User, "next"));
 
     for msg in &seed {
-        let stored = msg_db::insert_message(&env.pool, &conv_id, msg, None, None, None)
+        let details = measured_projection_details(&env.pool, &conv_id).await;
+        let stored = msg_db::insert_message(&env.pool, &conv_id, msg, None, None, Some(&details))
             .await
             .unwrap();
         // The plain-text anchor assistant (index 5 in the view) gets usage.
@@ -3219,6 +3518,7 @@ async fn spawn_gated(
         None,
         None,
         gate,
+        oct_agent::modality::InputModalities::Unknown,
     )
     .await
 }
@@ -3759,6 +4059,10 @@ async fn spawn_run_service(env: &TestEnv) -> Arc<RunService> {
         file_locks: dashmap::DashMap::new(),
         subagents: subagents.clone(),
         background: background.clone(),
+        attachments: Arc::new(oct_agent::attachments::AttachmentService::new(
+            env.dir.path().join("attachments"),
+            env.pool.clone(),
+        )),
         approvals: Arc::new(oct_agent::permissions::registry::ApprovalRegistry::new()),
         gates: Arc::new(dashmap::DashMap::new()),
         prompt_envs: Arc::new(dashmap::DashMap::new()),

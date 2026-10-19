@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT filename FROM staged_uploads WHERE asset_id = $1 ORDER BY created_at LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "filename",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "staged_uploads",
+            "name": "filename"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "87525ffe42d7d966c211cf98a0d6a62232c3dfa7fc9562dc933c24734566fa85"
+}

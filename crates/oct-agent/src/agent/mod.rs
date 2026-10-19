@@ -285,9 +285,16 @@ pub struct AgentContext {
     /// 子代理与内部模型调用（title/compact/wake）恒为 `None`：只有用户的
     /// 根会话携带档位，adapter 负责翻译成各家 wire 参数。
     pub reasoning: Option<oct_llm_provider::core::ReasoningRequest>,
+    /// 模型可接受的输入模态（models 表 `modalities_input` 的解释）。请求
+    /// 装配时以此门控工具结果图片——文本模型收到图片会被 provider 直接
+    /// 400。`Unknown`（列缺失/损坏）放行一切，保持门控前的行为。
+    pub input_modalities: crate::modality::InputModalities,
     /// Anthropic's total output ceiling from the model catalog, including
     /// thinking tokens. Other adapters retain their existing defaults.
     pub max_output_tokens: Option<u32>,
+    /// 附件存储：请求装配时把 `oct-attachment://` 引用水合成 data URL。
+    /// `None` = 装配不经 RunService（测试装配），引用原样保留。
+    pub attachments: Option<std::sync::Arc<crate::attachments::AttachmentService>>,
     /// The run's permission gate: every tool call passes
     /// `check` before `execute`. Assembled by the RunService (root and
     /// subagent runs alike) from the persisted rules, the conversation's
