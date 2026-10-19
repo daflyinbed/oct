@@ -9,15 +9,23 @@
           <div
             class="group relative h-12 w-12 flex-none overflow-hidden border border-line-soft rounded-lg"
           >
-            <img
-              :src="item.objectUrl"
-              :alt="item.filename"
-              class="h-full w-full object-cover"
-            />
+            <ImagePreview :src="item.objectUrl" :filename="item.filename">
+              <button
+                type="button"
+                class="h-full w-full cursor-zoom-in control-focus"
+                :aria-label="`预览 ${item.filename}`"
+              >
+                <img
+                  :src="item.objectUrl"
+                  :alt="item.filename"
+                  class="h-full w-full object-cover"
+                />
+              </button>
+            </ImagePreview>
             <!-- 上传进度：SVG 圆环 -->
             <svg
               v-if="item.status === 'uploading'"
-              class="absolute inset-0 h-full w-full -rotate-90"
+              class="pointer-events-none absolute inset-0 h-full w-full -rotate-90"
               viewBox="0 0 36 36"
             >
               <circle
@@ -43,7 +51,7 @@
             </svg>
             <span
               v-else-if="item.status === 'failed'"
-              class="absolute inset-0 flex items-center justify-center bg-danger-10/70 text-[10px] text-white"
+              class="pointer-events-none absolute inset-0 flex items-center justify-center bg-danger-10/70 text-[10px] text-white"
               >失败</span
             >
             <button
@@ -120,6 +128,7 @@
 </template>
 
 <script setup lang="ts">
+import ImagePreview from "@/components/ui/ImagePreview.vue";
 import type { PendingAttachment } from "@/composables/useAttachments";
 
 defineProps<{

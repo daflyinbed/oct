@@ -33,24 +33,28 @@
             >
           </template>
         </div>
-        <!-- 图片附件：缩略图（点击新标签页看原图） -->
+        <!-- 图片附件：缩略图（点击在当前页面预览） -->
         <div v-if="imageParts.length > 0" class="flex flex-wrap gap-1.5">
-          <a
+          <ImagePreview
             v-for="part in imageParts"
             :key="part.attachmentId"
-            :href="attachmentUrl(part.attachmentId)"
-            target="_blank"
-            rel="noopener"
-            class="block max-w-[240px]"
-            :title="part.filename ?? undefined"
+            :src="attachmentUrl(part.attachmentId)"
+            :filename="part.filename ?? '附件图片'"
           >
-            <img
-              :src="attachmentUrl(part.attachmentId)"
-              :alt="part.filename ?? '附件图片'"
-              loading="lazy"
-              class="max-h-44 w-auto border border-line-soft rounded-lg"
-            />
-          </a>
+            <button
+              type="button"
+              class="block max-w-[240px] cursor-zoom-in rounded-lg control-focus"
+              :title="part.filename ?? '附件图片'"
+              :aria-label="`预览 ${part.filename ?? '附件图片'}`"
+            >
+              <img
+                :src="attachmentUrl(part.attachmentId)"
+                :alt="part.filename ?? '附件图片'"
+                loading="lazy"
+                class="max-h-44 max-w-full w-auto border border-line-soft rounded-lg"
+              />
+            </button>
+          </ImagePreview>
         </div>
         <!-- 文本附件：文件链接在新标签页以纯文本查看。 -->
         <div v-if="fileParts.length > 0" class="flex flex-wrap gap-1.5">
@@ -143,6 +147,7 @@
 
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import ImagePreview from "@/components/ui/ImagePreview.vue";
 import CompactionDivider from "./CompactionDivider.vue";
 import MarkdownText from "./MarkdownText.vue";
 import TaskCard from "./TaskCard.vue";
