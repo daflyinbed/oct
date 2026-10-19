@@ -22,6 +22,7 @@ declare module 'vue' {
     ChatMessage: typeof import('./components/chat/ChatMessage.vue')['default']
     ChatMessageList: typeof import('./components/chat/ChatMessageList.vue')['default']
     ChatPanel: typeof import('./components/chat/ChatPanel.vue')['default']
+    ChatTurnNavigator: typeof import('./components/chat/ChatTurnNavigator.vue')['default']
     CompactionDivider: typeof import('./components/chat/CompactionDivider.vue')['default']
     ConnectProviderPage: typeof import('./components/settings/provider/ConnectProviderPage.vue')['default']
     ContextRing: typeof import('./components/chat/ContextRing.vue')['default']
