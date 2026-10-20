@@ -108,6 +108,7 @@ declare module 'vue' {
     SubagentTabView: typeof import('./components/subagent/SubagentTabView.vue')['default']
     TaskCard: typeof import('./components/chat/TaskCard.vue')['default']
     TaskNotificationDivider: typeof import('./components/chat/TaskNotificationDivider.vue')['default']
+    TerminalTabView: typeof import('./components/views/TerminalTabView.vue')['default']
     ThinkingCard: typeof import('./components/chat/ThinkingCard.vue')['default']
     ThreadItem: typeof import('./components/sidebar/ThreadItem.vue')['default']
     TitleBar: typeof import('./components/layout/TitleBar.vue')['default']

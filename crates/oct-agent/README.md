@@ -17,6 +17,7 @@ oct 的后端服务 crate：Axum REST/SSE API + agent loop 运行时。既是 li
 - `subagent/` — `task` 工具委派的子代理运行时
 - `permissions/` — 权限规则求值（rules/evaluator/descriptor/gate/registry）
 - `tools/` — `read`/`write`/`edit_file`/`listdir`/`grep`/`glob`/`execute`/`task_stop`
+- `terminal.rs` + `api/terminals.rs` — 项目级交互 shell（WezTerm `portable-pty`）；REST 创建/列出/关闭，WebSocket 收发原始字节与 resize。PTY 独立于浏览器连接，单会话只允许一个输入控制者，断线按字节游标重放最近约 1 MiB 输出。会话只驻留内存，最多 16 个；关闭终端/删除项目会终止 shell 与前台进程，服务重启后需重新创建。
 - `codemode/` — code mode 宿主侧：catalog 生成、SDK 发布、诊断、storage
 - `mcp/` — `McpManager`（连接对账/目录）、OAuth 凭据
 - `db/` — sqlx 数据层（compile-time checked 查询）

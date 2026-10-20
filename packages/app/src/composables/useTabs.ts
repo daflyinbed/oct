@@ -5,7 +5,7 @@ import { useProjects } from "./useProjects";
 import type { DiffSelection } from "./useGit";
 
 export type TabKind =
-  "chat" | "file" | "diff" | "git-graph" | "mcp" | "subagent";
+  "chat" | "file" | "diff" | "git-graph" | "mcp" | "subagent" | "terminal";
 
 export interface WorkspaceTab {
   /** 稳定唯一键：`chat:<conversationId>`、`file:<projectId>:<path>`、`diff:<key>`… */
@@ -19,6 +19,8 @@ export interface WorkspaceTab {
   diffSelection?: DiffSelection;
   /** subagent 专属：所属根会话 id（「返回主对话」跳回；null = 未知）。 */
   rootConversationId?: string | null;
+  /** terminal 专属：创建时的本地目录；payload 是后端 PTY session id。 */
+  workingDir?: string;
 }
 
 const tabs = ref<WorkspaceTab[]>([]);
@@ -32,11 +34,11 @@ export function useTabs() {
     () => tabs.value.find((tab) => tab.id === activeTabId.value) ?? null,
   );
 
-  function openTab(tab: WorkspaceTab) {
+  function openTab(tab: WorkspaceTab, activate = true) {
     if (!tabs.value.some((existing) => existing.id === tab.id)) {
       tabs.value = [...tabs.value, tab];
     }
-    activeTabId.value = tab.id;
+    if (activate) activeTabId.value = tab.id;
   }
 
   function closeTab(id: string) {

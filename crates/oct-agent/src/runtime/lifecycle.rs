@@ -8,7 +8,7 @@ use tokio::sync::RwLock;
 
 #[derive(Default)]
 pub struct Lifecycle {
-    pub admission: RwLock<()>,
+    pub admission: Arc<RwLock<()>>,
     deleting: Arc<DashSet<String>>,
 }
 struct Deleting {
@@ -91,8 +91,9 @@ impl RunService {
         Ok(deleted)
     }
     pub async fn delete_project(&self, id: &str) -> Result<bool, AppError> {
-        // Serialize project deletion against creation of conversations. Runs
-        // are rejected by the project tombstone while existing runs drain.
+        // Serialize project deletion against creation of conversations and
+        // terminals. Runs are rejected by the project tombstone while existing
+        // runs drain.
         let _admission = self.lifecycle.admission.write().await;
         let _deleting = self.lifecycle.begin(format!("project:{id}"))?;
         let conversations =

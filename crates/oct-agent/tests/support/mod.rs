@@ -393,7 +393,7 @@ pub fn is_terminal(event: &AgentEvent) -> bool {
 // --- Full-stack e2e harness ------------------------------------------------
 
 /// A real oct-agent HTTP server on a random port, backed by its own
-/// migrated SQLite file inside a temp directory. Tests talk to it purely
+/// migrated SQLite file inside a temp directory. Tests normally talk to it
 /// over HTTP (reqwest); the LLM behind a provider row points at an
 /// [`llm::LlmMock`]. Everything between the two is production code.
 pub struct TestApp {
@@ -402,6 +402,8 @@ pub struct TestApp {
     /// Handle onto the server's own database: lets tests seed persisted
     /// state (e.g. an interrupted turn's dangling history) directly.
     pub pool: sqlx::SqlitePool,
+    /// Shared server state for deterministic lifecycle coordination.
+    pub state: oct_agent::api::AppState,
     /// The very `Arc<McpManager>` the server's AppState holds: lets tests
     /// inject scripted MCP connections (see [`mcp::FakeMcpConnection`])
     /// instead of spawning real server processes.
@@ -511,8 +513,16 @@ impl TestApp {
             mcp: mcp.clone(),
             oauth_flows: Arc::new(oct_agent::oauth::OAuthFlowStore::default()),
             wire_log: wire_test_setup(),
+            // Terminal tests must not source the developer's shell rc files.
+            terminals: Arc::new(oct_agent::terminal::TerminalManager::with_shell(
+                if cfg!(windows) {
+                    "powershell.exe"
+                } else {
+                    "/bin/sh"
+                },
+            )),
         };
-        let app = oct_agent::api::build_router(state);
+        let app = oct_agent::api::build_router(state.clone());
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -526,6 +536,7 @@ impl TestApp {
             dir,
             base_url: format!("http://127.0.0.1:{port}"),
             pool,
+            state,
             mcp,
             background,
             attachments,

@@ -14,6 +14,7 @@ pub mod reasoning;
 pub mod runtime;
 pub mod seed;
 pub mod subagent;
+pub mod terminal;
 pub mod tools;
 
 pub mod error;

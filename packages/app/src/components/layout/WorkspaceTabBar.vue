@@ -19,7 +19,7 @@
       <span class="max-w-[160px] truncate">{{ tab.title }}</span>
       <span
         class="h-4 w-4 inline-flex items-center justify-center rounded-[4px] text-faint transition-colors hover:bg-neutral-2 hover:text-neutral-10"
-        title="关闭标签"
+        :title="tab.kind === 'terminal' ? '关闭终端并结束 shell' : '关闭标签'"
         @click.stop="$emit('close', tab.id)"
       >
         <i-lucide-x class="h-2.5 w-2.5" />
@@ -70,6 +70,7 @@ import IconDiff from "~icons/lucide/git-compare";
 import IconChat from "~icons/lucide/message-square";
 import IconPlug from "~icons/lucide/plug";
 import IconRotateCcw from "~icons/lucide/rotate-ccw";
+import IconTerminal from "~icons/lucide/terminal";
 import type { TabKind } from "@/composables/useTabs";
 import type { Component } from "vue";
 
@@ -92,7 +93,8 @@ defineEmits<{
   tabAction: [action: TabAction];
 }>();
 
-export type TabAction = "add-chat" | "open-diff" | "open-graph";
+export type TabAction =
+  "add-chat" | "open-diff" | "open-graph" | "open-terminal";
 
 // 与侧边栏 ThreadItem 同款：分叉 → git-branch，回退备份 → rotate-ccw，
 // 其余按标签类型取图标
@@ -106,6 +108,7 @@ function tabIcon(tab: DisplayTab): Component {
   if (tab.kind === "diff") return IconDiff;
   if (tab.kind === "mcp") return IconPlug;
   if (tab.kind === "subagent") return IconBot;
+  if (tab.kind === "terminal") return IconTerminal;
   return IconGraph;
 }
 
@@ -117,5 +120,6 @@ const addActions: {
   { label: "New Chat", event: "add-chat", icon: IconChat },
   { label: "File Diff", event: "open-diff", icon: IconDiff },
   { label: "Git Graph", event: "open-graph", icon: IconGraph },
+  { label: "Terminal", event: "open-terminal", icon: IconTerminal },
 ];
 </script>

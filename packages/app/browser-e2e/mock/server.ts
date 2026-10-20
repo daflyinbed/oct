@@ -80,6 +80,7 @@ export interface Scenario {
   };
   /** GET /api/projects 的返回体(形状见 schema.d.ts 的 Project)。 */
   projects?: unknown[];
+  terminals?: components["schemas"]["TerminalInfo"][];
   /** 全部会话(按 project_id 过滤返回)。 */
   conversations?: unknown[];
   /** GET /api/conversations/:id/messages 的返回体(MessageDto[])。 */
@@ -604,6 +605,44 @@ async function handleApi(
     };
     (s.projects ??= []).push(project);
     return sendJson(res, 201, project);
+  }
+
+  // GET|POST /api/projects/:pid/conversations
+  const terminalRoute = pathname.match(
+    /^\/api\/projects\/([^/]+)\/terminals(?:\/([^/]+))?$/,
+  );
+  if (terminalRoute) {
+    const projectId = decodeURIComponent(terminalRoute[1]);
+    const id = terminalRoute[2];
+    if (req.method === "GET" && !id) {
+      return sendJson(
+        res,
+        200,
+        (s.terminals ?? []).filter((item) => item.project_id === projectId),
+      );
+    }
+    if (req.method === "POST" && !id) {
+      const project = (s.projects ?? []).find(
+        (item) => (item as { id: string }).id === projectId,
+      ) as { working_dir: string } | undefined;
+      const terminal: components["schemas"]["TerminalInfo"] = {
+        id: `terminal-${++state.autoId}`,
+        project_id: projectId,
+        working_dir: project?.working_dir ?? "/tmp",
+        shell: "/bin/sh",
+        created_at: nowIso(),
+        exited: false,
+        exit_code: null,
+      };
+      (s.terminals ??= []).push(terminal);
+      return sendJson(res, 201, terminal);
+    }
+    if (req.method === "DELETE" && id) {
+      s.terminals = (s.terminals ?? []).filter(
+        (item) => item.id !== id || item.project_id !== projectId,
+      );
+      return sendJson(res, 204, null);
+    }
   }
 
   // GET|POST /api/projects/:pid/conversations

@@ -11,7 +11,10 @@ import VueRouter from "vue-router/vite";
 const backendProxy = {
   "/api": {
     target: "http://127.0.0.1:3000",
-    changeOrigin: true,
+    // Preserve Host so the terminal's same-origin WebSocket check also
+    // applies through the dev/preview proxy.
+    changeOrigin: false,
+    ws: true,
   },
 };
 

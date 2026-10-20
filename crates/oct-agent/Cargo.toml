@@ -23,7 +23,7 @@ reqwest = { version = "0.13", features = ["json", "form"] }
 # No default features: debug builds read the folder at runtime, release builds
 # bake the files in via include_bytes.
 rust-embed = "8.12"
-axum = { version = "0.8", features = ["multipart"] }
+axum = { version = "0.8", features = ["multipart", "ws"] }
 chrono = { version = "0.4", features = [ "serde" ] }
 futures-util = "0.3"
 serde = { version = "1", features = [ "derive" ] }
@@ -76,6 +76,7 @@ grep-regex = "0.1"
 grep-searcher = "0.1"
 # Default database location under $XDG_DATA_HOME (db::resolve_database_url)
 dirs = "7.0.0"
+portable-pty = "0.9"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -92,3 +93,4 @@ reqwest = { version = "0.13", features = ["stream", "multipart"] }
 # auto-advance replaces sleep-based waiting ("tests forbid sleep as a sync
 # primitive"). Test-only; not part of the production feature set.
 tokio = { version = "1", features = ["test-util"] }
+tokio-tungstenite = "0.29"

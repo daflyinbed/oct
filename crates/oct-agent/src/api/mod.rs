@@ -15,6 +15,7 @@ pub mod projects;
 pub mod providers;
 pub mod settings;
 pub mod subagents;
+pub mod terminals;
 
 use axum::{Router, handler::HandlerWithoutStateExt};
 use dashmap::DashMap;
@@ -54,6 +55,7 @@ pub struct AppState {
     /// Live handle onto the LLM wire-log sink (the `settings` API flips
     /// it). Installed by `main` before the subscriber is assembled.
     pub wire_log: oct_llm_provider::wire::WireLogControl,
+    pub terminals: Arc<crate::terminal::TerminalManager>,
 }
 
 #[derive(OpenApi)]
@@ -133,6 +135,8 @@ pub struct AppState {
         providers::ProviderResponse,
         providers::ModelSummary,
         providers::ApiKeyResponse,
+        crate::terminal::TerminalInfo,
+        terminals::CreateTerminalRequest,
     ))
 )]
 pub struct ApiDoc;
@@ -191,6 +195,11 @@ fn api_routes(state: AppState) -> OpenApiRouter<AppState> {
         .routes(utoipa_axum::routes!(projects::get_project))
         .routes(utoipa_axum::routes!(projects::update_project))
         .routes(utoipa_axum::routes!(projects::delete_project))
+        // User-operated shells; their lifetime is independent of chat runs.
+        .routes(utoipa_axum::routes!(terminals::create_terminal))
+        .routes(utoipa_axum::routes!(terminals::list_terminals))
+        .routes(utoipa_axum::routes!(terminals::delete_terminal))
+        .routes(utoipa_axum::routes!(terminals::attach_terminal))
         // Project files (directory tree + content preview)
         .routes(utoipa_axum::routes!(files::list_project_files))
         .routes(utoipa_axum::routes!(files::read_project_file))

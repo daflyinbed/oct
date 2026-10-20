@@ -41,6 +41,9 @@ importers:
       '@vueuse/core':
         specifier: ^15.0.0
         version: 15.0.0(vue@3.5.44(typescript@5.9.3))
+      ghostty-web:
+        specifier: 0.4.0-next.20.g1858a59
+        version: 0.4.0-next.20.g1858a59
       openapi-fetch:
         specifier: ^0.17.0
         version: 0.17.0
@@ -2006,6 +2009,9 @@ packages:
 
   get-tsconfig@4.14.3:
     resolution: {integrity: sha512-++QEw4DIY7WGoukz+/+A/8dGYPT9l9yIadnmSgZ8Rjr3YVSVDipQSO9CdnJo9ePqFqUUqh+wk9uIaoiAwsiPkA==}
+
+  ghostty-web@0.4.0-next.20.g1858a59:
+    resolution: {integrity: sha512-NXA9H3IJlx+DGJukXbOPQWFkigYdAatTqkoIvM8tvhfbaYoDf3gGKxXLLyXtLYOBt5qzGdEZa294TU36gULjVg==}
 
   github-slugger@2.0.0:
     resolution: {integrity: sha512-IaOQ9puYtjrkq7Y0Ygl9KDZnrf/aiUJYUpVf89y8kyaxbRG7Y1SrX/jaumrv81vc61+kiMempujsM3Yw7w5qcw==}
@@ -5177,6 +5183,8 @@ snapshots:
   get-tsconfig@4.14.3:
     dependencies:
       resolve-pkg-maps: 1.0.0
+
+  ghostty-web@0.4.0-next.20.g1858a59: {}
 
   github-slugger@2.0.0: {}
 

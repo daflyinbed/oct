@@ -51,10 +51,17 @@
           <WorkspaceTabBar
             :tabs="displayTabs"
             @select="activateTab"
-            @close="closeTab"
+            @close="handleCloseTab"
             @tab-action="handleTabAction"
           />
           <div class="min-h-0 flex flex-1 flex-col">
+            <p
+              v-if="terminalError"
+              role="alert"
+              class="flex-none px-3 py-2 text-xs text-danger-10"
+            >
+              {{ terminalError }}
+            </p>
             <!-- Chat 内容走路由（深链/侧栏入口共用）；其余标签类型直接切换渲染 -->
             <div
               v-show="!activeTab || activeTab.kind === 'chat'"
@@ -91,6 +98,17 @@
               :agent-id="tab.payload ?? ''"
               :root-conversation-id="tab.rootConversationId ?? null"
               :description="tab.title ?? ''"
+            />
+            <!-- PTYs survive tab switches; closing the tab explicitly
+                 deletes its backend session before destroying the view. -->
+            <TerminalTabView
+              v-for="tab in terminalTabs"
+              v-show="activeTabId === tab.id"
+              :key="tab.id"
+              :session-id="tab.payload!"
+              :project-id="tab.projectId!"
+              :working-dir="tab.workingDir ?? ''"
+              :active="activeTabId === tab.id"
             />
           </div>
         </div>
@@ -194,6 +212,7 @@ import DiffTabView from "@/components/views/DiffTabView.vue";
 import FileTabView from "@/components/views/FileTabView.vue";
 import GitGraphTabView from "@/components/views/GitGraphTabView.vue";
 import McpTabView from "@/components/views/McpTabView.vue";
+import TerminalTabView from "@/components/views/TerminalTabView.vue";
 import {
   refreshBackgroundTasks,
   setWakeRunHandler,
@@ -203,6 +222,12 @@ import { useProjects } from "@/composables/useProjects";
 import { useProviders } from "@/composables/useProviders";
 import { refreshSubagents } from "@/composables/useSubagents";
 import { useTabs } from "@/composables/useTabs";
+import {
+  createTerminal,
+  deleteTerminal,
+  listTerminals,
+} from "@/composables/useTerminal";
+import type { TerminalInfo } from "@/composables/useTerminal";
 import type { components } from "@/api/schema";
 import type { TabAction } from "@/components/layout/WorkspaceTabBar.vue";
 import type { DiffSelection } from "@/composables/useGit";
@@ -267,6 +292,12 @@ const showDiffPanel = ref(true);
 const showFileTree = ref(true);
 const showSettings = ref(false);
 const showNewProject = ref(false);
+const terminalError = ref("");
+const openingTerminal = ref(false);
+let workspaceDisposed = false;
+onScopeDispose(() => {
+  workspaceDisposed = true;
+});
 /** 非空 = 打开设置时直接定位到该 MCP server 的编辑表单（状态栏菜单深链）。 */
 const mcpFocusServerId = ref<string | null>(null);
 /** 新建与编辑共用一个对话框：project 为 null 时是新建模式。 */
@@ -332,6 +363,9 @@ setWakeRunHandler((conversationId) => {
 const subagentTabs = computed(() =>
   tabs.value.filter((tab) => tab.kind === "subagent"),
 );
+const terminalTabs = computed(() =>
+  tabs.value.filter((tab) => tab.kind === "terminal"),
+);
 
 watch(activeTabId, (id, prevId) => {
   const tab = tabs.value.find((item) => item.id === id);
@@ -390,7 +424,64 @@ async function handleDeleteBackup(projectId: string, id: string) {
 function handleTabAction(action: TabAction) {
   if (action === "add-chat") void handleAddChatTab();
   else if (action === "open-diff") handleOpenDiffTab();
+  else if (action === "open-terminal") void handleOpenTerminalTab();
   else handleOpenGraphTab();
+}
+
+function openTerminalTab(terminal: TerminalInfo, activate = true) {
+  const project = projects.value.find(
+    (item) => item.id === terminal.project_id,
+  );
+  openTab(
+    {
+      id: `terminal:${terminal.id}`,
+      kind: "terminal",
+      payload: terminal.id,
+      projectId: terminal.project_id,
+      workingDir: terminal.working_dir,
+      title: `Terminal · ${project?.name ?? "Shell"} · ${terminal.id.slice(0, 4)}`,
+    },
+    activate,
+  );
+}
+
+async function handleOpenTerminalTab() {
+  if (openingTerminal.value) return;
+  const projectId =
+    activeTab.value?.projectId ??
+    activeProjectId.value ??
+    projects.value[0]?.id;
+  if (!projectId) {
+    showNewProject.value = true;
+    return;
+  }
+  openingTerminal.value = true;
+  terminalError.value = "";
+  try {
+    const terminal = await createTerminal(projectId);
+    if (workspaceDisposed) return;
+    showChat.value = true;
+    openTerminalTab(terminal);
+  } catch (error) {
+    terminalError.value =
+      error instanceof Error ? error.message : "无法创建终端";
+  } finally {
+    openingTerminal.value = false;
+  }
+}
+
+async function handleCloseTab(id: string) {
+  const tab = tabs.value.find((item) => item.id === id);
+  if (tab?.kind === "terminal" && tab.projectId && tab.payload) {
+    try {
+      await deleteTerminal(tab.projectId, tab.payload);
+    } catch (error) {
+      terminalError.value =
+        error instanceof Error ? error.message : "无法关闭终端";
+      return;
+    }
+  }
+  closeTab(id);
 }
 
 async function handleAddChatTab() {
@@ -452,8 +543,20 @@ async function handleCreateConversation(projectId: string) {
   }
 }
 
-onMounted(() => {
-  fetchProjects();
+onMounted(async () => {
   fetchProviders();
+  await fetchProjects();
+  // Discover server-owned PTYs after refresh. Restored inactive tabs attach
+  // lazily, so merely opening this page does not steal another view's input.
+  const results = await Promise.allSettled(
+    projects.value.map((project) => listTerminals(project.id)),
+  );
+  if (workspaceDisposed) return;
+  for (const result of results) {
+    if (result.status !== "fulfilled") continue;
+    for (const terminal of result.value) openTerminalTab(terminal, false);
+  }
+  if (!activeTabId.value && terminalTabs.value[0])
+    activateTab(terminalTabs.value[0].id);
 });
 </script>

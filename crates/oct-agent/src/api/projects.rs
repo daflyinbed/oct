@@ -120,6 +120,10 @@ pub async fn delete_project(
 ) -> ApiResult<StatusCode> {
     let deleted = state.runs.delete_project(&id).await?;
     if deleted {
+        let terminals = state.terminals.clone();
+        tokio::task::spawn_blocking(move || terminals.remove_project(&id))
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(AppError::NotFound("Project not found".into()))

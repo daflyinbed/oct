@@ -146,6 +146,7 @@ async fn run_server(
         mcp,
         oauth_flows: Arc::new(oct_agent::oauth::OAuthFlowStore::default()),
         wire_log,
+        terminals: Arc::new(oct_agent::terminal::TerminalManager::default()),
     };
 
     let app = api::build_router(state).layer(CorsLayer::permissive());
