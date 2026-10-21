@@ -4,7 +4,7 @@
       class="workspace-panel-header select-none justify-between border-b border-line-soft"
     >
       <div
-        class="min-w-0 flex items-center gap-[7px] text-[12.5px] text-neutral-10 font-semibold"
+        class="min-w-0 flex items-center gap-[7px] text-base text-neutral-10 font-semibold"
       >
         <i-lucide-git-compare
           v-if="mode === 'changes'"
@@ -24,7 +24,7 @@
       </div>
       <div class="flex shrink-0 items-center gap-1">
         <div
-          class="flex items-center border border-line-soft rounded-md p-0.5 text-[11px]"
+          class="flex items-center border border-line-soft rounded-md p-0.5 text-xs"
         >
           <button
             class="rounded px-1.5 py-0.5 transition-colors"
@@ -50,7 +50,7 @@
           </button>
         </div>
         <button
-          class="h-[22px] w-[22px] control-ghost rounded-md text-[12px] control-focus"
+          class="h-[22px] w-[22px] control-ghost rounded-md text-sm control-focus"
           title="关闭 Changes"
           aria-label="关闭 Changes"
           @click="emit('close')"
@@ -59,11 +59,11 @@
         </button>
       </div>
     </header>
-    <p v-if="!projectId" class="px-2 py-1.5 text-[12.5px] text-faint">
+    <p v-if="!projectId" class="px-2 py-1.5 text-base text-faint">
       选择项目会话以查看 Git 变更。
     </p>
     <template v-else>
-      <div class="flex shrink-0 items-center gap-1 p-2 text-[12px]">
+      <div class="flex shrink-0 items-center gap-1 p-2 text-sm">
         <button
           class="min-w-0 flex flex-1 items-center gap-1.5 control-ghost rounded py-1 text-left"
           :disabled="!status || busy"
@@ -137,7 +137,7 @@
           </div>
           <p
             v-else-if="loading && !status"
-            class="px-2 py-1.5 text-[12.5px] text-faint"
+            class="px-2 py-1.5 text-base text-faint"
           >
             加载 Git 状态…
           </p>
@@ -145,7 +145,7 @@
         <template v-else>
           <div
             v-if="mode === 'stashes'"
-            class="mb-1 flex items-center justify-between px-2 py-1 text-[12.5px] text-dim"
+            class="mb-1 flex items-center justify-between px-2 py-1 text-base text-dim"
           >
             <span>Stashes</span
             ><button
@@ -164,10 +164,10 @@
                 openDiff({ revision: entry.id, stash: mode === 'stashes' })
               "
             >
-              <p class="text-neutral-11 truncate text-[12.5px]">
+              <p class="text-neutral-11 truncate text-base">
                 {{ entry.subject }}
               </p>
-              <p class="mt-0.5 flex gap-2 text-[10.5px] text-faint">
+              <p class="mt-0.5 flex gap-2 text-badge text-faint">
                 <span class="text-accent-10 font-mono">{{
                   entry.short_id
                 }}</span
@@ -178,13 +178,13 @@
           </div>
           <p
             v-if="(mode === 'stashes' ? stashes : history).length === 0"
-            class="px-2 py-1.5 text-[12.5px] text-faint"
+            class="px-2 py-1.5 text-base text-faint"
           >
             {{ mode === "stashes" ? "暂无 stash" : "暂无提交" }}
           </p>
           <p
             v-if="mode === 'history' && history.length === 100"
-            class="px-2 py-1.5 text-[12.5px] text-faint"
+            class="px-2 py-1.5 text-base text-faint"
           >
             显示最近 100 条提交
           </p>
@@ -192,7 +192,7 @@
       </div>
       <footer
         v-if="status"
-        class="flex shrink-0 items-center justify-between gap-2 border-t border-line-soft p-2 text-[12px]"
+        class="flex shrink-0 items-center justify-between gap-2 border-t border-line-soft p-2 text-sm"
       >
         <span
           class="min-w-0 flex items-center gap-1.5 truncate"
@@ -233,11 +233,11 @@
         /><AlertDialogContent
           class="fixed left-1/2 top-1/2 z-50 w-[min(420px,90vw)] border border-line-soft rounded-xl bg-surface p-5 shadow-[var(--oct-shadow)] -translate-x-1/2 -translate-y-1/2"
         >
-          <AlertDialogTitle class="text-[15px] font-semibold">{{
+          <AlertDialogTitle class="text-lg font-semibold">{{
             pending?.label
           }}</AlertDialogTitle>
           <AlertDialogDescription
-            class="mt-3 whitespace-pre-wrap text-[13px] text-dim"
+            class="mt-3 whitespace-pre-wrap text-base text-dim"
             >{{ pending?.description }}</AlertDialogDescription
           >
           <div class="mt-5 flex justify-end gap-2">

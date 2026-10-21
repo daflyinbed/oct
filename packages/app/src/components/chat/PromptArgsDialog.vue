@@ -9,21 +9,14 @@
           class="flex items-center gap-2 border-b border-line-soft px-4 py-3"
         >
           <i-lucide-terminal class="h-4 w-4 flex-none text-dim" />
-          <DialogTitle
-            class="min-w-0 flex-1 truncate text-[13px] font-semibold"
-          >
+          <DialogTitle class="min-w-0 flex-1 truncate text-base font-semibold">
             /{{ promptName }}
           </DialogTitle>
-          <span class="flex-none text-[11.5px] text-faint">{{
-            serverName
-          }}</span>
+          <span class="flex-none text-xs text-faint">{{ serverName }}</span>
         </div>
 
         <form class="flex flex-col gap-3 px-4 py-3.5" @submit.prevent="submit">
-          <DialogDescription
-            v-if="promptDescription"
-            class="text-[12px] text-dim"
-          >
+          <DialogDescription v-if="promptDescription" class="text-sm text-dim">
             {{ promptDescription }}
           </DialogDescription>
           <DialogDescription v-else class="sr-only">
@@ -34,30 +27,30 @@
             :key="argument.name"
             class="flex flex-col gap-1"
           >
-            <span class="flex items-center gap-1.5 text-[12px] text-neutral-10">
+            <span class="flex items-center gap-1.5 text-sm text-neutral-10">
               <span class="font-mono">{{ argument.name }}</span>
               <span v-if="argument.required" class="text-danger-10">*</span>
-              <span v-if="!argument.required" class="text-[10.5px] text-faint"
+              <span v-if="!argument.required" class="text-badge text-faint"
                 >(可选)</span
               >
             </span>
-            <span v-if="argument.description" class="text-[11px] text-faint">{{
+            <span v-if="argument.description" class="text-xs text-faint">{{
               argument.description
             }}</span>
             <input
               v-model="values[argument.name]"
               :placeholder="argument.description ?? argument.name"
-              class="h-8 border border-line-soft rounded-md bg-surface px-2.5 text-[12.5px] text-neutral-10 outline-none transition-colors focus:border-accent-6"
+              class="h-8 border border-line-soft rounded-md bg-surface px-2.5 text-base text-neutral-10 outline-none transition-colors focus:border-accent-6"
               @keydown.escape.stop
             />
           </label>
-          <p v-if="formError" class="text-[11.5px] text-danger-10">
+          <p v-if="formError" class="text-xs text-danger-10">
             {{ formError }}
           </p>
           <div class="flex items-center justify-end gap-1.5 pt-0.5">
             <button
               type="button"
-              class="h-7 control-surface rounded-md px-2.5 text-[12px] font-medium control-focus"
+              class="h-7 control-surface rounded-md px-2.5 text-sm font-medium control-focus"
               @click="$emit('cancel')"
             >
               取消
@@ -65,7 +58,7 @@
             <button
               type="submit"
               :disabled="submitting"
-              class="h-7 inline-flex items-center gap-1.5 rounded-md bg-accent-7 px-2.5 text-[12px] text-white font-medium control-focus transition-[filter] disabled:opacity-50 hover:brightness-110"
+              class="h-7 inline-flex items-center gap-1.5 rounded-md bg-accent-7 px-2.5 text-sm text-white font-medium control-focus transition-[filter] disabled:opacity-50 hover:brightness-110"
             >
               <i-lucide-loader-circle
                 v-if="submitting"

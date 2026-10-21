@@ -25,6 +25,19 @@ const colorGroups = [
 const colorVariants = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, "contrast"] as const;
 const colorProperties = ["bg", "text", "border", "fill", "stroke"] as const;
 
+// 字号与行高的唯一来源；同时导出 CSS 变量，供全局样式、Markdown 和终端消费。
+// 主文字 14px，标题 16/18px；辅助文字 12/13px，徽标 11px。
+const fontSize = {
+  badge: ["11px", "16px"],
+  xs: ["12px", "18px"],
+  sm: ["13px", "20px"],
+  base: ["14px", "22px"],
+  lg: ["16px", "24px"],
+  xl: ["18px", "28px"],
+  code: ["12px", "20px"],
+  terminal: ["13px", "20px"],
+} satisfies Record<string, [string, string]>;
+
 export default defineConfig({
   // 开启文件系统提取：dev 模式下 uno.css 只聚合「先于它加载的模块」的
   // transform 提取，深层/懒加载导入链会输掉这个竞态（无 HMR 的场景如
@@ -37,6 +50,17 @@ export default defineConfig({
   // 不启用 presetIcons：它会把任意 i- 前缀 token（含扫描编译产物拼出的碎片）
   // 当图标解析，只能靠关 warn 压噪音。
   presets: [presetWind3()],
+  preflights: [
+    {
+      getCSS: () =>
+        `:root {\n${Object.entries(fontSize)
+          .map(
+            ([name, [size, lineHeight]]) =>
+              `  --oct-font-size-${name}: ${size};\n  --oct-line-height-${name}: ${lineHeight};`,
+          )
+          .join("\n")}\n}`,
+    },
+  ],
   safelist: [
     ...colorProperties.flatMap((property) =>
       colorGroups.flatMap((group) =>
@@ -65,6 +89,7 @@ export default defineConfig({
       "border border-neutral-5 rounded-md bg-surface text-neutral-10 hover:bg-neutral-3 focus:border-accent-7",
   },
   theme: {
+    fontSize,
     colors: {
       accent: {
         ...semanticColorGroup("accent"),

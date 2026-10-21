@@ -18,14 +18,14 @@
             class="z-50 min-w-[210px] border border-neutral-5 rounded-lg bg-surface p-1 shadow-[var(--oct-shadow)]"
           >
             <DropdownMenuItem
-              class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-[12.5px] text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
+              class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-base text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
               @select="$emit('createProject')"
             >
               <i-lucide-plus class="h-3.5 w-3.5 text-dim" />
               New Project…
             </DropdownMenuItem>
             <DropdownMenuItem
-              class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-[12.5px] text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
+              class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-base text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
               @select="$emit('createProject')"
             >
               <i-lucide-download class="h-3.5 w-3.5 text-dim" />
@@ -33,18 +33,18 @@
             </DropdownMenuItem>
             <DropdownMenuSeparator class="mx-1 my-1 h-px bg-line-soft" />
             <DropdownMenuItem
-              class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-[12.5px] text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
+              class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-base text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
               @select="$emit('openSettings')"
             >
               <i-lucide-sliders-horizontal class="h-3.5 w-3.5 text-dim" />
               Providers &amp; Models…
               <kbd
-                class="ml-auto border border-line-soft rounded-[4px] px-1 text-[10px] text-faint font-mono"
+                class="ml-auto border border-line-soft rounded-[4px] px-1 text-badge text-faint font-mono"
                 >⌘,</kbd
               >
             </DropdownMenuItem>
             <DropdownMenuItem
-              class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-[12.5px] text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
+              class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-base text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
               @select="$emit('openSettings')"
             >
               <i-lucide-settings class="h-3.5 w-3.5 text-dim" />
@@ -52,18 +52,18 @@
             </DropdownMenuItem>
             <DropdownMenuSeparator class="mx-1 my-1 h-px bg-line-soft" />
             <DropdownMenuItem
-              class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-[12.5px] text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
+              class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-base text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
               @select="focusComposer"
             >
               <i-lucide-keyboard class="h-3.5 w-3.5 text-dim" />
               Keyboard Shortcuts
               <kbd
-                class="ml-auto border border-line-soft rounded-[4px] px-1 text-[10px] text-faint font-mono"
+                class="ml-auto border border-line-soft rounded-[4px] px-1 text-badge text-faint font-mono"
                 >⌘K</kbd
               >
             </DropdownMenuItem>
             <DropdownMenuItem
-              class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-[12.5px] text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
+              class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-base text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
             >
               <i-lucide-info class="h-3.5 w-3.5 text-dim" />
               About Oct
@@ -73,7 +73,7 @@
       </DropdownMenuRoot>
 
       <span
-        class="flex items-center gap-[7px] px-2 pl-1 text-[13px] text-strong font-semibold tracking-[0.2px]"
+        class="flex items-center gap-[7px] px-2 pl-1 text-base text-strong font-semibold tracking-[0.2px]"
       >
         <svg
           class="text-accent-7"
@@ -91,7 +91,7 @@
       <!-- 项目切换器 -->
       <DropdownMenuRoot>
         <DropdownMenuTrigger
-          class="h-[26px] inline-flex items-center gap-1.5 rounded-md px-2 text-[12.5px] text-neutral-10 font-medium outline-none transition-colors data-[state=open]:bg-neutral-1 hover:bg-neutral-1"
+          class="h-[26px] inline-flex items-center gap-1.5 rounded-md px-2 text-base text-neutral-10 font-medium outline-none transition-colors data-[state=open]:bg-neutral-1 hover:bg-neutral-1"
           :title="activeProjectTooltip"
         >
           <i-lucide-folder class="h-3.5 w-3.5 text-dim" />
@@ -107,39 +107,39 @@
             class="z-50 min-w-[220px] border border-neutral-5 rounded-lg bg-surface p-1 shadow-[var(--oct-shadow)]"
           >
             <div
-              class="px-2 pb-0.5 pt-1 text-[10.5px] text-faint font-semibold tracking-[0.6px] uppercase"
+              class="px-2 pb-0.5 pt-1 text-badge text-faint font-semibold tracking-[0.6px] uppercase"
             >
               切换项目
             </div>
             <DropdownMenuItem
               v-for="project in projects"
               :key="project.id"
-              class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-[12.5px] text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
+              class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-base text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
               @select="$emit('selectProject', project.id)"
             >
               <span class="truncate">{{ project.name }}</span>
               <span
                 v-if="additionalCount(project) > 0"
-                class="text-[10px] text-faint"
+                class="text-badge text-faint"
                 :title="(project.additional_dirs ?? []).join('\n')"
               >
                 +{{ additionalCount(project) }}
               </span>
               <span
-                class="ml-auto max-w-[140px] flex-none truncate text-[11px] text-faint font-mono"
+                class="ml-auto max-w-[140px] flex-none truncate text-xs text-faint font-mono"
                 >{{ project.working_dir }}</span
               >
             </DropdownMenuItem>
             <DropdownMenuSeparator class="mx-1 my-1 h-px bg-line-soft" />
             <DropdownMenuItem
-              class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-[12.5px] text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
+              class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-base text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
               @select="$emit('editProject')"
             >
               <i-lucide-sliders-horizontal class="h-3.5 w-3.5 text-dim" />
               Project Settings…
             </DropdownMenuItem>
             <DropdownMenuItem
-              class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-[12.5px] text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
+              class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-base text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
               @select="$emit('createProject')"
             >
               <i-lucide-plus class="h-3.5 w-3.5 text-dim" />
@@ -154,13 +154,13 @@
 
     <!-- 居中命令搜索（聚焦输入框） -->
     <button
-      class="h-[26px] max-w-[38vw] w-[340px] flex items-center gap-2 border border-line-soft rounded-md bg-panel px-2.5 text-[12px] text-faint transition-colors hover:border-line hover:text-dim"
+      class="h-[26px] max-w-[38vw] w-[340px] flex items-center gap-2 border border-line-soft rounded-md bg-panel px-2.5 text-sm text-faint transition-colors hover:border-line hover:text-dim"
       @click="focusComposer"
     >
       <i-lucide-search class="h-3 w-3 flex-none" />
       <span class="truncate">搜索对话、文件、命令…</span>
       <kbd
-        class="ml-auto border border-line-soft rounded-[4px] px-1 text-[10.5px] text-faint font-mono"
+        class="ml-auto border border-line-soft rounded-[4px] px-1 text-badge text-faint font-mono"
         >⌘K</kbd
       >
     </button>
@@ -176,7 +176,7 @@
         <i-lucide-settings class="h-4 w-4" />
       </button>
       <span
-        class="ml-1 h-6 w-6 inline-flex items-center justify-center rounded-full from-accent-7 to-accent-9 bg-gradient-to-br text-[11px] text-white font-semibold"
+        class="ml-1 h-6 w-6 inline-flex items-center justify-center rounded-full from-accent-7 to-accent-9 bg-gradient-to-br text-xs text-white font-semibold"
         title="账户"
       >
         O

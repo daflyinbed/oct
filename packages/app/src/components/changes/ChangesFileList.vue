@@ -3,7 +3,7 @@
     <template v-for="row in rows" :key="row.key">
       <div
         v-if="row.files"
-        class="group h-6 flex items-center gap-1 rounded-[5px] pr-2 text-[12.5px] text-dim transition-colors hover:bg-neutral-1"
+        class="group h-6 flex items-center gap-1 rounded-[5px] pr-2 text-base text-dim transition-colors hover:bg-neutral-1"
         :style="{ paddingLeft: `${8 + row.depth * 14}px` }"
       >
         <button
@@ -40,7 +40,7 @@
       </div>
       <div
         v-else-if="row.file"
-        class="group h-6 flex items-center gap-1 rounded-[5px] pr-2 text-[12.5px] transition-colors hover:bg-neutral-1"
+        class="group h-6 flex items-center gap-1 rounded-[5px] pr-2 text-base transition-colors hover:bg-neutral-1"
         :class="selected === row.file.path ? 'bg-accent-3 text-neutral-10' : ''"
         :style="{ paddingLeft: `${20 + row.depth * 14}px` }"
       >
@@ -71,10 +71,10 @@
             }}</span
           >
           <span class="min-w-0 flex-1 truncate">{{ row.label }}</span>
-          <span v-if="row.file.binary" class="text-[10px] text-faint"
+          <span v-if="row.file.binary" class="text-badge text-faint"
             >binary</span
           >
-          <span v-else class="flex shrink-0 gap-1 text-[11px]"
+          <span v-else class="flex shrink-0 gap-1 text-xs"
             ><span class="text-success-10"
               >+{{
                 row.staged === true

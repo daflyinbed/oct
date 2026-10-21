@@ -12,14 +12,14 @@
       class="pointer-events-none absolute inset-0 z-50 flex items-center justify-center bg-accent-1/70 backdrop-blur-sm"
     >
       <span
-        class="rounded-full bg-accent-7 px-4 py-1.5 text-[13px] text-white shadow"
+        class="rounded-full bg-accent-7 px-4 py-1.5 text-base text-white shadow"
         >松开以添加附件</span
       >
     </div>
     <div
       v-if="forkError"
       role="alert"
-      class="flex flex-none items-center gap-2 px-7 py-2 text-[12px] text-danger-10"
+      class="flex flex-none items-center gap-2 px-7 py-2 text-sm text-danger-10"
     >
       <span>{{ forkError }}</span>
       <button
@@ -50,12 +50,12 @@
         class="mx-auto max-w-[760px] flex items-center gap-2 border border-warning-6 rounded-[10px] bg-warning-1 px-3 py-2"
       >
         <i-lucide-rotate-ccw class="h-3.5 w-3.5 flex-none text-warning-10" />
-        <span class="min-w-0 flex-1 text-[12.5px] text-dim">
+        <span class="min-w-0 flex-1 text-base text-dim">
           上一轮被中断，未得到回复
         </span>
         <button
           type="button"
-          class="h-7 flex-none border border-line-soft rounded-[7px] px-2.5 text-[12px] text-dim control-focus hover:bg-warning-2 disabled:opacity-40"
+          class="h-7 flex-none border border-line-soft rounded-[7px] px-2.5 text-sm text-dim control-focus hover:bg-warning-2 disabled:opacity-40"
           :disabled="!forkEnabled"
           title="从中断处分支"
           @click="$emit('fork', { kind: 'head' })"
@@ -64,7 +64,7 @@
         </button>
         <button
           type="button"
-          class="h-7 flex-none rounded-[7px] bg-warning-7 px-2.5 text-[12px] text-warning-10 font-medium control-focus transition-[filter] disabled:opacity-40 hover:brightness-110"
+          class="h-7 flex-none rounded-[7px] bg-warning-7 px-2.5 text-sm text-warning-10 font-medium control-focus transition-[filter] disabled:opacity-40 hover:brightness-110"
           :disabled="forkBusy"
           title="修复中断的工具调用并继续此轮"
           @click="$emit('resume')"
@@ -86,7 +86,7 @@
     />
 
     <!-- 输入区：模型选择器内嵌在输入框内（Zed agent 面板的做法） -->
-    <div v-if="readOnly" class="flex-none px-7 py-4 text-[13px] text-dim">
+    <div v-if="readOnly" class="flex-none px-7 py-4 text-base text-dim">
       此会话是回退前的只读备份。
       <button
         type="button"
@@ -127,13 +127,13 @@
               : 'Select a conversation first...'
           "
           :disabled="!conversationId || sending || forkBusy"
-          class="block w-full resize-none border-none bg-transparent px-3.5 pb-1.5 pt-3 text-[13.5px] text-neutral-10 leading-[1.5] outline-none placeholder:text-faint"
+          class="block w-full resize-none border-none bg-transparent px-3.5 pb-1.5 pt-3 text-base text-neutral-10 leading-[1.5] outline-none placeholder:text-faint"
           @keydown="handleInputKeydown"
         />
         <!-- 斜杠命令渲染状态/错误行 -->
         <div
           v-if="slashRendering || slashError"
-          class="flex items-center gap-1.5 px-3.5 pb-1 text-[11.5px]"
+          class="flex items-center gap-1.5 px-3.5 pb-1 text-xs"
           :class="slashError ? 'text-danger-10' : 'text-faint'"
         >
           <i-lucide-loader-circle
@@ -158,7 +158,7 @@
             :disabled="!conversationId"
             @update:model-value="(v: string) => $emit('setPermissionMode', v)"
           />
-          <span class="mx-0.5 flex-none text-[12px] text-faint">/</span>
+          <span class="mx-0.5 flex-none text-sm text-faint">/</span>
 
           <!-- 上下文占用圆环：hover 弹出容量详情 -->
           <ContextRing class="mr-1" />
@@ -173,7 +173,7 @@
             trigger-class="max-w-[180px] text-dim"
             @update:model-value="(v: string) => $emit('selectProvider', v)"
           />
-          <span class="flex-none text-[12px] text-faint">/</span>
+          <span class="flex-none text-sm text-faint">/</span>
           <AppSelect
             :model-value="selectedModelId"
             :options="modelOptions"

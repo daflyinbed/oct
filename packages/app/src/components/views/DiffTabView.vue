@@ -1,7 +1,7 @@
 <template>
   <section class="workspace-panel min-w-0 flex-1 bg-background">
     <header
-      class="h-9 flex flex-none items-center gap-2 border-b border-line-soft px-4 text-[12.5px] font-semibold"
+      class="h-9 flex flex-none items-center gap-2 border-b border-line-soft px-4 text-base font-semibold"
     >
       <i-lucide-git-compare class="h-3.5 w-3.5 text-dim" /><span
         class="min-w-0 flex-1 truncate"
@@ -25,8 +25,8 @@
     </p>
     <div v-else class="workspace-panel-body overflow-auto py-2">
       <pre
-        class="min-w-max text-[12px] leading-5"
-      ><code><span v-for="(line, index) in patch.split('\n')" :key="index" class="block px-4" :class="lineClass(line)">{{ line || ' ' }}</span></code></pre>
+        class="min-w-max text-code"
+      ><code class="text-code"><span v-for="(line, index) in patch.split('\n')" :key="index" class="block px-4" :class="lineClass(line)">{{ line || ' ' }}</span></code></pre>
     </div>
   </section>
 </template>

@@ -1,20 +1,20 @@
 <template>
   <section class="workspace-panel min-w-0 flex-1 bg-background">
     <header
-      class="workspace-panel-header gap-2 text-[12.5px] text-neutral-10 font-semibold"
+      class="workspace-panel-header gap-2 text-base text-neutral-10 font-semibold"
     >
       <i-lucide-plug class="h-3.5 w-3.5 flex-none text-dim" />
       <span class="min-w-0 truncate">{{ server?.name ?? serverId }}</span>
       <span
         v-if="server?.command"
-        class="max-w-[40%] truncate rounded bg-neutral-2 px-1.5 py-px text-[10.5px] text-dim leading-[16px] font-mono"
+        class="max-w-[40%] truncate rounded bg-neutral-2 px-1.5 py-px text-code text-dim font-mono"
       >
         {{ server.command }}
       </span>
       <span class="flex-1" />
       <span
         v-if="server"
-        class="flex flex-none items-center gap-1.5 text-[11.5px]"
+        class="flex flex-none items-center gap-1.5 text-xs"
         :title="mcpStatusText(server)"
       >
         <span
@@ -26,7 +26,7 @@
         }}</span>
       </span>
       <button
-        class="h-[24px] inline-flex flex-none items-center gap-1.5 control-surface rounded-md px-2 text-[11.5px] font-medium control-focus disabled:opacity-50"
+        class="h-[24px] inline-flex flex-none items-center gap-1.5 control-surface rounded-md px-2 text-xs font-medium control-focus disabled:opacity-50"
         :disabled="ensuring || !activeProjectId"
         title="重新对账并刷新"
         @click="refresh"
@@ -42,19 +42,19 @@
       <!-- 连接失败：错误日志即面板主体 -->
       <template v-if="server.status === 'failed'">
         <h3
-          class="mb-2 text-[10.5px] text-faint font-medium tracking-wide uppercase"
+          class="mb-2 text-badge text-faint font-medium tracking-wide uppercase"
         >
           最近错误
         </h3>
         <pre
-          class="whitespace-pre-wrap border border-danger-6 rounded-md bg-danger-1 px-2.5 py-2 text-[11.5px] text-danger-10 font-mono"
+          class="whitespace-pre-wrap border border-danger-6 rounded-md bg-danger-1 px-2.5 py-2 text-code text-danger-10 font-mono"
           >{{ server.error ?? "未知错误" }}</pre>
       </template>
 
       <!-- 已连接：加载到的工具清单（原始服务端名与描述） -->
       <template v-else-if="server.status === 'connected'">
         <h3
-          class="mb-2 text-[10.5px] text-faint font-medium tracking-wide uppercase"
+          class="mb-2 text-badge text-faint font-medium tracking-wide uppercase"
         >
           工具 · {{ server.tools?.length ?? 0 }}
         </h3>
@@ -64,27 +64,24 @@
             :key="tool.name"
             class="flex flex-col gap-0.5 border border-line-soft rounded-md bg-surface px-2.5 py-1.5"
           >
-            <code class="text-[12px] text-strong font-mono">{{
-              tool.name
-            }}</code>
-            <span v-if="tool.description" class="text-[11.5px] text-dim">{{
+            <code class="text-code text-strong font-mono">{{ tool.name }}</code>
+            <span v-if="tool.description" class="text-xs text-dim">{{
               tool.description
             }}</span>
           </li>
         </ul>
-        <p v-else class="mb-5 text-[12px] text-faint">
-          该 server 未上报任何工具。
-        </p>
+        <p v-else class="mb-5 text-sm text-faint">该 server 未上报任何工具。</p>
 
         <!-- Prompts：只读清单,使用入口是聊天输入框的斜杠命令 -->
         <h3
-          class="mb-2 text-[10.5px] text-faint font-medium tracking-wide uppercase"
+          class="mb-2 text-badge text-faint font-medium tracking-wide uppercase"
         >
           Prompts · {{ server.prompts?.length ?? 0 }}
         </h3>
         <template v-if="server.prompts?.length">
-          <p class="mb-2 text-[11.5px] text-faint">
-            在聊天输入框输入 <code class="font-mono">/</code> 选择使用。
+          <p class="mb-2 text-xs text-faint">
+            在聊天输入框输入
+            <code class="text-code font-mono">/</code> 选择使用。
           </p>
           <ul class="mb-5 flex flex-col gap-1.5">
             <li
@@ -93,24 +90,24 @@
               class="flex flex-col gap-0.5 border border-line-soft rounded-md bg-surface px-2.5 py-1.5"
             >
               <span class="flex items-center gap-1.5">
-                <code class="text-[12px] text-strong font-mono"
+                <code class="text-code text-strong font-mono"
                   >/{{ prompt.name }}</code
                 >
                 <span
                   v-if="prompt.arguments.length > 0"
-                  class="text-[10.5px] text-faint"
+                  class="text-badge text-faint"
                   >{{ prompt.arguments.length }} 个参数</span
                 >
               </span>
-              <span v-if="prompt.description" class="text-[11.5px] text-dim">{{
+              <span v-if="prompt.description" class="text-xs text-dim">{{
                 prompt.description
               }}</span>
               <span
                 v-for="argument in prompt.arguments"
                 :key="argument.name"
-                class="text-[11px] text-faint"
+                class="text-xs text-faint"
               >
-                <code class="font-mono">{{ argument.name }}</code>
+                <code class="text-code font-mono">{{ argument.name }}</code>
                 <span v-if="argument.required" class="text-danger-10">*</span>
                 <span v-if="argument.description" class="ml-1">{{
                   argument.description
@@ -119,13 +116,13 @@
             </li>
           </ul>
         </template>
-        <p v-else class="mb-5 text-[12px] text-faint">
+        <p v-else class="mb-5 text-sm text-faint">
           该 server 未上报任何 prompt。
         </p>
 
         <!-- Resources：只读清单 + 面板内查看（不进 chat/模型） -->
         <h3
-          class="mb-2 text-[10.5px] text-faint font-medium tracking-wide uppercase"
+          class="mb-2 text-badge text-faint font-medium tracking-wide uppercase"
         >
           Resources · {{ server.resources?.length ?? 0 }}
         </h3>
@@ -145,24 +142,23 @@
                 class="h-3 w-3 flex-none text-faint transition-transform"
                 :class="openResource?.uri === resource.uri ? 'rotate-90' : ''"
               />
-              <span class="min-w-0 flex-1 truncate text-[12px] text-strong">
+              <span class="min-w-0 flex-1 truncate text-sm text-strong">
                 {{ resource.name }}
               </span>
               <span
                 v-if="resource.mime_type"
-                class="flex-none text-[10.5px] text-faint font-mono"
+                class="flex-none text-badge text-faint font-mono"
                 >{{ resource.mime_type }}</span
               >
             </button>
             <span
               v-if="resource.description"
-              class="pl-[24px] text-[11.5px] text-dim"
+              class="pl-[24px] text-xs text-dim"
               >{{ resource.description }}</span
             >
-            <code
-              class="truncate pl-[24px] text-[10.5px] text-faint font-mono"
-              >{{ resource.uri }}</code
-            >
+            <code class="truncate pl-[24px] text-code text-faint font-mono">{{
+              resource.uri
+            }}</code>
 
             <!-- 内容查看：文本原样,二进制给占位说明 -->
             <div
@@ -171,7 +167,7 @@
             >
               <p
                 v-if="resourceError"
-                class="whitespace-pre-wrap text-[11.5px] text-danger-10"
+                class="whitespace-pre-wrap text-xs text-danger-10"
               >
                 {{ resourceError }}
               </p>
@@ -181,11 +177,11 @@
               />
               <pre
                 v-else-if="resourceContent?.text != null"
-                class="max-h-[320px] overflow-auto whitespace-pre-wrap rounded-md bg-neutral-1 px-2.5 py-2 text-[11.5px] text-neutral-10 font-mono"
+                class="max-h-[320px] overflow-auto whitespace-pre-wrap rounded-md bg-neutral-1 px-2.5 py-2 text-code text-neutral-10 font-mono"
                 >{{ resourceContent.text }}</pre>
               <p
                 v-else-if="resourceContent?.blob_base64 != null"
-                class="text-[11.5px] text-faint"
+                class="text-xs text-faint"
               >
                 二进制内容（{{
                   resourceContent.mime_type ?? resource.mime_type ?? "未知类型"
@@ -195,12 +191,10 @@
             </div>
           </li>
         </ul>
-        <p v-else class="text-[12px] text-faint">
-          该 server 未上报任何 resource。
-        </p>
+        <p v-else class="text-sm text-faint">该 server 未上报任何 resource。</p>
       </template>
 
-      <p v-else class="text-[12px] text-faint">
+      <p v-else class="text-sm text-faint">
         尚未连接；刷新或发送消息后会尝试建连。
       </p>
     </div>
@@ -210,7 +204,7 @@
       class="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center text-faint"
     >
       <i-lucide-plug class="h-8 w-8" />
-      <p class="text-[13px] text-dim">
+      <p class="text-base text-dim">
         该 server 不在当前项目的有效集合中（可能已被删除或禁用）。
       </p>
     </div>

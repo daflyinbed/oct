@@ -1,7 +1,7 @@
 <template>
   <div class="flex items-center gap-1">
     <button
-      class="h-[26px] rounded-md px-2.5 text-[12.5px] transition-colors"
+      class="h-[26px] rounded-md px-2.5 text-base transition-colors"
       :class="
         connectMode === 'pick'
           ? 'bg-neutral-2 text-strong font-semibold'
@@ -12,7 +12,7 @@
       从列表连接
     </button>
     <button
-      class="h-[26px] rounded-md px-2.5 text-[12.5px] transition-colors"
+      class="h-[26px] rounded-md px-2.5 text-base transition-colors"
       :class="
         connectMode === 'manual'
           ? 'bg-neutral-2 text-strong font-semibold'
@@ -32,7 +32,7 @@
       <button
         v-for="provider in unconnectedProviders"
         :key="provider.id"
-        class="h-9 w-full flex items-center gap-2 border-b border-line-soft px-3 text-left text-[12.5px] transition-colors last:border-b-0"
+        class="h-9 w-full flex items-center gap-2 border-b border-line-soft px-3 text-left text-base transition-colors last:border-b-0"
         :class="
           pickId === provider.id
             ? 'bg-accent-3 text-neutral-10'
@@ -42,14 +42,14 @@
       >
         <span class="truncate">{{ provider.name }}</span>
         <span
-          class="ml-auto flex-none rounded bg-neutral-2 px-1.5 py-px text-[10.5px] text-dim font-medium leading-[16px]"
+          class="ml-auto flex-none rounded bg-neutral-2 px-1.5 py-px text-badge text-dim font-medium leading-[16px]"
         >
           {{ provider.adapter_type }}
         </span>
       </button>
       <p
         v-if="unconnectedProviders.length === 0"
-        class="px-3 py-4 text-center text-[12px] text-faint"
+        class="px-3 py-4 text-center text-sm text-faint"
       >
         所有内置 Provider 都已连接，可用「手动添加」接入新的。
       </p>
@@ -57,7 +57,7 @@
 
     <template v-if="picked">
       <div
-        class="mt-5 border-b border-line border-dashed pb-1.5 text-[11px] text-dim tracking-[0.5px] font-mono"
+        class="mt-5 border-b border-line border-dashed pb-1.5 text-xs text-dim tracking-[0.5px] font-mono"
       >
         Connect {{ picked.name }}
       </div>
@@ -65,8 +65,8 @@
         class="flex items-center gap-[18px] border-b border-line-soft border-dashed py-2.5"
       >
         <div class="min-w-0 flex-1">
-          <div class="text-[13px] text-strong font-semibold">API Key</div>
-          <div class="mt-0.5 text-[12px] text-dim">
+          <div class="text-base text-strong font-semibold">API Key</div>
+          <div class="mt-0.5 text-sm text-dim">
             填入 {{ picked.name }} 的 API Key，保存后即完成连接。
           </div>
         </div>
@@ -74,17 +74,17 @@
           v-model="pickKey"
           :type="showPickKey ? 'text' : 'password'"
           placeholder="Enter API key..."
-          class="h-[26px] w-[240px] flex-none control-surface px-2.5 text-[12px] control-focus"
+          class="h-[26px] w-[240px] flex-none control-surface px-2.5 text-sm control-focus"
           @keydown.enter="connectPicked"
         />
         <button
-          class="h-[26px] flex-none control-ghost rounded-md px-2 text-[12px] control-focus"
+          class="h-[26px] flex-none control-ghost rounded-md px-2 text-sm control-focus"
           @click="showPickKey = !showPickKey"
         >
           {{ showPickKey ? "Hide" : "Show" }}
         </button>
         <button
-          class="h-[26px] flex-none control-solid rounded-md px-3 text-[12px] font-medium control-focus transition-colors disabled:opacity-50"
+          class="h-[26px] flex-none control-solid rounded-md px-3 text-sm font-medium control-focus transition-colors disabled:opacity-50"
           :disabled="!pickKey.trim()"
           @click="connectPicked"
         >
@@ -100,7 +100,7 @@
       <button
         v-for="t in PROVIDER_TYPES"
         :key="t.type"
-        class="h-[26px] rounded-md px-2.5 text-[12.5px] transition-colors"
+        class="h-[26px] rounded-md px-2.5 text-base transition-colors"
         :class="
           addForm.type === t.type
             ? 'bg-neutral-2 text-strong font-semibold'
@@ -114,23 +114,21 @@
 
     <div class="mt-4 space-y-4">
       <label class="block">
-        <span class="text-[13px] text-strong font-semibold">
-          Provider Name
-        </span>
-        <span class="ml-1 text-[12px] text-danger-10">*</span>
-        <div class="mt-0.5 text-[12px] text-dim">
+        <span class="text-base text-strong font-semibold"> Provider Name </span>
+        <span class="ml-1 text-sm text-danger-10">*</span>
+        <div class="mt-0.5 text-sm text-dim">
           用于识别该 Provider 的唯一名称。
         </div>
         <input
           v-model="addForm.name"
           :placeholder="addForm.type === 'anthropic' ? 'Anthropic' : 'OpenAI'"
-          class="mt-2 h-[30px] w-full control-surface px-3 text-[13px] control-focus"
+          class="mt-2 h-[30px] w-full control-surface px-3 text-base control-focus"
         />
       </label>
       <label class="block">
-        <span class="text-[13px] text-strong font-semibold"> API URL </span>
-        <span class="ml-1 text-[12px] text-danger-10">*</span>
-        <div class="mt-0.5 text-[12px] text-dim">兼容 API 的 base URL。</div>
+        <span class="text-base text-strong font-semibold"> API URL </span>
+        <span class="ml-1 text-sm text-danger-10">*</span>
+        <div class="mt-0.5 text-sm text-dim">兼容 API 的 base URL。</div>
         <input
           v-model="addForm.base_url"
           :placeholder="
@@ -138,33 +136,31 @@
               ? 'https://api.anthropic.com/v1'
               : 'https://api.openai.com/v1'
           "
-          class="mt-2 h-[30px] w-full control-surface px-3 text-[13px] control-focus"
+          class="mt-2 h-[30px] w-full control-surface px-3 text-base control-focus"
         />
       </label>
       <label class="block">
-        <span class="text-[13px] text-strong font-semibold"> API Key </span>
-        <span class="ml-1 text-[12px] text-danger-10">*</span>
-        <div class="mt-0.5 text-[12px] text-dim">
-          调用该 Provider 使用的密钥。
-        </div>
+        <span class="text-base text-strong font-semibold"> API Key </span>
+        <span class="ml-1 text-sm text-danger-10">*</span>
+        <div class="mt-0.5 text-sm text-dim">调用该 Provider 使用的密钥。</div>
         <input
           v-model="addForm.api_key"
           type="password"
           placeholder="sk-..."
-          class="mt-2 h-[30px] w-full control-surface px-3 text-[13px] control-focus"
+          class="mt-2 h-[30px] w-full control-surface px-3 text-base control-focus"
         />
       </label>
-      <p v-if="addError" class="text-[12px] text-danger-10">{{ addError }}</p>
+      <p v-if="addError" class="text-sm text-danger-10">{{ addError }}</p>
       <div class="flex items-center gap-2">
         <button
-          class="h-[28px] control-solid rounded-md px-4 text-[12.5px] font-medium control-focus transition-colors disabled:opacity-50"
+          class="h-[28px] control-solid rounded-md px-4 text-base font-medium control-focus transition-colors disabled:opacity-50"
           :disabled="!canSubmitProvider || creating"
           @click="submitProvider"
         >
           {{ creating ? "Creating…" : "Create Provider" }}
         </button>
         <button
-          class="h-[28px] control-ghost rounded-md px-3 text-[12.5px] control-focus"
+          class="h-[28px] control-ghost rounded-md px-3 text-base control-focus"
           @click="emit('cancel')"
         >
           Cancel

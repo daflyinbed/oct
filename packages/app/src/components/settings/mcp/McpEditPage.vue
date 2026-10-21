@@ -1,34 +1,32 @@
 <template>
   <div class="flex items-center gap-2">
-    <DialogTitle class="text-[16.5px] text-strong font-semibold">
+    <DialogTitle class="text-xl text-strong font-semibold">
       {{ server ? "Edit MCP Server" : "Add MCP Server" }}
     </DialogTitle>
     <span
-      class="rounded bg-neutral-2 px-1.5 py-px text-[10.5px] text-dim font-medium leading-[16px]"
+      class="rounded bg-neutral-2 px-1.5 py-px text-badge text-dim font-medium leading-[16px]"
     >
       {{ form.transport }}
     </span>
   </div>
-  <p class="mt-1 text-[12px] text-dim">
+  <p class="mt-1 text-sm text-dim">
     {{ formIntro }}
   </p>
 
   <div class="mt-4 max-w-[520px] space-y-4">
     <label class="block">
-      <span class="text-[13px] text-strong font-semibold"> Name </span>
-      <span class="ml-1 text-[12px] text-danger-10">*</span>
-      <div class="mt-0.5 text-[12px] text-dim">
-        唯一名称，用于识别该 server。
-      </div>
+      <span class="text-base text-strong font-semibold"> Name </span>
+      <span class="ml-1 text-sm text-danger-10">*</span>
+      <div class="mt-0.5 text-sm text-dim">唯一名称，用于识别该 server。</div>
       <input
         v-model="form.name"
         placeholder="e.g. filesystem"
-        class="mt-2 h-[30px] w-full control-surface px-3 text-[13px] control-focus"
+        class="mt-2 h-[30px] w-full control-surface px-3 text-base control-focus"
       />
     </label>
     <label class="block">
-      <span class="text-[13px] text-strong font-semibold"> Transport </span>
-      <div class="mt-0.5 text-[12px] text-dim">
+      <span class="text-base text-strong font-semibold"> Transport </span>
+      <div class="mt-0.5 text-sm text-dim">
         stdio 本地子进程；http 远程 Streamable HTTP 端点。
       </div>
       <div class="mt-2">
@@ -44,55 +42,55 @@
     <!-- stdio 专属字段：本地进程三件套 -->
     <template v-if="form.transport === 'stdio'">
       <label class="block">
-        <span class="text-[13px] text-strong font-semibold"> Command </span>
-        <span class="ml-1 text-[12px] text-danger-10">*</span>
-        <div class="mt-0.5 text-[12px] text-dim">启动命令（可执行文件）。</div>
+        <span class="text-base text-strong font-semibold"> Command </span>
+        <span class="ml-1 text-sm text-danger-10">*</span>
+        <div class="mt-0.5 text-sm text-dim">启动命令（可执行文件）。</div>
         <input
           v-model="form.command"
           placeholder="e.g. npx"
-          class="mt-2 h-[30px] w-full control-surface px-3 text-[13px] font-mono control-focus"
+          class="mt-2 h-[30px] w-full control-surface px-3 text-code font-mono control-focus"
         />
       </label>
       <label class="block">
-        <span class="text-[13px] text-strong font-semibold"> Args </span>
-        <div class="mt-0.5 text-[12px] text-dim">命令行参数，每行一个。</div>
+        <span class="text-base text-strong font-semibold"> Args </span>
+        <div class="mt-0.5 text-sm text-dim">命令行参数，每行一个。</div>
         <textarea
           v-model="form.args"
           rows="3"
           placeholder="-y&#10;@modelcontextprotocol/server-filesystem&#10;/tmp"
-          class="mt-2 block w-full resize-y border border-neutral-5 rounded-md bg-surface px-3 py-2 text-[12.5px] text-neutral-10 font-mono control-focus outline-none transition-colors placeholder:text-faint"
+          class="mt-2 block w-full resize-y border border-neutral-5 rounded-md bg-surface px-3 py-2 text-code text-neutral-10 font-mono control-focus outline-none transition-colors placeholder:text-faint"
         />
       </label>
       <label class="block">
-        <span class="text-[13px] text-strong font-semibold"> Env </span>
-        <div class="mt-0.5 text-[12px] text-dim">
+        <span class="text-base text-strong font-semibold"> Env </span>
+        <div class="mt-0.5 text-sm text-dim">
           环境变量，每行一个 KEY=value。
         </div>
         <textarea
           v-model="form.env"
           rows="2"
           placeholder="API_TOKEN=secret"
-          class="mt-2 block w-full resize-y border border-neutral-5 rounded-md bg-surface px-3 py-2 text-[12.5px] text-neutral-10 font-mono control-focus outline-none transition-colors placeholder:text-faint"
+          class="mt-2 block w-full resize-y border border-neutral-5 rounded-md bg-surface px-3 py-2 text-code text-neutral-10 font-mono control-focus outline-none transition-colors placeholder:text-faint"
         />
       </label>
     </template>
     <!-- http 专属字段：端点 + 请求头（bearer 认证入口） -->
     <template v-else>
       <label class="block">
-        <span class="text-[13px] text-strong font-semibold"> URL </span>
-        <span class="ml-1 text-[12px] text-danger-10">*</span>
-        <div class="mt-0.5 text-[12px] text-dim">
+        <span class="text-base text-strong font-semibold"> URL </span>
+        <span class="ml-1 text-sm text-danger-10">*</span>
+        <div class="mt-0.5 text-sm text-dim">
           Streamable HTTP 端点（http:// 或 https:// 开头）。
         </div>
         <input
           v-model="form.url"
           placeholder="https://example.com/mcp"
-          class="mt-2 h-[30px] w-full control-surface px-3 text-[13px] font-mono control-focus"
+          class="mt-2 h-[30px] w-full control-surface px-3 text-base font-mono control-focus"
         />
       </label>
       <label class="block">
-        <span class="text-[13px] text-strong font-semibold"> Headers </span>
-        <div class="mt-0.5 text-[12px] text-dim">
+        <span class="text-base text-strong font-semibold"> Headers </span>
+        <div class="mt-0.5 text-sm text-dim">
           请求头，每行一个 KEY=value；Bearer 认证写 Authorization=Bearer
           &lt;token&gt;。
         </div>
@@ -100,7 +98,7 @@
           v-model="form.headers"
           rows="2"
           placeholder="Authorization=Bearer sk-..."
-          class="mt-2 block w-full resize-y border border-neutral-5 rounded-md bg-surface px-3 py-2 text-[12.5px] text-neutral-10 font-mono control-focus outline-none transition-colors placeholder:text-faint"
+          class="mt-2 block w-full resize-y border border-neutral-5 rounded-md bg-surface px-3 py-2 text-code text-neutral-10 font-mono control-focus outline-none transition-colors placeholder:text-faint"
         />
       </label>
       <!-- OAuth 登录区：仅已保存的 http 行（start 需要服务端行与落库的
@@ -110,10 +108,10 @@
         class="border border-line-soft rounded-lg bg-surface p-3"
       >
         <div class="flex items-center gap-2">
-          <span class="text-[13px] text-strong font-semibold"> OAuth </span>
+          <span class="text-base text-strong font-semibold"> OAuth </span>
           <span
             v-if="oauthState?.kind === 'authorized'"
-            class="rounded bg-success-7 px-1.5 py-px text-[10.5px] text-success-contrast font-medium leading-[16px]"
+            class="rounded bg-success-7 px-1.5 py-px text-badge text-success-contrast font-medium leading-[16px]"
             :title="
               oauthState.expiresAt
                 ? `有效期至 ${formatOauthExpiry(oauthState.expiresAt)}`
@@ -124,18 +122,18 @@
           </span>
           <span
             v-else-if="oauthState?.kind === 'expired'"
-            class="rounded bg-danger-7 px-1.5 py-px text-[10.5px] text-danger-10 font-medium leading-[16px]"
+            class="rounded bg-danger-7 px-1.5 py-px text-badge text-danger-10 font-medium leading-[16px]"
           >
             需重新登录
           </span>
           <span
             v-else
-            class="rounded bg-neutral-2 px-1.5 py-px text-[10.5px] text-dim font-medium leading-[16px]"
+            class="rounded bg-neutral-2 px-1.5 py-px text-badge text-dim font-medium leading-[16px]"
           >
             未授权
           </span>
         </div>
-        <div class="mt-0.5 text-[12px] text-dim">
+        <div class="mt-0.5 text-sm text-dim">
           远端服务器需要 OAuth 2.0 时在此登录（授权码 + PKCE，基于已保存的 URL
           发起）；已登录的 Bearer 优先于 Headers 里的静态 Authorization。
           <template v-if="oauthState?.kind === 'authorized'">
@@ -149,7 +147,7 @@
         </div>
         <div class="mt-2 flex items-center gap-2">
           <button
-            class="h-[26px] inline-flex items-center gap-1.5 control-solid rounded-md px-3 text-[12px] font-medium control-focus transition-colors disabled:opacity-50"
+            class="h-[26px] inline-flex items-center gap-1.5 control-solid rounded-md px-3 text-sm font-medium control-focus transition-colors disabled:opacity-50"
             :disabled="oauthBusy"
             :title="
               oauthState?.kind === 'absent'
@@ -168,38 +166,36 @@
           </button>
           <button
             v-if="oauthState && oauthState.kind !== 'absent'"
-            class="h-[26px] inline-flex items-center control-ghost rounded-md px-2.5 text-[12px] control-focus transition-colors disabled:opacity-50"
+            class="h-[26px] inline-flex items-center control-ghost rounded-md px-2.5 text-sm control-focus transition-colors disabled:opacity-50"
             :disabled="oauthBusy"
             @click="logoutOauthLogin"
           >
             退出登录
           </button>
         </div>
-        <p v-if="oauthError" class="mt-1.5 text-[12px] text-danger-10">
+        <p v-if="oauthError" class="mt-1.5 text-sm text-danger-10">
           {{ oauthError }}
         </p>
       </div>
     </template>
     <div class="flex items-start gap-4">
       <label class="block w-[180px] flex-none">
-        <span class="text-[13px] text-strong font-semibold">
-          Tool Timeout
-        </span>
-        <div class="mt-0.5 text-[12px] text-dim">
+        <span class="text-base text-strong font-semibold"> Tool Timeout </span>
+        <div class="mt-0.5 text-sm text-dim">
           工具调用超时（毫秒），留空用默认值。
         </div>
         <input
           v-model="form.toolTimeout"
           placeholder="30000"
           inputmode="numeric"
-          class="mt-2 h-[30px] w-full control-surface px-3 text-[13px] font-mono control-focus"
+          class="mt-2 h-[30px] w-full control-surface px-3 text-base font-mono control-focus"
         />
       </label>
       <label class="mt-[1px] min-w-0 flex-1">
-        <span class="mt-[11px] text-[13px] text-strong font-semibold">
+        <span class="mt-[11px] text-base text-strong font-semibold">
           Project Scope
         </span>
-        <div class="mt-0.5 text-[12px] text-dim">
+        <div class="mt-0.5 text-sm text-dim">
           全局对所有项目生效；项目内仅该项目的对话可见。
         </div>
         <div class="mt-2">
@@ -216,17 +212,17 @@
     </div>
     <!-- 只显示表单自己的错误；fetch/列表级错误留在列表视图顶部，不经 ??
          泄漏进表单 -->
-    <p v-if="error" class="text-[12px] text-danger-10">{{ error }}</p>
+    <p v-if="error" class="text-sm text-danger-10">{{ error }}</p>
     <div class="flex items-center gap-2">
       <button
-        class="h-[28px] control-solid rounded-md px-4 text-[12.5px] font-medium control-focus transition-colors disabled:opacity-50"
+        class="h-[28px] control-solid rounded-md px-4 text-base font-medium control-focus transition-colors disabled:opacity-50"
         :disabled="!canSubmit || submitting"
         @click="submitForm"
       >
         {{ submitting ? "Saving…" : server ? "Save Changes" : "Create Server" }}
       </button>
       <button
-        class="h-[28px] control-ghost rounded-md px-3 text-[12.5px] control-focus"
+        class="h-[28px] control-ghost rounded-md px-3 text-base control-focus"
         @click="emit('cancel')"
       >
         Cancel

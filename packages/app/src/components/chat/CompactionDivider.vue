@@ -7,10 +7,10 @@
       @click="open = !open"
     >
       <i-lucide-archive class="h-3.5 w-3.5 flex-none text-faint" />
-      <span class="min-w-0 flex-1 truncate text-[12px] text-dim">
+      <span class="min-w-0 flex-1 truncate text-sm text-dim">
         已压缩 {{ part.compactedMessages }} 条较早消息{{ savedText }}
       </span>
-      <span class="flex flex-none items-center gap-1 text-[11px] text-faint">
+      <span class="flex flex-none items-center gap-1 text-xs text-faint">
         {{ part.triggeredBy === "manual" ? "手动" : "自动" }}
         <i-lucide-chevron-down
           class="h-3 w-3 transition-transform"
@@ -20,7 +20,7 @@
     </button>
     <div v-if="open" class="border-t border-line-soft px-3 py-2">
       <pre
-        class="max-h-[280px] overflow-auto whitespace-pre-wrap break-words text-[12px] text-dim leading-[1.5] font-sans"
+        class="max-h-[280px] overflow-auto whitespace-pre-wrap break-words text-base text-dim leading-[1.5] font-sans"
         >{{ part.summary }}</pre>
     </div>
   </div>

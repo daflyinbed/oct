@@ -5,10 +5,10 @@
       <DialogContent
         class="fixed left-1/2 top-1/2 z-50 max-h-[85vh] max-w-[calc(100vw-72px)] w-[420px] overflow-y-auto border border-neutral-5 rounded-xl bg-panel p-5 shadow-[var(--oct-shadow)] -translate-x-1/2 -translate-y-1/2"
       >
-        <DialogTitle class="text-[16.5px] text-strong font-semibold">
+        <DialogTitle class="text-xl text-strong font-semibold">
           {{ isEdit ? "Project Settings" : "New Project" }}
         </DialogTitle>
-        <p class="mt-1 text-[12px] text-dim">
+        <p class="mt-1 text-sm text-dim">
           {{
             isEdit
               ? "编辑项目的名称与工作目录。"
@@ -18,29 +18,29 @@
 
         <form class="mt-4 flex flex-col gap-3" @submit.prevent="submit">
           <label class="flex flex-col gap-2">
-            <span class="text-[12px] text-dim font-medium">Project name</span>
+            <span class="text-sm text-dim font-medium">Project name</span>
             <input
               v-model="name"
               placeholder="my-project"
-              class="h-[30px] w-full control-surface px-3 text-[13px] control-focus"
+              class="h-[30px] w-full control-surface px-3 text-base control-focus"
             />
           </label>
           <label class="flex flex-col gap-2">
-            <span class="text-[12px] text-dim font-medium">
+            <span class="text-sm text-dim font-medium">
               Working directory
             </span>
             <input
               v-model="workingDir"
               placeholder="/home/me/projects/my-project"
-              class="h-[30px] w-full control-surface px-3 text-[13px] font-mono control-focus"
+              class="h-[30px] w-full control-surface px-3 text-base font-mono control-focus"
             />
           </label>
 
           <div class="flex flex-col gap-2">
-            <span class="text-[12px] text-dim font-medium">
+            <span class="text-sm text-dim font-medium">
               Additional directories
             </span>
-            <p class="text-[11px] text-faint">
+            <p class="text-xs text-faint">
               agent 只能通过绝对路径访问这些目录；相对路径始终锚定主工作目录。
             </p>
             <div
@@ -51,11 +51,11 @@
               <input
                 v-model="additionalDirs[index]!"
                 placeholder="/home/me/another-repo"
-                class="h-[30px] w-full control-surface px-3 text-[13px] font-mono control-focus"
+                class="h-[30px] w-full control-surface px-3 text-base font-mono control-focus"
               />
               <button
                 type="button"
-                class="h-[30px] w-[30px] flex-none control-ghost rounded-md text-[12px] control-focus"
+                class="h-[30px] w-[30px] flex-none control-ghost rounded-md text-sm control-focus"
                 :title="dir.trim() ? `移除 ${dir}` : '移除此目录'"
                 @click="additionalDirs.splice(index, 1)"
               >
@@ -64,26 +64,26 @@
             </div>
             <button
               type="button"
-              class="h-[28px] self-start control-ghost rounded-md px-2.5 text-[12px] control-focus"
+              class="h-[28px] self-start control-ghost rounded-md px-2.5 text-sm control-focus"
               @click="additionalDirs.push('')"
             >
               + 添加目录
             </button>
           </div>
 
-          <p v-if="submitError" class="text-[12px] text-danger-10" role="alert">
+          <p v-if="submitError" class="text-sm text-danger-10" role="alert">
             {{ submitError }}
           </p>
 
           <div class="mt-2 flex justify-end gap-2">
             <DialogClose
-              class="h-[28px] control-ghost rounded-md px-3 text-[12.5px] control-focus"
+              class="h-[28px] control-ghost rounded-md px-3 text-base control-focus"
             >
               Cancel
             </DialogClose>
             <button
               type="submit"
-              class="h-[28px] control-surface rounded-md px-3 text-[12.5px] font-medium control-focus disabled:pointer-events-none disabled:opacity-50"
+              class="h-[28px] control-surface rounded-md px-3 text-base font-medium control-focus disabled:pointer-events-none disabled:opacity-50"
               :disabled="!canSubmit || submitting"
             >
               {{

@@ -15,13 +15,13 @@
         :class="backgroundStatusClass(state.status)"
       />
       <span
-        class="flex-none text-[12px] font-medium"
+        class="flex-none text-sm font-medium"
         :class="backgroundStatusClass(state.status)"
         >后台任务</span
       >
       <!-- 命令行（terminal 样式）：cwd 弱化 + $ 提示符 + 命令 -->
       <span
-        class="min-w-0 flex-1 truncate text-[12px] text-strong font-mono"
+        class="min-w-0 flex-1 truncate text-code text-strong font-mono"
         :title="commandLine"
       >
         <span v-if="workingDir" class="text-accent-10" :title="workingDir">{{
@@ -31,19 +31,17 @@
       </span>
 
       <!-- 运行中：耗时走表 + 输出字节数 -->
-      <span
-        v-if="elapsed"
-        class="flex-none text-[11px] text-faint tabular-nums"
-        >{{ elapsed }}</span
-      >
+      <span v-if="elapsed" class="flex-none text-xs text-faint tabular-nums">{{
+        elapsed
+      }}</span>
       <span
         v-if="state.status === 'running' && state.outputBytes != null"
-        class="flex-none text-[11px] text-faint tabular-nums"
+        class="flex-none text-xs text-faint tabular-nums"
         >{{ formatBackgroundBytes(state.outputBytes) }}</span
       >
 
       <!-- 状态 chip -->
-      <span v-if="part.inherited" class="text-[11px] text-faint"
+      <span v-if="part.inherited" class="text-xs text-faint"
         >来源会话历史任务</span
       >
       <span
@@ -53,11 +51,11 @@
         <i-lucide-loader-circle
           class="h-3.5 w-3.5 animate-spin text-accent-7"
         />
-        <span class="text-[11px] text-accent-10">运行中</span>
+        <span class="text-xs text-accent-10">运行中</span>
       </span>
       <span
         v-else-if="state.status === 'completed'"
-        class="h-[16px] inline-flex flex-none items-center whitespace-nowrap rounded-full px-1.5 text-[10.5px] font-medium leading-none"
+        class="h-[16px] inline-flex flex-none items-center whitespace-nowrap rounded-full px-1.5 text-badge font-medium leading-none"
         :class="
           state.exitCode === 0
             ? 'bg-success-7 text-success-10'
@@ -73,17 +71,17 @@
       >
       <span
         v-else-if="state.status === 'failed'"
-        class="h-[16px] inline-flex flex-none items-center whitespace-nowrap rounded-full bg-danger-7 px-1.5 text-[10.5px] text-danger-10 font-medium leading-none"
+        class="h-[16px] inline-flex flex-none items-center whitespace-nowrap rounded-full bg-danger-7 px-1.5 text-badge text-danger-10 font-medium leading-none"
         >✗ 失败</span
       >
       <span
         v-else-if="state.status === 'cancelled'"
-        class="h-[16px] inline-flex flex-none items-center whitespace-nowrap rounded-full bg-neutral-3 px-1.5 text-[10.5px] text-dim font-medium leading-none"
+        class="h-[16px] inline-flex flex-none items-center whitespace-nowrap rounded-full bg-neutral-3 px-1.5 text-badge text-dim font-medium leading-none"
         >已取消</span
       >
       <span
         v-else
-        class="h-[16px] inline-flex flex-none items-center whitespace-nowrap rounded-full bg-warning-7 px-1.5 text-[10.5px] text-warning-10 font-medium leading-none"
+        class="h-[16px] inline-flex flex-none items-center whitespace-nowrap rounded-full bg-warning-7 px-1.5 text-badge text-warning-10 font-medium leading-none"
         title="后端重启时进程被终结"
         >已中断</span
       >
@@ -92,7 +90,7 @@
       <button
         v-if="!part.inherited && state.status === 'running'"
         type="button"
-        class="h-[22px] inline-flex flex-none items-center gap-1 border border-line-soft rounded-[6px] px-1.5 text-[11px] text-dim control-focus transition-colors hover:bg-danger-1 hover:text-danger-10 disabled:opacity-50"
+        class="h-[22px] inline-flex flex-none items-center gap-1 border border-line-soft rounded-[6px] px-1.5 text-xs text-dim control-focus transition-colors hover:bg-danger-1 hover:text-danger-10 disabled:opacity-50"
         :disabled="stopping"
         title="停止此后台任务"
         @click.stop="stop"
@@ -105,7 +103,7 @@
       <button
         v-if="!part.inherited"
         type="button"
-        class="h-[22px] inline-flex flex-none items-center gap-1 border border-line-soft rounded-[6px] px-1.5 text-[11px] text-dim control-focus transition-colors hover:bg-neutral-1 hover:text-neutral-10"
+        class="h-[22px] inline-flex flex-none items-center gap-1 border border-line-soft rounded-[6px] px-1.5 text-xs text-dim control-focus transition-colors hover:bg-neutral-1 hover:text-neutral-10"
         title="查看输出文件"
         @click.stop="showOutput = true"
       >
@@ -117,7 +115,7 @@
     <!-- 失败原因（机制性击杀：输出超限 / 24h 上限） -->
     <div
       v-if="state.error"
-      class="border-t border-line-soft px-3 py-1 text-[11.5px] text-danger-10"
+      class="border-t border-line-soft px-3 py-1 text-xs text-danger-10"
     >
       {{ state.error }}
     </div>

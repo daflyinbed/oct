@@ -6,7 +6,7 @@
   >
     <SelectTrigger
       :title="title"
-      class="control-focus inline-flex flex-none items-center gap-1.5 min-w-0 h-[26px] px-2 rounded-md border border-neutral-5 bg-surface text-[12px] transition-colors hover:bg-neutral-3 data-[state=open]:bg-neutral-3 data-[placeholder]:text-faint disabled:pointer-events-none disabled:opacity-50"
+      class="control-focus inline-flex flex-none items-center gap-1.5 min-w-0 h-[26px] px-2 rounded-md border border-neutral-5 bg-surface text-base transition-colors hover:bg-neutral-3 data-[state=open]:bg-neutral-3 data-[placeholder]:text-faint disabled:pointer-events-none disabled:opacity-50"
       :class="triggerClass"
     >
       <SelectValue :placeholder="placeholder" class="min-w-0 truncate" />
@@ -30,7 +30,7 @@
             v-for="option in options"
             :key="option.value"
             :value="option.value"
-            class="flex items-center gap-2 h-[25px] px-2.5 rounded-[5px] text-[13px] text-neutral-10 outline-none focus-visible:outline-none cursor-pointer data-[highlighted]:bg-neutral-2 data-[disabled]:cursor-default data-[disabled]:opacity-50"
+            class="flex items-center gap-2 h-[25px] px-2.5 rounded-[5px] text-base text-neutral-10 outline-none focus-visible:outline-none cursor-pointer data-[highlighted]:bg-neutral-2 data-[disabled]:cursor-default data-[disabled]:opacity-50"
           >
             <SelectItemText class="flex-1 min-w-0 truncate text-left">{{
               option.label

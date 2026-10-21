@@ -6,7 +6,7 @@
     <button
       v-for="tab in tabs"
       :key="tab.id"
-      class="relative flex items-center gap-[7px] whitespace-nowrap border-r border-line-soft py-0 pl-3 pr-[6px] text-[12.5px] transition-colors"
+      class="relative flex items-center gap-[7px] whitespace-nowrap border-r border-line-soft py-0 pl-3 pr-[6px] text-base transition-colors"
       :class="
         tab.active
           ? 'bg-background text-strong shadow-[inset_0_2px_0_var(--oct-color-accent-7)]'
@@ -43,7 +43,7 @@
           <DropdownMenuItem
             v-for="action in addActions"
             :key="action.label"
-            class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-[12.5px] text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
+            class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-base text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
             @select="$emit('tabAction', action.event)"
           >
             <component :is="action.icon" class="h-3.5 w-3.5 text-dim" />

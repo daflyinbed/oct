@@ -4,7 +4,7 @@
     <ContextMenuRoot>
       <ContextMenuTrigger as-child>
         <button
-          class="relative w-full flex rounded-md pr-2 text-left text-[12.5px] control-focus transition-colors"
+          class="relative w-full flex rounded-md pr-2 text-left text-base control-focus transition-colors"
           :class="[
             layout === 'time'
               ? 'flex-col items-start gap-[3px] py-[7px]'
@@ -36,7 +36,7 @@
               <PermissionBadge :mode="node.conv.permission_mode" />
             </span>
             <span
-              class="max-w-full flex items-center gap-[5px] text-[11.5px] text-faint"
+              class="max-w-full flex items-center gap-[5px] text-xs text-faint"
             >
               <i-lucide-folder class="h-[11px] w-[11px] flex-none" />
               <span class="truncate">{{ projectName }}</span>
@@ -56,7 +56,7 @@
             <!-- aria-hidden：时间只是补充元数据（悬停看绝对时间），保持行名 = 标题，
                  与标签页按钮同名以便按名定位 -->
             <span
-              class="flex-none text-[10.5px] text-faint"
+              class="flex-none text-badge text-faint"
               :title="new Date(node.conv.updated_at).toLocaleString()"
               aria-hidden="true"
               >{{ relativeThreadTime(node.conv.updated_at) }}</span
@@ -69,7 +69,7 @@
           class="z-50 min-w-[150px] border border-neutral-5 rounded-lg bg-surface p-1 shadow-[var(--oct-shadow)]"
         >
           <ContextMenuItem
-            class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-[12.5px] text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
+            class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-base text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
             @select="$emit('rename', node.conv)"
           >
             <i-lucide-pencil class="h-3.5 w-3.5 text-dim" />
@@ -77,7 +77,7 @@
           </ContextMenuItem>
           <ContextMenuItem
             v-if="node.conv.origin_kind === 'revert_backup'"
-            class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-[12.5px] text-danger-10 outline-none data-[highlighted]:bg-neutral-1"
+            class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-base text-danger-10 outline-none data-[highlighted]:bg-neutral-1"
             @select="$emit('deleteBackup', node.conv.id)"
           >
             <i-lucide-trash-2 class="h-3.5 w-3.5" />删除备份

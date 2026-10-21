@@ -12,7 +12,7 @@
         :side="side ?? 'bottom'"
         align="end"
         :side-offset="5"
-        class="z-50 min-w-48 border border-line-soft rounded-lg bg-surface p-1 text-[12px] shadow-[var(--oct-shadow)]"
+        class="z-50 min-w-48 border border-line-soft rounded-lg bg-surface p-1 text-sm shadow-[var(--oct-shadow)]"
       >
         <template v-for="(group, index) in groups" :key="index">
           <DropdownMenuSeparator v-if="index" class="my-1 h-px bg-line-soft" />
@@ -24,7 +24,7 @@
               >
               <DropdownMenuPortal
                 ><DropdownMenuSubContent
-                  class="z-50 min-w-36 border border-line-soft rounded-lg bg-surface p-1 text-[12px] shadow-[var(--oct-shadow)]"
+                  class="z-50 min-w-36 border border-line-soft rounded-lg bg-surface p-1 text-sm shadow-[var(--oct-shadow)]"
                 >
                   <DropdownMenuItem
                     v-for="child in item.children"

@@ -174,18 +174,20 @@ body,
 }
 
 body {
-  font:
-    13px/1.55 -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    Inter,
-    "PingFang SC",
-    "Hiragino Sans GB",
-    "Microsoft YaHei",
-    sans-serif;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-size: var(--oct-font-size-base);
+  line-height: var(--oct-line-height-base);
   color: var(--oct-color-neutral-10);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+code,
+pre {
+  font-size: var(--oct-font-size-code);
+  line-height: var(--oct-line-height-code);
 }
 
 ::selection {

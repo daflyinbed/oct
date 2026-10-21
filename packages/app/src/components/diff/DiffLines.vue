@@ -1,5 +1,5 @@
 <template>
-  <div class="py-1 text-[11.5px] text-neutral-10 leading-[1.7] font-mono">
+  <div class="py-1 text-code text-neutral-10 font-mono">
     <div
       v-for="(line, idx) in lines"
       :key="idx"

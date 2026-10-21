@@ -13,6 +13,8 @@ import { openGate } from "./support/mock";
 
 // 工具卡片头按钮(execute_command 的 displayName 是"终端")
 const TOOL_CARD_HEADER = /终端/;
+const COMMAND_WITH_PATHS =
+  "ls -l /proc/13249/cwd /proc/74702/cwd 2>/dev/null | head -40";
 
 // 第二个文本段渲染在卡片之后;markdown 会吃掉段首空格
 const TEXT_AFTER_TOOL_OUTPUT = /warn!\s*done/;
@@ -35,8 +37,8 @@ it("tool call card: generating → running with live output → done", async () 
         toolCallStart(
           "call_1",
           "execute_command",
-          "echo hi",
-          '{"command":"echo hi"}',
+          COMMAND_WITH_PATHS,
+          JSON.stringify({ command: COMMAND_WITH_PATHS }),
         ),
       ],
     },
@@ -66,8 +68,15 @@ it("tool call card: generating → running with live output → done", async () 
   await openGate("after-delta");
 
   // running:tool_call_start 带来标题;展开卡片检查终端块与实时输出
-  await expect.poll(chatText).toContain("echo hi");
-  await page.getByRole("button", { name: TOOL_CARD_HEADER }).click();
+  await expect.poll(chatText).toContain(COMMAND_WITH_PATHS);
+  const header = page.getByRole("button", { name: TOOL_CARD_HEADER });
+  const title = (await header.element()).querySelector<HTMLElement>(
+    ":scope > span[title]",
+  )!;
+  expect(title.textContent?.trim()).toBe(COMMAND_WITH_PATHS);
+  expect(title.classList.contains("text-faint")).toBe(true);
+  expect(title.children).toHaveLength(0);
+  await header.click();
   await expect.poll(chatText).toContain("hello");
   await expect.poll(chatText).toContain("warn!");
 

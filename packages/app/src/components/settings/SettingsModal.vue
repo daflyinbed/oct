@@ -26,13 +26,13 @@
               <input
                 v-model="query"
                 placeholder="Search settings…"
-                class="min-w-0 flex-1 border-none bg-transparent text-[12.5px] text-neutral-10 outline-none placeholder:text-faint"
+                class="min-w-0 flex-1 border-none bg-transparent text-base text-neutral-10 outline-none placeholder:text-faint"
               />
             </div>
           </div>
           <div class="flex-1 overflow-y-auto px-1.5 pb-3">
             <button
-              class="h-7 w-full flex items-center gap-2 rounded-md px-2 text-left text-[12.5px] text-neutral-10 transition-colors"
+              class="h-7 w-full flex items-center gap-2 rounded-md px-2 text-left text-base text-neutral-10 transition-colors"
               :class="view.name !== 'ai' ? 'bg-neutral-1 font-semibold' : ''"
               @click="goAi"
             >
@@ -58,28 +58,28 @@
                 <i-lucide-arrow-left class="h-3.5 w-3.5" />
               </button>
               <button
-                class="text-[12.5px] text-dim transition-colors hover:text-neutral-10"
+                class="text-base text-dim transition-colors hover:text-neutral-10"
                 @click="goAi"
               >
                 AI
               </button>
-              <span class="text-[12.5px] text-faint">/</span>
+              <span class="text-base text-faint">/</span>
               <template v-if="inProviderTree">
                 <button
-                  class="text-[12.5px] text-dim transition-colors hover:text-neutral-10"
+                  class="text-base text-dim transition-colors hover:text-neutral-10"
                   @click="view = { name: 'providers' }"
                 >
                   LLM Providers
                 </button>
                 <template v-if="view.name === 'provider'">
-                  <span class="text-[12.5px] text-faint">/</span>
-                  <span class="text-[12.5px] text-neutral-10 font-semibold">{{
+                  <span class="text-base text-faint">/</span>
+                  <span class="text-base text-neutral-10 font-semibold">{{
                     selectedProviderName
                   }}</span>
                 </template>
                 <template v-else-if="view.name === 'connect-provider'">
-                  <span class="text-[12.5px] text-faint">/</span>
-                  <span class="text-[12.5px] text-neutral-10 font-semibold"
+                  <span class="text-base text-faint">/</span>
+                  <span class="text-base text-neutral-10 font-semibold"
                     >Connect Provider</span
                   >
                 </template>
@@ -88,43 +88,43 @@
                 v-else-if="view.name === 'mcp' || view.name === 'mcp-edit'"
               >
                 <button
-                  class="text-[12.5px] text-dim transition-colors hover:text-neutral-10"
+                  class="text-base text-dim transition-colors hover:text-neutral-10"
                   @click="view = { name: 'mcp' }"
                 >
                   MCP Servers
                 </button>
                 <template v-if="view.name === 'mcp-edit'">
-                  <span class="text-[12.5px] text-faint">/</span>
-                  <span class="text-[12.5px] text-neutral-10 font-semibold">{{
+                  <span class="text-base text-faint">/</span>
+                  <span class="text-base text-neutral-10 font-semibold">{{
                     editingServerName ?? "Add Server"
                   }}</span>
                 </template>
               </template>
               <template v-else-if="view.name === 'agents'">
-                <span class="text-[12.5px] text-neutral-10 font-semibold"
+                <span class="text-base text-neutral-10 font-semibold"
                   >Agents</span
                 >
               </template>
               <template v-else-if="view.name === 'permissions'">
                 <button
-                  class="text-[12.5px] text-dim transition-colors hover:text-neutral-10"
+                  class="text-base text-dim transition-colors hover:text-neutral-10"
                   @click="goAi"
                 >
                   AI
                 </button>
-                <span class="text-[12.5px] text-faint">/</span>
-                <span class="text-[12.5px] text-neutral-10 font-semibold">
+                <span class="text-base text-faint">/</span>
+                <span class="text-base text-neutral-10 font-semibold">
                   权限规则
                 </span>
               </template>
             </template>
-            <span v-else class="text-[12.5px] text-neutral-10 font-semibold">
+            <span v-else class="text-base text-neutral-10 font-semibold">
               AI
             </span>
             <span class="flex-1" />
             <button
               v-if="view.name === 'providers'"
-              class="h-[26px] inline-flex items-center gap-1.5 control-surface rounded-md px-2.5 text-[12px] font-medium control-focus"
+              class="h-[26px] inline-flex items-center gap-1.5 control-surface rounded-md px-2.5 text-sm font-medium control-focus"
               @click="view = { name: 'connect-provider' }"
             >
               <i-lucide-plus class="h-3 w-3" />
@@ -132,14 +132,14 @@
             </button>
             <button
               v-if="view.name === 'mcp'"
-              class="h-[26px] inline-flex items-center gap-1.5 control-surface rounded-md px-2.5 text-[12px] font-medium control-focus"
+              class="h-[26px] inline-flex items-center gap-1.5 control-surface rounded-md px-2.5 text-sm font-medium control-focus"
               @click="view = { name: 'mcp-edit', id: null }"
             >
               <i-lucide-plus class="h-3 w-3" />
               Add Server
             </button>
             <DialogClose
-              class="h-[26px] w-[26px] control-ghost rounded-md text-[12px] control-focus"
+              class="h-[26px] w-[26px] control-ghost rounded-md text-sm control-focus"
               title="关闭（Esc）"
             >
               ✕
@@ -149,10 +149,10 @@
           <div class="flex-1 overflow-y-auto px-7 pb-12 pt-[18px] max-sm:px-4">
             <!-- ============ AI 根页：按作用域列出配置入口 ============ -->
             <template v-if="view.name === 'ai'">
-              <DialogTitle class="text-[16.5px] text-strong font-semibold">
+              <DialogTitle class="text-xl text-strong font-semibold">
                 AI
               </DialogTitle>
-              <p class="mt-1 text-[12px] text-dim">
+              <p class="mt-1 text-sm text-dim">
                 {{
                   inProjectScope
                     ? `项目「${activeScopeProjectName}」专属的配置入口；全局配置切到「全局」作用域查看。`
@@ -160,7 +160,7 @@
                 }}
               </p>
               <div
-                class="mt-6 border-b border-line border-dashed pb-1.5 text-[11px] text-dim tracking-[0.5px] font-mono"
+                class="mt-6 border-b border-line border-dashed pb-1.5 text-xs text-dim tracking-[0.5px] font-mono"
               >
                 General
               </div>
@@ -168,22 +168,22 @@
                 class="flex items-center gap-[18px] border-b border-line-soft border-dashed py-3"
               >
                 <div class="min-w-0 flex-1">
-                  <div class="text-[13px] text-strong font-semibold">
+                  <div class="text-base text-strong font-semibold">
                     工具调用方式
                   </div>
-                  <div class="mt-0.5 text-[12px] text-dim">
+                  <div class="mt-0.5 text-sm text-dim">
                     代码模式按需读取工具声明，用 TypeScript 组合文件、命令和 MCP
                     调用并筛选结果；下次运行生效，子代理继承调用方式并遵守工具白名单。
                   </div>
                   <div
                     v-if="!codeModeAvailable"
-                    class="mt-0.5 text-[12px] text-warning-10"
+                    class="mt-0.5 text-sm text-warning-10"
                   >
                     代码运行组件尚未安装，当前会回退为直接调用。
                   </div>
                   <div
                     v-if="mcpModeError"
-                    class="mt-0.5 text-[12px] text-danger-10"
+                    class="mt-0.5 text-sm text-danger-10"
                   >
                     {{ mcpModeError }}
                   </div>
@@ -202,10 +202,10 @@
                 class="flex items-center gap-[18px] border-b border-line-soft border-dashed py-3"
               >
                 <div class="min-w-0 flex-1">
-                  <div class="text-[13px] text-strong font-semibold">
+                  <div class="text-base text-strong font-semibold">
                     LLM Wire 日志
                   </div>
-                  <div class="mt-0.5 text-[12px] text-dim">
+                  <div class="mt-0.5 text-sm text-dim">
                     按对话记录与模型交互的原始请求与 SSE 流（JSONL，数据库目录的
                     llm-wire/ 下）；用于排查模型交互问题，切换即时生效。
                   </div>
@@ -228,21 +228,21 @@
               >
                 <div class="min-w-0 flex-1">
                   <div class="flex items-center gap-2">
-                    <span class="text-[13px] text-strong font-semibold">
+                    <span class="text-base text-strong font-semibold">
                       LLM Providers
                     </span>
                     <span
-                      class="rounded bg-neutral-2 px-1.5 py-px text-[10.5px] text-dim font-medium leading-[16px]"
+                      class="rounded bg-neutral-2 px-1.5 py-px text-badge text-dim font-medium leading-[16px]"
                     >
                       全局
                     </span>
                   </div>
-                  <div class="mt-0.5 text-[12px] text-dim">
+                  <div class="mt-0.5 text-sm text-dim">
                     连接模型 Provider，并选择聊天标签页中显示哪些模型。
                   </div>
                 </div>
                 <button
-                  class="h-[26px] inline-flex flex-none items-center gap-1.5 control-surface rounded-md px-2.5 text-[12px] font-medium control-focus"
+                  class="h-[26px] inline-flex flex-none items-center gap-1.5 control-surface rounded-md px-2.5 text-sm font-medium control-focus"
                   @click="view = { name: 'providers' }"
                 >
                   Configure
@@ -253,10 +253,10 @@
                 class="flex items-center gap-[18px] border-b border-line-soft border-dashed py-3"
               >
                 <div class="min-w-0 flex-1">
-                  <div class="text-[13px] text-strong font-semibold">
+                  <div class="text-base text-strong font-semibold">
                     MCP Servers
                   </div>
-                  <div class="mt-0.5 text-[12px] text-dim">
+                  <div class="mt-0.5 text-sm text-dim">
                     {{
                       inProjectScope
                         ? "仅该项目对话可用的 MCP servers；全局配置对所有项目生效。"
@@ -265,7 +265,7 @@
                   </div>
                 </div>
                 <button
-                  class="h-[26px] inline-flex flex-none items-center gap-1.5 control-surface rounded-md px-2.5 text-[12px] font-medium control-focus"
+                  class="h-[26px] inline-flex flex-none items-center gap-1.5 control-surface rounded-md px-2.5 text-sm font-medium control-focus"
                   title="配置 MCP Servers"
                   @click="view = { name: 'mcp' }"
                 >
@@ -277,16 +277,14 @@
                 class="flex items-center gap-[18px] border-b border-line-soft border-dashed py-3"
               >
                 <div class="min-w-0 flex-1">
-                  <div class="text-[13px] text-strong font-semibold">
-                    Agents
-                  </div>
-                  <div class="mt-0.5 text-[12px] text-dim">
+                  <div class="text-base text-strong font-semibold">Agents</div>
+                  <div class="mt-0.5 text-sm text-dim">
                     配置 Worker 子代理的模型、角色指令与工具，以及 Title
                     标题生成。
                   </div>
                 </div>
                 <button
-                  class="h-[26px] inline-flex flex-none items-center gap-1.5 control-surface rounded-md px-2.5 text-[12px] font-medium control-focus"
+                  class="h-[26px] inline-flex flex-none items-center gap-1.5 control-surface rounded-md px-2.5 text-sm font-medium control-focus"
                   title="配置 Agents"
                   @click="view = { name: 'agents' }"
                 >
@@ -300,17 +298,17 @@
               >
                 <div class="min-w-0 flex-1">
                   <div class="flex items-center gap-2">
-                    <span class="text-[13px] text-strong font-semibold">
+                    <span class="text-base text-strong font-semibold">
                       权限规则
                     </span>
                     <span
                       v-if="!inProjectScope"
-                      class="rounded bg-neutral-2 px-1.5 py-px text-[10.5px] text-dim font-medium leading-[16px]"
+                      class="rounded bg-neutral-2 px-1.5 py-px text-badge text-dim font-medium leading-[16px]"
                     >
                       全局
                     </span>
                   </div>
-                  <div class="mt-0.5 text-[12px] text-dim">
+                  <div class="mt-0.5 text-sm text-dim">
                     {{
                       inProjectScope
                         ? "工具调用的 allow/deny/ask 规则；「总是允许」的审批也会落在这里。"
@@ -319,7 +317,7 @@
                   </div>
                 </div>
                 <button
-                  class="h-[26px] inline-flex flex-none items-center gap-1.5 control-surface rounded-md px-2.5 text-[12px] font-medium control-focus"
+                  class="h-[26px] inline-flex flex-none items-center gap-1.5 control-surface rounded-md px-2.5 text-sm font-medium control-focus"
                   title="配置权限规则"
                   @click="view = { name: 'permissions' }"
                 >

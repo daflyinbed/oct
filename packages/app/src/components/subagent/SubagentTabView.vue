@@ -4,23 +4,23 @@
        只进实例本地快照（ContextRing 经 props 喂入）。输入区被任务状态
        栏替代（受管查看模式：不支持发送/模型切换/resume） -->
   <main class="workspace-panel min-w-0 flex-1 bg-background">
-    <header class="workspace-panel-header gap-2 text-[12.5px] text-neutral-10">
+    <header class="workspace-panel-header gap-2 text-base text-neutral-10">
       <i-lucide-bot class="h-3.5 w-3.5 flex-none text-dim" />
       <span class="min-w-0 truncate font-semibold">{{ identity }}</span>
       <span
-        class="h-[15px] inline-flex flex-none items-center whitespace-nowrap rounded-full bg-neutral-2 px-1.5 text-[10px] text-dim leading-none font-mono"
+        class="h-[15px] inline-flex flex-none items-center whitespace-nowrap rounded-full bg-neutral-2 px-1.5 text-badge text-dim leading-none font-mono"
         >worker</span
       >
       <span class="flex-1" />
       <span
         v-if="task?.model_id"
-        class="max-w-[220px] flex-none truncate text-[11px] text-faint font-mono"
+        class="max-w-[220px] flex-none truncate text-xs text-faint font-mono"
         :title="task.model_id"
       >
         {{ task.model_id }}
       </span>
       <span
-        class="flex flex-none items-center gap-1.5 text-[11.5px]"
+        class="flex flex-none items-center gap-1.5 text-xs"
         :title="statusTitle"
       >
         <i-lucide-loader-circle
@@ -34,7 +34,7 @@
            watch 会负责路由跳转/刷新 -->
       <button
         v-if="rootConversationId"
-        class="h-[24px] inline-flex flex-none items-center gap-1.5 control-surface rounded-md px-2 text-[11.5px] font-medium control-focus"
+        class="h-[24px] inline-flex flex-none items-center gap-1.5 control-surface rounded-md px-2 text-xs font-medium control-focus"
         title="返回主对话"
         @click="returnToParent"
       >
@@ -45,7 +45,7 @@
 
     <details
       v-if="task?.agent_config"
-      class="flex-none border-b border-line-soft px-7 py-2 text-[11.5px] text-dim"
+      class="flex-none border-b border-line-soft px-7 py-2 text-xs text-dim"
     >
       <summary class="cursor-pointer">
         任务配置 · {{ task.agent_config.tools.length }} 个工具 ·
@@ -83,7 +83,7 @@
       <div
         class="mx-auto max-w-[760px] flex items-center gap-2.5 border border-line-soft rounded-[10px] bg-surface px-3 py-2"
       >
-        <span class="min-w-0 flex-1 text-[12.5px]" :class="statusClass">
+        <span class="min-w-0 flex-1 text-base" :class="statusClass">
           <template v-if="isRunning"
             >子代理运行中 · 查看模式（不能从此处发送消息）</template
           >

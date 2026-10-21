@@ -7,13 +7,13 @@
   <div v-else-if="message.role === 'notification'" class="py-1">
     <TaskNotificationDivider :part="notificationPart(message)" />
   </div>
-  <!-- 用户消息：IM 式右侧气泡 + 气泡下操作行（复制 / 回退编辑）；助手回合：扁平无头像 -->
+  <!-- 用户消息：IM 式右侧气泡 + 可选的回退编辑；助手回合：扁平无头像 -->
   <div
     v-else-if="message.role === 'user'"
     class="flex flex-col items-end gap-1"
   >
     <div
-      class="max-w-[75%] border border-line-soft rounded-xl bg-panel px-3.5 py-2 text-[13px] text-neutral-10"
+      class="max-w-[75%] border border-line-soft rounded-xl bg-panel px-3.5 py-2 text-base text-neutral-10"
     >
       <div class="flex flex-col gap-1.5">
         <div
@@ -73,18 +73,11 @@
         </div>
       </div>
     </div>
-    <div v-if="!message.isStreaming" class="flex items-center gap-0.5">
+    <div
+      v-if="!message.isStreaming && revertEnabled && message.forkCut"
+      class="flex items-center gap-0.5"
+    >
       <button
-        type="button"
-        :class="ACTION_BUTTON_CLASS"
-        :title="copied ? '已复制' : '复制'"
-        @click="copyMessage(message)"
-      >
-        <i-lucide-check v-if="copied" class="h-3.5 w-3.5" />
-        <i-lucide-copy v-else class="h-3.5 w-3.5" />
-      </button>
-      <button
-        v-if="revertEnabled && message.forkCut"
         type="button"
         :class="ACTION_BUTTON_CLASS"
         title="回退并编辑"
@@ -94,48 +87,78 @@
       </button>
     </div>
   </div>
-  <div v-else class="space-y-2">
-    <template v-for="(part, i) in message.parts" :key="partKey(part, i)">
-      <!-- 模型正文按 markdown 渲染（vue-stream-markdown）；光标只在最后一个 part 上 -->
-      <MarkdownText
-        v-if="part.kind === 'text'"
-        :text="part.text"
-        :streaming="message.isStreaming && i === message.parts.length - 1"
-      />
-      <ThinkingCard v-else-if="part.kind === 'reasoning'" :part="part" />
-      <!-- 流式压缩事件落在当前流式消息的 parts 里（通常位于最前部） -->
-      <CompactionDivider v-else-if="part.kind === 'compaction'" :part="part" />
-      <!-- task 工具（子代理委派）有专属任务卡片，不走通用工具卡片 -->
-      <TaskCard
-        v-else-if="part.kind === 'tool_call' && part.name === 'task'"
-        :part="part"
-        :conversation-id="conversationId"
-      />
-      <ToolCallCard
-        v-else-if="part.kind === 'tool_call'"
-        :part="part"
-        :conversation-id="conversationId"
-      />
-    </template>
-    <!-- 尚无任何内容时的流式占位光标 -->
-    <div v-if="message.isStreaming && message.parts.length === 0">
-      <span class="animate-pulse">▌</span>
-    </div>
-    <!-- 助手回合操作行：复制正文（markdown 源）+ 从此处分支 -->
-    <div v-if="!message.isStreaming" class="flex items-center gap-0.5">
-      <button
-        type="button"
-        :class="ACTION_BUTTON_CLASS"
-        :title="copied ? '已复制' : '复制'"
-        @click="copyMessage(message)"
+  <div v-else class="relative">
+    <div class="space-y-2">
+      <template v-for="(part, i) in message.parts" :key="partKey(part, i)">
+        <!-- 模型正文按 markdown 渲染（vue-stream-markdown）；光标只在最后一个 part 上 -->
+        <MarkdownText
+          v-if="part.kind === 'text'"
+          :text="part.text"
+          :streaming="message.isStreaming && i === message.parts.length - 1"
+        />
+        <ThinkingCard v-else-if="part.kind === 'reasoning'" :part="part" />
+        <!-- 流式压缩事件落在当前流式消息的 parts 里（通常位于最前部） -->
+        <CompactionDivider
+          v-else-if="part.kind === 'compaction'"
+          :part="part"
+        />
+        <!-- task 工具（子代理委派）有专属任务卡片，不走通用工具卡片 -->
+        <TaskCard
+          v-else-if="part.kind === 'tool_call' && part.name === 'task'"
+          :part="part"
+          :conversation-id="conversationId"
+        />
+        <ToolCallCard
+          v-else-if="part.kind === 'tool_call'"
+          :part="part"
+          :conversation-id="conversationId"
+        />
+      </template>
+      <!-- 尚无任何内容时的流式占位光标 -->
+      <div v-if="message.isStreaming && message.parts.length === 0">
+        <span class="animate-pulse">▌</span>
+      </div>
+      <!-- 最终回复常驻复制/分支；中间工具步骤只在下方间隙提供分支入口。 -->
+      <div
+        v-if="showReplyCopy || showReplyFork"
+        class="flex items-center gap-0.5"
       >
-        <i-lucide-check v-if="copied" class="h-3.5 w-3.5" />
-        <i-lucide-copy v-else class="h-3.5 w-3.5" />
-      </button>
+        <button
+          v-if="showReplyCopy"
+          type="button"
+          :class="ACTION_BUTTON_CLASS"
+          :title="copied ? '已复制' : '复制'"
+          @click="copyMessage(message)"
+        >
+          <i-lucide-check v-if="copied" class="h-3.5 w-3.5" />
+          <i-lucide-copy v-else class="h-3.5 w-3.5" />
+        </button>
+        <button
+          v-if="showReplyFork"
+          type="button"
+          :class="ACTION_BUTTON_CLASS"
+          :title="forkTitle(message)"
+          @click="$emit('fork', message.forkCut!)"
+        >
+          <i-lucide-git-branch class="h-3.5 w-3.5" />
+        </button>
+      </div>
+    </div>
+
+    <!-- 工具批次切点位于两条 assistant 记录之间：绝对定位在紧凑的
+         8px 间隙里，不参与消息高度；hover/focus 时用横线标出切点。 -->
+    <div
+      v-if="showStepFork"
+      class="group absolute right-0 z-20 h-2 -bottom-2 -left-10"
+      data-fork-marker="step"
+    >
+      <div
+        aria-hidden="true"
+        class="pointer-events-none absolute left-0 right-0 top-1/2 h-px bg-accent-6 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100"
+      />
       <button
-        v-if="forkEnabled && message.forkCut"
         type="button"
-        :class="ACTION_BUTTON_CLASS"
+        class="absolute left-4 top-1/2 z-1 h-5 w-5 flex items-center justify-center border border-line-soft rounded bg-surface text-faint opacity-0 shadow-sm control-focus transition-[opacity,colors] -translate-x-1/2 -translate-y-1/2 hover:border-accent-6 hover:text-accent-10 group-focus-within:opacity-100 group-hover:opacity-100"
         :title="forkTitle(message)"
         @click="$emit('fork', message.forkCut!)"
       >
@@ -194,6 +217,34 @@ const fileParts = computed(() =>
 );
 const hasText = computed(() =>
   props.message.parts.some((part) => part.kind === "text"),
+);
+const hasCopyableText = computed(() =>
+  props.message.parts.some(
+    (part) => part.kind === "text" && part.text.trim().length > 0,
+  ),
+);
+/** 工具结果行提供的切点 id 与承载它的 assistant 行不同。 */
+const isToolStep = computed(
+  () =>
+    !props.message.isStreaming &&
+    props.message.forkCut?.kind === "message" &&
+    props.message.forkCut.message_id !== props.message.id,
+);
+/** 中间工具步骤不提供复制，即使该记录包含模型的过程说明文字。 */
+const showReplyCopy = computed(
+  () =>
+    !props.message.isStreaming && hasCopyableText.value && !isToolStep.value,
+);
+const showStepFork = computed(
+  () => Boolean(props.forkEnabled) && isToolStep.value,
+);
+/** 完整回复的切点直接落在该 assistant 行上，操作按钮保持常驻。 */
+const showReplyFork = computed(
+  () =>
+    !props.message.isStreaming &&
+    Boolean(props.forkEnabled) &&
+    Boolean(props.message.forkCut) &&
+    !isToolStep.value,
 );
 /** 流式光标永远落在最后一个 text part 上（附件 parts 在其后）。 */
 const lastTextIndex = computed(() => {

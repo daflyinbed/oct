@@ -1,14 +1,14 @@
 <template>
   <div>
-    <h2 class="text-[16.5px] text-strong font-semibold">Agents</h2>
-    <p class="mt-1 text-[12px] text-dim">
+    <h2 class="text-xl text-strong font-semibold">Agents</h2>
+    <p class="mt-1 text-sm text-dim">
       分别配置子代理与自动标题；项目按字段覆盖全局。
     </p>
     <div class="mt-5 flex flex-wrap gap-2">
       <button
         v-for="item in views"
         :key="item.key"
-        class="rounded-md px-3 py-1.5 text-[12px] control-focus"
+        class="rounded-md px-3 py-1.5 text-sm control-focus"
         :class="
           selectedKey === item.key
             ? 'bg-neutral-3 text-strong'
@@ -20,19 +20,19 @@
         {{ item.name }}
       </button>
     </div>
-    <p v-if="loading" class="mt-5 text-[12px] text-dim">加载配置与工具目录…</p>
-    <p v-if="error" role="alert" class="mt-4 text-[12px] text-red-9">
+    <p v-if="loading" class="mt-5 text-sm text-dim">加载配置与工具目录…</p>
+    <p v-if="error" role="alert" class="mt-4 text-sm text-red-9">
       {{ error }}
     </p>
     <template v-if="current && !loading">
-      <p class="mt-4 text-[12px] text-dim">{{ current.description }}</p>
+      <p class="mt-4 text-sm text-dim">{{ current.description }}</p>
       <div class="mt-5 space-y-5">
         <section>
           <div
-            class="mb-2 flex items-center gap-2 text-[13px] text-strong font-semibold"
+            class="mb-2 flex items-center gap-2 text-base text-strong font-semibold"
           >
             模型
-            <span class="text-[11px] text-dim font-normal">{{
+            <span class="text-xs text-dim font-normal">{{
               sourceLabel(current.sources.model)
             }}</span>
           </div>
@@ -53,16 +53,16 @@
               trigger-class="max-w-[420px]"
             />
           </div>
-          <p class="mt-2 text-[11px] text-dim">
+          <p class="mt-2 text-xs text-dim">
             当前生效：{{ modelSummary(current.effective.model) }}
           </p>
         </section>
         <section>
           <div
-            class="mb-2 flex items-center gap-2 text-[13px] text-strong font-semibold"
+            class="mb-2 flex items-center gap-2 text-base text-strong font-semibold"
           >
             {{ selectedKey === "title" ? "额外标题指令" : "额外角色指令" }}
-            <span class="text-[11px] text-dim font-normal">{{
+            <span class="text-xs text-dim font-normal">{{
               sourceLabel(current.sources.instructions)
             }}</span>
           </div>
@@ -80,16 +80,16 @@
             v-if="instructionsMode === 'custom'"
             v-model="instructions"
             :disabled="saving"
-            class="mt-2 min-h-[120px] w-full border border-line-soft rounded-md bg-surface p-3 text-[12px] text-neutral-10 outline-none focus:border-accent-6"
+            class="mt-2 min-h-[120px] w-full border border-line-soft rounded-md bg-surface p-3 text-sm text-neutral-10 outline-none focus:border-accent-6"
             :aria-label="
               selectedKey === 'title' ? '额外标题指令' : '额外角色指令'
             "
             placeholder="填写额外要求；留空表示不使用额外指令。"
           />
-          <p v-else class="mt-2 whitespace-pre-wrap text-[12px] text-dim">
+          <p v-else class="mt-2 whitespace-pre-wrap text-sm text-dim">
             {{ current.global_effective.instructions || "无全局额外指令" }}
           </p>
-          <details class="mt-2 text-[11px] text-dim">
+          <details class="mt-2 text-xs text-dim">
             <summary class="cursor-pointer">内置提示词说明</summary>
             <p class="mt-1">
               {{
@@ -102,14 +102,14 @@
         </section>
         <section>
           <div
-            class="mb-2 flex items-center gap-2 text-[13px] text-strong font-semibold"
+            class="mb-2 flex items-center gap-2 text-base text-strong font-semibold"
           >
             工具
-            <span class="text-[11px] text-dim font-normal">{{
+            <span class="text-xs text-dim font-normal">{{
               sourceLabel(current.sources.tools)
             }}</span>
           </div>
-          <p v-if="!current.tools_editable" class="text-[12px] text-dim">
+          <p v-if="!current.tools_editable" class="text-sm text-dim">
             无工具 · 单次标题生成
           </p>
           <template v-else>
@@ -120,19 +120,19 @@
               title="Agent 工具策略"
             />
             <div v-if="toolsMode === 'allowlist'" class="mt-3 space-y-3">
-              <p class="text-[11px] text-dim">
+              <p class="text-xs text-dim">
                 {{
                   projectId ? "覆盖全局工具选择。" : "只开放下方选中的工具。"
                 }}全不选表示无工具；选中工具仍遵守审批规则。
               </p>
               <div v-for="group in toolGroups" :key="group.name">
-                <div class="mb-1 text-[12px] text-dim font-semibold">
+                <div class="mb-1 text-sm text-dim font-semibold">
                   {{ group.name }}
                 </div>
                 <label
                   v-for="option in group.items"
                   :key="toolKey(option.selector)"
-                  class="flex cursor-pointer items-center gap-2 py-1 text-[12px] text-neutral-10"
+                  class="flex cursor-pointer items-center gap-2 py-1 text-sm text-neutral-10"
                 >
                   <input
                     type="checkbox"
@@ -166,19 +166,19 @@
                   >
                 </label>
               </div>
-              <p class="text-[11px] text-dim">
+              <p class="text-xs text-dim">
                 edit_file 需要 read_file，选择会联动。execute_command 与 MCP
                 可能修改数据。
               </p>
               <div v-if="requireReadTools" class="flex items-center gap-2">
-                <p class="text-[11px] text-dim">
+                <p class="text-xs text-dim">
                   代码模式已启用：read_file / grep / glob
                   用于浏览本运行生成的工具
                   SDK，非空列表必须包含（后端同样校验）。
                 </p>
                 <button
                   type="button"
-                  class="shrink-0 control-ghost rounded-md px-2.5 py-1 text-[11px] control-focus"
+                  class="shrink-0 control-ghost rounded-md px-2.5 py-1 text-xs control-focus"
                   :disabled="saving"
                   @click="clearAllTools"
                 >
@@ -186,7 +186,7 @@
                 </button>
               </div>
             </div>
-            <p class="mt-2 text-[11px] text-dim">
+            <p class="mt-2 text-xs text-dim">
               当前生效：{{
                 current.effective.tools.mode === "parent"
                   ? "跟随父代理可派生工具"
@@ -198,22 +198,22 @@
       </div>
       <div class="mt-6 flex items-center gap-2">
         <button
-          class="control-surface rounded-md px-3 py-1.5 text-[12px] control-focus"
+          class="control-surface rounded-md px-3 py-1.5 text-sm control-focus"
           :disabled="saving || !validModel"
           @click="saveDraft"
         >
           {{ saving ? "保存中…" : "保存配置" }}
         </button>
         <button
-          class="control-ghost rounded-md px-3 py-1.5 text-[12px] control-focus"
+          class="control-ghost rounded-md px-3 py-1.5 text-sm control-focus"
           :disabled="saving"
           @click="reset"
         >
           {{ projectId ? "全部恢复继承" : "恢复内置默认" }}
         </button>
-        <span v-if="dirty" class="text-[11px] text-dim">有未保存修改</span>
+        <span v-if="dirty" class="text-xs text-dim">有未保存修改</span>
       </div>
-      <p v-if="saved" role="status" class="mt-3 text-[12px] text-dim">
+      <p v-if="saved" role="status" class="mt-3 text-sm text-dim">
         {{ saved }}
       </p>
     </template>
@@ -224,19 +224,19 @@
       <AlertDialogContent
         class="fixed left-1/2 top-1/2 z-60 w-[360px] border border-line-soft rounded-xl bg-panel p-5 shadow-[var(--oct-shadow)] -translate-x-1/2 -translate-y-1/2"
       >
-        <AlertDialogTitle class="text-[14px] text-strong font-semibold"
+        <AlertDialogTitle class="text-lg text-strong font-semibold"
           >丢弃未保存修改？</AlertDialogTitle
         >
-        <AlertDialogDescription class="mt-2 text-[12px] text-dim"
+        <AlertDialogDescription class="mt-2 text-sm text-dim"
           >离开当前配置后，未保存的修改将被丢弃。</AlertDialogDescription
         >
         <div class="mt-5 flex justify-end gap-2">
           <AlertDialogCancel
-            class="control-surface rounded-md px-3 py-1.5 text-[12px]"
+            class="control-surface rounded-md px-3 py-1.5 text-sm"
             >继续编辑</AlertDialogCancel
           >
           <AlertDialogAction
-            class="control-surface rounded-md px-3 py-1.5 text-[12px]"
+            class="control-surface rounded-md px-3 py-1.5 text-sm"
             @click="discard"
             >丢弃修改</AlertDialogAction
           >

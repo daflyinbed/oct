@@ -6,7 +6,7 @@
       class="overflow-hidden border border-line-soft rounded-md"
     >
       <div
-        class="border-b border-line-soft bg-surface px-3 py-1.5 text-[11.5px] text-neutral-10 font-medium font-mono"
+        class="border-b border-line-soft bg-surface px-3 py-1.5 text-xs text-neutral-10 font-medium font-mono"
       >
         {{ file.path }}
       </div>

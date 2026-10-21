@@ -12,12 +12,12 @@
           class="flex items-center gap-2 border-b border-line-soft px-4 py-3"
         >
           <i-lucide-terminal class="h-4 w-4 flex-none text-dim" />
-          <DialogTitle
-            class="min-w-0 flex-1 truncate text-[13px] font-semibold"
-          >
-            <span class="font-mono" :title="command">{{ command }}</span>
+          <DialogTitle class="min-w-0 flex-1 truncate text-base font-semibold">
+            <span class="text-code font-mono" :title="command">{{
+              command
+            }}</span>
           </DialogTitle>
-          <span class="flex-none text-[11px] text-faint font-mono">{{
+          <span class="flex-none text-xs text-faint font-mono">{{
             taskId.slice(0, 8)
           }}</span>
           <button
@@ -41,7 +41,7 @@
           >
             <button
               type="button"
-              class="h-6 control-surface rounded-md px-2 text-[11.5px] control-focus disabled:opacity-50"
+              class="h-6 control-surface rounded-md px-2 text-xs control-focus disabled:opacity-50"
               :class="earlierFailed ? 'text-danger-10' : ''"
               :disabled="loadingEarlier"
               @click="loadEarlier"
@@ -54,21 +54,21 @@
                     : `加载更早（已载 ${formatBackgroundBytes(loadedBytes)} / 共 ${formatBackgroundBytes(totalBytes)}）`
               }}
             </button>
-            <span class="text-[11px] text-faint">输出从尾部开始展示</span>
+            <span class="text-xs text-faint">输出从尾部开始展示</span>
           </div>
 
           <div
             v-if="loading && output === null"
-            class="flex items-center justify-center gap-2 py-8 text-[12px] text-faint"
+            class="flex items-center justify-center gap-2 py-8 text-sm text-faint"
           >
             <i-lucide-loader-circle class="h-3.5 w-3.5 animate-spin" />
             加载输出中…
           </div>
           <div v-else-if="failed" class="flex flex-col items-center gap-2 py-8">
-            <p class="text-[12px] text-danger-10">输出加载失败</p>
+            <p class="text-sm text-danger-10">输出加载失败</p>
             <button
               type="button"
-              class="h-7 control-surface rounded-md px-2.5 text-[12px] control-focus"
+              class="h-7 control-surface rounded-md px-2.5 text-sm control-focus"
               @click="loadTail"
             >
               重试
@@ -76,7 +76,7 @@
           </div>
           <pre
             v-else
-            class="max-h-[60vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface px-2.5 py-1.5 text-[11.5px] text-neutral-10 leading-[1.55] font-mono"
+            class="max-h-[60vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface px-2.5 py-1.5 text-code text-neutral-10 font-mono"
             >{{ output || "（无输出）" }}</pre>
         </div>
       </DialogContent>

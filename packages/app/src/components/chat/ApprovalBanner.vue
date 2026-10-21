@@ -21,12 +21,12 @@
               class="block h-full w-full"
             />
           </span>
-          <span class="flex-none text-[12.5px] text-strong font-semibold">
+          <span class="flex-none text-base text-strong font-semibold">
             {{ kindMeta(approval.kind).label }}
           </span>
           <span
             v-if="approval.agentId"
-            class="max-w-[180px] truncate text-[11px] text-warning-10"
+            class="max-w-[180px] truncate text-xs text-warning-10"
             :title="approval.agentId"
             >子代理 ·
             {{
@@ -35,13 +35,13 @@
           >
           <span
             v-if="approval.outside"
-            class="h-[16px] inline-flex flex-none items-center whitespace-nowrap rounded-full bg-warning-7 px-1.5 text-[10.5px] text-warning-10 font-medium leading-none"
+            class="h-[16px] inline-flex flex-none items-center whitespace-nowrap rounded-full bg-warning-7 px-1.5 text-badge text-warning-10 font-medium leading-none"
             title="目标路径解析后位于工作区（含附加目录）之外"
           >
             工作区外
           </span>
           <span
-            class="min-w-0 flex-1 truncate text-[12px] text-dim font-mono"
+            class="min-w-0 flex-1 truncate text-code text-dim font-mono"
             :title="approval.path ?? approval.command ?? approval.title"
           >
             {{ approval.title }}
@@ -54,11 +54,11 @@
           v-if="approval.kind !== 'mcp'"
           class="mt-2 min-w-0 flex items-center gap-2"
         >
-          <span class="flex-none text-[11px] text-faint">规则 pattern</span>
+          <span class="flex-none text-xs text-faint">规则 pattern</span>
           <input
             :value="patternOf(approval)"
             type="text"
-            class="h-7 min-w-0 flex-1 border border-line-soft rounded-md bg-surface px-2 text-[11.5px] text-neutral-10 font-mono outline-none transition-colors focus:border-accent-6 placeholder:text-faint"
+            class="h-7 min-w-0 flex-1 border border-line-soft rounded-md bg-surface px-2 text-code text-neutral-10 font-mono outline-none transition-colors focus:border-accent-6 placeholder:text-faint"
             placeholder="绝对路径 glob / 命令前缀（可编辑后随「总是允许」保存）"
             @input="
               setPattern(approval, ($event.target as HTMLInputElement).value)
@@ -71,7 +71,7 @@
           <span class="flex-1" />
           <button
             type="button"
-            class="h-7 flex-none rounded-[7px] bg-danger-7 px-2.5 text-[12px] text-danger-10 font-medium control-focus transition-[filter] hover:brightness-110"
+            class="h-7 flex-none rounded-[7px] bg-danger-7 px-2.5 text-sm text-danger-10 font-medium control-focus transition-[filter] hover:brightness-110"
             title="拒绝本次调用（模型可见拒绝原因）"
             @click="decide(approval, 'deny')"
           >
@@ -79,7 +79,7 @@
           </button>
           <button
             type="button"
-            class="h-7 flex-none border border-neutral-5 rounded-[7px] bg-surface px-2.5 text-[12px] text-neutral-10 font-medium control-focus transition-colors hover:bg-neutral-3"
+            class="h-7 flex-none border border-neutral-5 rounded-[7px] bg-surface px-2.5 text-sm text-neutral-10 font-medium control-focus transition-colors hover:bg-neutral-3"
             title="允许并在本项目保存一条 allow 规则（pattern 见上方输入框）"
             @click="decide(approval, 'allow_always')"
           >
@@ -87,7 +87,7 @@
           </button>
           <button
             type="button"
-            class="h-7 flex-none rounded-[7px] bg-accent-7 px-2.5 text-[12px] text-accent-contrast font-medium control-focus transition-[filter] hover:brightness-110"
+            class="h-7 flex-none rounded-[7px] bg-accent-7 px-2.5 text-sm text-accent-contrast font-medium control-focus transition-[filter] hover:brightness-110"
             title="仅允许本次调用"
             @click="decide(approval, 'allow')"
           >

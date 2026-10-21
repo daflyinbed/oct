@@ -4,13 +4,13 @@
       class="workspace-panel-header select-none justify-between border-b border-line-soft"
     >
       <div
-        class="flex items-center gap-[7px] text-[12.5px] text-neutral-10 font-semibold"
+        class="flex items-center gap-[7px] text-base text-neutral-10 font-semibold"
       >
         <i-lucide-files class="h-3.5 w-3.5 text-dim" />
         Files
       </div>
       <button
-        class="h-[22px] w-[22px] control-ghost rounded-md text-[12px] control-focus"
+        class="h-[22px] w-[22px] control-ghost rounded-md text-sm control-focus"
         title="关闭"
         @click="$emit('close')"
       >
@@ -19,13 +19,13 @@
     </header>
 
     <div class="workspace-panel-body p-1.5">
-      <p v-if="!projectId" class="px-2 py-1.5 text-[12.5px] text-faint">
+      <p v-if="!projectId" class="px-2 py-1.5 text-base text-faint">
         Select a conversation to browse its project files.
       </p>
-      <p v-else-if="loading" class="px-2 py-1.5 text-[12.5px] text-faint">
+      <p v-else-if="loading" class="px-2 py-1.5 text-base text-faint">
         Loading…
       </p>
-      <p v-else-if="error" class="px-2 py-1.5 text-[12.5px] text-danger-10">
+      <p v-else-if="error" class="px-2 py-1.5 text-base text-danger-10">
         {{ error }}
       </p>
       <TreeRoot
@@ -40,7 +40,7 @@
       >
         <p
           v-if="flattenItems.length === 0"
-          class="px-2 py-1.5 text-[12.5px] text-faint"
+          class="px-2 py-1.5 text-base text-faint"
         >
           Empty directory.
         </p>
@@ -52,7 +52,7 @@
           class="cursor-pointer rounded-[5px] outline-none"
         >
           <div
-            class="h-6 flex items-center gap-1 rounded-[5px] pr-2 text-[12.5px] transition-colors"
+            class="h-6 flex items-center gap-1 rounded-[5px] pr-2 text-base transition-colors"
             :class="
               isSelected
                 ? 'bg-accent-3 text-neutral-10'

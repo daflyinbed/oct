@@ -12,7 +12,7 @@
         <div
           class="absolute inset-x-0 top-0 z-10 flex items-center gap-4 bg-gradient-to-b from-black/40 px-5 py-4"
         >
-          <DialogTitle class="min-w-0 flex-1 truncate text-sm font-medium">
+          <DialogTitle class="min-w-0 flex-1 truncate text-base font-medium">
             {{ filename }}
           </DialogTitle>
           <DialogClose
@@ -38,7 +38,7 @@
             class="absolute h-7 w-7 animate-spin text-white/70"
             aria-label="加载图片中"
           />
-          <p v-if="failed" role="alert" class="text-sm text-white/80">
+          <p v-if="failed" role="alert" class="text-base text-white/80">
             图片加载失败
           </p>
           <img
@@ -113,7 +113,7 @@
             <i-lucide-zoom-out class="h-5 w-5" aria-hidden="true" />
           </button>
           <span
-            class="w-10 flex-none text-center text-xs text-white/70 tabular-nums"
+            class="w-10 flex-none text-center text-sm text-white/70 tabular-nums"
           >
             {{ Math.round(scale * 100) }}%
           </span>

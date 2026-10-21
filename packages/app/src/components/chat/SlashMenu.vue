@@ -8,7 +8,7 @@
   >
     <template v-for="group in groups" :key="group.label">
       <p
-        class="px-2 pb-0.5 pt-1.5 text-[10.5px] text-faint font-medium tracking-wide uppercase"
+        class="px-2 pb-0.5 pt-1.5 text-badge text-faint font-medium tracking-wide uppercase"
       >
         {{ group.label }}
       </p>
@@ -35,21 +35,19 @@
         <span class="min-w-0 flex-1 truncate">
           <span
             v-if="item.kind === 'builtin'"
-            class="text-[12.5px] text-neutral-10 font-mono"
+            class="text-base text-neutral-10 font-mono"
             >/{{ item.label }}</span
           >
-          <span v-else class="text-[12.5px] text-neutral-10 font-mono">{{
+          <span v-else class="text-base text-neutral-10 font-mono">{{
             item.prompt.name
           }}</span>
-          <span
-            v-if="itemDescription(item)"
-            class="ml-1.5 text-[11.5px] text-dim"
-            >{{ itemDescription(item) }}</span
-          >
+          <span v-if="itemDescription(item)" class="ml-1.5 text-xs text-dim">{{
+            itemDescription(item)
+          }}</span>
         </span>
         <span
           v-if="item.kind === 'prompt' && item.prompt.arguments.length > 0"
-          class="flex-none text-[10.5px] text-faint"
+          class="flex-none text-badge text-faint"
         >
           {{ item.prompt.arguments.length }} 个参数
         </span>

@@ -84,6 +84,24 @@ async function boot(cut: ForkCut, draft: string | null, inherited = rows) {
   await expect.element(page.getByTitle("从这条回复后分支")).toBeEnabled();
 }
 
+it("用户消息不显示复制，完整回复常驻复制与分支操作", async () => {
+  await boot({ kind: "message", message_id: "a1", side: "after" }, null);
+  const user = document.querySelector<HTMLElement>('[data-message-id="u1"]')!;
+  const reply = document.querySelector<HTMLElement>('[data-message-id="a1"]')!;
+  const copy = reply.querySelector<HTMLElement>('button[title="复制"]');
+  const fork = reply.querySelector<HTMLElement>(
+    'button[title="从这条回复后分支"]',
+  );
+
+  expect(user.querySelector('button[title="复制"]')).toBeNull();
+  expect(user.querySelector('button[title="回退并编辑"]')).not.toBeNull();
+  expect(copy).not.toBeNull();
+  expect(fork).not.toBeNull();
+  expect(getComputedStyle(copy!).opacity).toBe("1");
+  expect(getComputedStyle(fork!).opacity).toBe("1");
+  expect(reply.querySelector('[data-fork-marker="step"]')).toBeNull();
+});
+
 it("当前会话分支加入侧栏并带分叉标记，并能独立继续发送", async () => {
   const cut = {
     kind: "message",
@@ -203,7 +221,10 @@ it("回复后分支保留回复，继承的后台任务不带停止或查看输�
   );
 });
 
-async function bootAbort(cut: ForkCut = { kind: "head" }) {
+async function bootAbort(
+  cut: ForkCut = { kind: "head" },
+  withContinuation = false,
+) {
   await resetMock();
   const interrupted = [
     storedMessage("user", [{ type: "text", text: "run" }], {
@@ -213,6 +234,7 @@ async function bootAbort(cut: ForkCut = { kind: "head" }) {
     storedMessage(
       "assistant",
       [
+        { type: "text", text: "我先运行命令检查。" },
         {
           type: "tool_call",
           id: "abort-call",
@@ -243,6 +265,19 @@ async function bootAbort(cut: ForkCut = { kind: "head" }) {
       },
     ),
   ];
+  if (withContinuation) {
+    interrupted.push(
+      storedMessage(
+        "assistant",
+        [{ type: "reasoning", text: "继续检查下一步" }],
+        {
+          id: "abort-continuation",
+          details: { reasoning_duration_ms: 1000 },
+        },
+      ),
+    );
+  }
+  const revision = interrupted.length;
   const inherited = interrupted.map((row) => ({ ...row, inherited: true }));
   await setScenario({
     projects: [projectFixture()],
@@ -271,13 +306,13 @@ async function bootAbort(cut: ForkCut = { kind: "head" }) {
       ],
     },
     afterStreamHistory: {
-      c1: { messages: interrupted, revision: 3, resumable: true },
+      c1: { messages: interrupted, revision, resumable: true },
       "abort-branch": {
         messages: [
           ...inherited,
           storedMessage("assistant", [{ type: "text", text: "分支恢复完成" }]),
         ],
-        revision: 4,
+        revision: revision + 1,
         resumable: false,
       },
     },
@@ -288,9 +323,9 @@ async function bootAbort(cut: ForkCut = { kind: "head" }) {
             ...conversationFixture("abort-branch", "p1", "中断会话（分支）"),
             origin_kind: "fork",
             forked_from_conversation_id: "c1",
-            forked_at_revision: 3,
+            forked_at_revision: revision,
           },
-          context_revision: 3,
+          context_revision: revision,
           cut,
           draft: null,
         },
@@ -347,19 +382,58 @@ it("停止工具后可从中断处分支，分支能恢复此轮且来源保持�
   ).toEqual(["/api/conversations/abort-branch/resume"]);
 });
 
-it("中断工具卡片的消息菜单传递闭合工具组的真实结果 id", async () => {
+it("中间工具步骤的左侧切点传递闭合工具组的真实结果 id", async () => {
   const cut = {
     kind: "message",
     message_id: "abort-result",
     side: "after",
   } as const;
-  await bootAbort(cut);
-  await page.getByTitle("从这一步后分支").click();
+  await bootAbort(cut, true);
+  const assistant = document.querySelector<HTMLElement>(
+    '[data-message-id="abort-assistant"]',
+  )!;
+  const marker = assistant.querySelector<HTMLElement>(
+    '[data-fork-marker="step"]',
+  )!;
+  const markerContent = marker.previousElementSibling as HTMLElement;
+  const continuation = document.querySelector<HTMLElement>(
+    '[data-message-id="abort-continuation"]',
+  )!;
+  const forkButton = page.getByTitle("从这一步后分支");
+  const line = marker.querySelector<HTMLElement>('[aria-hidden="true"]')!;
+
+  // 中间工具步骤即使含有过程说明文字也不提供复制；切点仍位于紧凑间隙。
+  expect(assistant.textContent).toContain("我先运行命令检查。");
+  expect(assistant.querySelector('button[title="复制"]')).toBeNull();
+  expect(getComputedStyle(marker).position).toBe("absolute");
+  expect(Number(getComputedStyle(marker).zIndex)).toBeGreaterThan(10);
+  expect(assistant.getBoundingClientRect().height).toBeCloseTo(
+    markerContent.getBoundingClientRect().height,
+    0,
+  );
+  expect(marker.getBoundingClientRect().height).toBeCloseTo(8, 0);
+  expect(
+    continuation.getBoundingClientRect().top -
+      assistant.getBoundingClientRect().bottom,
+  ).toBeCloseTo(8, 0);
+  expect(getComputedStyle(forkButton.element()).opacity).toBe("0");
+  expect(getComputedStyle(line).opacity).toBe("0");
+
+  await forkButton.hover();
+  await expect
+    .poll(() => getComputedStyle(forkButton.element()).opacity)
+    .toBe("1");
+  await expect.poll(() => getComputedStyle(line).opacity).toBe("1");
+  expect(line.getBoundingClientRect().width).toBeGreaterThan(
+    markerContent.getBoundingClientRect().width,
+  );
+
+  await forkButton.click();
   await expect
     .poll(() => mounted?.router.currentRoute.value.path)
     .toBe("/conversation/abort-branch");
   const requests = await getRequests();
   expect(
     requests.find((request) => request.path.endsWith("/fork"))?.body,
-  ).toMatchObject({ expected_revision: 3, cut });
+  ).toMatchObject({ expected_revision: 4, cut });
 });

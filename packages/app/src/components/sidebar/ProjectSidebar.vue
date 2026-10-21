@@ -1,8 +1,7 @@
 <template>
   <aside class="workspace-panel h-full w-full bg-panel">
     <header class="workspace-panel-header flex-none">
-      <span
-        class="text-[11px] text-dim font-semibold tracking-[0.8px] uppercase"
+      <span class="text-xs text-dim font-semibold tracking-[0.8px] uppercase"
         >Threads</span
       >
       <span class="flex-1" />
@@ -32,7 +31,7 @@
         <input
           v-model="filter"
           placeholder="Search threads…"
-          class="min-w-0 flex-1 border-none bg-transparent text-[12.5px] text-neutral-10 outline-none placeholder:text-faint"
+          class="min-w-0 flex-1 border-none bg-transparent text-base text-neutral-10 outline-none placeholder:text-faint"
         />
       </div>
     </div>
@@ -40,7 +39,7 @@
     <!-- 按时间排序视图：日期分组（今天/昨天/星期X/月份），行 = 标题 + 项目两行 -->
     <div v-if="sortByTime" class="workspace-panel-body px-1.5 pb-3">
       <div v-for="group in timeGroups" :key="group.label">
-        <div class="px-2.5 pb-[5px] pt-3 text-[11.5px] text-faint">
+        <div class="px-2.5 pb-[5px] pt-3 text-xs text-faint">
           {{ group.label }}
         </div>
         <div class="space-y-px">
@@ -63,7 +62,7 @@
     <div v-else class="workspace-panel-body px-1.5 pb-3">
       <div v-for="project in visibleProjects" :key="project.id" class="mb-1">
         <button
-          class="group/pg h-7 w-full flex items-center gap-1.5 rounded-md px-2 text-left text-[12.5px] text-neutral-10 font-semibold control-focus transition-colors hover:bg-neutral-1"
+          class="group/pg h-7 w-full flex items-center gap-1.5 rounded-md px-2 text-left text-base text-neutral-10 font-semibold control-focus transition-colors hover:bg-neutral-1"
           @click="toggleProject(project.id)"
         >
           <i-lucide-chevron-right
@@ -72,7 +71,7 @@
           />
           <span class="truncate">{{ project.name }}</span>
           <span
-            class="flex-none rounded-full bg-neutral-2 px-1.5 text-[10.5px] text-faint font-normal leading-[16px]"
+            class="flex-none rounded-full bg-neutral-2 px-1.5 text-badge text-faint font-normal leading-[16px]"
           >
             {{ (conversations.get(project.id) ?? []).length }}
           </span>
@@ -99,7 +98,7 @@
           />
 
           <button
-            class="w-full flex items-center gap-1.5 rounded-md py-[5px] pl-[26px] pr-2 text-left text-[12.5px] text-faint control-focus transition-colors hover:bg-neutral-1 hover:text-accent-10"
+            class="w-full flex items-center gap-1.5 rounded-md py-[5px] pl-[26px] pr-2 text-left text-base text-faint control-focus transition-colors hover:bg-neutral-1 hover:text-accent-10"
             @click="$emit('createConversation', project.id)"
           >
             <i-lucide-plus class="h-3 w-3" />

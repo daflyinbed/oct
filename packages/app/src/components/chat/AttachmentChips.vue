@@ -1,7 +1,7 @@
 <template>
   <div class="flex flex-col gap-1 px-3 pt-2.5">
     <!-- 拒收提示（超限/前置校验失败）：单行即时文案 -->
-    <div v-if="notice" class="text-[11.5px] text-danger-10">{{ notice }}</div>
+    <div v-if="notice" class="text-xs text-danger-10">{{ notice }}</div>
     <div class="flex flex-wrap items-start gap-1.5">
       <template v-for="item in items" :key="item.localId">
         <!-- 图片：48px 缩略图 + 进度环 -->
@@ -51,7 +51,7 @@
             </svg>
             <span
               v-else-if="item.status === 'failed'"
-              class="pointer-events-none absolute inset-0 flex items-center justify-center bg-danger-10/70 text-[10px] text-white"
+              class="pointer-events-none absolute inset-0 flex items-center justify-center bg-danger-10/70 text-badge text-white"
               >失败</span
             >
             <button
@@ -65,7 +65,7 @@
           </div>
           <div
             v-if="item.status === 'failed'"
-            class="max-w-[220px] flex items-start gap-1 text-[10.5px] text-danger-10"
+            class="max-w-[220px] flex items-start gap-1 text-badge text-danger-10"
           >
             <span role="alert" class="min-w-0 break-words">{{
               item.error ?? "上传失败"
@@ -87,12 +87,12 @@
         >
           <i-lucide-file-text class="h-4 w-4 flex-none text-faint" />
           <div class="min-w-0 flex flex-1 flex-col">
-            <span class="truncate text-[11.5px] text-neutral-10">{{
+            <span class="truncate text-xs text-neutral-10">{{
               item.filename
             }}</span>
             <span
               v-if="item.status === 'failed'"
-              class="flex items-center gap-1 text-[10.5px] text-danger-10"
+              class="flex items-center gap-1 text-badge text-danger-10"
             >
               <span class="truncate">{{ item.error ?? "上传失败" }}</span>
               <button
@@ -106,10 +106,10 @@
             </span>
             <span
               v-else-if="item.status === 'uploading'"
-              class="text-[10.5px] text-faint"
+              class="text-badge text-faint"
               >{{ item.progress }}%</span
             >
-            <span v-else class="text-[10.5px] text-faint">{{
+            <span v-else class="text-badge text-faint">{{
               formatSize(item.sizeBytes)
             }}</span>
           </div>

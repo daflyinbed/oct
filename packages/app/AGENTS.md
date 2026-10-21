@@ -16,6 +16,14 @@
 - `src/composables/chat/attachments.ts` 是发送/草稿的共享附件类型；历史展示优先用 `MessageDto.user_content.body/attachments`，不显示模型用的固定文本快照。旧历史 fallback 集中在 `chat/display.ts`。
 - `src/api/`: `client.ts` (openapi-fetch), `schema.d.ts` (auto-generated)
 
+## 字号
+
+- 字号与行高集中在根 `uno.config.ts` 的 `fontSize`，同时生成 `--oct-font-size-*` / `--oct-line-height-*` CSS 变量。组件使用 token 类，避免新增 `text-[…px]`。
+- `text-base` 14px / 22px：默认正文、主界面文字；`text-sm` 13px / 20px：紧凑控件；`text-xs` 12px / 18px：辅助信息；`text-badge` 11px / 16px：徽标。
+- `text-lg` 16px / 24px、`text-xl` 18px / 28px：两级标题。对话 Markdown 的 h1/h2 为 18/16px，h3–h6 与正文同为 14px。
+- `text-code` 12px / 20px：行内代码、代码块、文件预览、diff 与工具输出；终端读取 `--oct-font-size-terminal`（13px），不在 JS 中重复写字号。
+- `MarkdownText.vue` 将库内字号变量映射到上述 token，并覆盖代码行与行号的显式字号；修改时同时核对表格、行内代码和代码块。
+
 ## 单元测试
 
 - vitest 测试与源码同目录（`src/**/*.test.ts`）。独立 `vitest.config.ts`，node 环境，不加载 vue/unocss 插件。

@@ -58,7 +58,7 @@
             <p
               v-if="terminalError"
               role="alert"
-              class="flex-none px-3 py-2 text-xs text-danger-10"
+              class="flex-none px-3 py-2 text-sm text-danger-10"
             >
               {{ terminalError }}
             </p>

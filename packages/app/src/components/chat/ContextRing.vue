@@ -52,10 +52,10 @@
         class="z-50 w-[290px] border border-neutral-5 rounded-lg bg-surface p-3 shadow-[var(--oct-shadow)]"
       >
         <div class="flex items-baseline justify-between gap-4">
-          <span class="text-[12.5px] text-neutral-10 font-medium">
+          <span class="text-base text-neutral-10 font-medium">
             上下文容量
           </span>
-          <span class="text-[11.5px] text-faint tabular-nums">
+          <span class="text-xs text-faint tabular-nums">
             {{ headerUsage }}
           </span>
         </div>
@@ -71,7 +71,7 @@
           />
         </div>
 
-        <div class="mt-2.5 text-[12px] space-y-1.5">
+        <div class="mt-2.5 text-sm space-y-1.5">
           <div class="flex items-center justify-between">
             <span class="text-dim">已用</span>
             <span class="text-neutral-10 tabular-nums">
@@ -92,7 +92,7 @@
           </div>
         </div>
 
-        <p class="mt-2.5 border-t border-line-soft pt-2 text-[11px] text-faint">
+        <p class="mt-2.5 border-t border-line-soft pt-2 text-xs text-faint">
           {{
             compacting
               ? "正在压缩上下文…"

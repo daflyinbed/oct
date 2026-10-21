@@ -11,15 +11,15 @@
       @click="open = !open"
     >
       <i-lucide-bell class="h-3.5 w-3.5 flex-none text-faint" />
-      <span class="flex-none text-[12px] font-medium" :class="summaryClass">{{
+      <span class="flex-none text-sm font-medium" :class="summaryClass">{{
         summaryText
       }}</span>
       <span
-        class="min-w-0 flex-1 truncate text-[12px] text-dim font-mono"
+        class="min-w-0 flex-1 truncate text-code text-dim font-mono"
         :title="firstTask?.command"
         >{{ firstTask?.command }}</span
       >
-      <span class="flex flex-none items-center gap-1 text-[11px] text-faint">
+      <span class="flex flex-none items-center gap-1 text-xs text-faint">
         {{ part.tasks.length > 1 ? `${part.tasks.length} 个任务` : "后台任务" }}
         <i-lucide-chevron-down
           class="h-3 w-3 transition-transform"
@@ -34,18 +34,18 @@
             class="h-1.5 w-1.5 flex-none rounded-full"
             :class="dotOf(task.status)"
           />
-          <span class="flex-none text-[11.5px]" :class="labelClassOf(task)">
+          <span class="flex-none text-xs" :class="labelClassOf(task)">
             {{ labelOf(task) }}
           </span>
           <span
-            class="min-w-0 flex-1 truncate text-[11.5px] text-dim font-mono"
+            class="min-w-0 flex-1 truncate text-code text-dim font-mono"
             :title="task.command"
             >{{ task.command }}</span
           >
           <!-- 定位信封卡片：高亮 + 滚动（简单实现：DOM 查询 + scrollIntoView） -->
           <button
             type="button"
-            class="h-[22px] inline-flex flex-none items-center gap-1 border border-line-soft rounded-[6px] px-1.5 text-[11px] text-dim control-focus transition-colors hover:bg-neutral-1 hover:text-neutral-10"
+            class="h-[22px] inline-flex flex-none items-center gap-1 border border-line-soft rounded-[6px] px-1.5 text-xs text-dim control-focus transition-colors hover:bg-neutral-1 hover:text-neutral-10"
             title="定位到任务卡片"
             @click="locate(task)"
           >
@@ -56,9 +56,9 @@
         <!-- 通知内联的输出尾部（后端截 4KiB，可能带省略前缀） -->
         <pre
           v-if="task.tail"
-          class="mt-1 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface px-2.5 py-1.5 text-[11px] text-dim leading-[1.5] font-mono"
+          class="text-code mt-1 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface px-2.5 py-1.5 text-code text-dim font-mono"
           >{{ task.tail }}</pre>
-        <p v-if="task.error" class="mt-1 text-[11px] text-danger-10">
+        <p v-if="task.error" class="mt-1 text-xs text-danger-10">
           {{ task.error }}
         </p>
       </div>

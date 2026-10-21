@@ -39,7 +39,7 @@
             align="start"
             :side-offset="8"
             :collision-padding="12"
-            class="z-50 w-[320px] max-w-[calc(100vw-24px)] border border-neutral-5 rounded-xl bg-surface p-4 text-[13px] leading-[1.6] shadow-[var(--oct-shadow)]"
+            class="z-50 w-[320px] max-w-[calc(100vw-24px)] border border-neutral-5 rounded-xl bg-surface p-4 text-base leading-[1.6] shadow-[var(--oct-shadow)]"
           >
             <p
               class="line-clamp-2 whitespace-pre-wrap break-words text-neutral-10"

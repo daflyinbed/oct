@@ -4,7 +4,7 @@
     aria-label="终端"
   >
     <div
-      class="min-h-8 flex flex-none items-center gap-3 border-b border-line-soft px-3 text-xs text-dim"
+      class="min-h-8 flex flex-none items-center gap-3 border-b border-line-soft px-3 text-sm text-dim"
     >
       <i-lucide-terminal class="h-3.5 w-3.5" />
       <span class="min-w-0 flex-1 truncate" :title="workingDir">{{
@@ -26,13 +26,13 @@
     <p
       v-if="initializationError || connection.error.value"
       role="alert"
-      class="flex-none px-3 py-2 text-xs text-danger-10"
+      class="flex-none px-3 py-2 text-sm text-danger-10"
     >
       {{ initializationError || connection.error.value }}
     </p>
     <p
       v-if="connection.notice.value"
-      class="flex-none px-3 py-1 text-xs text-dim"
+      class="flex-none px-3 py-1 text-sm text-dim"
     >
       {{ connection.notice.value }}
     </p>
@@ -116,7 +116,9 @@ async function initialize() {
     if (disposed || !container.value) return;
     const style = getComputedStyle(container.value);
     terminal = new ghostty.Terminal({
-      fontSize: 13,
+      fontSize: Number.parseFloat(
+        style.getPropertyValue("--oct-font-size-terminal"),
+      ),
       fontFamily: "'JetBrains Mono', 'Noto Sans Mono', monospace",
       cursorBlink: true,
       scrollback: 5000,

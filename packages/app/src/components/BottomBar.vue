@@ -20,7 +20,7 @@
     </button>
 
     <span class="mx-1.5 h-3.5 w-px bg-line" />
-    <span class="flex items-center gap-1.5 px-1 text-[11.5px] text-faint">
+    <span class="flex items-center gap-1.5 px-1 text-xs text-faint">
       <span class="text-success-10">✓</span> Ready
     </span>
 
@@ -53,7 +53,7 @@
             class="z-50 w-[264px] border border-neutral-5 rounded-lg bg-surface p-1 shadow-[var(--oct-shadow)]"
           >
             <p
-              class="px-2 pb-1 pt-1.5 text-[10.5px] text-faint font-medium tracking-wide uppercase"
+              class="px-2 pb-1 pt-1.5 text-badge text-faint font-medium tracking-wide uppercase"
             >
               MCP Servers
             </p>
@@ -64,13 +64,13 @@
                 class="mx-2 my-1 bg-line-soft"
               />
               <p
-                class="px-2 py-0.5 text-[10.5px] text-faint font-medium tracking-wide uppercase"
+                class="px-2 py-0.5 text-badge text-faint font-medium tracking-wide uppercase"
               >
                 {{ group.label }}
               </p>
               <DropdownMenuSub v-for="server in group.servers" :key="server.id">
                 <DropdownMenuSubTrigger
-                  class="flex items-center gap-2 rounded-[5px] px-2 py-1 text-[12.5px] outline-none data-[highlighted]:bg-neutral-1"
+                  class="flex items-center gap-2 rounded-[5px] px-2 py-1 text-base outline-none data-[highlighted]:bg-neutral-1"
                 >
                   <span
                     class="h-1.5 w-1.5 flex-none rounded-full"
@@ -78,7 +78,7 @@
                   />
                   <span class="min-w-0 flex-1 truncate">{{ server.name }}</span>
                   <span
-                    class="flex-none text-[11px]"
+                    class="flex-none text-xs"
                     :class="mcpStatusClass(server.status)"
                   >
                     {{ mcpStatusShortText(server) }}
@@ -97,7 +97,7 @@
                        两者都打开该 server 自己的面板 tab -->
                   <DropdownMenuItem
                     v-if="server.status === 'failed'"
-                    class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-[12.5px] text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
+                    class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-base text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
                     @select="openServerPanel(server)"
                   >
                     <i-lucide-scroll-text class="h-3.5 w-3.5 text-dim" />
@@ -105,14 +105,14 @@
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     v-else
-                    class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-[12.5px] text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
+                    class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-base text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
                     @select="openServerPanel(server)"
                   >
                     <i-lucide-wrench class="h-3.5 w-3.5 text-dim" />
                     查看加载的工具
                   </DropdownMenuItem>
                   <DropdownMenuItem
-                    class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-[12.5px] text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
+                    class="h-[26px] flex cursor-pointer items-center gap-2 rounded-[5px] px-2 text-base text-neutral-10 outline-none data-[highlighted]:bg-neutral-1"
                     @select="emit('configureMcpServer', server.id)"
                   >
                     <i-lucide-settings class="h-3.5 w-3.5 text-dim" />
@@ -121,7 +121,7 @@
                   <DropdownMenuSeparator class="mx-1 my-1 bg-line-soft" />
                   <!-- 状态行（只读）：对齐 Zed 的 Running — 12.4 MB 尾行 -->
                   <div
-                    class="flex items-center gap-2 px-2 py-1 text-[11.5px]"
+                    class="flex items-center gap-2 px-2 py-1 text-xs"
                     :title="mcpStatusText(server)"
                   >
                     <span
@@ -137,10 +137,7 @@
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
             </template>
-            <p
-              v-if="servers.length === 0"
-              class="px-2 py-2 text-[12px] text-faint"
-            >
+            <p v-if="servers.length === 0" class="px-2 py-2 text-sm text-faint">
               当前项目没有启用的 MCP server。
             </p>
           </DropdownMenuContent>
@@ -161,7 +158,7 @@
           title="子代理任务"
         >
           <i-lucide-bot class="h-3.5 w-3.5" />
-          <span class="text-[11.5px]">子代理 {{ runningTasks.length }}</span>
+          <span class="text-xs">子代理 {{ runningTasks.length }}</span>
           <!-- 运行中：脉冲点（demo .pulse 的不透明度脉冲） -->
           <span
             v-if="runningTasks.length > 0"
@@ -170,11 +167,11 @@
           <!-- 待恢复：crash 后的 lost 任务，不能误显示为运行/完成 -->
           <span
             v-else-if="hasLostTasks"
-            class="h-[15px] inline-flex items-center whitespace-nowrap rounded-full bg-warning-7 px-1.5 text-[10px] text-warning-10 font-medium leading-none"
+            class="h-[15px] inline-flex items-center whitespace-nowrap rounded-full bg-warning-7 px-1.5 text-badge text-warning-10 font-medium leading-none"
             >待恢复</span
           >
           <!-- 全部结算：安静完成态，入口保留 -->
-          <span v-else class="text-[11.5px] text-success-10">✓</span>
+          <span v-else class="text-xs text-success-10">✓</span>
         </DropdownMenuTrigger>
         <DropdownMenuPortal>
           <DropdownMenuContent
@@ -184,14 +181,14 @@
             class="z-50 w-[300px] border border-neutral-5 rounded-lg bg-surface p-1 shadow-[var(--oct-shadow)]"
           >
             <p
-              class="px-2 pb-1 pt-1.5 text-[10.5px] text-faint font-medium tracking-wide uppercase"
+              class="px-2 pb-1 pt-1.5 text-badge text-faint font-medium tracking-wide uppercase"
             >
               子代理任务
             </p>
             <DropdownMenuItem
               v-for="task in subagentTasks"
               :key="task.run_id"
-              class="flex cursor-pointer items-center gap-2 rounded-[5px] px-2 py-1 text-[12.5px] outline-none data-[highlighted]:bg-neutral-1"
+              class="flex cursor-pointer items-center gap-2 rounded-[5px] px-2 py-1 text-base outline-none data-[highlighted]:bg-neutral-1"
               @select="openTask(task)"
             >
               <span
@@ -204,11 +201,11 @@
                 }}</span>
                 <span
                   v-if="task.activity && task.status === 'running'"
-                  class="block truncate text-[11px] text-faint"
+                  class="block truncate text-xs text-faint"
                   >{{ task.activity }}</span
                 >
               </span>
-              <span class="flex-none text-[11px] text-faint tabular-nums">{{
+              <span class="flex-none text-xs text-faint tabular-nums">{{
                 taskElapsed(task)
               }}</span>
               <span
@@ -237,7 +234,7 @@
           title="后台任务"
         >
           <i-lucide-terminal class="h-3.5 w-3.5" />
-          <span class="text-[11.5px]"
+          <span class="text-xs"
             >后台任务 {{ runningBackgroundTasks.length }}</span
           >
           <span
@@ -247,11 +244,11 @@
           <!-- 已中断：后端重启击杀的后台命令 -->
           <span
             v-else-if="hasInterruptedBackgroundTasks"
-            class="h-[15px] inline-flex items-center whitespace-nowrap rounded-full bg-warning-7 px-1.5 text-[10px] text-warning-10 font-medium leading-none"
+            class="h-[15px] inline-flex items-center whitespace-nowrap rounded-full bg-warning-7 px-1.5 text-badge text-warning-10 font-medium leading-none"
             >已中断</span
           >
           <!-- 全部结算：安静完成态，入口保留 -->
-          <span v-else class="text-[11.5px] text-success-10">✓</span>
+          <span v-else class="text-xs text-success-10">✓</span>
         </DropdownMenuTrigger>
         <DropdownMenuPortal>
           <DropdownMenuContent
@@ -261,14 +258,14 @@
             class="z-50 w-[340px] border border-neutral-5 rounded-lg bg-surface p-1 shadow-[var(--oct-shadow)]"
           >
             <p
-              class="px-2 pb-1 pt-1.5 text-[10.5px] text-faint font-medium tracking-wide uppercase"
+              class="px-2 pb-1 pt-1.5 text-badge text-faint font-medium tracking-wide uppercase"
             >
               后台任务
             </p>
             <DropdownMenuItem
               v-for="task in backgroundTasks"
               :key="task.id"
-              class="flex cursor-pointer items-center gap-2 rounded-[5px] px-2 py-1 text-[12.5px] outline-none data-[highlighted]:bg-neutral-1"
+              class="flex cursor-pointer items-center gap-2 rounded-[5px] px-2 py-1 text-base outline-none data-[highlighted]:bg-neutral-1"
               @select="locateBackgroundTask(task)"
             >
               <span
@@ -277,7 +274,7 @@
               />
               <span class="min-w-0 flex-1">
                 <span
-                  class="block truncate text-[11.5px] text-neutral-10 font-mono"
+                  class="block truncate text-code text-neutral-10 font-mono"
                   :title="task.command"
                   >{{ task.command }}</span
                 >
@@ -288,10 +285,10 @@
                   task.exit_code != null &&
                   task.exit_code !== 0
                 "
-                class="flex-none text-[11px] text-danger-10"
+                class="flex-none text-xs text-danger-10"
                 >exit {{ task.exit_code }}</span
               >
-              <span class="flex-none text-[11px] text-faint tabular-nums">{{
+              <span class="flex-none text-xs text-faint tabular-nums">{{
                 backgroundTaskElapsed(task)
               }}</span>
               <span

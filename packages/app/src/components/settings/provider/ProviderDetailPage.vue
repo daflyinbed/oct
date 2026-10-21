@@ -1,15 +1,15 @@
 <template>
   <div v-if="selected" class="flex items-center gap-2">
-    <DialogTitle class="text-[16.5px] text-strong font-semibold">
+    <DialogTitle class="text-xl text-strong font-semibold">
       {{ selected.name }}
     </DialogTitle>
     <span
-      class="rounded bg-success-7 px-1.5 py-px text-[10.5px] text-success-contrast font-medium leading-[16px]"
+      class="rounded bg-success-7 px-1.5 py-px text-badge text-success-contrast font-medium leading-[16px]"
     >
       已连接
     </span>
   </div>
-  <p v-if="selected" class="mt-1 text-[12px] text-dim">
+  <p v-if="selected" class="mt-1 text-sm text-dim">
     <span class="font-mono">{{ selected.adapter_type }}</span>
     <template v-if="selected.base_url">
       · <span class="font-mono">{{ selected.base_url }}</span>
@@ -18,7 +18,7 @@
 
   <template v-if="selected">
     <div
-      class="mt-6 border-b border-line border-dashed pb-1.5 text-[11px] text-dim tracking-[0.5px] font-mono"
+      class="mt-6 border-b border-line border-dashed pb-1.5 text-xs text-dim tracking-[0.5px] font-mono"
     >
       Connection
     </div>
@@ -26,8 +26,8 @@
       class="flex items-center gap-[18px] border-b border-line-soft border-dashed py-2.5"
     >
       <div class="min-w-0 flex-1">
-        <div class="text-[13px] text-strong font-semibold">API Key</div>
-        <div class="mt-0.5 text-[12px] text-dim">
+        <div class="text-base text-strong font-semibold">API Key</div>
+        <div class="mt-0.5 text-sm text-dim">
           {{
             selected.api_key_set
               ? "已配置。输入新 Key，失去焦点即保存替换。"
@@ -39,7 +39,7 @@
         <input
           :type="showKey ? 'text' : 'password'"
           :placeholder="selected.api_key_set ? '••••••••（已配置）' : '未配置'"
-          class="h-[26px] w-full control-surface pl-2.5 pr-8 text-[12px] control-focus"
+          class="h-[26px] w-full control-surface pl-2.5 pr-8 text-sm control-focus"
           :value="keyInput"
           @input="keyInput = ($event.target as HTMLInputElement).value"
           @keydown.enter="($event.target as HTMLInputElement).blur()"
@@ -58,7 +58,7 @@
     </div>
 
     <div
-      class="mt-6 border-b border-line border-dashed pb-1.5 text-[11px] text-dim tracking-[0.5px] font-mono"
+      class="mt-6 border-b border-line border-dashed pb-1.5 text-xs text-dim tracking-[0.5px] font-mono"
     >
       Models
     </div>
@@ -68,28 +68,28 @@
       class="flex items-center gap-[18px] border-b border-line-soft border-dashed py-2.5"
     >
       <div class="min-w-0 flex-1">
-        <div class="truncate text-[13px] text-strong font-semibold">
+        <div class="truncate text-base text-strong font-semibold">
           {{ model.name }}
         </div>
-        <div class="mt-0.5 text-[11.5px] text-faint font-mono">
+        <div class="mt-0.5 text-xs text-faint font-mono">
           {{ model.model_id }}
         </div>
       </div>
       <div class="flex flex-none items-center gap-1">
         <span
           v-if="model.limit_context"
-          class="rounded bg-neutral-2 px-1 py-px text-[10px] text-dim"
+          class="rounded bg-neutral-2 px-1 py-px text-badge text-dim"
         >
           {{ formatTokens(model.limit_context) }}
         </span>
         <span
           v-if="model.tool_call"
-          class="rounded bg-neutral-2 px-1 py-px text-[10px] text-dim"
+          class="rounded bg-neutral-2 px-1 py-px text-badge text-dim"
           >tools</span
         >
         <span
           v-if="model.reasoning"
-          class="rounded bg-neutral-2 px-1 py-px text-[10px] text-dim"
+          class="rounded bg-neutral-2 px-1 py-px text-badge text-dim"
           >thinking</span
         >
       </div>
@@ -109,42 +109,42 @@
         />
       </button>
     </div>
-    <p v-if="filteredModels.length === 0" class="py-4 text-[12px] text-faint">
+    <p v-if="filteredModels.length === 0" class="py-4 text-sm text-faint">
       无匹配的模型
     </p>
 
     <!-- 自定义 Provider：手动登记模型 -->
     <div v-if="selected.source === 'custom'" class="mt-4">
-      <div class="text-[12.5px] text-neutral-10 font-semibold">Add Model</div>
+      <div class="text-base text-neutral-10 font-semibold">Add Model</div>
       <div
         class="mt-2 flex items-end gap-2 border border-line-soft rounded-lg bg-surface p-3"
       >
         <label class="block min-w-0 flex-1">
-          <span class="text-[11px] text-dim">Model ID</span>
+          <span class="text-xs text-dim">Model ID</span>
           <input
             v-model="modelForm.model_id"
             placeholder="e.g. gpt-5"
-            class="mt-1 h-[26px] w-full control-surface px-2.5 text-[12px] control-focus"
+            class="mt-1 h-[26px] w-full control-surface px-2.5 text-sm control-focus"
           />
         </label>
         <label class="block min-w-0 flex-1">
-          <span class="text-[11px] text-dim">Display Name</span>
+          <span class="text-xs text-dim">Display Name</span>
           <input
             v-model="modelForm.name"
             placeholder="e.g. GPT-5"
-            class="mt-1 h-[26px] w-full control-surface px-2.5 text-[12px] control-focus"
+            class="mt-1 h-[26px] w-full control-surface px-2.5 text-sm control-focus"
           />
         </label>
         <label class="block w-[120px] flex-none">
-          <span class="text-[11px] text-dim">Context</span>
+          <span class="text-xs text-dim">Context</span>
           <input
             v-model="modelForm.limit_context"
             placeholder="128000"
-            class="mt-1 h-[26px] w-full control-surface px-2.5 text-[12px] control-focus"
+            class="mt-1 h-[26px] w-full control-surface px-2.5 text-sm control-focus"
           />
         </label>
         <button
-          class="h-[26px] flex-none control-solid rounded-md px-3 text-[12px] font-medium control-focus disabled:opacity-50"
+          class="h-[26px] flex-none control-solid rounded-md px-3 text-sm font-medium control-focus disabled:opacity-50"
           :disabled="!modelForm.model_id.trim()"
           @click="submitModel"
         >

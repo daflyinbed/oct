@@ -1,7 +1,7 @@
 <template>
   <section class="workspace-panel min-w-0 flex-1 bg-background">
     <header
-      class="h-9 flex flex-none items-center gap-2 border-b border-line-soft px-4 text-[12.5px] text-dim font-mono"
+      class="h-9 flex flex-none items-center gap-2 border-b border-line-soft px-4 text-base text-dim font-mono"
     >
       <component :is="icon" class="h-3.5 w-3.5 flex-none text-faint" />
       <span class="truncate">{{ path }}</span>
@@ -12,7 +12,7 @@
 
     <div
       v-if="pending"
-      class="flex flex-1 items-center justify-center gap-2 text-[12.5px] text-faint"
+      class="flex flex-1 items-center justify-center gap-2 text-base text-faint"
     >
       <i-lucide-loader-circle class="h-4 w-4 animate-spin" />
       Loading…
@@ -22,18 +22,18 @@
       class="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center"
     >
       <i-lucide-file-warning class="h-8 w-8 text-danger-10" />
-      <p class="text-[13px] text-danger-10">{{ error }}</p>
+      <p class="text-base text-danger-10">{{ error }}</p>
     </div>
     <template v-else-if="file">
       <p
         v-if="file.truncated"
-        class="flex-none border-b border-line-soft px-4 py-1.5 text-[12px] text-warning-10"
+        class="flex-none border-b border-line-soft px-4 py-1.5 text-sm text-warning-10"
       >
         File is {{ formatSize(file.size) }} — preview truncated at 1 MiB.
       </p>
       <!-- eslint-disable-next-line vue/no-v-html -- shiki 输出的受信任高亮 HTML -->
       <div
-        class="code-view min-h-0 flex-1 overflow-auto text-[12.5px] leading-[1.6] font-mono"
+        class="code-view min-h-0 flex-1 overflow-auto text-code font-mono"
         v-html="html"
       />
     </template>

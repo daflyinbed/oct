@@ -1,6 +1,6 @@
 <template>
   <Markdown
-    class="markdown-body"
+    class="markdown-body text-base"
     :content="text"
     :mode="streaming ? 'streaming' : 'static'"
     :is-dark="isDark"
@@ -53,9 +53,37 @@ void loadCodeExtension().then((extension) => {
      变量（theme.css），这里映射到应用 token——值本身随根节点 data-theme
      切换，故两套选择器可以共用同一条规则。 -->
 <style>
-.markdown-body {
-  font-size: 13px;
-  line-height: 1.55;
+.markdown-body.stream-markdown {
+  /* 库的标题使用独立的 rem 变量，映射到应用字号，避免绕过外层正文设置。 */
+  --text-3xl-fontSize: var(--oct-font-size-xl);
+  --text-3xl-lineHeight: var(--oct-line-height-xl);
+  --text-2xl-fontSize: var(--oct-font-size-lg);
+  --text-2xl-lineHeight: var(--oct-line-height-lg);
+  --text-xl-fontSize: var(--oct-font-size-base);
+  --text-xl-lineHeight: var(--oct-line-height-base);
+  --text-lg-fontSize: var(--oct-font-size-base);
+  --text-lg-lineHeight: var(--oct-line-height-base);
+  --text-base-fontSize: var(--oct-font-size-base);
+  --text-base-lineHeight: var(--oct-line-height-base);
+  --text-sm-fontSize: var(--oct-font-size-sm);
+  --text-sm-lineHeight: var(--oct-line-height-sm);
+  --text-xs-fontSize: var(--oct-font-size-xs);
+  --text-xs-lineHeight: var(--oct-line-height-xs);
+  line-height: var(--oct-line-height-base);
+}
+
+/* h6、表格与普通正文同级；库默认将它们和代码共用 text-sm。 */
+.markdown-body.stream-markdown :is(h6, th, td) {
+  font-size: var(--oct-font-size-base);
+  line-height: var(--oct-line-height-base);
+}
+
+/* 代码行及行号都有库内显式字号，不能只覆盖 pre 的继承值。 */
+.markdown-body.stream-markdown
+  :is(pre, code, [data-stream-markdown="code-line"]),
+.markdown-body.stream-markdown [data-stream-markdown="code-line"]::before {
+  font-size: var(--oct-font-size-code);
+  line-height: var(--oct-line-height-code);
 }
 
 .markdown-body.stream-markdown.light,

@@ -8,29 +8,27 @@
   >
     <div class="flex items-center gap-2 px-3 py-1.5">
       <i-lucide-bot class="h-3.5 w-3.5 flex-none" :class="statusClass" />
-      <span class="flex-none text-[12px] font-medium" :class="statusClass"
+      <span class="flex-none text-sm font-medium" :class="statusClass"
         >子代理</span
       >
       <!-- worker 角色标记：角色由宿主固定，不由模型选择 -->
       <span
-        class="h-[15px] inline-flex flex-none items-center whitespace-nowrap rounded-full bg-neutral-2 px-1.5 text-[10px] text-dim leading-none font-mono"
+        class="h-[15px] inline-flex flex-none items-center whitespace-nowrap rounded-full bg-neutral-2 px-1.5 text-badge text-dim leading-none font-mono"
         >worker</span
       >
       <span
-        class="min-w-0 flex-1 truncate text-[12px] text-strong"
+        class="min-w-0 flex-1 truncate text-sm text-strong"
         :title="state.description"
         >{{ state.description }}</span
       >
-      <span
-        v-if="elapsed"
-        class="flex-none text-[11px] text-faint tabular-nums"
-        >{{ elapsed }}</span
-      >
+      <span v-if="elapsed" class="flex-none text-xs text-faint tabular-nums">{{
+        elapsed
+      }}</span>
       <!-- 状态 chip：运行中 spinner / 完成 ✓ / 失败 ✗ / 取消 / 待恢复 -->
-      <span v-if="part.inherited" class="text-[11px] text-faint"
+      <span v-if="part.inherited" class="text-xs text-faint"
         >来源会话历史任务</span
       >
-      <span v-else-if="approvals.length > 0" class="text-[11px] text-warning-10"
+      <span v-else-if="approvals.length > 0" class="text-xs text-warning-10"
         >等待审批 · {{ approvals.length }}</span
       >
       <span
@@ -40,33 +38,33 @@
         <i-lucide-loader-circle
           class="h-3.5 w-3.5 animate-spin text-accent-7"
         />
-        <span class="text-[11px] text-accent-10">运行中</span>
+        <span class="text-xs text-accent-10">运行中</span>
       </span>
       <span
         v-else-if="state.status === 'completed'"
-        class="h-[16px] inline-flex flex-none items-center whitespace-nowrap rounded-full bg-success-7 px-1.5 text-[10.5px] text-success-10 font-medium leading-none"
+        class="h-[16px] inline-flex flex-none items-center whitespace-nowrap rounded-full bg-success-7 px-1.5 text-badge text-success-10 font-medium leading-none"
         >✓ 已完成</span
       >
       <span
         v-else-if="state.status === 'failed'"
-        class="h-[16px] inline-flex flex-none items-center whitespace-nowrap rounded-full bg-danger-7 px-1.5 text-[10.5px] text-danger-10 font-medium leading-none"
+        class="h-[16px] inline-flex flex-none items-center whitespace-nowrap rounded-full bg-danger-7 px-1.5 text-badge text-danger-10 font-medium leading-none"
         >✗ 失败</span
       >
       <span
         v-else-if="state.status === 'cancelled'"
-        class="h-[16px] inline-flex flex-none items-center whitespace-nowrap rounded-full bg-neutral-3 px-1.5 text-[10.5px] text-dim font-medium leading-none"
+        class="h-[16px] inline-flex flex-none items-center whitespace-nowrap rounded-full bg-neutral-3 px-1.5 text-badge text-dim font-medium leading-none"
         >已取消</span
       >
       <span
         v-else
-        class="h-[16px] inline-flex flex-none items-center whitespace-nowrap rounded-full bg-warning-7 px-1.5 text-[10.5px] text-warning-10 font-medium leading-none"
+        class="h-[16px] inline-flex flex-none items-center whitespace-nowrap rounded-full bg-warning-7 px-1.5 text-badge text-warning-10 font-medium leading-none"
         >待恢复</span
       >
       <!-- 打开子代理：持久入口（agent_id 未知前禁用） -->
       <button
         v-if="!part.inherited"
         type="button"
-        class="h-[22px] inline-flex flex-none items-center gap-1 border border-line-soft rounded-[6px] px-1.5 text-[11px] text-dim control-focus transition-colors hover:bg-neutral-1 hover:text-neutral-10 disabled:opacity-50"
+        class="h-[22px] inline-flex flex-none items-center gap-1 border border-line-soft rounded-[6px] px-1.5 text-xs text-dim control-focus transition-colors hover:bg-neutral-1 hover:text-neutral-10 disabled:opacity-50"
         :disabled="state.agentId == null"
         :title="
           state.agentId == null
@@ -84,7 +82,7 @@
     <!-- 运行中的活动摘要（正在执行的命令 / 读取的文件） -->
     <div
       v-if="state.activity && state.status === 'running'"
-      class="flex items-center gap-1.5 border-t border-line-soft px-3 py-1 text-[11.5px] text-faint"
+      class="flex items-center gap-1.5 border-t border-line-soft px-3 py-1 text-xs text-faint"
     >
       <i-lucide-terminal class="h-3 w-3 flex-none" />
       <span class="min-w-0 flex-1 truncate">{{ state.activity }}</span>
@@ -93,7 +91,7 @@
     <!-- 结果摘要：信封 JSON 的 output 头部（或原文头部） -->
     <div
       v-if="summary"
-      class="border-t border-line-soft px-3 py-1.5 text-[11.5px] leading-[1.55]"
+      class="border-t border-line-soft px-3 py-1.5 text-xs leading-[1.55]"
       :class="part.isError ? 'text-danger-10' : 'text-dim'"
     >
       {{ summary }}

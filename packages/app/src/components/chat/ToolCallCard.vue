@@ -36,7 +36,7 @@
 
       <span
         v-if="displayName"
-        class="flex-none text-[12px]"
+        class="flex-none text-sm"
         :class="errorTone ? 'text-danger-10' : 'text-strong'"
         >{{ displayName }}</span
       >
@@ -48,7 +48,7 @@
       <!-- 文件类工具：文件名（强调）+ 目录（弱化）；其余工具沿用标题 -->
       <span
         v-if="filePathInfo"
-        class="min-w-0 flex-1 truncate text-[12px]"
+        class="min-w-0 flex-1 truncate text-sm"
         :title="filePathInfo.full"
       >
         <span
@@ -60,7 +60,7 @@
       </span>
       <span
         v-else-if="titleText"
-        class="min-w-0 flex-1 truncate text-[12px] text-faint"
+        class="min-w-0 flex-1 truncate text-sm text-faint"
         :title="titleText"
       >
         {{ titleText }}
@@ -72,12 +72,12 @@
         <template v-if="diffStat">
           <span
             v-if="diffStat.added > 0"
-            class="text-[11px] text-success-10 leading-none font-mono"
+            class="text-xs text-success-10 leading-none font-mono"
             >+{{ diffStat.added }}</span
           >
           <span
             v-if="diffStat.removed > 0"
-            class="text-[11px] text-danger-10 leading-none font-mono"
+            class="text-xs text-danger-10 leading-none font-mono"
             >−{{ diffStat.removed }}</span
           >
         </template>
@@ -93,27 +93,27 @@
         <!-- 已中断：后端崩溃等原因未拿到结果的调用，提示可恢复此轮 -->
         <span
           v-else-if="interrupted"
-          class="h-[16px] inline-flex items-center whitespace-nowrap rounded-full bg-warning-7 px-1.5 text-[10.5px] text-warning-10 font-medium leading-none"
+          class="h-[16px] inline-flex items-center whitespace-nowrap rounded-full bg-warning-7 px-1.5 text-badge text-warning-10 font-medium leading-none"
           >已中断</span
         >
         <!-- 已拒绝：权限门拒绝的调用（details kind=
              permission_denied），结构与「已清除」徽标同款 -->
         <span
           v-else-if="part.denied"
-          class="h-[16px] inline-flex items-center whitespace-nowrap rounded-full bg-danger-7 px-1.5 text-[10.5px] text-danger-10 font-medium leading-none"
+          class="h-[16px] inline-flex items-center whitespace-nowrap rounded-full bg-danger-7 px-1.5 text-badge text-danger-10 font-medium leading-none"
           >已拒绝</span
         >
         <!-- 已清除：微压缩把旧结果替换为占位符，原文可回查 -->
         <span
           v-else-if="part.cleared"
-          class="h-[16px] inline-flex items-center whitespace-nowrap rounded-full bg-neutral-3 px-1.5 text-[10.5px] text-dim font-medium leading-none"
+          class="h-[16px] inline-flex items-center whitespace-nowrap rounded-full bg-neutral-3 px-1.5 text-badge text-dim font-medium leading-none"
           >已清除</span
         >
         <template v-else-if="open">
           <span
             v-for="chip in chips"
             :key="chip.key"
-            class="h-[16px] inline-flex items-center whitespace-nowrap rounded-full px-1.5 text-[10.5px] font-medium leading-none"
+            class="h-[16px] inline-flex items-center whitespace-nowrap rounded-full px-1.5 text-badge font-medium leading-none"
             :class="toneClass[chip.tone]"
             >{{ chip.label }}</span
           >
@@ -141,7 +141,7 @@
             : 'border-line-soft'
       "
     >
-      <div v-if="nestedCalls.length > 0" class="text-[11.5px] space-y-1">
+      <div v-if="nestedCalls.length > 0" class="text-xs space-y-1">
         <div
           v-for="call in nestedCalls"
           :key="call.id"
@@ -171,7 +171,7 @@
             <div class="break-all text-dim">{{ call.title || call.name }}</div>
             <div
               v-if="call.duration_ms != null || call.error_code"
-              class="text-[10px] text-dim"
+              class="text-badge text-dim"
             >
               <span v-if="call.duration_ms != null"
                 >{{ call.duration_ms }} ms</span
@@ -189,7 +189,7 @@
       <!-- 生成中：参数流式累积， pulsing cursor，不解析半截 JSON -->
       <div
         v-if="part.status === 'generating' && part.arguments"
-        class="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-md bg-surface px-2.5 py-1.5 text-[11.5px] text-dim leading-[1.5] font-mono"
+        class="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-md bg-surface px-2.5 py-1.5 text-code text-dim font-mono"
       >
         {{ part.arguments }}<span class="animate-pulse text-accent-7">▌</span>
       </div>
@@ -200,7 +200,7 @@
         <div
           v-if="terminal"
           ref="liveEl"
-          class="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface px-2.5 py-1.5 text-[11.5px] text-neutral-10 leading-[1.55] font-mono"
+          class="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface px-2.5 py-1.5 text-code text-neutral-10 font-mono"
           @scroll="onLiveScroll"
         >
           <span
@@ -240,12 +240,12 @@
         <!-- 参数（按工具自然展示，未识别时回退 JSON） -->
         <div v-else-if="argBlocks.length > 0" class="min-w-0 space-y-1.5">
           <template v-for="(block, i) in argBlocks" :key="i">
-            <div v-if="block.kind === 'note'" class="text-[11px] text-faint">
+            <div v-if="block.kind === 'note'" class="text-xs text-faint">
               {{ block.text }}
             </div>
             <pre
               v-else
-              class="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md px-2.5 py-1.5 text-[11.5px] leading-[1.55] font-mono"
+              class="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md px-2.5 py-1.5 text-code font-mono"
               :class="blockClassOf(block.kind)"
               >{{ block.text }}</pre>
           </template>
@@ -259,13 +259,13 @@
         <div v-if="part.status === 'done' && part.content !== null">
           <template v-if="part.cleared">
             <div class="mb-1 flex items-center justify-between gap-2">
-              <div class="text-[11px] text-faint">
+              <div class="text-xs text-faint">
                 该结果已从模型上下文清除（微压缩）
               </div>
               <button
                 v-if="originalText === null && conversationId"
                 type="button"
-                class="text-[11px] text-accent-10 control-focus hover:underline disabled:opacity-60"
+                class="text-xs text-accent-10 control-focus hover:underline disabled:opacity-60"
                 :disabled="loadingOriginal"
                 @click="loadOriginal"
               >
@@ -280,23 +280,23 @@
             </div>
             <pre
               v-if="originalText !== null"
-              class="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface px-2.5 py-1.5 text-[11.5px] text-neutral-10 leading-[1.55] font-mono"
+              class="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface px-2.5 py-1.5 text-code text-neutral-10 font-mono"
               >{{ originalText }}</pre>
-            <div v-else class="text-[11px] text-faint font-mono">
+            <div v-else class="text-xs text-faint font-mono">
               {{ part.content }}
             </div>
           </template>
           <template v-else-if="!fileEdit && !terminal">
-            <div class="mb-1 text-[11px] text-faint">返回给模型</div>
+            <div class="mb-1 text-xs text-faint">返回给模型</div>
             <pre
-              class="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md px-2.5 py-1.5 text-[11.5px] leading-[1.55] font-mono"
+              class="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md px-2.5 py-1.5 text-code font-mono"
               :class="
                 part.isError
                   ? 'bg-danger-1 text-danger-10'
                   : 'bg-surface text-neutral-10'
               "
               >{{ part.content }}</pre>
-            <p v-if="isTruncated" class="mt-1 text-[11px] text-faint">
+            <p v-if="isTruncated" class="mt-1 text-xs text-faint">
               此内容已返回给模型（含截断）
             </p>
           </template>
@@ -638,9 +638,21 @@ const filePathInfo = computed<{
   full: string;
 } | null>(() => {
   let path: string | null = null;
-  if (props.part.name === "edit_file") path = argStr("file_path");
-  else if (props.part.name === "write_file" || props.part.name === "read_file")
-    path = argStr("path");
+  switch (props.part.name) {
+    case "edit_file":
+      path = argStr("file_path");
+      break;
+    case "write_file":
+    case "read_file":
+    case "list_dir":
+      path = argStr("path");
+      break;
+    case "glob":
+      path = argStr("pattern");
+      break;
+    default:
+      return null;
+  }
   path ??= titleText.value;
   if (!path) return null;
   const cut = path.lastIndexOf("/");

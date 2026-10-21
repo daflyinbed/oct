@@ -1,8 +1,8 @@
 <template>
-  <DialogTitle class="text-[16.5px] text-strong font-semibold">
+  <DialogTitle class="text-xl text-strong font-semibold">
     MCP Servers
   </DialogTitle>
-  <p class="mt-1 text-[12px] text-dim">
+  <p class="mt-1 text-sm text-dim">
     为 Agent 接入外部工具服务器（stdio / http）；启用后下一次对话开始时连接。{{
       inProjectScope
         ? `此处为项目「${activeScopeProjectName}」专属配置，全局配置见「全局」作用域。`
@@ -10,7 +10,7 @@
     }}
   </p>
 
-  <p v-if="mcpError" class="mt-3 text-[12px] text-danger-10">
+  <p v-if="mcpError" class="mt-3 text-sm text-danger-10">
     {{ mcpError }}
   </p>
 
@@ -27,16 +27,14 @@
         :class="mcpStatusDot(server.status)"
         :title="mcpStatusText(server)"
       />
-      <span class="text-[13px] text-strong font-semibold">{{
-        server.name
-      }}</span>
+      <span class="text-base text-strong font-semibold">{{ server.name }}</span>
       <span
-        class="rounded bg-neutral-2 px-1.5 py-px text-[10.5px] text-dim font-medium leading-[16px]"
+        class="rounded bg-neutral-2 px-1.5 py-px text-badge text-dim font-medium leading-[16px]"
       >
         {{ scopeLabel(server) }}
       </span>
       <span
-        class="rounded bg-neutral-2 px-1.5 py-px text-[10.5px] text-dim font-medium leading-[16px]"
+        class="rounded bg-neutral-2 px-1.5 py-px text-badge text-dim font-medium leading-[16px]"
       >
         {{ server.transport }}
       </span>
@@ -56,7 +54,7 @@
         />
       </button>
       <button
-        class="h-[26px] inline-flex flex-none items-center gap-1.5 control-surface rounded-md px-2.5 text-[12px] font-medium control-focus"
+        class="h-[26px] inline-flex flex-none items-center gap-1.5 control-surface rounded-md px-2.5 text-sm font-medium control-focus"
         :title="`配置 ${server.name}`"
         @click="emit('edit', server)"
       >
@@ -79,14 +77,14 @@
          下可读（text-faint 在亮色面板上对比度不足） -->
     <div class="mt-1.5 pl-3.5">
       <span
-        class="block truncate text-[12px]"
+        class="block truncate text-sm"
         :class="mcpStatusClass(server.status)"
       >
         {{ mcpStatusText(server) }}
       </span>
       <span
         v-if="server.command || server.url"
-        class="mt-0.5 block truncate text-[11.5px] text-dim font-mono"
+        class="mt-0.5 block truncate text-xs text-dim font-mono"
         :title="server.command ?? server.url ?? ''"
       >
         {{ server.command ?? server.url }}
@@ -98,16 +96,16 @@
     v-if="filteredServers.length === 0 && !mcpLoading"
     class="py-10 text-center"
   >
-    <p class="text-[12.5px] text-faint">{{ emptyText }}</p>
+    <p class="text-base text-faint">{{ emptyText }}</p>
     <button
-      class="mt-3 h-[26px] inline-flex items-center gap-1.5 control-surface rounded-md px-2.5 text-[12px] font-medium control-focus"
+      class="mt-3 h-[26px] inline-flex items-center gap-1.5 control-surface rounded-md px-2.5 text-sm font-medium control-focus"
       @click="emit('add')"
     >
       <i-lucide-plus class="h-3 w-3" />
       Add Server
     </button>
   </div>
-  <p v-if="mcpLoading" class="py-8 text-center text-[12.5px] text-faint">
+  <p v-if="mcpLoading" class="py-8 text-center text-base text-faint">
     Loading…
   </p>
 </template>

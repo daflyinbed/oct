@@ -9,10 +9,13 @@
       @scroll="onScroll"
       @scrollend="onScrollEnd"
     >
-      <div
-        class="mx-auto max-w-[760px] pb-3 pl-12 pr-7 pt-[18px] space-y-[18px]"
-      >
-        <div v-for="msg in messages" :key="msg.id" :data-message-id="msg.id">
+      <div class="mx-auto max-w-[760px] pb-3 pl-12 pr-7 pt-[18px]">
+        <div
+          v-for="(msg, index) in messages"
+          :key="msg.id"
+          :class="messageSpacingClass(index)"
+          :data-message-id="msg.id"
+        >
           <ChatMessage
             :message="msg"
             :conversation-id="conversationId"
@@ -23,10 +26,10 @@
           />
         </div>
         <div v-if="messages.length === 0" class="pt-20 text-center text-faint">
-          <p class="mb-1.5 text-[15px] text-dim font-medium">
+          <p class="mb-1.5 text-lg text-dim font-medium">
             {{ emptyTitle }}
           </p>
-          <p class="text-[12.5px]">{{ emptyHint }}</p>
+          <p class="text-base">{{ emptyHint }}</p>
         </div>
       </div>
     </div>
@@ -188,6 +191,21 @@ watch(
 );
 
 onMounted(updateActiveTurn);
+
+/**
+ * 普通消息维持 18px 的回合间距；工具批次切点后的 assistant 记录属于
+ * 同一回合的延续，使用与消息内部 part 一致的 8px 间距。
+ */
+function messageSpacingClass(index: number): string | undefined {
+  if (index === 0) return undefined;
+  const previous = props.messages[index - 1];
+  const followsToolStep =
+    Boolean(props.forkEnabled) &&
+    !previous?.isStreaming &&
+    previous?.forkCut?.kind === "message" &&
+    previous.forkCut.message_id !== previous.id;
+  return followsToolStep ? "mt-2" : "mt-[18px]";
+}
 
 // 消息内容增长（文本/思考/工具参数/实时输出）时跟随滚动到底部；回看历史时暂停跟随。
 watch(

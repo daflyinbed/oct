@@ -5,37 +5,37 @@
       <DialogContent
         class="fixed left-1/2 top-1/2 z-50 max-w-[calc(100vw-72px)] w-[360px] border border-neutral-5 rounded-xl bg-panel p-5 shadow-[var(--oct-shadow)] -translate-x-1/2 -translate-y-1/2"
       >
-        <DialogTitle class="text-[16.5px] text-strong font-semibold">
+        <DialogTitle class="text-xl text-strong font-semibold">
           Rename Conversation
         </DialogTitle>
-        <p class="mt-1 text-[12px] text-dim">
+        <p class="mt-1 text-sm text-dim">
           手动命名的标题不会再被自动生成的标题覆盖。
         </p>
 
         <form class="mt-4 flex flex-col gap-3" @submit.prevent="submit">
           <label class="flex flex-col gap-2">
-            <span class="text-[12px] text-dim font-medium">Title</span>
+            <span class="text-sm text-dim font-medium">Title</span>
             <input
               ref="inputEl"
               v-model="title"
               placeholder="New Chat"
-              class="h-[30px] w-full control-surface px-3 text-[13px] control-focus"
+              class="h-[30px] w-full control-surface px-3 text-base control-focus"
             />
           </label>
 
-          <p v-if="submitError" class="text-[12px] text-danger-10" role="alert">
+          <p v-if="submitError" class="text-sm text-danger-10" role="alert">
             {{ submitError }}
           </p>
 
           <div class="mt-2 flex justify-end gap-2">
             <DialogClose
-              class="h-[28px] control-ghost rounded-md px-3 text-[12.5px] control-focus"
+              class="h-[28px] control-ghost rounded-md px-3 text-base control-focus"
             >
               Cancel
             </DialogClose>
             <button
               type="submit"
-              class="h-[28px] control-surface rounded-md px-3 text-[12.5px] font-medium control-focus disabled:pointer-events-none disabled:opacity-50"
+              class="h-[28px] control-surface rounded-md px-3 text-base font-medium control-focus disabled:pointer-events-none disabled:opacity-50"
               :disabled="!canSubmit || submitting"
             >
               {{ submitting ? "Saving…" : "Save" }}
