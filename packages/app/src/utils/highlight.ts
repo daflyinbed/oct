@@ -1,37 +1,5 @@
 import { createHighlighterCore } from "shiki/core";
 import { createOnigurumaEngine } from "shiki/engine/oniguruma";
-import langC from "shiki/langs/c.mjs";
-import langCpp from "shiki/langs/cpp.mjs";
-import langCss from "shiki/langs/css.mjs";
-import langDiff from "shiki/langs/diff.mjs";
-import langDockerfile from "shiki/langs/dockerfile.mjs";
-import langDotenv from "shiki/langs/dotenv.mjs";
-import langFish from "shiki/langs/fish.mjs";
-import langGo from "shiki/langs/go.mjs";
-import langGraphql from "shiki/langs/graphql.mjs";
-import langHtml from "shiki/langs/html.mjs";
-import langIni from "shiki/langs/ini.mjs";
-import langJavascript from "shiki/langs/javascript.mjs";
-import langJson from "shiki/langs/json.mjs";
-import langJsx from "shiki/langs/jsx.mjs";
-import langLess from "shiki/langs/less.mjs";
-import langMarkdown from "shiki/langs/markdown.mjs";
-import langMdx from "shiki/langs/mdx.mjs";
-import langPython from "shiki/langs/python.mjs";
-import langRuby from "shiki/langs/ruby.mjs";
-import langRust from "shiki/langs/rust.mjs";
-import langScss from "shiki/langs/scss.mjs";
-import langShellscript from "shiki/langs/shellscript.mjs";
-import langSql from "shiki/langs/sql.mjs";
-import langStylus from "shiki/langs/stylus.mjs";
-import langSwift from "shiki/langs/swift.mjs";
-import langToml from "shiki/langs/toml.mjs";
-import langTsx from "shiki/langs/tsx.mjs";
-import langTypescript from "shiki/langs/typescript.mjs";
-import langVue from "shiki/langs/vue.mjs";
-import langWasm from "shiki/langs/wasm.mjs";
-import langXml from "shiki/langs/xml.mjs";
-import langYaml from "shiki/langs/yaml.mjs";
 import themeGithubDark from "shiki/themes/github-dark-default.mjs";
 import themeGithubLight from "shiki/themes/github-light.mjs";
 import type { HighlighterCore } from "shiki/core";
@@ -108,49 +76,71 @@ export function languageForPath(path: string): string {
   return EXTENSION_LANGUAGES[extension] ?? "plaintext";
 }
 
-// 单例懒初始化：只加载上面声明的语言/主题，避免 shiki 全量 bundle。
+// 单例只初始化引擎和主题，语言（及其内嵌依赖）按实际预览类型加载。
+const LANGUAGE_LOADERS = {
+  c: () => import("shiki/langs/c.mjs"),
+  cpp: () => import("shiki/langs/cpp.mjs"),
+  css: () => import("shiki/langs/css.mjs"),
+  diff: () => import("shiki/langs/diff.mjs"),
+  dockerfile: () => import("shiki/langs/dockerfile.mjs"),
+  dotenv: () => import("shiki/langs/dotenv.mjs"),
+  fish: () => import("shiki/langs/fish.mjs"),
+  go: () => import("shiki/langs/go.mjs"),
+  graphql: () => import("shiki/langs/graphql.mjs"),
+  html: () => import("shiki/langs/html.mjs"),
+  ini: () => import("shiki/langs/ini.mjs"),
+  javascript: () => import("shiki/langs/javascript.mjs"),
+  json: () => import("shiki/langs/json.mjs"),
+  jsx: () => import("shiki/langs/jsx.mjs"),
+  less: () => import("shiki/langs/less.mjs"),
+  markdown: () => import("shiki/langs/markdown.mjs"),
+  mdx: () => import("shiki/langs/mdx.mjs"),
+  python: () => import("shiki/langs/python.mjs"),
+  ruby: () => import("shiki/langs/ruby.mjs"),
+  rust: () => import("shiki/langs/rust.mjs"),
+  scss: () => import("shiki/langs/scss.mjs"),
+  shellscript: () => import("shiki/langs/shellscript.mjs"),
+  sql: () => import("shiki/langs/sql.mjs"),
+  stylus: () => import("shiki/langs/stylus.mjs"),
+  swift: () => import("shiki/langs/swift.mjs"),
+  toml: () => import("shiki/langs/toml.mjs"),
+  tsx: () => import("shiki/langs/tsx.mjs"),
+  typescript: () => import("shiki/langs/typescript.mjs"),
+  vue: () => import("shiki/langs/vue.mjs"),
+  wasm: () => import("shiki/langs/wasm.mjs"),
+  xml: () => import("shiki/langs/xml.mjs"),
+  yaml: () => import("shiki/langs/yaml.mjs"),
+};
 let highlighterPromise: Promise<HighlighterCore> | null = null;
+const languagePromises = new Map<string, Promise<void>>();
 
 function getHighlighter(): Promise<HighlighterCore> {
   highlighterPromise ??= createHighlighterCore({
     themes: [themeGithubLight, themeGithubDark],
-    langs: [
-      langC,
-      langCpp,
-      langCss,
-      langDiff,
-      langDockerfile,
-      langDotenv,
-      langFish,
-      langGo,
-      langGraphql,
-      langHtml,
-      langIni,
-      langJavascript,
-      langJson,
-      langJsx,
-      langLess,
-      langMarkdown,
-      langMdx,
-      langPython,
-      langRuby,
-      langRust,
-      langScss,
-      langShellscript,
-      langSql,
-      langStylus,
-      langSwift,
-      langToml,
-      langTsx,
-      langTypescript,
-      langVue,
-      langWasm,
-      langXml,
-      langYaml,
-    ],
+    langs: [],
     engine: createOnigurumaEngine(import("shiki/wasm")),
+  }).catch((error) => {
+    highlighterPromise = null;
+    throw error;
   });
   return highlighterPromise;
+}
+
+async function loadLanguage(highlighter: HighlighterCore, lang: string) {
+  if (!Object.keys(LANGUAGE_LOADERS).includes(lang)) return;
+  if (highlighter.getLoadedLanguages().includes(lang)) return;
+  let pending = languagePromises.get(lang);
+  if (!pending) {
+    const loader = LANGUAGE_LOADERS[lang as keyof typeof LANGUAGE_LOADERS];
+    pending = loader()
+      .then((module) => highlighter.loadLanguage(module.default))
+      .catch((error) => {
+        languagePromises.delete(lang);
+        throw error;
+      });
+    languagePromises.set(lang, pending);
+  }
+  await pending;
 }
 
 // defaultColor: false 让明暗两套颜色都以 CSS 变量（--shiki-light/--shiki-dark）
@@ -160,6 +150,7 @@ export async function highlightCode(
   lang: string,
 ): Promise<string> {
   const highlighter = await getHighlighter();
+  await loadLanguage(highlighter, lang);
   const resolved = highlighter.getLoadedLanguages().includes(lang)
     ? lang
     : "plaintext";

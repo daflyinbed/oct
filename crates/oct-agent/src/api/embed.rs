@@ -9,7 +9,9 @@
 //! (stale `dist/` embeds stale assets silently).
 
 use axum::{
+    extract::Request,
     http::{StatusCode, Uri, header},
+    middleware::Next,
     response::{IntoResponse, Response},
 };
 use rust_embed::Embed;
@@ -24,6 +26,47 @@ use tokio::io::{AsyncRead, AsyncSeek, ReadBuf};
 use tower_http::services::fs::{Backend, File as FsFile, Metadata as FsMetadata};
 
 const INDEX_HTML: &str = "index.html";
+
+/// Vite's default asset names end in an eight-character content hash. Only
+/// successful asset responses get immutable caching; HTML must revalidate so
+/// deployments can point clients at the new bundle.
+pub async fn cache_control(request: Request, next: Next) -> Response {
+    let path = request.uri().path().to_owned();
+    let mut response = next.run(request).await;
+    if response.status().is_success() || response.status() == StatusCode::NOT_MODIFIED {
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        let policy = if content_type.starts_with("text/html") {
+            Some("no-cache")
+        } else if is_hashed_asset(&path) {
+            Some("public, max-age=31536000, immutable")
+        } else {
+            None
+        };
+        if let Some(policy) = policy {
+            response
+                .headers_mut()
+                .insert(header::CACHE_CONTROL, policy.parse().unwrap());
+        }
+    }
+    response
+}
+
+fn is_hashed_asset(path: &str) -> bool {
+    path.strip_prefix("/assets/")
+        .and_then(|name| name.rsplit_once('.'))
+        .is_some_and(|(stem, _)| {
+            let bytes = stem.as_bytes();
+            bytes.len() > 9
+                && bytes[bytes.len() - 9] == b'-'
+                && bytes[bytes.len() - 8..]
+                    .iter()
+                    .all(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'-')
+        })
+}
 
 #[derive(Embed)]
 #[folder = "../../packages/app/dist"]

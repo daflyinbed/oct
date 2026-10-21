@@ -4757,7 +4757,10 @@ export interface operations {
     };
     list_providers: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Only providers with an API key and their enabled models (chat startup). */
+                configured?: boolean;
+            };
             header?: never;
             path?: never;
             cookie?: never;

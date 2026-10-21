@@ -85,14 +85,18 @@ export function useProjects() {
 
   const fetchProjects = async () => {
     loading.value = true;
-    const { data, error } = await client.GET("/api/projects");
-    if (!error && data) {
-      projects.value = data;
-      for (const project of data) {
-        await fetchConversations(project.id);
+    try {
+      const { data, error } = await client.GET("/api/projects");
+      if (!error && data) {
+        projects.value = data;
+        // 各项目独立加载，慢请求或失败不阻塞其他项目的会话列表。
+        await Promise.allSettled(
+          data.map((project) => fetchConversations(project.id)),
+        );
       }
+    } finally {
+      loading.value = false;
     }
-    loading.value = false;
   };
 
   const createProject = async (

@@ -399,3 +399,43 @@ it("权限 PATCH 的晚响应保留并发创建的备份与更新后的会话元
     permission_mode: "bypass",
   });
 });
+
+describe("fetchProjects", () => {
+  it("loads conversation lists concurrently and isolates a failed project", async () => {
+    const store = useProjects();
+    const replies = new Map<
+      string,
+      { resolve: (value: unknown) => void; reject: (error: Error) => void }
+    >();
+    GET.mockImplementation(((
+      path: string,
+      options?: { params: { path: { projectId: string } } },
+    ) => {
+      if (path === "/api/projects")
+        return Promise.resolve({
+          data: [
+            project("parallel-1"),
+            project("parallel-2"),
+            project("parallel-3"),
+          ],
+        });
+      return new Promise((resolve, reject) =>
+        replies.set(options!.params.path.projectId, { resolve, reject }),
+      );
+    }) as never);
+    const pending = store.fetchProjects();
+    await vi.waitFor(() => expect(replies.size).toBe(3));
+    replies.get("parallel-2")!.resolve({
+      data: [{ ...conversation("fast", "fast"), project_id: "parallel-2" }],
+    });
+    await vi.waitFor(() =>
+      expect(store.conversations.value.get("parallel-2")?.[0]?.id).toBe("fast"),
+    );
+    expect(store.loading.value).toBe(true);
+    replies.get("parallel-1")!.resolve({ data: [] });
+    replies.get("parallel-3")!.reject(new Error("offline"));
+    await pending;
+    expect(store.loading.value).toBe(false);
+    expect(store.conversations.value.get("parallel-2")?.[0]?.id).toBe("fast");
+  });
+});

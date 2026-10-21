@@ -263,3 +263,82 @@ describe("whenProvidersReady（目录竞态兜底）", () => {
     expect(settled).toBe(true);
   });
 });
+
+describe("startup catalog loading", () => {
+  async function freshStore() {
+    vi.resetModules();
+    return (await import("./useProviders")).useProviders();
+  }
+
+  it("starts and deduplicates the configured request even before App mounts", async () => {
+    const current = await freshStore();
+    let resolve!: (value: unknown) => void;
+    GET.mockImplementation(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }) as never,
+    );
+    const ready = current.whenProvidersReady();
+    const mounted = current.fetchProviders();
+    expect(GET).toHaveBeenCalledTimes(1);
+    expect(GET).toHaveBeenCalledWith("/api/providers", {
+      params: { query: { configured: true } },
+    });
+    resolve({ data: [] });
+    await Promise.all([ready, mounted]);
+    await current.whenProvidersReady();
+    expect(GET).toHaveBeenCalledTimes(1);
+    expect(current.loading.value).toBe(false);
+  });
+
+  it("does not wait for the full settings catalog", async () => {
+    const current = await freshStore();
+    let resolveCatalog!: (value: unknown) => void;
+    GET.mockImplementation(((
+      _path: string,
+      options: { params: { query: { configured: boolean } } },
+    ) =>
+      options.params.query.configured
+        ? Promise.resolve({ data: [] })
+        : new Promise((done) => {
+            resolveCatalog = done;
+          })) as never);
+    const catalog = current.fetchProviderCatalog();
+    await current.whenProvidersReady();
+    expect(current.loading.value).toBe(true);
+    resolveCatalog({ data: [] });
+    await catalog;
+    expect(current.loading.value).toBe(false);
+  });
+
+  it("keeps the full catalog when the configured response arrives late", async () => {
+    const current = await freshStore();
+    let resolveConfigured!: (value: unknown) => void;
+    const full = [{ id: "unconfigured", models: [] }];
+    GET.mockImplementation(((
+      _path: string,
+      options: { params: { query: { configured: boolean } } },
+    ) =>
+      options.params.query.configured
+        ? new Promise((done) => {
+            resolveConfigured = done;
+          })
+        : Promise.resolve({ data: full })) as never);
+    const configured = current.fetchProviders();
+    await current.fetchProviderCatalog();
+    resolveConfigured({ data: [] });
+    await configured;
+    expect(current.providers.value).toEqual(full);
+  });
+
+  it("retries a failed startup request", async () => {
+    const current = await freshStore();
+    GET.mockRejectedValueOnce(new Error("offline"));
+    await current.whenProvidersReady();
+    expect(current.loading.value).toBe(false);
+    GET.mockResolvedValueOnce({ data: [] } as never);
+    await current.whenProvidersReady();
+    expect(GET).toHaveBeenCalledTimes(2);
+  });
+});

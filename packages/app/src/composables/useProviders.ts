@@ -12,8 +12,13 @@ const selectedProviderId = ref<string | null>(null);
 const selectedModelId = ref<string | null>(null);
 /** 思考档位选择（AppSelect 的 value；null = 不带档位，走模型默认）。 */
 const selectedReasoning = ref<string | null>(null);
-/** 进行中/最近一次目录请求：深链会话加载与 App 挂载拉目录并发，水合前等它落定。 */
+/** 聊天目录和设置页完整目录分别去重；完整目录不阻塞聊天初始化。 */
 let providersFetch: Promise<void> | null = null;
+let catalogFetch: Promise<void> | null = null;
+let configuredLoaded = false;
+let catalogLoaded = false;
+let catalogVersion = 0;
+let pendingRequests = 0;
 
 /** models.dev `reasoning_options` 的运行时形态（后端透传的 JSON）。 */
 interface RawReasoningOptions {
@@ -174,7 +179,7 @@ export function useProviders() {
     const model = provider?.models.find(
       (m) => m.model_id === input.modelId && m.is_enabled,
     );
-    if (!provider || !model) {
+    if (!provider?.api_key_set || !model) {
       selectedReasoning.value = null;
       return;
     }
@@ -188,37 +193,60 @@ export function useProviders() {
         : null;
   };
 
-  /** 目录就绪后再继续：深链首屏时本组合式可能先于 App 挂载的目录请求。 */
-  const whenProvidersReady = async () => {
-    if (providers.value.length === 0) await providersFetch;
-  };
-
-  const fetchProviders = async () => {
+  const loadProviders = async (catalog: boolean) => {
+    const version = catalogVersion;
+    pendingRequests++;
     loading.value = true;
-    const request = (async () => {
-      try {
-        const { data, error } = await client.GET("/api/providers");
-        if (!error && data) {
-          providers.value = data;
-          if (data.length > 0 && !selectedProviderId.value) {
-            const withKey = data.find((p) => p.api_key_set);
-            if (withKey) {
-              selectedProviderId.value = withKey.id;
-              const enabled = withKey.models.filter((m) => m.is_enabled);
-              if (enabled.length > 0) {
-                selectedModelId.value = enabled[0].model_id;
-              }
+    try {
+      const { data, error } = await client.GET("/api/providers", {
+        params: { query: { configured: !catalog } },
+      });
+      if (!error && data) {
+        // 设置页可能比聊天目录先返回，迟到的精简响应不能删掉完整目录。
+        if (catalog || version === catalogVersion) providers.value = data;
+        if (catalog) {
+          catalogLoaded = true;
+          catalogVersion++;
+        } else configuredLoaded = true;
+        if (data.length > 0 && !selectedProviderId.value) {
+          const withKey = data.find(
+            (p) => p.api_key_set && p.models.some((m) => m.is_enabled),
+          );
+          if (withKey) {
+            selectedProviderId.value = withKey.id;
+            const enabled = withKey.models.filter((m) => m.is_enabled);
+            if (enabled.length > 0) {
+              selectedModelId.value = enabled[0].model_id;
             }
           }
         }
-      } catch {
-        // 网络异常：保持既有列表（无独立的错误视图），loading 必须复位。
-      } finally {
-        loading.value = false;
       }
-    })();
-    providersFetch = request;
-    return request;
+    } catch {
+      // 网络异常：保持既有列表（无独立的错误视图），loading 必须复位。
+    } finally {
+      pendingRequests--;
+      loading.value = pendingRequests > 0;
+    }
+  };
+
+  const fetchProviders = (): Promise<void> => {
+    providersFetch ??= loadProviders(false).finally(() => {
+      providersFetch = null;
+    });
+    return providersFetch;
+  };
+
+  const fetchProviderCatalog = (): Promise<void> => {
+    catalogFetch ??= loadProviders(true).finally(() => {
+      catalogFetch = null;
+    });
+    return catalogFetch;
+  };
+
+  /** 目录就绪后再继续：深链首屏时本组合式可能先于 App 挂载的目录请求。 */
+  const whenProvidersReady = async () => {
+    if (providersFetch) await providersFetch;
+    else if (!configuredLoaded && !catalogLoaded) await fetchProviders();
   };
 
   const updateApiKey = async (providerId: string, apiKey: string) => {
@@ -324,7 +352,7 @@ export function useProviders() {
       body: input,
     });
     if (!error) {
-      await fetchProviders();
+      await fetchProviderCatalog();
       return true;
     }
     return false;
@@ -367,6 +395,7 @@ export function useProviders() {
     reasoningOptions,
     selectedReasoning: readonly(selectedReasoning),
     fetchProviders,
+    fetchProviderCatalog,
     updateApiKey,
     getApiKey,
     disconnectProvider,

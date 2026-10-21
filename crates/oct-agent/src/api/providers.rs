@@ -1,9 +1,10 @@
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use chrono::NaiveDateTime;
-use serde::Serialize;
-use utoipa::ToSchema;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use utoipa::{IntoParams, ToSchema};
 
 use super::AppState;
 use super::error::{ApiResult, AppError};
@@ -92,9 +93,17 @@ fn model_to_summary(m: &model_db::Model) -> ModelSummary {
     }
 }
 
+#[derive(Debug, Default, Deserialize, IntoParams)]
+pub struct ProviderListQuery {
+    /// Only providers with an API key and their enabled models (chat startup).
+    #[serde(default)]
+    pub configured: bool,
+}
+
 #[utoipa::path(
     get,
     path = "/providers",
+    params(ProviderListQuery),
     responses(
         (status = 200, description = "List of providers with their models", body = Vec<ProviderResponse>)
     ),
@@ -102,9 +111,29 @@ fn model_to_summary(m: &model_db::Model) -> ModelSummary {
 )]
 pub async fn list_providers(
     State(state): State<AppState>,
+    Query(query): Query<ProviderListQuery>,
 ) -> ApiResult<Json<Vec<ProviderResponse>>> {
     let providers = db::list_providers(&state.pool).await?;
     let mut result = Vec::with_capacity(providers.len());
+
+    if query.configured {
+        // Reuse the enabled-model query instead of issuing one catalog query
+        // per provider, and only serialize the connected part of the catalog.
+        let mut models: HashMap<String, Vec<ModelSummary>> = HashMap::new();
+        for model in model_db::list_enabled_models(&state.pool).await? {
+            models
+                .entry(model.provider_id.clone())
+                .or_default()
+                .push(model_to_summary(&model));
+        }
+        for provider in providers.iter().filter(|p| !p.api_key.is_empty()) {
+            result.push(to_provider_response(
+                provider,
+                models.remove(&provider.id).unwrap_or_default(),
+            ));
+        }
+        return Ok(Json(result));
+    }
 
     for p in &providers {
         let models = model_db::list_models_by_provider(&state.pool, &p.id).await?;

@@ -198,7 +198,14 @@
 
 <script setup lang="ts">
 import { SplitterGroup, SplitterPanel, SplitterResizeHandle } from "reka-ui";
-import { computed, onMounted, onScopeDispose, ref, watch } from "vue";
+import {
+  computed,
+  defineAsyncComponent,
+  onMounted,
+  onScopeDispose,
+  ref,
+  watch,
+} from "vue";
 import { useRoute, useRouter } from "vue-router";
 import BottomBar from "@/components/BottomBar.vue";
 import DiffPanel from "@/components/diff/DiffPanel.vue";
@@ -209,7 +216,6 @@ import SettingsModal from "@/components/settings/SettingsModal.vue";
 import ProjectSidebar from "@/components/sidebar/ProjectSidebar.vue";
 import SubagentTabView from "@/components/subagent/SubagentTabView.vue";
 import DiffTabView from "@/components/views/DiffTabView.vue";
-import FileTabView from "@/components/views/FileTabView.vue";
 import GitGraphTabView from "@/components/views/GitGraphTabView.vue";
 import McpTabView from "@/components/views/McpTabView.vue";
 import TerminalTabView from "@/components/views/TerminalTabView.vue";
@@ -231,6 +237,10 @@ import type { TerminalInfo } from "@/composables/useTerminal";
 import type { components } from "@/api/schema";
 import type { TabAction } from "@/components/layout/WorkspaceTabBar.vue";
 import type { DiffSelection } from "@/composables/useGit";
+
+const FileTabView = defineAsyncComponent(
+  () => import("@/components/views/FileTabView.vue"),
+);
 
 const route = useRoute();
 const router = useRouter();
