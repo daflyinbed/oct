@@ -33,13 +33,14 @@
     <ChatTurnNavigator
       :key="conversationId ?? ''"
       :messages="messages"
+      :active-id="activeTurnId"
       @navigate="scrollToMessage"
     />
   </div>
 </template>
 
 <script setup lang="ts">
-import { nextTick, ref, watch } from "vue";
+import { nextTick, onMounted, ref, watch } from "vue";
 import ChatMessage from "./ChatMessage.vue";
 import ChatTurnNavigator from "./ChatTurnNavigator.vue";
 import type { DisplayMessage } from "@/composables/useChat";
@@ -67,9 +68,11 @@ defineEmits<{
 
 const scrollContainer = ref<HTMLElement | null>(null);
 const followingLatest = ref(true);
+const activeTurnId = ref<string | null>(null);
 let scrollingToMessage = false;
 
 function onScroll() {
+  updateActiveTurn();
   if (scrollingToMessage) return;
   const container = scrollContainer.value;
   if (container) {
@@ -77,6 +80,43 @@ function onScroll() {
       container.scrollHeight - container.scrollTop - container.clientHeight <
       24;
   }
+}
+
+// scroll-spy（文档站目录式）：视口顶线以上最后一条用户消息为当前轮次。
+// 顶线取容器顶 + 24px——比 scrollToMessage 的 18px 定位边距略宽，留亚像素容差，
+// 保证点击指示条定位后高亮落在被点击的那条；贴底跟随最新回复时直接高亮最后一条。
+function updateActiveTurn() {
+  const container = scrollContainer.value;
+  if (!container) return;
+  const turnIds = props.messages
+    .filter((message) => message.role === "user")
+    .map((message) => message.id);
+  if (turnIds.length === 0) {
+    activeTurnId.value = null;
+    return;
+  }
+  if (
+    container.scrollHeight - container.scrollTop - container.clientHeight <
+    24
+  ) {
+    activeTurnId.value = turnIds.at(-1)!;
+    return;
+  }
+  const tops = new Map<string, number>();
+  for (const element of container.querySelectorAll<HTMLElement>(
+    "[data-message-id]",
+  )) {
+    tops.set(element.dataset.messageId!, element.getBoundingClientRect().top);
+  }
+  const threshold = container.getBoundingClientRect().top + 24;
+  let active = turnIds[0]!;
+  for (const id of turnIds) {
+    const top = tops.get(id);
+    if (top === undefined) continue;
+    if (top <= threshold) active = id;
+    else break;
+  }
+  activeTurnId.value = active;
 }
 
 function onScrollEnd() {
@@ -122,7 +162,7 @@ watch(
   () => {
     scrollingToMessage = false;
     followingLatest.value = true;
-    scrollToBottom();
+    void scrollToBottom().then(updateActiveTurn);
   },
 );
 
@@ -138,9 +178,16 @@ watch(
 );
 
 watch(
-  () => props.messages.length,
-  () => scrollToBottom(),
+  // 终态历史会以持久化 id 替换 pending/stream id，消息数可能完全不变；
+  // 用 id 序列同时覆盖增删与同长度替换，避免 activeTurnId 悬空。
+  () => props.messages.map((message) => message.id).join("\n"),
+  async () => {
+    await scrollToBottom();
+    updateActiveTurn();
+  },
 );
+
+onMounted(updateActiveTurn);
 
 // 消息内容增长（文本/思考/工具参数/实时输出）时跟随滚动到底部；回看历史时暂停跟随。
 watch(

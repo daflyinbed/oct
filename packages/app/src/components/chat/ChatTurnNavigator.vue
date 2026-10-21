@@ -19,9 +19,10 @@
         <HoverCardTrigger as-child>
           <button
             type="button"
-            class="turn-indicator h-5 w-full flex items-center pl-3 control-focus"
+            class="turn-indicator h-[8px] w-full flex items-center pl-3 control-focus"
+            :data-turn-id="turn.id"
             :aria-label="`第 ${index + 1} 条用户消息：${turn.question}`"
-            :aria-current="index === turns.length - 1 ? 'true' : undefined"
+            :aria-current="turn.id === activeId ? 'true' : undefined"
             :aria-describedby="
               previewId === turn.id ? previewElementId : undefined
             "
@@ -69,6 +70,8 @@ import type { DisplayMessage } from "@/composables/useChat";
 
 const props = defineProps<{
   messages: readonly DisplayMessage[];
+  /** scroll-spy 由 ChatMessageList 计算：视口内当前轮次的用户消息 id。 */
+  activeId: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -147,6 +150,19 @@ watch(
   },
   { immediate: true },
 );
+
+// 高亮随滚动移动时保证指示条在轨道内可见（回看历史时轨道跟着视口走）。
+watch(
+  () => props.activeId,
+  async (id) => {
+    if (!id) return;
+    await nextTick();
+    navigation.value
+      ?.querySelector<HTMLElement>(`[data-turn-id="${CSS.escape(id)}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  },
+  { immediate: true },
+);
 </script>
 
 <style scoped>
@@ -159,8 +175,8 @@ watch(
 }
 
 .turn-indicator-line {
-  width: 16px;
-  height: 3px;
+  width: 12px;
+  height: 2px;
   border-radius: 999px;
   background: var(--oct-color-faint);
   opacity: 0.65;
@@ -178,7 +194,7 @@ watch(
 .turn-indicator:hover .turn-indicator-line,
 .turn-indicator:focus-visible .turn-indicator-line,
 .turn-indicator[data-state="open"] .turn-indicator-line {
-  width: 32px;
+  width: 24px;
   background: var(--oct-color-strong);
   opacity: 1;
 }

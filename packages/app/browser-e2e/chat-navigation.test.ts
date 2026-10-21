@@ -82,7 +82,7 @@ it("previews each user turn with its first reply and highlights the latest messa
   await expect.poll(() => indicators().elements().length).toBe(3);
   await page.getByPlaceholder(COMPOSER_SELECTOR).hover();
   expect([0, 1, 2].map((index) => lineStyle(index).width)).toEqual([
-    16, 16, 16,
+    12, 12, 12,
   ]);
   expect(indicators().nth(0).element().hasAttribute("aria-current")).toBe(
     false,
@@ -98,7 +98,7 @@ it("previews each user turn with its first reply and highlights the latest messa
   await expect.poll(previewText).toContain("我先说明播放器的入口。");
   await expect.poll(previewText).not.toContain("私有思考");
   await expect.poll(previewText).not.toContain("后来补充的结论");
-  await expect.poll(() => lineStyle(0).width).toBe(32);
+  await expect.poll(() => lineStyle(0).width).toBe(24);
   expect(lineStyle(0).color).toBe(lineStyle(2).color);
   const lines = preview.element().querySelectorAll("p");
   expect(lines[0]?.textContent).toContain("UnityMain");
@@ -108,7 +108,7 @@ it("previews each user turn with its first reply and highlights the latest messa
   await expect.poll(previewText).toContain("尚未回答的问题");
   await expect.poll(previewText).toContain("暂无回复");
   await expect.poll(previewText).not.toContain("播放器的入口");
-  await expect.poll(() => lineStyle(0).width).toBe(16);
+  await expect.poll(() => lineStyle(0).width).toBe(12);
 
   await page.getByPlaceholder(COMPOSER_SELECTOR).hover();
   indicators().last().element().focus();
@@ -171,22 +171,64 @@ it("updates streaming previews and preserves the position when jumping to an ear
     await expect.poll(chatText).toContain("后续内容继续到达。");
     await expect.poll(() => scroll.scrollTop, { timeout: 3000 }).toBe(0);
     await expect.element(page.getByTitle("发送（Enter）")).toBeInTheDocument();
-    expect(indicators().last().element().getAttribute("aria-current")).toBe(
-      "true",
-    );
+    // 回看首个问题后，高亮跟随视口落在第一条，而不是钉在最后一条。
+    await expect
+      .poll(() => indicators().first().element().getAttribute("aria-current"))
+      .toBe("true");
   } finally {
     await openGate("thinking");
     await openGate("first-answer");
   }
 });
 
+it("keeps the active indicator when optimistic message ids become persistent", async () => {
+  const persistedUser = storedMessage(
+    "user",
+    [{ type: "text", text: "检查持久化高亮" }],
+    { id: "persisted-user" },
+  );
+  const persistedAssistant = storedMessage(
+    "assistant",
+    [{ type: "text", text: "高亮应继续指向当前轮次。" }],
+    { id: "persisted-assistant" },
+  );
+  mounted = await bootConversation(
+    [
+      {
+        type: "events",
+        events: [textDelta("高亮应继续指向当前轮次。"), finishEvent()],
+      },
+    ],
+    {
+      afterStreamHistory: {
+        c1: {
+          messages: [persistedUser, persistedAssistant],
+          revision: 1,
+        },
+      },
+    },
+  );
+
+  await sendChatMessage("检查持久化高亮");
+  await expect
+    .poll(() => document.querySelector('[data-message-id="persisted-user"]'))
+    .not.toBeNull();
+  await expect
+    .poll(() =>
+      document
+        .querySelector('[data-turn-id="persisted-user"]')
+        ?.getAttribute("aria-current"),
+    )
+    .toBe("true");
+});
+
 it("keeps the latest indicator reachable when a long conversation overflows the rail", async () => {
   mounted = await bootConversation([], {
-    stored: Array.from({ length: 60 }, (_, index) =>
+    stored: Array.from({ length: 200 }, (_, index) =>
       storedMessage("user", [{ type: "text", text: `问题 ${index + 1}` }]),
     ),
   });
-  await expect.poll(() => indicators().elements().length).toBe(60);
+  await expect.poll(() => indicators().elements().length).toBe(200);
   const navigation = page
     .getByRole("navigation", { name: "用户消息导航" })
     .element();
@@ -210,4 +252,7 @@ it("keeps the latest indicator reachable when a long conversation overflows the 
       { timeout: 3000 },
     )
     .toBeCloseTo(18, 0);
+  await expect
+    .poll(() => indicators().first().element().getAttribute("aria-current"))
+    .toBe("true");
 });
