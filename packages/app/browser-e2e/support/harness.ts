@@ -7,7 +7,7 @@ import {
   providerFixture,
 } from "./fixtures";
 import { resetMock, setScenario } from "./mock";
-import type { ScriptStep } from "../mock/server";
+import type { Scenario, ScriptStep } from "../mock/server";
 import type { MountedApp } from "./app";
 
 export const COMPOSER_SELECTOR = "Ask Oct to do something...";
@@ -19,7 +19,11 @@ export const COMPOSER_SELECTOR = "Ask Oct to do something...";
  */
 export async function bootConversation(
   script: ScriptStep[],
-  opts: { stored?: unknown[]; withProvider?: boolean } = {},
+  opts: {
+    stored?: unknown[];
+    withProvider?: boolean;
+    afterStreamHistory?: Scenario["afterStreamHistory"];
+  } = {},
 ): Promise<MountedApp> {
   await resetMock();
   await setScenario({
@@ -28,6 +32,7 @@ export async function bootConversation(
     providers: opts.withProvider === false ? [] : [providerFixture()],
     messages: { c1: opts.stored ?? [] },
     scripts: { c1: script },
+    afterStreamHistory: opts.afterStreamHistory,
   });
 
   const mounted = await mountApp();

@@ -2,31 +2,47 @@
   <!-- 消息列表 + 滚动容器：主面板与子代理 panel 共用的展示链路
        （ChatMessage / 思考块 / 工具卡片 / 压缩分隔条），各自传入
        实例化的 messages 与会话作用域 -->
-  <div ref="scrollContainer" class="workspace-panel-body">
-    <div class="mx-auto max-w-[760px] px-7 pb-3 pt-[18px] space-y-[18px]">
-      <ChatMessage
-        v-for="msg in messages"
-        :key="msg.id"
-        :message="msg"
-        :conversation-id="conversationId"
-        :fork-enabled="forkEnabled"
-        :revert-enabled="revertEnabled"
-        @fork="(cut) => $emit('fork', cut)"
-        @revert="(cut) => $emit('revert', cut)"
-      />
-      <div v-if="messages.length === 0" class="pt-20 text-center text-faint">
-        <p class="mb-1.5 text-[15px] text-dim font-medium">
-          {{ emptyTitle }}
-        </p>
-        <p class="text-[12.5px]">{{ emptyHint }}</p>
+  <div class="relative min-h-0 flex flex-1">
+    <div
+      ref="scrollContainer"
+      class="workspace-panel-body min-w-0"
+      @scroll="onScroll"
+      @scrollend="onScrollEnd"
+    >
+      <div
+        class="mx-auto max-w-[760px] pb-3 pl-12 pr-7 pt-[18px] space-y-[18px]"
+      >
+        <div v-for="msg in messages" :key="msg.id" :data-message-id="msg.id">
+          <ChatMessage
+            :message="msg"
+            :conversation-id="conversationId"
+            :fork-enabled="forkEnabled"
+            :revert-enabled="revertEnabled"
+            @fork="(cut) => $emit('fork', cut)"
+            @revert="(cut) => $emit('revert', cut)"
+          />
+        </div>
+        <div v-if="messages.length === 0" class="pt-20 text-center text-faint">
+          <p class="mb-1.5 text-[15px] text-dim font-medium">
+            {{ emptyTitle }}
+          </p>
+          <p class="text-[12.5px]">{{ emptyHint }}</p>
+        </div>
       </div>
     </div>
+    <ChatTurnNavigator
+      :key="conversationId ?? ''"
+      :messages="messages"
+      :active-id="activeTurnId"
+      @navigate="scrollToMessage"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { nextTick, ref, watch } from "vue";
+import { nextTick, onMounted, ref, watch } from "vue";
 import ChatMessage from "./ChatMessage.vue";
+import ChatTurnNavigator from "./ChatTurnNavigator.vue";
 import type { DisplayMessage } from "@/composables/useChat";
 
 const props = withDefaults(
@@ -51,20 +67,129 @@ defineEmits<{
 }>();
 
 const scrollContainer = ref<HTMLElement | null>(null);
+const followingLatest = ref(true);
+const activeTurnId = ref<string | null>(null);
+let scrollingToMessage = false;
+
+function onScroll() {
+  updateActiveTurn();
+  if (scrollingToMessage) return;
+  const container = scrollContainer.value;
+  if (container) {
+    followingLatest.value =
+      container.scrollHeight - container.scrollTop - container.clientHeight <
+      24;
+  }
+}
+
+// scroll-spy（文档站目录式）：视口顶线以上最后一条用户消息为当前轮次。
+// 顶线取容器顶 + 24px——比 scrollToMessage 的 18px 定位边距略宽，留亚像素容差，
+// 保证点击指示条定位后高亮落在被点击的那条；贴底跟随最新回复时直接高亮最后一条。
+function updateActiveTurn() {
+  const container = scrollContainer.value;
+  if (!container) return;
+  const turnIds = props.messages
+    .filter((message) => message.role === "user")
+    .map((message) => message.id);
+  if (turnIds.length === 0) {
+    activeTurnId.value = null;
+    return;
+  }
+  if (
+    container.scrollHeight - container.scrollTop - container.clientHeight <
+    24
+  ) {
+    activeTurnId.value = turnIds.at(-1)!;
+    return;
+  }
+  const tops = new Map<string, number>();
+  for (const element of container.querySelectorAll<HTMLElement>(
+    "[data-message-id]",
+  )) {
+    tops.set(element.dataset.messageId!, element.getBoundingClientRect().top);
+  }
+  const threshold = container.getBoundingClientRect().top + 24;
+  let active = turnIds[0]!;
+  for (const id of turnIds) {
+    const top = tops.get(id);
+    if (top === undefined) continue;
+    if (top <= threshold) active = id;
+    else break;
+  }
+  activeTurnId.value = active;
+}
+
+function onScrollEnd() {
+  scrollingToMessage = false;
+  onScroll();
+}
+
+function scrollToMessage(messageId: string) {
+  const container = scrollContainer.value;
+  const target = container?.querySelector<HTMLElement>(
+    `[data-message-id="${CSS.escape(messageId)}"]`,
+  );
+  if (!container || !target) return;
+  followingLatest.value = false;
+  const top = Math.max(
+    0,
+    Math.min(
+      container.scrollHeight - container.clientHeight,
+      container.scrollTop +
+        target.getBoundingClientRect().top -
+        container.getBoundingClientRect().top -
+        18,
+    ),
+  );
+  scrollingToMessage = Math.abs(container.scrollTop - top) > 1;
+  container.scrollTo({
+    top,
+    behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+      ? "instant"
+      : "smooth",
+  });
+}
 
 async function scrollToBottom() {
   await nextTick();
-  if (scrollContainer.value) {
+  if (followingLatest.value && scrollContainer.value) {
     scrollContainer.value.scrollTop = scrollContainer.value.scrollHeight;
   }
 }
 
 watch(
-  () => props.messages.length,
-  () => scrollToBottom(),
+  () => props.conversationId,
+  () => {
+    scrollingToMessage = false;
+    followingLatest.value = true;
+    void scrollToBottom().then(updateActiveTurn);
+  },
 );
 
-// 消息内容增长（文本/思考/工具参数/实时输出）时跟随滚动到底部
+watch(
+  () => props.messages.filter((message) => message.role === "user").length,
+  (count, previousCount) => {
+    // 发送后历史刷新会把临时 id 换成持久化 id；只有新增提问才恢复跟随。
+    if (count <= previousCount) return;
+    scrollingToMessage = false;
+    followingLatest.value = true;
+    scrollToBottom();
+  },
+);
+
+watch(
+  // 终态历史会以持久化 id 替换 pending/stream id，消息数可能完全不变；
+  // 用 id 序列同时覆盖增删与同长度替换，避免 activeTurnId 悬空。
+  () => props.messages.map((message) => message.id).join("\n"),
+  async () => {
+    await scrollToBottom();
+    updateActiveTurn();
+  },
+);
+
+onMounted(updateActiveTurn);
+
+// 消息内容增长（文本/思考/工具参数/实时输出）时跟随滚动到底部；回看历史时暂停跟随。
 watch(
   () => {
     const last = props.messages.at(-1);
