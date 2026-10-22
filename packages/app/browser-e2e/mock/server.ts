@@ -80,6 +80,14 @@ export interface Scenario {
   };
   /** GET /api/projects 的返回体(形状见 schema.d.ts 的 Project)。 */
   projects?: unknown[];
+  directoryReplies?: Record<
+    string,
+    {
+      body?: components["schemas"]["DirectoryListing"];
+      status?: number;
+      gate?: string;
+    }
+  >;
   terminals?: components["schemas"]["TerminalInfo"][];
   /** 全部会话(按 project_id 过滤返回)。 */
   conversations?: unknown[];
@@ -614,6 +622,16 @@ async function handleApi(
       return sendJson(res, 200, fixture?.stashes ?? []);
     if (pathname.endsWith("/diff"))
       return sendJson(res, 200, { patch: fixture?.patch ?? "" });
+  }
+
+  if (req.method === "GET" && pathname === "/api/directories") {
+    const reply = s.directoryReplies?.[searchParams.get("path") ?? ""];
+    if (reply?.gate) await gateWait(reply.gate);
+    return sendJson(
+      res,
+      reply?.status ?? (reply?.body ? 200 : 400),
+      reply?.body ?? { error: "Cannot read directory" },
+    );
   }
 
   // GET /api/projects

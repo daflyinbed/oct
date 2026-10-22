@@ -367,6 +367,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/directories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_directories"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/mcp/oauth/callback": {
         parameters: {
             query?: never;
@@ -1624,6 +1640,18 @@ export interface components {
         /** @description The decide endpoint's answer. */
         DecideApprovalResponse: {
             resolved: boolean;
+        };
+        DirectoryEntry: {
+            name: string;
+            path: string;
+        };
+        DirectoryListing: {
+            /** @description Absolute directory containing the suggestions. */
+            directory: string;
+            entries: components["schemas"]["DirectoryEntry"][];
+            parent?: string | null;
+            /** @description Incomplete final path component; empty when browsing a directory. */
+            query: string;
         };
         /**
          * @description The error body of EVERY non-2xx API response. `code` is the stable
@@ -3312,6 +3340,36 @@ export interface operations {
             };
             /** @description Conversation not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_directories: {
+        parameters: {
+            query?: {
+                /** @description Absolute path or path prefix. Empty and `~` start in the server user's home. */
+                path?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Matching directories on the server */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DirectoryListing"];
+                };
+            };
+            /** @description Invalid, missing or unreadable directory */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };

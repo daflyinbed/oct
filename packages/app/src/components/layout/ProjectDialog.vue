@@ -8,13 +8,13 @@
         <DialogTitle class="text-xl text-strong font-semibold">
           {{ isEdit ? "Project Settings" : "New Project" }}
         </DialogTitle>
-        <p class="mt-1 text-sm text-dim">
+        <DialogDescription class="mt-1 text-sm text-dim">
           {{
             isEdit
               ? "编辑项目的名称与工作目录。"
               : "创建一个绑定本地工作目录的项目。"
           }}
-        </p>
+        </DialogDescription>
 
         <form class="mt-4 flex flex-col gap-3" @submit.prevent="submit">
           <label class="flex flex-col gap-2">
@@ -25,16 +25,17 @@
               class="h-[30px] w-full control-surface px-3 text-base control-focus"
             />
           </label>
-          <label class="flex flex-col gap-2">
+          <div class="flex flex-col gap-2">
             <span class="text-sm text-dim font-medium">
               Working directory
             </span>
-            <input
+            <DirectoryPicker
               v-model="workingDir"
+              label="Working directory"
               placeholder="/home/me/projects/my-project"
-              class="h-[30px] w-full control-surface px-3 text-base font-mono control-focus"
+              @select="suggestName"
             />
-          </label>
+          </div>
 
           <div class="flex flex-col gap-2">
             <span class="text-sm text-dim font-medium">
@@ -48,10 +49,11 @@
               :key="index"
               class="flex items-center gap-1.5"
             >
-              <input
+              <DirectoryPicker
                 v-model="additionalDirs[index]!"
+                :label="`Additional directory ${index + 1}`"
                 placeholder="/home/me/another-repo"
-                class="h-[30px] w-full control-surface px-3 text-base font-mono control-focus"
+                class="min-w-0 flex-1"
               />
               <button
                 type="button"
@@ -107,6 +109,7 @@
 import {
   DialogClose,
   DialogContent,
+  DialogDescription,
   DialogOverlay,
   DialogPortal,
   DialogRoot,
@@ -114,6 +117,7 @@ import {
 } from "reka-ui";
 import { computed, ref, watch } from "vue";
 import { useProjects } from "@/composables/useProjects";
+import DirectoryPicker from "@/components/ui/DirectoryPicker.vue";
 import type { components } from "@/api/schema";
 
 type Project = components["schemas"]["Project"];
@@ -156,6 +160,12 @@ watch(
 
 function handleUpdateOpen(open: boolean) {
   if (!open) emit("close");
+}
+
+function suggestName(path: string) {
+  if (!isEdit.value && !name.value.trim()) {
+    name.value = path.split("/").filter(Boolean).at(-1) ?? "";
+  }
 }
 
 async function submit() {
