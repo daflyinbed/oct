@@ -23,6 +23,7 @@ export async function bootConversation(
     stored?: unknown[];
     withProvider?: boolean;
     afterStreamHistory?: Scenario["afterStreamHistory"];
+    contextRevision?: number;
   } = {},
 ): Promise<MountedApp> {
   await resetMock();
@@ -33,6 +34,8 @@ export async function bootConversation(
     messages: { c1: opts.stored ?? [] },
     scripts: { c1: script },
     afterStreamHistory: opts.afterStreamHistory,
+    contextRevisions:
+      opts.contextRevision == null ? undefined : { c1: opts.contextRevision },
   });
 
   const mounted = await mountApp();
@@ -53,5 +56,7 @@ export async function sendChatMessage(text: string): Promise<void> {
  * useChat 的 stream buffer 每 50ms 才 flush 一次,瞬时断言必 flaky。 */
 export async function chatText(): Promise<string> {
   const main = await page.getByRole("main").element();
-  return main.textContent ?? "";
+  // 断言用户实际可见的内容，工作折叠区保留 DOM 以维护卡片展开状态。
+  // eslint-disable-next-line unicorn/prefer-dom-node-text-content
+  return main.innerText;
 }

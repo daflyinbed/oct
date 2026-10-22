@@ -103,7 +103,13 @@ export interface Scenario {
   /** Persisted terminal snapshots installed before scripted SSE EOF. */
   afterStreamHistory?: Record<
     string,
-    { messages: MessageDto[]; revision: number; resumable?: boolean }
+    {
+      messages: MessageDto[];
+      revision: number;
+      resumable?: boolean;
+      /** Bind this POST's client_request_id to the scripted user message. */
+      requestMessageId?: string;
+    }
   >;
   revertReplies?: Record<
     string,
@@ -173,6 +179,10 @@ export interface Scenario {
   scripts?: Record<string, ScriptStep[]>;
   approvals?: Record<string, components["schemas"]["PendingApprovalDto"][]>;
   subagents?: Record<string, components["schemas"]["SubagentTaskDto"][]>;
+  backgroundTasks?: Record<
+    string,
+    components["schemas"]["BackgroundTaskDto"][]
+  >;
   /** Decide opens a scripted gate; the next event supplies its resolution. */
   approvalGates?: Record<string, string>;
 }
@@ -286,6 +296,7 @@ const RE_CONVERSATION_COMPACT = /^\/api\/conversations\/([^/]+)\/compact$/;
 const RE_CONVERSATION_RUN = /^\/api\/conversations\/([^/]+)\/run$/;
 const RE_APPROVALS = /^\/api\/conversations\/([^/]+)\/approvals$/;
 const RE_SUBAGENTS = /^\/api\/conversations\/([^/]+)\/subagents$/;
+const RE_BACKGROUND_TASKS = /^\/api\/conversations\/([^/]+)\/background-tasks$/;
 const RE_APPROVAL_DECIDE =
   /^\/api\/conversations\/([^/]+)\/approvals\/([^/]+)$/;
 const RE_MCP_SERVER = /^\/api\/mcp\/servers\/([^/]+)$/;
@@ -437,6 +448,25 @@ async function handleSse(
   if (first && first.type === "status") {
     sendJson(res, first.code, { error: `scripted ${first.code}` });
     return;
+  }
+
+  const snapshot = state.scenario.afterStreamHistory?.[convId];
+  if (snapshot?.requestMessageId) {
+    const body = (await readBodyCached(req)) as {
+      client_request_id?: string;
+    } | null;
+    const message = snapshot.messages.find(
+      (message) => message.id === snapshot.requestMessageId,
+    );
+    if (message && body?.client_request_id) {
+      message.details = {
+        ...message.details,
+        extra: {
+          ...message.details?.extra,
+          client_request_id: body.client_request_id,
+        },
+      };
+    }
   }
 
   const stream: OpenStream = { res, closed: false };
@@ -745,6 +775,14 @@ async function handleApi(
   m = pathname.match(RE_SUBAGENTS);
   if (m && req.method === "GET") {
     return sendJson(res, 200, s.subagents?.[decodeURIComponent(m[1])] ?? []);
+  }
+  m = pathname.match(RE_BACKGROUND_TASKS);
+  if (m && req.method === "GET") {
+    return sendJson(
+      res,
+      200,
+      s.backgroundTasks?.[decodeURIComponent(m[1])] ?? [],
+    );
   }
   m = pathname.match(RE_APPROVAL_DECIDE);
   if (m && req.method === "POST") {

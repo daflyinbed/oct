@@ -64,6 +64,9 @@
 
     <ChatMessageList
       :messages="messages"
+      :interrupted="
+        task != null && ['failed', 'cancelled', 'lost'].includes(task.status)
+      "
       :conversation-id="agentId"
       empty-title="子代理尚未产生消息"
       empty-hint="等待委派 prompt 落地…"

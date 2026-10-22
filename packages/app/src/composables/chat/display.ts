@@ -173,12 +173,27 @@ export type DisplayPart =
   | CompactionPart
   | TaskNotificationPart;
 
+/** 主轮的展示状态；后台工具/子代理仍在运行不会延长主轮。 */
+export interface DisplayWork {
+  state: "running" | "completed" | "interrupted" | "failed";
+}
+
+function messageTimestamp(
+  value: string | null | undefined,
+): number | undefined {
+  const timestamp = value == null ? NaN : Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
 export interface DisplayMessage {
   id: string;
   role: "user" | "assistant" | "compaction" | "notification";
   parts: readonly DisplayPart[];
   isStreaming?: boolean;
   forkCut?: ForkCut | null;
+  work?: DisplayWork;
+  startedAt?: number;
+  finishedAt?: number;
 }
 
 /** Internal mutable shape used while building/merging messages. */
@@ -188,6 +203,9 @@ export interface BuildableMessage {
   parts: DisplayPart[];
   isStreaming?: boolean;
   forkCut?: ForkCut | null;
+  work?: DisplayWork;
+  startedAt?: number;
+  finishedAt?: number;
 }
 
 /** Tail cap per tool call for live output kept in the DOM. */
@@ -269,6 +287,34 @@ export function pushText(msg: BuildableMessage, text: string) {
   } else {
     msg.parts.push({ kind: "text", text });
   }
+}
+
+/** 中断时最后一轮的未落库文字仍留在当前视图；已持久化的工具与正文不重复。 */
+export function unpersistedStreamTail(
+  streamed: readonly DisplayPart[],
+  history: readonly DisplayMessage[],
+): DisplayPart[] {
+  const textTail = (parts: readonly DisplayPart[]) =>
+    parts
+      .slice(parts.findLastIndex((part) => part.kind === "tool_call") + 1)
+      .filter((part) => part.kind === "text" || part.kind === "reasoning");
+  const live = textTail(streamed);
+  const assistantParts: DisplayPart[] = [];
+  for (let index = history.length - 1; index >= 0; index--) {
+    const message = history[index]!;
+    if (message.role === "user" || message.role === "notification") break;
+    if (message.role === "assistant") assistantParts.unshift(...message.parts);
+  }
+  const saved = textTail(assistantParts);
+  let shared = 0;
+  while (
+    shared < live.length &&
+    shared < saved.length &&
+    live[shared]!.kind === saved[shared]!.kind &&
+    live[shared]!.text === saved[shared]!.text
+  )
+    shared++;
+  return live.slice(shared);
 }
 
 /**
@@ -489,6 +535,7 @@ export function storedToDisplayList(stored: ApiMessage[]): DisplayMessage[] {
         out.push({
           id: m.id,
           role: "notification",
+          startedAt: messageTimestamp(m.started_at),
           parts: [
             {
               kind: "task_notification",
@@ -508,6 +555,7 @@ export function storedToDisplayList(stored: ApiMessage[]): DisplayMessage[] {
         role: "user",
         parts: [],
         forkCut: m.fork_cut,
+        startedAt: messageTimestamp(m.started_at),
       };
       if (m.user_content) {
         if (m.user_content.body) pushText(msg, m.user_content.body);
@@ -573,6 +621,7 @@ export function storedToDisplayList(stored: ApiMessage[]): DisplayMessage[] {
         role: "assistant",
         parts: [],
         forkCut: m.fork_cut,
+        finishedAt: messageTimestamp(m.finished_at),
       };
       // Thinking duration is UI metadata (DTO details), not a message part.
       const storedDurationMs = m.details?.reasoning_duration_ms ?? null;

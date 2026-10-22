@@ -5,8 +5,9 @@ oct 的前端：Vue 3 + TypeScript + Vite 8 + UnoCSS（OKLCH design tokens）。
 ## 界面能力
 
 - 多项目/多会话工作区：侧栏、标签页、文件树与文件预览、Git Changes 面板
-- 聊天：SSE 流式渲染（`vue-stream-markdown` + shiki 高亮）、thinking/tool 卡片、左侧用户消息导航（悬停预览问题与回复开头、点击定位）、斜杠命令（内置命令 + MCP prompts）、上下文占用圆环、`/compact`
+- 聊天：SSE 流式渲染（`vue-stream-markdown` + shiki 高亮）、thinking/tool 卡片、工作过程折叠（运行中展开，完成后收起并单独保留最终答复；中断/失败或没有最终正文时展开）、左侧用户消息导航（悬停预览问题与回复开头、点击定位）、斜杠命令（内置命令 + MCP prompts）、上下文占用圆环、`/compact`
 - 子代理任务卡、后台 bash 任务卡（输出查看/停止）、审批横幅（allow/allow_always/deny）
+- 工作耗时由前端计算：使用消息接口的 `started_at`（本轮用户消息创建时间）与 `finished_at`（最终回复落库时间），运行中本地走表；恢复沿用原轮次开始时间，取消与失败只显示状态。
 - 交互终端：标签条「+ → Terminal」从项目目录启动后端主机的默认 shell，前端使用 `ghostty-web`，支持窗口缩放、中文输入、粘贴、Ctrl-C 和交互式 SSH。切换标签保留终端；刷新后重新发现会话，断线重连保留 shell 状态；关闭标签会终止 shell。输出缓存约 1 MiB，溢出时提示历史截断，无法完整还原较早的终端画面；会话在后端重启后失效。
 - 对话 fork / revert（含切点选择与历史回滚对话框）
 - 设置：providers/models、MCP servers（连接状态/OAuth 登录）、Agents（worker/title）、权限规则、wire 日志与工具调用方式开关

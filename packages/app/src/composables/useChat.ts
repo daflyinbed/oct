@@ -13,6 +13,7 @@ import {
   MICROCOMPACT_PLACEHOLDER,
   newToolCard,
   storedToDisplayList,
+  unpersistedStreamTail,
 } from "./chat/display";
 import { createRunController } from "./chat/run";
 import { readChatStream } from "./chat/transport";
@@ -23,6 +24,7 @@ import type {
   ChatStreamEvent,
   DisplayMessage,
   DisplayPart,
+  DisplayWork,
   PendingApproval,
   PendingApprovalDto,
   ToolCallPart,
@@ -113,6 +115,22 @@ interface StreamState {
   messageId: string;
   parts: DisplayPart[];
   isStreaming: boolean;
+  work: DisplayWork;
+  startedAt: number;
+  finishedAt?: number;
+}
+
+function newStreamState(
+  messageId: string,
+  startedAt = Date.now(),
+): StreamState {
+  return {
+    messageId,
+    parts: [],
+    isStreaming: true,
+    work: { state: "running" },
+    startedAt,
+  };
 }
 
 function clonePart(part: DisplayPart): DisplayPart {
@@ -337,11 +355,16 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
       ...messages.value[idx],
       parts: streamState.parts.map(clonePart),
       isStreaming: streamState.isStreaming,
+      work: { ...streamState.work },
+      startedAt: streamState.startedAt,
+      finishedAt: streamState.finishedAt,
     };
   }
 
   function startFlushing() {
     stopFlushing();
+    streamDirty = true;
+    flushStream();
     flushTimer = setInterval(flushStream, FLUSH_INTERVAL_MS);
   }
 
@@ -381,16 +404,33 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
     owner: RunOwner,
     refresh?: () => Promise<void>,
     reconnect?: () => Promise<void>,
+    clientRequestId?: string,
   ) {
     if (!runs.owns(owner)) return;
+    const lastTriggerId = () =>
+      messages.value.findLast(
+        (message) => message.role === "user" || message.role === "notification",
+      )?.id;
+    const runTriggerId = lastTriggerId();
     stopFlushing();
     usageCompacting.value = false;
     if (trackContextUsage) setCompacting(false);
+    let work: DisplayWork | undefined;
+    let partial: DisplayMessage | undefined;
     if (streamState) {
       finalizeUnconvergedCards();
+      if (streamState.work.state === "running") {
+        streamState.work.state = "interrupted";
+      }
+      work = { ...streamState.work };
       streamState.isStreaming = false;
       streamDirty = true;
       flushStream();
+      if (work.state === "interrupted" || work.state === "failed") {
+        partial = messages.value.find(
+          (message) => message.id === streamState?.messageId,
+        );
+      }
       streamState = null;
     }
     if (refresh) {
@@ -400,6 +440,35 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
         /* persisted history converges on the next load */
       }
     }
+    // 持久化刷新会把一条流式记录拆成多条 DB 消息；保留本轮真实终态，
+    // 避免部分正文或错误提示被当成正常最终答复而收起。
+    // 后端可能已插入后台唤醒/下一笔提问；旧轮状态不得贴到新轮正文上。
+    // 发送时用请求回执把临时 user id 对应到落库消息；补投在它之前的
+    // 后台通知不会改变当前轮次，恢复/重连则直接沿用已有消息 id。
+    const persistedTriggerId =
+      clientRequestId &&
+      lastHistory.value?.conversationId === owner.conversationId
+        ? lastHistory.value.messages.find(
+            (message) =>
+              message.role === "user" &&
+              message.details?.extra?.client_request_id === clientRequestId,
+          )?.id
+        : undefined;
+    if (
+      work &&
+      runs.owns(owner) &&
+      lastTriggerId() === (persistedTriggerId ?? runTriggerId)
+    ) {
+      if (
+        partial &&
+        !messages.value.some((message) => message.id === partial!.id)
+      ) {
+        const tail = unpersistedStreamTail(partial.parts, messages.value);
+        if (tail.length > 0) messages.value.push({ ...partial, parts: tail });
+      }
+      const last = messages.value.at(-1);
+      if (last?.role === "assistant") last.work = work;
+    }
     if (!runs.finish(owner)) return;
     if (reconnect) await reconnect();
   }
@@ -407,6 +476,7 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
   function showRunFailure(owner: RunOwner, text: string) {
     if (!runs.owns(owner)) return;
     if (streamState) {
+      streamState.work.state = "failed";
       if (
         !messages.value.some((message) => message.id === streamState?.messageId)
       )
@@ -420,6 +490,7 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
           id: `error-${owner.generation}`,
           role: "assistant",
           parts: [{ kind: "text", text }],
+          work: { state: "failed" },
         },
       ];
     }
@@ -680,12 +751,16 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
 
       case "finish":
       case "cancelled": {
+        streamState.work.state =
+          event.type === "finish" ? "completed" : "interrupted";
+        if (event.type === "finish") streamState.finishedAt = Date.now();
         finalizeUnconvergedCards();
         streamState.isStreaming = false;
         break;
       }
 
       case "error": {
+        streamState.work.state = "failed";
         const last = parts.at(-1);
         if (last?.kind === "text") {
           last.text += `\n\nError: ${event.data}`;
@@ -1004,6 +1079,7 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
         id: `pending-${Date.now()}`,
         role: "user",
         parts: pendingParts,
+        startedAt: Date.now(),
       },
     ];
 
@@ -1012,7 +1088,12 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
       ...messages.value,
       { id: assistantId, role: "assistant", parts: [], isStreaming: true },
     ];
-    streamState = { messageId: assistantId, parts: [], isStreaming: true };
+    streamState = newStreamState(
+      assistantId,
+      messages.value.findLast(
+        (message) => message.role === "user" || message.role === "notification",
+      )?.startedAt,
+    );
     startFlushing();
 
     // 非 2xx 时从错误体提取可展示文案（pending_recovery 附引导提示）；
@@ -1075,6 +1156,7 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
           ? () => loadMessages(conversationId, !hadInterruptedCards)
           : undefined,
         reconnect ? () => attachRun(conversationId) : undefined,
+        clientRequestId,
       );
     }
   };
@@ -1112,7 +1194,13 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
         ...messages.value,
         { id: assistantId, role: "assistant", parts: [], isStreaming: true },
       ];
-      streamState = { messageId: assistantId, parts: [], isStreaming: true };
+      streamState = newStreamState(
+        assistantId,
+        messages.value.findLast(
+          (message) =>
+            message.role === "user" || message.role === "notification",
+        )?.startedAt,
+      );
       startFlushing();
 
       reconnect = !(await consumeSseStream(res, owner));
@@ -1193,7 +1281,13 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
           ...messages.value,
           { id: assistantId, role: "assistant", parts: [], isStreaming: true },
         ];
-        streamState = { messageId: assistantId, parts: [], isStreaming: true };
+        streamState = newStreamState(
+          assistantId,
+          messages.value.findLast(
+            (message) =>
+              message.role === "user" || message.role === "notification",
+          )?.startedAt,
+        );
         startFlushing();
       };
 
@@ -1296,7 +1390,13 @@ export function createChatSession(options: CreateChatSessionOptions = {}) {
           ...messages.value,
           { id: assistantId, role: "assistant", parts: [], isStreaming: true },
         ];
-        streamState = { messageId: assistantId, parts: [], isStreaming: true };
+        streamState = newStreamState(
+          assistantId,
+          messages.value.findLast(
+            (message) =>
+              message.role === "user" || message.role === "notification",
+          )?.startedAt,
+        );
         startFlushing();
       };
 

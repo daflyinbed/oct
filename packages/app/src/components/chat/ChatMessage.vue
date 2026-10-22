@@ -193,6 +193,8 @@ const props = defineProps<{
   conversationId: string | null;
   forkEnabled?: boolean;
   revertEnabled?: boolean;
+  /** 工作过程里的说明不提供最终回复的复制/分支操作。 */
+  process?: boolean;
 }>();
 
 defineEmits<{
@@ -233,7 +235,10 @@ const isToolStep = computed(
 /** 中间工具步骤不提供复制，即使该记录包含模型的过程说明文字。 */
 const showReplyCopy = computed(
   () =>
-    !props.message.isStreaming && hasCopyableText.value && !isToolStep.value,
+    !props.process &&
+    !props.message.isStreaming &&
+    hasCopyableText.value &&
+    !isToolStep.value,
 );
 const showStepFork = computed(
   () => Boolean(props.forkEnabled) && isToolStep.value,
@@ -242,6 +247,7 @@ const showStepFork = computed(
 const showReplyFork = computed(
   () =>
     !props.message.isStreaming &&
+    !props.process &&
     Boolean(props.forkEnabled) &&
     Boolean(props.message.forkCut) &&
     !isToolStep.value,

@@ -85,6 +85,8 @@ it("tool call card: generating → running with live output → done", async () 
   // done:exit 徽标、流后追加的第二个文本段(text_delta 落在卡片之后,
   // 是独立的 text part,不与 "Let me run " 合并;markdown 渲染会吃掉
   // 段首空格)、光标消失(▋ 为 vue-stream-markdown 的 block caret)
+  await expect.poll(chatText).toContain("done");
+  await page.getByTestId("chat-work-toggle").click();
   await expect.poll(chatText).toContain("exit 0");
   await expect.poll(chatText).toMatch(TEXT_AFTER_TOOL_OUTPUT);
   await expect.element(page.getByText("▋")).not.toBeInTheDocument();

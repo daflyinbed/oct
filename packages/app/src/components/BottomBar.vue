@@ -266,7 +266,7 @@
               v-for="task in backgroundTasks"
               :key="task.id"
               class="flex cursor-pointer items-center gap-2 rounded-[5px] px-2 py-1 text-base outline-none data-[highlighted]:bg-neutral-1"
-              @select="locateBackgroundTask(task)"
+              @select="locateBackgroundTask(task.id)"
             >
               <span
                 class="h-1.5 w-1.5 flex-none rounded-full"
@@ -353,8 +353,8 @@ import { computed, watch, watchEffect } from "vue";
 import {
   backgroundStatusDot,
   cancelBackgroundTask,
-  highlightBackgroundTask,
   isBackgroundTaskTerminal,
+  locateBackgroundTask,
   refreshBackgroundTasks,
   useBackgroundTasks,
 } from "@/composables/useBackgroundTasks";
@@ -494,14 +494,6 @@ function handleBackgroundMenuOpen(open: boolean) {
   if (open && props.rootConversationId) {
     void refreshBackgroundTasks(props.rootConversationId);
   }
-}
-
-/** 定位：store 高亮（BashTaskCard 切 accent 边框）+ 平滑滚动到卡片。 */
-function locateBackgroundTask(task: BackgroundTask) {
-  highlightBackgroundTask(task.id);
-  document
-    .querySelector(`[data-bg-task-id="${CSS.escape(task.id)}"]`)
-    ?.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 function stopBackgroundTask(task: BackgroundTask) {

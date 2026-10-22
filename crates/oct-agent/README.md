@@ -31,6 +31,8 @@ oct 的后端服务 crate：Axum REST/SSE API + agent loop 运行时。既是 li
 
 SQLite，位置解析两级：`DATABASE_URL` 显式设置优先 → 默认 `$XDG_DATA_HOME/oct/oct.db`（目录 0700、库文件 0600）。迁移在仓库根 `migrations/`，启动时自动执行；查询全部走 `sqlx::query!` 宏（`.sqlx/` 离线缓存已提交）。改 SQL 后对 scratch 库跑迁移再 `cargo sqlx prepare --workspace`。
 
+消息接口的 `MessageDto` 直接提供 UTC 时间戳：用户消息（含后台通知）的 `started_at` 来自消息创建时间，助手回复的 `finished_at` 来自回复落库时间；压缩标记和工具结果不提供计时字段。前端按用户轮次取开始时间与最终回复的结束时间计算耗时，运行中本地走表，取消与失败只显示状态。恢复后的回复沿用原用户轮次，等待恢复和停机时间仍计入；fork/回滚共享的消息保留原时间。无需额外查询或聚合运行记录。
+
 ## 测试
 
 `tests/` 全部集成测试，共享 `tests/support/`（`TestApp` 真实 axum 服务器 + OpenAI 兼容 LLM mock + FakeMcpConnection），CI 铁律：绝不调用真实模型。架构细节与各测试文件说明见本目录 `AGENTS.md`。

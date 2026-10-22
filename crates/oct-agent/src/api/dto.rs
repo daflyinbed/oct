@@ -306,6 +306,13 @@ pub struct MessageDto {
     /// Shared history has no runtime ownership in the fork.
     pub inherited: Option<bool>,
     pub created_at: chrono::NaiveDateTime,
+    /// UTC creation time of the user/notification that starts a visual turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// UTC persistence time of this assistant response. The frontend uses
+    /// the final response as the turn's end and calculates the duration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl MessageDto {
@@ -337,6 +344,11 @@ impl MessageDto {
             fork_cut: crate::db::history::message_cut(row),
             inherited: None,
             created_at: row.created_at,
+            started_at: (row.role == "user"
+                && crate::context::details_kind(row.details_json.as_deref()).as_deref()
+                    != Some("compaction"))
+            .then(|| row.created_at.and_utc()),
+            finished_at: (row.role == "assistant").then(|| row.created_at.and_utc()),
         }
     }
 
@@ -368,6 +380,11 @@ impl MessageDto {
             fork_cut: None,
             inherited: None,
             created_at: row.created_at,
+            started_at: (row.role == "user"
+                && crate::context::details_kind(row.details_json.as_deref()).as_deref()
+                    != Some("compaction"))
+            .then(|| row.created_at.and_utc()),
+            finished_at: (row.role == "assistant").then(|| row.created_at.and_utc()),
         }
     }
 }
@@ -428,6 +445,8 @@ mod tests {
             ),
         );
         let dto = MessageDto::from_stored(&row);
+        assert!(dto.started_at.is_none(), "compaction is not a user turn");
+        assert!(dto.finished_at.is_none());
         let details = dto.details.expect("details");
         assert_eq!(details.kind, Some(KnownDetailsKind::Compaction));
         let compaction = details.compaction.expect("compaction metadata");
@@ -447,6 +466,28 @@ mod tests {
         let details = dto.details.expect("details");
         assert_eq!(details.reasoning_duration_ms, Some(1500));
         assert!(details.kind.is_none());
+    }
+
+    #[test]
+    fn exposes_message_timestamps_without_run_metadata() {
+        for (role, details) in [
+            ("user", None),
+            ("user", Some(r#"{"kind":"background_task_notification"}"#)),
+            ("assistant", None),
+            ("tool", None),
+        ] {
+            let row = stored_row(role, r#"[{"Text":"message"}]"#, details);
+            let dto = MessageDto::from_stored(&row);
+            let expected = row.created_at.and_utc();
+            assert_eq!(dto.started_at, (role == "user").then_some(expected));
+            assert_eq!(dto.finished_at, (role == "assistant").then_some(expected));
+            let json = serde_json::to_value(dto).unwrap();
+            if role == "user" {
+                assert!(json["started_at"].as_str().unwrap().ends_with('Z'));
+            } else if role == "assistant" {
+                assert!(json["finished_at"].as_str().unwrap().ends_with('Z'));
+            }
+        }
     }
 
     #[test]

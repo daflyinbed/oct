@@ -77,7 +77,9 @@ it("thinking card streams in its collapsed row and follows the latest text", asy
 
   await openGate("mid");
 
-  // 流式结束后保留用户的展开选择，并显示耗时。
+  // 流式结束后过程整体收起；重新展开，内层仍保留用户的选择并显示耗时。
+  await expect.poll(chatText).toContain("我来帮你看看。");
+  await page.getByTestId("chat-work-toggle").click();
   await expect.poll(chatText).toContain("思考");
   await expect.poll(chatText).toContain("持续了几秒");
   await expect.element(header).toHaveAttribute("aria-expanded", "true");
@@ -109,9 +111,10 @@ it("tool loop with reasoning shows one collapsible thinking block per round", as
 
   await sendChatMessage("列出文件");
 
-  // 两轮各一块,结束后都折叠为摘要。
-  await expect.poll(chatText).toContain("持续了几秒");
+  // 两轮各一块；展开工作过程后，内层仍各自折叠为摘要。
   await expect.poll(chatText).toContain("目录里有 a.txt 和 b.txt。");
+  await page.getByTestId("chat-work-toggle").click();
+  await expect.poll(chatText).toContain("持续了几秒");
   const headers = page.getByRole("button", { name: THINKING_CARD_HEADER });
   await expect.poll(async () => (await headers.elements()).length).toBe(2);
   for (const el of await headers.elements()) {

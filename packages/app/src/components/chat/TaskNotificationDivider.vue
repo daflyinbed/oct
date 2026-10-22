@@ -42,12 +42,12 @@
             :title="task.command"
             >{{ task.command }}</span
           >
-          <!-- 定位信封卡片：高亮 + 滚动（简单实现：DOM 查询 + scrollIntoView） -->
+          <!-- 定位信封卡片：展开所属工作过程后滚动并高亮。 -->
           <button
             type="button"
             class="h-[22px] inline-flex flex-none items-center gap-1 border border-line-soft rounded-[6px] px-1.5 text-xs text-dim control-focus transition-colors hover:bg-neutral-1 hover:text-neutral-10"
             title="定位到任务卡片"
-            @click="locate(task)"
+            @click="locateBackgroundTask(task.taskId)"
           >
             <i-lucide-crosshair class="h-3 w-3" />
             查看任务
@@ -72,8 +72,8 @@ import {
   backgroundStatusClass,
   backgroundStatusDot,
   backgroundStatusLabel,
-  highlightBackgroundTask,
   isBackgroundTaskStatus,
+  locateBackgroundTask,
 } from "@/composables/useBackgroundTasks";
 import type {
   TaskNotificationPart,
@@ -164,14 +164,5 @@ function labelClassOf(task: TaskNotificationTask): string {
   return isBackgroundTaskStatus(task.status)
     ? backgroundStatusClass(task.status)
     : "text-faint";
-}
-
-/** 定位：store 高亮（BashTaskCard 切 accent 边框）+ 平滑滚动到卡片。 */
-function locate(task: TaskNotificationTask): void {
-  highlightBackgroundTask(task.taskId);
-  const el = document.querySelector(
-    `[data-bg-task-id="${CSS.escape(task.taskId)}"]`,
-  );
-  el?.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 </script>

@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { storedToDisplayList } from "./display";
-import type { ApiMessage } from "./display";
+import {
+  newToolCard,
+  storedToDisplayList,
+  unpersistedStreamTail,
+} from "./display";
+import type { ApiMessage, DisplayMessage, DisplayPart } from "./display";
 
 function userRow(overrides: Partial<ApiMessage>): ApiMessage {
   return {
@@ -16,6 +20,50 @@ function userRow(overrides: Partial<ApiMessage>): ApiMessage {
     ...overrides,
   } as ApiMessage;
 }
+
+describe("unpersisted partial output", () => {
+  const tool = newToolCard("call", "read");
+  const reasoning: DisplayPart = {
+    kind: "reasoning",
+    text: "部分思考",
+    startedAt: null,
+    durationMs: 100,
+    ended: true,
+  };
+  const text: DisplayPart = { kind: "text", text: "部分正文" };
+
+  it("retains the unfinished round after persisted tools", () => {
+    const history: DisplayMessage[] = [
+      { id: "step", role: "assistant", parts: [tool] },
+    ];
+    expect(unpersistedStreamTail([tool, reasoning, text], history)).toEqual([
+      reasoning,
+      text,
+    ]);
+    expect(unpersistedStreamTail([tool], history)).toEqual([]);
+  });
+
+  it("does not repeat saved text or compare against a previous user turn", () => {
+    const saved: DisplayMessage = {
+      id: "saved",
+      role: "assistant",
+      parts: [tool, reasoning, text],
+    };
+    expect(unpersistedStreamTail([tool, reasoning, text], [saved])).toEqual([]);
+    expect(
+      unpersistedStreamTail(
+        [tool, reasoning, text],
+        [{ ...saved, parts: [tool, reasoning] }],
+      ),
+    ).toEqual([text]);
+    expect(
+      unpersistedStreamTail(
+        [reasoning, text],
+        [saved, { id: "new", role: "user", parts: [] }],
+      ),
+    ).toEqual([reasoning, text]);
+  });
+});
 
 describe("storedToDisplayList user image attachments", () => {
   it("renders the explicit human body and assets without model-facing snapshot text", () => {

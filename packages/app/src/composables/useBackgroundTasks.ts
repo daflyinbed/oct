@@ -1,4 +1,4 @@
-import { computed, readonly, ref, toValue } from "vue";
+import { computed, nextTick, readonly, ref, toValue } from "vue";
 import client from "@/api/client";
 import type { components } from "@/api/schema";
 import type { MaybeRefOrGetter } from "vue";
@@ -290,6 +290,23 @@ export function highlightBackgroundTask(taskId: string): void {
 
 export function isBackgroundTaskHighlighted(taskId: string): boolean {
   return highlightedTaskId.value === taskId;
+}
+
+/**
+ * 定位：通知与底栏共用，先展开所属工作过程，再平滑滚动到卡片；
+ * store 高亮让 BashTaskCard 切换 accent 边框。
+ */
+export async function locateBackgroundTask(taskId: string): Promise<void> {
+  const element = document.querySelector(
+    `[data-bg-task-id="${CSS.escape(taskId)}"]`,
+  );
+  if (!element) return;
+  // 卡片在折叠时仍保留 DOM，冒泡到所属工作段即可请求展开。
+  element.dispatchEvent(new Event("reveal-chat-work", { bubbles: true }));
+  await nextTick();
+  if (!element.isConnected) return;
+  highlightBackgroundTask(taskId);
+  element.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 // ---------------------------------------------------------------------------

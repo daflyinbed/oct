@@ -501,6 +501,150 @@ describe("sendMessage 实时流", () => {
     return fetchMock;
   }
 
+  it.each([
+    [finishEvent, "completed"],
+    [cancelledEvent, "interrupted"],
+    [errorEvent("连接中断"), "failed"],
+  ])("保留主轮终态，仅正常完成记录结束时间：%j", async (event, state) => {
+    stubFetch(sse([textDelta("部分文字"), event]));
+    const before = Date.now();
+    await sendMessage(nextConvId(), "hi");
+    const message = messages.value.at(-1)!;
+    expect(message.work?.state).toBe(state);
+    expect(message.startedAt).toBeGreaterThanOrEqual(before);
+    if (state === "completed") {
+      expect(message.finishedAt).toBeGreaterThanOrEqual(message.startedAt!);
+      expect(message.finishedAt).toBeLessThanOrEqual(Date.now());
+    } else expect(message.finishedAt).toBeUndefined();
+  });
+
+  it("发送前补投后台通知后，终态刷新仍保留当前轮的部分回复与取消状态", async () => {
+    const conv = nextConvId();
+    const previous = [
+      storedMessage("user", [{ type: "text", text: "启动后台任务" }]),
+      storedMessage("assistant", [{ type: "text", text: "任务已启动" }]),
+    ];
+    GET.mockResolvedValueOnce({ data: previous } as never);
+    await fetchMessages(conv);
+
+    let clientRequestId: string;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (_path, init) => {
+        clientRequestId = JSON.parse(init!.body as string).client_request_id;
+        return sse([
+          toolCallStart("call", "read_file", "a.txt", '{"path":"a.txt"}'),
+          toolResult("call", "ok"),
+          reasoningDelta("正在整理结果"),
+          textDelta("尚未完成的回复"),
+          cancelledEvent,
+        ]);
+      }),
+    );
+    GET.mockImplementation(async (path) => {
+      if (path === "/api/conversations/{id}/run")
+        return { data: { running: false, resumable: true } } as never;
+      return {
+        data: [
+          ...previous,
+          storedMessage("user", [{ type: "text", text: "后台任务已完成" }], {
+            details: {
+              extra: { kind: "background_task_notification", tasks: [] },
+            },
+          }),
+          storedMessage("user", [{ type: "text", text: "检查" }], {
+            id: "current-user",
+            details: { extra: { client_request_id: clientRequestId } },
+          }),
+          storedMessage("assistant", [
+            {
+              type: "tool_call",
+              id: "call",
+              name: "read_file",
+              arguments: "{}",
+            },
+          ]),
+          storedMessage("tool", [
+            {
+              type: "tool_result",
+              call_id: "call",
+              content: "ok",
+              is_error: false,
+            },
+          ]),
+        ],
+        response: new Response(null, {
+          headers: { "X-Context-Revision": "7" },
+        }),
+      } as never;
+    });
+
+    await sendMessage(conv, "检查");
+
+    expect(
+      messages.value.filter((message) => message.role === "notification"),
+    ).toHaveLength(1);
+    expect(
+      messages.value.findLast((message) => message.role === "user")?.id,
+    ).toBe("current-user");
+    expect(messages.value.at(-1)?.work?.state).toBe("interrupted");
+    expect(messages.value.at(-1)?.parts).toEqual([
+      expect.objectContaining({ kind: "reasoning", text: "正在整理结果" }),
+      { kind: "text", text: "尚未完成的回复" },
+    ]);
+    expect(toolCards()).toHaveLength(1);
+  });
+
+  it.each([
+    ["user", finishEvent],
+    ["notification", finishEvent],
+    ["user", cancelledEvent],
+    ["notification", cancelledEvent],
+  ])(
+    "终态刷新包含下一轮 %s 时，不把旧轮 %j 状态或部分回复贴到新回复",
+    async (nextRole, event) => {
+      let clientRequestId: string;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn<typeof fetch>(async (_path, init) => {
+          clientRequestId = JSON.parse(init!.body as string).client_request_id;
+          return sse([textDelta("旧轮部分回复"), event]);
+        }),
+      );
+      GET.mockImplementation(async (path) => {
+        if (path === "/api/conversations/{id}/run")
+          return { data: { running: false, resumable: false } } as never;
+        return {
+          data: [
+            storedMessage("user", [{ type: "text", text: "hi" }], {
+              details: { extra: { client_request_id: clientRequestId } },
+            }),
+            storedMessage("user", [{ type: "text", text: "hi" }], {
+              details: {
+                extra:
+                  nextRole === "notification"
+                    ? { kind: "background_task_notification", tasks: [] }
+                    : { client_request_id: "next-request" },
+              },
+            }),
+            storedMessage("assistant", [{ type: "text", text: "新轮回复" }]),
+          ],
+          response: new Response(null, {
+            headers: { "X-Context-Revision": "4" },
+          }),
+        } as never;
+      });
+      await sendMessage(nextConvId(), "hi");
+      expect(messages.value.at(-1)?.parts).toEqual([
+        { kind: "text", text: "新轮回复" },
+      ]);
+      expect(messages.value.at(-1)?.work).toBeUndefined();
+      expect(
+        messages.value.flatMap((message) => message.parts),
+      ).not.toContainEqual({ kind: "text", text: "旧轮部分回复" });
+    },
+  );
+
   it("文本 delta 累积为一个文本 part，finish 后结束流式态", async () => {
     stubFetch(
       sse([
@@ -977,6 +1121,7 @@ describe("attachRun 重连重放", () => {
 
   it("主路径：run_meta 锚点截断 → 事件重放重建 → 终态守卫刷新", async () => {
     const conv = nextConvId();
+    const startedAt = Date.now() - 65_000;
     // 刷新后从 DB 拉到的历史：run 的 user 消息（u2）之后已有轮次边界
     // 落库的第一轮 assistant（a2）——属于 run 之内，重放前必须丢弃。
     stubGetQueue(
@@ -984,7 +1129,10 @@ describe("attachRun 重连重放", () => {
         data: [
           storedMessage("user", '[{"Text":"第一问"}]', { id: "u1" }),
           storedMessage("assistant", '[{"Text":"旧答"}]', { id: "a1" }),
-          storedMessage("user", '[{"Text":"run 的问题"}]', { id: "u2" }),
+          storedMessage("user", '[{"Text":"run 的问题"}]', {
+            id: "u2",
+            started_at: new Date(startedAt).toISOString(),
+          }),
           storedMessage(
             "assistant",
             '[{"ToolCall":{"id":"c1","name":"read_file","arguments":"{}"}}]',
@@ -1011,6 +1159,7 @@ describe("attachRun 重连重放", () => {
       "u2",
       expect.stringMatching(RE_reattachedId),
     ]);
+    expect(messages.value.at(-1)?.startedAt).toBe(startedAt);
 
     // 重放 delta 经现有 reducer 重建（与 live 流同一套逻辑），直至 finish
     sse.send(
@@ -1023,6 +1172,8 @@ describe("attachRun 重连重放", () => {
     await attachPromise;
 
     const rebuilt = messages.value[3]!;
+    expect(rebuilt.startedAt).toBe(startedAt);
+    expect(rebuilt.finishedAt).toBeGreaterThanOrEqual(startedAt + 65_000);
     expect(rebuilt.parts).toEqual([
       {
         kind: "reasoning",

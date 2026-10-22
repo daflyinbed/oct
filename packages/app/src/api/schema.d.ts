@@ -1905,6 +1905,12 @@ export interface components {
             /** Format: date-time */
             created_at: string;
             details?: components["schemas"]["MessageDetails"] | null;
+            /**
+             * Format: date-time
+             * @description UTC persistence time of this assistant response. The frontend uses
+             *     the final response as the turn's end and calculates the duration.
+             */
+            finished_at?: string | null;
             fork_cut?: components["schemas"]["ForkCut"] | null;
             id: string;
             /** @description Shared history has no runtime ownership in the fork. */
@@ -1925,6 +1931,11 @@ export interface components {
             /** Format: int64 */
             reasoning_tokens?: number | null;
             role: string;
+            /**
+             * Format: date-time
+             * @description UTC creation time of the user/notification that starts a visual turn.
+             */
+            started_at?: string | null;
             /**
              * @description Copy-on-write back-pointer: names the original content row this
              *     cleared copy superseded (exactly one hop).

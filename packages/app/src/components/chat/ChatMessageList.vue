@@ -9,15 +9,29 @@
       @scroll="onScroll"
       @scrollend="onScrollEnd"
     >
-      <div class="mx-auto max-w-[760px] pb-3 pl-12 pr-7 pt-[18px]">
+      <div
+        ref="messageContent"
+        class="mx-auto max-w-[760px] pb-3 pl-12 pr-7 pt-[18px]"
+      >
+        <!-- 普通消息与工作段保持 18px 回合间距；段内工具批次的延续维持 8px。 -->
         <div
-          v-for="(msg, index) in messages"
-          :key="msg.id"
-          :class="messageSpacingClass(index)"
-          :data-message-id="msg.id"
+          v-for="(unit, index) in renderUnits"
+          :key="unit.key"
+          :class="index > 0 ? 'mt-[18px]' : undefined"
+          :data-message-id="
+            unit.kind === 'message' ? unit.message.id : undefined
+          "
         >
+          <ChatWorkGroup
+            v-if="unit.kind === 'work'"
+            :work="unit"
+            :conversation-id="conversationId"
+            :fork-enabled="forkEnabled"
+            @fork="(cut) => $emit('fork', cut)"
+          />
           <ChatMessage
-            :message="msg"
+            v-else
+            :message="unit.message"
             :conversation-id="conversationId"
             :fork-enabled="forkEnabled"
             :revert-enabled="revertEnabled"
@@ -43,9 +57,12 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, onMounted, ref, watch } from "vue";
+import { useResizeObserver } from "@vueuse/core";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import ChatMessage from "./ChatMessage.vue";
 import ChatTurnNavigator from "./ChatTurnNavigator.vue";
+import ChatWorkGroup from "./ChatWorkGroup.vue";
+import { buildChatRenderUnits } from "./chatWork";
 import type { DisplayMessage } from "@/composables/useChat";
 
 const props = withDefaults(
@@ -57,6 +74,7 @@ const props = withDefaults(
     emptyHint?: string;
     forkEnabled?: boolean;
     revertEnabled?: boolean;
+    interrupted?: boolean;
   }>(),
   {
     emptyTitle: "Start a conversation",
@@ -70,6 +88,12 @@ defineEmits<{
 }>();
 
 const scrollContainer = ref<HTMLElement | null>(null);
+const messageContent = ref<HTMLElement | null>(null);
+const renderUnits = computed(() =>
+  buildChatRenderUnits(props.messages, {
+    interrupted: props.interrupted,
+  }),
+);
 const followingLatest = ref(true);
 const activeTurnId = ref<string | null>(null);
 let scrollingToMessage = false;
@@ -183,7 +207,13 @@ watch(
 watch(
   // 终态历史会以持久化 id 替换 pending/stream id，消息数可能完全不变；
   // 用 id 序列同时覆盖增删与同长度替换，避免 activeTurnId 悬空。
-  () => props.messages.map((message) => message.id).join("\n"),
+  () =>
+    props.messages
+      .map(
+        (message) =>
+          `${message.id}:${message.isStreaming}:${message.work?.state}`,
+      )
+      .join("\n"),
   async () => {
     await scrollToBottom();
     updateActiveTurn();
@@ -191,21 +221,8 @@ watch(
 );
 
 onMounted(updateActiveTurn);
-
-/**
- * 普通消息维持 18px 的回合间距；工具批次切点后的 assistant 记录属于
- * 同一回合的延续，使用与消息内部 part 一致的 8px 间距。
- */
-function messageSpacingClass(index: number): string | undefined {
-  if (index === 0) return undefined;
-  const previous = props.messages[index - 1];
-  const followsToolStep =
-    Boolean(props.forkEnabled) &&
-    !previous?.isStreaming &&
-    previous?.forkCut?.kind === "message" &&
-    previous.forkCut.message_id !== previous.id;
-  return followsToolStep ? "mt-2" : "mt-[18px]";
-}
+// 展开/收起工作过程会改变轮次位置，导航高亮随布局重新计算。
+useResizeObserver(messageContent, updateActiveTurn);
 
 // 消息内容增长（文本/思考/工具参数/实时输出）时跟随滚动到底部；回看历史时暂停跟随。
 watch(

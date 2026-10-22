@@ -366,7 +366,9 @@ pub async fn apply_cow_swaps(
     conversation_id: &str,
     swaps: &[CowSwap],
 ) -> Result<Vec<AppliedCowSwap>> {
-    let mut tx = pool.begin().await?;
+    // Reserve the writer before reading the slots: concurrent writes must
+    // not invalidate this read-then-write WAL snapshot.
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
 
     // Resolve call_id → current tool slot. ASC ordering makes later inserts
     // overwrite earlier ones in the map, i.e. the newest occurrence wins.

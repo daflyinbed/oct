@@ -34,6 +34,7 @@
     <!-- 消息展示链路与子代理 panel 共用（ChatMessageList） -->
     <ChatMessageList
       :messages="messages"
+      :interrupted="resumable"
       :conversation-id="conversationId"
       :fork-enabled="forkEnabled"
       :revert-enabled="revertEnabled"

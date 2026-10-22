@@ -2016,6 +2016,11 @@ async fn chat_conflict_cancel_then_session_frees() {
     // Start a run: response headers arrive (status 200), stream stays open.
     let first = app.send_message(&conv_id, "slow one").await;
     assert_eq!(first.status(), 200);
+    let mut first = sse_payloads(first);
+    // Wait until the first scripted model turn has actually been consumed;
+    // cancellation during preparation would leave its Hang for the next run.
+    let pre = next_event(&mut first).await.expect("first run delta");
+    assert_eq!(pre["type"], "text_delta");
 
     // A second run for the same conversation is rejected while one is live;
     // the stable code distinguishes it from "nothing to resume".
@@ -2029,7 +2034,10 @@ async fn chat_conflict_cancel_then_session_frees() {
     // returns).
     let cancel = app.cancel(&conv_id).await;
     assert_eq!(cancel.status(), 200);
-    let events = app.read_sse(first).await;
+    let mut events = vec![pre];
+    while let Some(event) = next_event(&mut first).await {
+        events.push(event);
+    }
     assert_eq!(*event_types(&events).last().unwrap(), "cancelled");
 
     // The session is free again: a new run is accepted and completes.
@@ -3112,7 +3120,10 @@ async fn auto_compaction_end_to_end_via_tiny_model_window() {
     assert!(compacting < compacted && compacted < text);
     assert_eq!(types.last().unwrap(), &"finish");
 
-    let compacted_ev = &events[compacted];
+    let compacted_ev = events
+        .iter()
+        .find(|event| event["type"] == "compacted")
+        .unwrap();
     assert_eq!(compacted_ev["data"]["triggered_by"], "auto");
     assert_eq!(compacted_ev["data"]["summary"], "AUTO-SUMMARY");
     assert_eq!(compacted_ev["data"]["context_window_tokens"], 500);
@@ -3410,7 +3421,7 @@ async fn idle_microcompact_triggers_via_api_after_backdated_activity() {
     let micro = events
         .iter()
         .find(|e| e["type"] == "microcompacted")
-        .expect("idle microcompact fired via the API path");
+        .unwrap_or_else(|| panic!("idle microcompact fired via the API path; events: {events:?}"));
     assert_eq!(micro["data"]["triggered_by"], "idle");
 
     // Fresh conversation, recent activity: no microcompact at all.

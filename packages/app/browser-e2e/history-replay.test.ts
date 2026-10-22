@@ -15,6 +15,14 @@ import {
 import { bootConversation, chatText, sendChatMessage } from "./support/harness";
 import { setScenario } from "./support/mock";
 
+// 历史 API 未提供主轮工时，重进时仅比较正文/卡片，不比较实时计时标签。
+async function replayContent(): Promise<string> {
+  return (await chatText())
+    .split("\n")
+    .filter((line) => !line.startsWith("已工作"))
+    .join("\n");
+}
+
 // 历史重放一致性:live 流渲染完的会话,重进后由 parts_json(StoredMessage
 // fixture,与剧本事件一一对应)重建,渲染文本必须与 live 结束态完全一致。
 // 这条 pin 住 applyStreamEvent(live)与 storedToDisplayList(重放)两条
@@ -53,7 +61,7 @@ it("history replay renders identically to the finished live stream", async () =>
   await expect.poll(chatText).toContain("读取文件");
   await expect.poll(chatText).toContain("a.txt");
   await expect.poll(chatText).not.toContain("▋");
-  const liveText = await chatText();
+  const liveText = await replayContent();
 
   // 会话持久化后的形状(mock 直接给出与剧本对应的 StoredMessage)
   await setScenario({
@@ -108,7 +116,7 @@ it("history replay renders identically to the finished live stream", async () =>
   await mounted.router.push("/conversation/c1");
   await nextTick();
 
-  await expect.poll(chatText).toBe(liveText);
+  await expect.poll(replayContent).toBe(liveText);
 
   mounted.unmount();
 });

@@ -207,6 +207,7 @@ it("回复后分支保留回复，继承的后台任务不带停止或查看输�
     .poll(() => mounted?.router.currentRoute.value.path)
     .toBe("/conversation/branch");
   await expect.poll(chatText).toContain("原回复");
+  await page.getByTestId("chat-work-toggle").click();
   await expect.poll(chatText).toContain("来源会话历史任务");
   await expect
     .element(page.getByTitle("停止此后台任务"))
