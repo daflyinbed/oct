@@ -17,7 +17,8 @@
 //! 2. [`RunService::start_root_run`] creates the `agent_runs` row, subscribes
 //!    to the run's event hub, assembles the agent context, and spawns the
 //!    supervisor. The guard moves into the supervisor, so occupancy lasts
-//!    the whole run.
+//!    the whole run. Assembly errors settle the registered row as failed
+//!    before releasing occupancy.
 //! 3. The supervisor awaits the loop (in its own task, so a panic becomes a
 //!    Failed outcome instead of skipping cleanup), persists the terminal
 //!    state — an async write done here, never in `Drop` — and releases the
@@ -458,7 +459,8 @@ impl RunService {
     /// Create the run's persistence row, subscribe to its event hub,
     /// assemble the agent context, and hand the whole run to the supervisor.
     /// The SSE response stream is live from the very first event. On any
-    /// failure the consumed guard simply drops, releasing the conversation.
+    /// assembly failure the row is settled as failed before the consumed
+    /// guard drops, releasing the conversation.
     pub async fn start_root_run(&self, req: RootRunRequest) -> AppResult<StartedRun> {
         // Read the session entry the guard guarantees and subscribe to its
         // hub BEFORE spawning so the response stream is live from the very
@@ -541,184 +543,230 @@ impl RunService {
             .map(|entry| entry.value().clone())
             .expect("the occupancy guard guarantees the session entry");
 
-        let (roots, additional) = workspace_roots(&project);
-        // Uploaded chat attachments are readable by the model (text files
-        // beyond the inline budget point here explicitly).
-        let mut roots = self
-            .runtime_roots(roots, &conversation_id, &conversation_id)
-            .await?;
-        // Frozen prompt environment (repo instruction block + MCP tool
-        // identities), keyed by the root conversation: the first assembly
-        // reads the files and snapshots the live MCP set; clean hits reuse
-        // the entry byte-for-byte so the system prompt — and the provider
-        // prefix cache with it — stays stable across runs. Dispatch maps the
-        // frozen identities onto the LIVE instances: a renamed server keeps
-        // its frozen exposed name, a missing one is skipped (and dirties the
-        // the entry, a missing one is skipped (and dirties the
-        // entry for the next run), and servers enabled after the freeze wait
-        // for the next refresh point.
-        let prompt_env = self.resolve_prompt_env(&conversation_id, &project).await;
-        // An anchor from a different prompt generation was measured under a
-        // different system prompt — drop it for this run: the anchored
-        // estimate excludes the prompt, so an enlarged instruction block
-        // would otherwise be invisible to the compaction watermarks.
-        // Equality (not a timestamp) closes the in-flight window: a request
-        // completing after a `/reload` still carries the OLD generation.
-        let mut view = view;
-        if let Some(anchor) = &view.anchor
-            && !prompt_env.accepts_anchor(anchor.prompt_generation)
-        {
-            view.anchor = None;
-        }
-        log_prompt_env(&conversation_id, &prompt_env);
-        let live_mcp: Vec<Arc<dyn tools::AgentTool>> = self
-            .mcp
-            .tools_for_run(Some(&project.id))
-            .into_iter()
-            .map(Arc::from)
-            .collect();
-        let (mcp_tools, missing_frozen) =
-            worker_config::restore_tools_lenient(&live_mcp, &prompt_env.mcp_tools);
-        if missing_frozen > 0 {
-            self.mark_prompt_env_dirty(&conversation_id);
-        }
-        let use_code = crate::codemode::mode(&self.pool, Some(&project.id))
-            .await
-            .unwrap_or_default()
-            == crate::codemode::McpToolMode::Code;
-        let worker_roots = roots.clone();
-        if use_code {
-            roots = roots
-                .with_read_only_root(self.codemode_root().join(&conversation_id).join(&run.id));
-        }
-        let locks = self.file_locks_for(&project.id);
-        let reads = Arc::new(AgentReadState::new());
-
-        // Default workspace tools plus every connected MCP server's tools that
-        // are in scope for THIS project (global + project-scoped; the LLM sees
-        // one flat toolset; MCP names are the mcp__{server}__{tool} forms
-        // deduplicated across servers). The file tools share the project's
-        // lock set so subagents serialize with this run on the same paths.
-        let mut run_tools: Vec<Arc<dyn tools::AgentTool>> =
-            tools::default_tools_with(roots.clone(), locks.clone(), reads)
+        // Keep every fallible assembly step behind one settlement boundary.
+        // The guard stays outside: a startup error must reach disk before
+        // occupancy is released, just like a supervised loop outcome.
+        let assembled = async {
+            let (roots, additional) = workspace_roots(&project);
+            // Uploaded chat attachments are readable by the model (text files
+            // beyond the inline budget point here explicitly).
+            let mut roots = self
+                .runtime_roots(roots, &conversation_id, &conversation_id)
+                .await?;
+            // Frozen prompt environment (repo instruction block + MCP tool
+            // identities), keyed by the root conversation: the first assembly
+            // reads the files and snapshots the live MCP set; clean hits reuse
+            // the entry byte-for-byte so the system prompt — and the provider
+            // prefix cache with it — stays stable across runs. Dispatch maps the
+            // frozen identities onto the LIVE instances: a renamed server keeps
+            // its frozen exposed name, a missing one is skipped (and dirties the
+            // the entry, a missing one is skipped (and dirties the
+            // entry for the next run), and servers enabled after the freeze wait
+            // for the next refresh point.
+            let prompt_env = self.resolve_prompt_env(&conversation_id, &project).await;
+            // An anchor from a different prompt generation was measured under a
+            // different system prompt — drop it for this run: the anchored
+            // estimate excludes the prompt, so an enlarged instruction block
+            // would otherwise be invisible to the compaction watermarks.
+            // Equality (not a timestamp) closes the in-flight window: a request
+            // completing after a `/reload` still carries the OLD generation.
+            let mut view = view;
+            if let Some(anchor) = &view.anchor
+                && !prompt_env.accepts_anchor(anchor.prompt_generation)
+            {
+                view.anchor = None;
+            }
+            log_prompt_env(&conversation_id, &prompt_env);
+            let live_mcp: Vec<Arc<dyn tools::AgentTool>> = self
+                .mcp
+                .tools_for_run(Some(&project.id))
                 .into_iter()
                 .map(Arc::from)
                 .collect();
-        run_tools.extend(mcp_tools);
-
-        // Background execution surface: the default set's plain
-        // execute tool is swapped in place for a background-enabled instance
-        // carrying this run's identity, and the two companion tools join the
-        // set. The swap is positional (schema order is otherwise unchanged).
-        for tool in run_tools.iter_mut() {
-            if tool.name() == "execute_command" {
-                *tool = Arc::new(tools::execute::ExecuteCommandTool::with_background(
-                    roots.clone(),
-                    tools::execute::ExecuteBackground {
-                        manager: self.background.clone(),
-                        conversation_id: conversation_id.clone(),
-                        parent_run_id: run.id.clone(),
-                    },
-                ));
+            let (mcp_tools, missing_frozen) =
+                worker_config::restore_tools_lenient(&live_mcp, &prompt_env.mcp_tools);
+            if missing_frozen > 0 {
+                self.mark_prompt_env_dirty(&conversation_id);
             }
-        }
-        run_tools.push(Arc::new(tools::task_stop::TaskStopTool::new(
-            self.background.clone(),
-            conversation_id.clone(),
-        )) as Arc<dyn tools::AgentTool>);
+            let use_code = crate::codemode::mode(&self.pool, Some(&project.id))
+                .await
+                .unwrap_or_default()
+                == crate::codemode::McpToolMode::Code;
+            let worker_roots = roots.clone();
+            if use_code {
+                roots = roots
+                    .with_read_only_root(self.codemode_root().join(&conversation_id).join(&run.id));
+            }
+            let locks = self.file_locks_for(&project.id);
+            let reads = Arc::new(AgentReadState::new());
 
-        // Bind the actual per-run native instances as well as MCP tools:
-        // read/edit share this agent's state, and root bash keeps its background identity.
-        let mut code_warning = None;
-        let prepared = if use_code {
-            match crate::codemode::Prepared::new(
-                self.codemode_root(),
-                &conversation_id,
-                &run.id,
-                &run_tools,
-            )
-            .await
-            {
-                Ok(prepared) => Some(prepared),
-                Err(error) => {
-                    tracing::warn!("Code mode preparation failed; using direct tools: {error:#}");
-                    code_warning = Some(format!(
-                        "Code mode was unavailable for this run: {error:#}. Tools are exposed directly.\n"
+            // Default workspace tools plus every connected MCP server's tools that
+            // are in scope for THIS project (global + project-scoped; the LLM sees
+            // one flat toolset; MCP names are the mcp__{server}__{tool} forms
+            // deduplicated across servers). The file tools share the project's
+            // lock set so subagents serialize with this run on the same paths.
+            let mut run_tools: Vec<Arc<dyn tools::AgentTool>> =
+                tools::default_tools_with(roots.clone(), locks.clone(), reads)
+                    .into_iter()
+                    .map(Arc::from)
+                    .collect();
+            run_tools.extend(mcp_tools);
+
+            // Background execution surface: the default set's plain
+            // execute tool is swapped in place for a background-enabled instance
+            // carrying this run's identity, and the two companion tools join the
+            // set. The swap is positional (schema order is otherwise unchanged).
+            for tool in run_tools.iter_mut() {
+                if tool.name() == "execute_command" {
+                    *tool = Arc::new(tools::execute::ExecuteCommandTool::with_background(
+                        roots.clone(),
+                        tools::execute::ExecuteBackground {
+                            manager: self.background.clone(),
+                            conversation_id: conversation_id.clone(),
+                            parent_run_id: run.id.clone(),
+                        },
                     ));
-                    None
                 }
             }
-        } else {
-            None
-        };
+            run_tools.push(Arc::new(tools::task_stop::TaskStopTool::new(
+                self.background.clone(),
+                conversation_id.clone(),
+            )) as Arc<dyn tools::AgentTool>);
 
-        // The delegation tool for root runs of chat conversations: it hands
-        // the SubagentManager everything it needs to spawn a worker —
-        // including (through the OnceLock filled right below) the very
-        // toolset built here, which children re-derive as parent-minus-task.
-        // The slot pattern exists because the TaskTool is PART of the set it
-        // must reference: the lock is filled only after the full Arc'd set
-        // (task included) exists, and every read happens at execute time,
-        // long after.
-        let parent_toolset: crate::subagent::ToolsetSlot = Arc::new(std::sync::OnceLock::new());
-        if attach_task_tool {
-            let task: Arc<dyn tools::AgentTool> = Arc::new(TaskTool::new(
-                self.subagents.clone(),
-                Arc::new(TaskSpawnConfig {
-                    parent_conversation_id: conversation_id.clone(),
-                    parent_run_id: run.id.clone(),
-                    root_conversation_id: conversation_id.clone(),
-                    root_run_id: run.id.clone(),
-                    project: project.clone(),
-                    roots: worker_roots,
-                    locks: locks.clone(),
-                    provider_id: provider_id.clone(),
-                    model_id: model_id.clone(),
-                    context_window,
-                    tool_mode: if prepared.is_some() {
-                        crate::codemode::McpToolMode::Code
-                    } else {
-                        crate::codemode::McpToolMode::Direct
-                    },
-                    parent_cancel: handle.cancel.clone(),
-                    parent_hub: handle.hub.clone(),
-                    parent_toolset: parent_toolset.clone(),
-                    // The parent's OWN frozen environment: children spawned
-                    // from this live run inherit it verbatim instead of
-                    // re-resolving the mutable cache, so a mid-run `/reload`
-                    // (or a compaction dirty flag) cannot make a child drift
-                    // from the parent that delegated to it.
-                    parent_env: Arc::new(prompt_env.clone()),
-                }),
-            ));
-            run_tools.push(task);
+            // Bind the actual per-run native instances as well as MCP tools:
+            // read/edit share this agent's state, and root bash keeps its background identity.
+            let mut code_warning = None;
+            let prepared = if use_code {
+                match crate::codemode::Prepared::new(
+                    self.codemode_root(),
+                    &conversation_id,
+                    &run.id,
+                    &run_tools,
+                )
+                .await
+                {
+                    Ok(prepared) => Some(prepared),
+                    Err(error) => {
+                        tracing::warn!("Code mode preparation failed; using direct tools: {error:#}");
+                        code_warning = Some(format!(
+                            "Code mode was unavailable for this run: {error:#}. Tools are exposed directly.\n"
+                        ));
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            // The delegation tool for root runs of chat conversations: it hands
+            // the SubagentManager everything it needs to spawn a worker —
+            // including (through the OnceLock filled right below) the very
+            // toolset built here, which children re-derive as parent-minus-task.
+            // The slot pattern exists because the TaskTool is PART of the set it
+            // must reference: the lock is filled only after the full Arc'd set
+            // (task included) exists, and every read happens at execute time,
+            // long after.
+            let parent_toolset: crate::subagent::ToolsetSlot = Arc::new(std::sync::OnceLock::new());
+            if attach_task_tool {
+                let task: Arc<dyn tools::AgentTool> = Arc::new(TaskTool::new(
+                    self.subagents.clone(),
+                    Arc::new(TaskSpawnConfig {
+                        parent_conversation_id: conversation_id.clone(),
+                        parent_run_id: run.id.clone(),
+                        root_conversation_id: conversation_id.clone(),
+                        root_run_id: run.id.clone(),
+                        project: project.clone(),
+                        roots: worker_roots,
+                        locks: locks.clone(),
+                        provider_id: provider_id.clone(),
+                        model_id: model_id.clone(),
+                        context_window,
+                        tool_mode: if prepared.is_some() {
+                            crate::codemode::McpToolMode::Code
+                        } else {
+                            crate::codemode::McpToolMode::Direct
+                        },
+                        parent_cancel: handle.cancel.clone(),
+                        parent_hub: handle.hub.clone(),
+                        parent_toolset: parent_toolset.clone(),
+                        // The parent's OWN frozen environment: children spawned
+                        // from this live run inherit it verbatim instead of
+                        // re-resolving the mutable cache, so a mid-run `/reload`
+                        // (or a compaction dirty flag) cannot make a child drift
+                        // from the parent that delegated to it.
+                        parent_env: Arc::new(prompt_env.clone()),
+                    }),
+                ));
+                run_tools.push(task);
+            }
+
+            let toolset = Arc::new(run_tools);
+            if attach_task_tool {
+                // Fill the slot now that the full set (task included) exists —
+                // as a WEAK reference, so the slot never keeps the toolset (and
+                // the run's hub, via the task tool's config) alive past the run
+                // (see TaskSpawnConfig::parent_toolset). Children exclude `task`
+                // by name when deriving their own sets.
+                let _ = parent_toolset.set(Arc::downgrade(&toolset));
+            }
+
+            // The run's permission gate: project rules + this
+            // conversation's mode, loaded once; `allow_always` decisions inject
+            // into it live through the service's gate index.
+            let gate = self
+                .assemble_gate(
+                    &conversation_id,
+                    &conversation_id,
+                    &run.id,
+                    &project.id,
+                    &roots,
+                    false,
+                )
+                .await?;
+
+            // Keep the full set alive through CodeTool; TaskTool's weak parent slot
+            // references it, so worker selection sees the original authorized tools.
+            let code_section = prepared.as_ref().map(|p| p.prompt_section());
+            let model_tools = match prepared {
+                Some(prepared) => prepared.expose(toolset.clone(), gate.clone()),
+                None => toolset.clone(),
+            };
+            let mut prompt = system_prompt(
+                &PathBuf::from(&project.working_dir),
+                &additional,
+                &model_tools,
+                code_section.as_ref(),
+            );
+            if let Some(warning) = code_warning {
+                prompt.push_str(&warning);
+            }
+            // Repo instructions close the prompt head (after the code-mode
+            // warning): the frozen block is byte-stable across the
+            // conversation's runs, so the prefix stays cacheable.
+            prompt.push_str(&prompt_env.repo.block);
+            let ctx = AgentContext {
+                model: Arc::from(model),
+                tools: model_tools,
+                pool: self.pool.clone(),
+                // Built from the ACTUAL tool list (task guidance included for
+                // root agents; see the prompt module).
+                system_prompt: prompt,
+                context_window,
+                idle,
+                reasoning,
+                input_modalities: self.resolve_input_modalities(&provider_id, &model_id).await,
+                max_output_tokens,
+                attachments: Some(self.attachments.clone()),
+                permission: gate,
+                prompt_env_refresh: Some(self.prompt_env_refresh(&conversation_id)),
+                prompt_generation: prompt_env.generation,
+            };
+
+            Ok::<_, AppError>((ctx, view))
         }
-
-        let toolset = Arc::new(run_tools);
-        if attach_task_tool {
-            // Fill the slot now that the full set (task included) exists —
-            // as a WEAK reference, so the slot never keeps the toolset (and
-            // the run's hub, via the task tool's config) alive past the run
-            // (see TaskSpawnConfig::parent_toolset). Children exclude `task`
-            // by name when deriving their own sets.
-            let _ = parent_toolset.set(Arc::downgrade(&toolset));
-        }
-
-        // The run's permission gate: project rules + this
-        // conversation's mode, loaded once; `allow_always` decisions inject
-        // into it live through the service's gate index.
-        let gate_result = self
-            .assemble_gate(
-                &conversation_id,
-                &conversation_id,
-                &run.id,
-                &project.id,
-                &roots,
-                false,
-            )
-            .await;
-        let gate = match gate_result {
-            Ok(gate) => gate,
+        .await;
+        let (ctx, view) = match assembled {
+            Ok(assembled) => assembled,
             Err(error) => {
                 run_db::finish_run(
                     &self.pool,
@@ -733,44 +781,6 @@ impl RunService {
                 .await?;
                 return Err(error);
             }
-        };
-
-        // Keep the full set alive through CodeTool; TaskTool's weak parent slot
-        // references it, so worker selection sees the original authorized tools.
-        let code_section = prepared.as_ref().map(|p| p.prompt_section());
-        let model_tools = match prepared {
-            Some(prepared) => prepared.expose(toolset.clone(), gate.clone()),
-            None => toolset.clone(),
-        };
-        let mut prompt = system_prompt(
-            &PathBuf::from(&project.working_dir),
-            &additional,
-            &model_tools,
-            code_section.as_ref(),
-        );
-        if let Some(warning) = code_warning {
-            prompt.push_str(&warning);
-        }
-        // Repo instructions close the prompt head (after the code-mode
-        // warning): the frozen block is byte-stable across the
-        // conversation's runs, so the prefix stays cacheable.
-        prompt.push_str(&prompt_env.repo.block);
-        let ctx = AgentContext {
-            model: Arc::from(model),
-            tools: model_tools,
-            pool: self.pool.clone(),
-            // Built from the ACTUAL tool list (task guidance included for
-            // root agents; see the prompt module).
-            system_prompt: prompt,
-            context_window,
-            idle,
-            reasoning,
-            input_modalities: self.resolve_input_modalities(&provider_id, &model_id).await,
-            max_output_tokens,
-            attachments: Some(self.attachments.clone()),
-            permission: gate,
-            prompt_env_refresh: Some(self.prompt_env_refresh(&conversation_id)),
-            prompt_generation: prompt_env.generation,
         };
 
         handle
