@@ -3,9 +3,9 @@ use std::time::Duration;
 use oct_llm_provider::core::{Message, Role};
 use tokio_util::sync::CancellationToken;
 
+use crate::application::notifications::build_notification_content;
 use crate::db::background as task_db;
 use crate::error::{AppError, AppResult};
-use crate::runtime::background::build_notification_content;
 use crate::runtime::{RootRunRequest, RunService};
 
 use super::{launch_root, preparation};

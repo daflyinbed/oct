@@ -218,7 +218,12 @@ pub async fn cancel_subagent(
 
     // The manager distinguishes live/startup owners from unowned DB rows,
     // and serializes persisted cancellation against registration/recovery.
-    if state.runs.subagents.cancel_run(&agent_id).await? {
+    if state
+        .runs
+        .delegation_service()
+        .cancel_run(&agent_id)
+        .await?
+    {
         return Ok(StatusCode::OK);
     }
 

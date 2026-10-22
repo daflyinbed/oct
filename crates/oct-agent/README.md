@@ -18,11 +18,14 @@ oct 的后端服务 crate：Axum REST/SSE API + agent loop 运行时。既是 li
 - `application/conversation/` — send/resume/compact/wake 应用入口：校验、历史准备、附件认领、恢复编排与运行交接；HTTP 与后台调度共用
 - `api/` — REST + SSE 路由、utoipa OpenAPI（`/scalar` UI、`/api/openapi.json`）、嵌入前端（`embed.rs`）
 - `agent/` — agent loop、上下文压缩（`compact.rs`）、microcompact（`micro.rs`）、repo instructions 与冻结 prompt 环境（`repo_instructions.rs`）
-- `application/assembly/` — 根/worker 装配器与共享权限、资源、冻结 prompt 环境；`application/execution.rs` 持有独立启动任务，`application/title.rs` 独立准备标题任务
-- `runtime/` — `RunService` 兼容入口与会话占用；`execution.rs` 统一监督根/子 loop、终态持久化和收尾；`ModelResolver` 独立解析模型；另有后台 bash（`background.rs`）、worker 配置（`worker_config.rs`）、code 恢复（`code_recovery.rs`）
-- `subagent/` — `task` 工具委派的子代理运行时
+- `application/assembly/` — 根/worker 装配器与共享权限、资源、冻结 prompt 环境；`application/execution.rs` 持有独立启动任务，`application/title.rs` 独立准备标题任务；code 恢复在 `assembly/code_recovery.rs`
+- `runtime/` — `RunService` 兼容入口与会话占用；`execution.rs` 统一监督根/子 loop、终态持久化和收尾；`ModelResolver` 独立解析模型；另有后台进程管理（`background.rs`）与 worker 快照选择/恢复（`worker_config.rs`）
+- `application/delegation.rs` + `inheritance.rs` — 委派注册、幂等、取消与 worker 启动；父工具继承只保留冻结描述及 MCP 实例
+- `application/notifications.rs` + `tool_ports.rs` — 通知聚合/wake 重试与按 run 绑定的后台能力；启动入口持有并关闭 drainer
+- `subagent/` — 活动子代理索引、完成观察与持久结果信封；不回调 RunService
 - `permissions/` — 权限规则求值（rules/evaluator/descriptor/gate/registry）
-- `tools/` — `read`/`write`/`edit_file`/`listdir`/`grep`/`glob`/`execute`/`task_stop`
+- `tool_contract/` — 中性工具身份、调用上下文、输出与 scoped ports；`tool_host/` — 权限派发与进度事件适配；`events/` — SSE 事件类型与内存 replay hub
+- `tools/` — `read`/`write`/`edit_file`/`listdir`/`grep`/`glob`/`execute`/`task_stop`/`task`；原生工具只依赖契约和注入能力
 - `terminal.rs` + `api/terminals.rs` — 项目级交互 shell（WezTerm `portable-pty`）；REST 创建/列出/关闭，WebSocket 收发原始字节与 resize。PTY 独立于浏览器连接，单会话只允许一个输入控制者，断线按字节游标重放最近约 1 MiB 输出。会话只驻留内存，最多 16 个；关闭终端/删除项目会终止 shell 与前台进程，服务重启后需重新创建。
 - `codemode/` — code mode 宿主侧：catalog 生成、SDK 发布、诊断、storage
 - `mcp/` — `McpManager`（连接对账/目录）、OAuth 凭据

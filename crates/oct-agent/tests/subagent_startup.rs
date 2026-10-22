@@ -3,7 +3,7 @@
 mod support;
 
 use std::future::{Future, poll_fn};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 
@@ -82,8 +82,6 @@ async fn spawn_config(app: &support::TestApp) -> (TaskSpawnConfig, Arc<Vec<Arc<d
         .map(Arc::from)
         .collect(),
     );
-    let slot = Arc::new(OnceLock::new());
-    slot.set(Arc::downgrade(&tools)).unwrap();
     let env = app.state.runs.reload_prompt_env(&conv, &project).await;
     (
         TaskSpawnConfig {
@@ -100,7 +98,9 @@ async fn spawn_config(app: &support::TestApp) -> (TaskSpawnConfig, Arc<Vec<Arc<d
             tool_mode: oct_agent::codemode::McpToolMode::Direct,
             parent_cancel: CancellationToken::new(),
             parent_hub: Arc::new(EventHub::new()),
-            parent_toolset: slot,
+            inheritance: Arc::new(
+                oct_agent::application::inheritance::WorkerInheritance::capture(&tools),
+            ),
             parent_env: Arc::new(env),
         },
         tools,
@@ -148,7 +148,7 @@ fn start_task(
     app: &support::TestApp,
     spawn: &TaskSpawnConfig,
 ) -> tokio::task::JoinHandle<Result<runs::AgentRun, oct_agent::subagent::TaskError>> {
-    let manager = app.state.runs.subagents.clone();
+    let manager = app.state.runs.delegation_service();
     let spawn = spawn.clone();
     tokio::spawn(async move {
         manager
@@ -328,18 +328,15 @@ async fn dropped_waiter_and_duplicate_delegation_share_one_execution() {
         .unwrap();
     first.abort();
     assert!(matches!(first.await, Err(error) if error.is_cancelled()));
-    let mut duplicate = Box::pin(app.state.runs.subagents.run_task(
-        &spawn,
-        "startup-task",
-        "startup",
-        "delegation",
-    ));
+    let delegation = app.state.runs.delegation_service();
+    let mut duplicate =
+        Box::pin(delegation.run_task(&spawn, "startup-task", "startup", "delegation"));
     assert!(
         poll_fn(|cx| Poll::Ready(duplicate.as_mut().poll(cx)))
             .await
             .is_pending()
     );
-    drop(tools); // The independent owners must keep the weak slot usable.
+    drop(tools); // The independent owners retain worker inheritance.
     release.send(()).unwrap();
     drop(held);
     let run = tokio::time::timeout(Duration::from_secs(10), duplicate)

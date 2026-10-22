@@ -1,5 +1,5 @@
-//! Conversation commands. RunService remains the execution backend while its
-//! assembly and supervision are migrated independently of these entry points.
+//! Conversation commands over shared preparation, application launchers and
+//! the execution kernel. RunService remains the compatibility facade.
 
 mod compact;
 pub mod preparation;

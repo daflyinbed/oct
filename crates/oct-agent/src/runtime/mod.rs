@@ -4,9 +4,8 @@
 //! request validation, history preparation, user-message insertion and manual
 //! compaction, handing resolved pieces to [`RunService::start_root_run`].
 //! HTTP adapters translate commands and encode responses; the `task` tool
-//! starts subagent runs through this same service (via
-//! [`crate::subagent::SubagentManager`])
-//! instead of calling REST handlers.
+//! receives a scoped delegation port backed by worker assembly and the
+//! execution kernel, without retaining this facade.
 //!
 //! Lifecycle of a root run:
 //!
@@ -32,7 +31,6 @@
 //! a child completion observer then publishes to the parent, closes the done
 //! watch and removes the active index before the guard is released.
 
-mod code_recovery;
 pub(crate) mod execution;
 pub(crate) mod replay;
 /// DB-driven model resolution (the single ChatModel construction path).
@@ -102,12 +100,11 @@ pub struct RunService {
     /// Process-wide canonical-path locks, shared by root/child runs and by
     /// overlapping projects so aliases across project boundaries serialize.
     pub file_locks: Arc<DashMap<String, Arc<WorkspaceFileLocks>>>,
-    /// Subagent registry/lifecycle (two-phase wired: the manager holds this
-    /// service through a `OnceLock`, set right after construction — see
-    /// `main.rs` / the test harness).
+    /// Active child registry and guarded settlement. Delegation orchestration
+    /// uses worker-only application capabilities; the index has no callback.
     pub subagents: Arc<SubagentManager>,
-    /// Background bash task registry/lifecycle: same two-phase
-    /// wiring — the manager starts wake runs through this service.
+    /// Background process registry/lifecycle. Settlement emits a wake address
+    /// consumed by the composition root's application notification drainer.
     pub background: Arc<background::BackgroundTaskManager>,
     /// Chat attachment store: run assembly grants the conversation's sent
     /// assets to the file tools as read-only files, conversation deletion
@@ -250,8 +247,7 @@ impl RunService {
         id: &str,
         cancel: CancellationToken,
     ) -> Result<OccupancyGuard, AppError> {
-        self.lifecycle.check("conversation", id)?;
-        self.occupy_unchecked(id, cancel)
+        self.occupancy().occupy_with(id, cancel)
     }
 
     fn occupy_unchecked(
@@ -259,21 +255,32 @@ impl RunService {
         id: &str,
         cancel: CancellationToken,
     ) -> Result<OccupancyGuard, AppError> {
-        match self.sessions.entry(id.to_string()) {
-            dashmap::mapref::entry::Entry::Occupied(_) => Err(AppError::SessionBusy(
-                "Agent is already running for this conversation".into(),
-            )),
-            dashmap::mapref::entry::Entry::Vacant(entry) => {
-                entry.insert(RunHandle {
-                    hub: Arc::new(EventHub::new()),
-                    cancel,
-                });
-                Ok(OccupancyGuard {
-                    sessions: self.sessions.clone(),
-                    conv_id: id.to_string(),
-                })
-            }
+        self.occupancy().occupy_unchecked(id, cancel)
+    }
+
+    pub(crate) fn occupancy(&self) -> RunOccupancy {
+        RunOccupancy {
+            sessions: self.sessions.clone(),
+            lifecycle: self.lifecycle.clone(),
         }
+    }
+
+    pub fn delegation_service(&self) -> crate::application::delegation::DelegationService {
+        crate::application::delegation::DelegationService::new(
+            self.assembly_services(),
+            self.occupancy(),
+            self.subagents.clone(),
+        )
+    }
+
+    pub(crate) async fn repair_dangling_tools(
+        &self,
+        conversation: &str,
+        exclude: &[String],
+    ) -> anyhow::Result<Vec<String>> {
+        self.assembly_services()
+            .repair_dangling_tools(conversation, exclude)
+            .await
     }
 
     /// Shared canonical-path locks across root/worker runs and projects.
@@ -406,4 +413,44 @@ pub async fn bootstrap(pool: &SqlitePool) -> anyhow::Result<()> {
         Err(e) => return Err(e),
     }
     Ok(())
+}
+
+/// Cloneable conversation admission without model/tool/application services.
+#[derive(Clone)]
+pub(crate) struct RunOccupancy {
+    sessions: Arc<DashMap<String, RunHandle>>,
+    lifecycle: lifecycle::Lifecycle,
+}
+
+impl RunOccupancy {
+    pub(crate) fn occupy_with(
+        &self,
+        id: &str,
+        cancel: CancellationToken,
+    ) -> Result<OccupancyGuard, AppError> {
+        self.lifecycle.check("conversation", id)?;
+        self.occupy_unchecked(id, cancel)
+    }
+
+    fn occupy_unchecked(
+        &self,
+        id: &str,
+        cancel: CancellationToken,
+    ) -> Result<OccupancyGuard, AppError> {
+        match self.sessions.entry(id.to_string()) {
+            dashmap::mapref::entry::Entry::Occupied(_) => Err(AppError::SessionBusy(
+                "Agent is already running for this conversation".into(),
+            )),
+            dashmap::mapref::entry::Entry::Vacant(entry) => {
+                entry.insert(RunHandle {
+                    hub: Arc::new(EventHub::new()),
+                    cancel,
+                });
+                Ok(OccupancyGuard {
+                    sessions: self.sessions.clone(),
+                    conv_id: id.to_string(),
+                })
+            }
+        }
+    }
 }

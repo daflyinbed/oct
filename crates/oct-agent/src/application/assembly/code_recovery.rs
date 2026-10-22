@@ -1,11 +1,11 @@
 //! Recover diagnostic results for the last run's dangling code calls.
-use super::RunService;
+use super::AssemblyServices;
 use crate::codemode::{catalog, diagnostics};
 use crate::db::{messages, runs};
 use oct_llm_provider::core::ContentPart;
 use std::collections::HashMap;
 
-impl RunService {
+impl AssemblyServices {
     pub(crate) async fn repair_dangling_tools(
         &self,
         conversation: &str,

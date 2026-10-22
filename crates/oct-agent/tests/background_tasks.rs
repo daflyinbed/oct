@@ -406,7 +406,7 @@ async fn restart_marks_lost_and_send_catch_up_notifies() {
     std::fs::copy(app.dir.path().join("test.db"), dir2.path().join("test.db")).unwrap();
     // The provider row (pointing at the still-running LlmMock) came over
     // with the copied database — no re-registration.
-    let app2 = TestApp::new_with_dir(dir2).await;
+    let app2 = TestApp::new_with_dir_without_wake_drainer(dir2).await;
 
     let row = background_task_row(&app2.pool, &task_id)
         .await
@@ -465,7 +465,8 @@ async fn deleting_the_conversation_cancels_tasks_and_cleans_output() {
 #[tokio::test]
 async fn output_files_are_readable_with_generic_tools_and_stop_still_works() {
     use oct_agent::agent::EventHub;
-    use oct_agent::tools::execute::{ExecuteBackground, ExecuteCommandTool};
+    use oct_agent::application::tool_ports::RunBackgroundCommands;
+    use oct_agent::tools::execute::ExecuteCommandTool;
     use oct_agent::tools::task_stop::TaskStopTool;
     use oct_agent::tools::{AgentTool, ToolContext};
     use tokio_util::sync::CancellationToken;
@@ -546,7 +547,11 @@ async fn output_files_are_readable_with_generic_tools_and_stop_still_works() {
     assert!(out.content.contains("alpha"));
 
     // task_stop on a settled task reports the already-exited status.
-    let stop_tool = TaskStopTool::new(app.background.clone(), conv.clone());
+    let stop_tool = TaskStopTool::new(Arc::new(RunBackgroundCommands::new(
+        app.background.clone(),
+        conv.clone(),
+        run.id.clone(),
+    )));
     let out = stop_tool
         .execute(json!({"task_id": task.id}), &ctx)
         .await
@@ -565,6 +570,24 @@ async fn output_files_are_readable_with_generic_tools_and_stop_still_works() {
         })
         .await
         .unwrap();
+    // A scoped port from another conversation must not cancel this process.
+    let foreign_conv = app.create_conversation(&project).await;
+    let foreign_stop = TaskStopTool::new(Arc::new(RunBackgroundCommands::new(
+        app.background.clone(),
+        foreign_conv,
+        run.id.clone(),
+    )));
+    let denied = foreign_stop
+        .execute(json!({"task_id": live.id}), &ctx)
+        .await
+        .unwrap();
+    assert!(denied.is_error);
+    assert!(denied.content.ends_with("Known task ids: (none)"));
+    assert_eq!(
+        background_task_row(&app.pool, &live.id).await.unwrap()["status"],
+        "running"
+    );
+
     let out = stop_tool
         .execute(json!({"task_id": live.id}), &ctx)
         .await
@@ -598,11 +621,11 @@ async fn output_files_are_readable_with_generic_tools_and_stop_still_works() {
     // The background-enabled instance on the same conversation works.
     let enabled = ExecuteCommandTool::with_background(
         oct_agent::tools::workspace::WorkspaceRoots::new(app.dir.path().to_path_buf(), Vec::new()),
-        ExecuteBackground {
-            manager: app.background.clone(),
-            conversation_id: conv.clone(),
-            parent_run_id: run.id.clone(),
-        },
+        Arc::new(RunBackgroundCommands::new(
+            app.background.clone(),
+            conv.clone(),
+            run.id.clone(),
+        )),
     );
     let out = enabled
         .execute(

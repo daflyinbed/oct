@@ -33,7 +33,9 @@ pub async fn prepare_history(runs: &RunService, id: &str) -> Result<(), AppError
     // Notification storage is retried by the durable drainer. Its failure
     // must not block the user's turn, but a successful insert must always
     // follow all results of the interrupted tool batch.
-    if let Err(error) = crate::runtime::background::catch_up_notifications(&runs.pool, id).await {
+    if let Err(error) =
+        crate::application::notifications::catch_up_notifications(&runs.pool, id).await
+    {
         tracing::warn!(conversation_id = id, %error, "failed to flush background task notifications");
     }
     Ok(())

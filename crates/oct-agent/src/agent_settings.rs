@@ -27,12 +27,7 @@ pub enum ModelChoice {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ToolSelector {
-    Builtin { name: String },
-    Mcp { server_id: String, tool: String },
-}
+pub use crate::tool_contract::ToolSelector;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]

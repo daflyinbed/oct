@@ -10,8 +10,11 @@ use std::time::Instant;
 use super::truncate::{MAX_TOOL_OUTPUT_BYTES, truncate_middle};
 use super::workspace::WorkspaceRoots;
 use super::{AgentTool, OutputStream, ToolContext, ToolOutput};
+use crate::process::GroupKillOnDrop;
+#[cfg(all(unix, target_os = "linux"))]
+use crate::process::set_pdeathsig;
 
-use crate::runtime::background::{BackgroundTaskManager, BashStart};
+use crate::tool_contract::ports::{BackgroundCommand, BackgroundCommands, BackgroundStarted};
 
 /// Timeout applied when the caller does not request one.
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
@@ -40,16 +43,7 @@ pub struct ExecuteCommandTool {
     /// workers) keeps the schema identical but gates the flag at dispatch
     /// — the wake/notification semantics only hold in the root
     /// conversation.
-    background: Option<ExecuteBackground>,
-}
-
-/// What the background branch needs: the manager plus the identity of the
-/// run handing the command over. Constructed per run by the RunService
-/// assembly (the same pattern the `task` tool's spawn config uses).
-pub struct ExecuteBackground {
-    pub manager: Arc<BackgroundTaskManager>,
-    pub conversation_id: String,
-    pub parent_run_id: String,
+    background: Option<Arc<dyn BackgroundCommands>>,
 }
 
 impl ExecuteCommandTool {
@@ -60,7 +54,7 @@ impl ExecuteCommandTool {
         }
     }
 
-    pub fn with_background(roots: WorkspaceRoots, background: ExecuteBackground) -> Self {
+    pub fn with_background(roots: WorkspaceRoots, background: Arc<dyn BackgroundCommands>) -> Self {
         Self {
             roots,
             background: Some(background),
@@ -177,16 +171,18 @@ where
         loop {
             // The timer lives inside the reader task, so drain/abort also
             // stops flushing before the final ToolResult is published.
-            let read =
-                match tokio::time::timeout(super::SMOOTHER_FLUSH_INTERVAL, stream.read(&mut chunk))
-                    .await
-                {
-                    Ok(read) => read,
-                    Err(_) => {
-                        ctx.flush_due();
-                        continue;
-                    }
-                };
+            let read = match tokio::time::timeout(
+                crate::tool_contract::SMOOTHER_FLUSH_INTERVAL,
+                stream.read(&mut chunk),
+            )
+            .await
+            {
+                Ok(read) => read,
+                Err(_) => {
+                    ctx.flush_due();
+                    continue;
+                }
+            };
             match read {
                 Ok(0) => break, // EOF
                 Ok(n) => {
@@ -238,30 +234,6 @@ async fn drain_reader(reader: Option<ReaderHandle>) -> Vec<u8> {
         .clone()
 }
 
-/// pre_exec hook: arm PR_SET_PDEATHSIG in the forked child, before exec.
-/// Runs between fork and exec, so only async-signal-safe calls are allowed —
-/// `prctl` and `getppid` are raw syscall wrappers and qualify.
-///
-/// Complements `process_group(0)`: the process group makes *deliberate* kills
-/// (timeout, cancellation, scope exit) take down the whole tree, while
-/// PDEATHSIG covers the backend itself dying without a chance to run any of
-/// that glue. SIGTERM (not SIGKILL) so well-behaved children can trap it,
-/// clean up, and take their own descendants down.
-#[cfg(all(unix, target_os = "linux"))]
-pub(crate) fn set_pdeathsig() -> std::io::Result<()> {
-    unsafe {
-        libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
-        // Race guard: if the parent died between fork and prctl, the signal
-        // will never fire (PDEATHSIG latches onto the parent as of prctl
-        // time). A reparented child (ppid == 1) means that already happened —
-        // exit now instead of running orphaned.
-        if libc::getppid() == 1 {
-            std::process::exit(1);
-        }
-    }
-    Ok(())
-}
-
 /// Kill the whole process tree on timeout. The child was spawned with
 /// `process_group(0)`, so it leads its own group and pgid == child pid;
 /// `killpg` takes down sh plus any descendants it spawned.
@@ -285,25 +257,6 @@ fn kill_process_group(pgid: Option<u32>, child: &mut tokio::process::Child) {
 #[cfg(not(unix))]
 fn kill_process_group(_pgid: Option<u32>, child: &mut tokio::process::Child) {
     let _ = child.start_kill();
-}
-
-/// Kills the child's process group when this scope ends. `kill_on_drop(true)`
-/// only signals the `sh` process itself; backgrounded descendants share the
-/// group and would otherwise survive a dropped future (agent cancelled
-/// mid-execution) or a parent that exited before them. ESRCH when the group is
-/// already gone is harmless.
-pub(crate) struct GroupKillOnDrop(pub(crate) Option<u32>);
-
-impl Drop for GroupKillOnDrop {
-    fn drop(&mut self) {
-        #[cfg(unix)]
-        if let Some(pgid) = self.0 {
-            // Best effort; the group is usually already empty here.
-            unsafe { libc::killpg(pgid as libc::pid_t, libc::SIGKILL) };
-        }
-        #[cfg(not(unix))]
-        let _ = self.0;
-    }
 }
 
 #[async_trait]
@@ -358,11 +311,8 @@ impl AgentTool for ExecuteCommandTool {
                 ));
             };
             return match bg
-                .manager
-                .start_bash(BashStart {
-                    conversation_id: bg.conversation_id.clone(),
-                    parent_run_id: Some(bg.parent_run_id.clone()),
-                    parent_call_id: ctx.timeline_call_id().to_string(),
+                .start(BackgroundCommand {
+                    call_id: ctx.timeline_call_id().to_string(),
                     command: args.command.clone(),
                     cwd,
                 })
@@ -383,7 +333,7 @@ impl AgentTool for ExecuteCommandTool {
             .clamp(1, MAX_TIMEOUT_SECS);
         let timeout = Duration::from_secs(timeout_secs);
 
-        let mut command = super::process::shell(&args.command);
+        let mut command = crate::process::shell(&args.command);
         command
             .current_dir(&cwd)
             .stdout(std::process::Stdio::piped())
@@ -561,9 +511,8 @@ impl AgentTool for ExecuteCommandTool {
 
 /// The tool result for a backgrounded command: the model-visible envelope
 /// plus the UI-only details that let the frontend render a live task card.
-fn background_envelope(task: &crate::db::background::BackgroundTask) -> ToolOutput {
-    let output_path =
-        crate::runtime::background::absolute_output_path(std::path::Path::new(&task.output_path));
+fn background_envelope(task: &BackgroundStarted) -> ToolOutput {
+    let output_path = &task.output_path;
     let content = format!(
         "Command started in the background.\n\
          task_id: {id}\n\
@@ -572,12 +521,12 @@ fn background_envelope(task: &crate::db::background::BackgroundTask) -> ToolOutp
          Use read_file or grep on output_file to read or search output; \
          use task_stop with task_id to stop it. You will be notified automatically when it \
          finishes — do not poll or sleep while waiting.",
-        id = task.id,
+        id = task.task_id,
         path = output_path.display(),
     );
     let details = serde_json::json!({
         "kind": "background_task",
-        "task_id": task.id,
+        "task_id": task.task_id,
         "command": task.command,
         "working_dir": task.working_dir,
         "output_path": output_path,
@@ -597,9 +546,7 @@ mod tests {
 
     #[tokio::test]
     async fn relative_output_paths_are_absolute_in_envelopes_and_notifications() {
-        use crate::runtime::background::{
-            BackgroundTaskManager, build_notification_content, exec_output_root,
-        };
+        use crate::runtime::background::{BackgroundTaskManager, exec_output_root};
         let backend = std::env::current_dir().unwrap();
         assert_eq!(exec_output_root("sqlite://oct.db"), backend.join("exec"));
         assert_eq!(
@@ -632,8 +579,16 @@ mod tests {
             created_at: chrono::Utc::now().naive_utc(),
             finished_at: None,
         };
-        let envelope = background_envelope(&task);
-        let (notification, details) = build_notification_content(&[task]).await;
+        let envelope = background_envelope(&BackgroundStarted {
+            task_id: task.id.clone(),
+            command: task.command.clone(),
+            working_dir: task.working_dir.clone(),
+            output_path: crate::runtime::background::absolute_output_path(std::path::Path::new(
+                &task.output_path,
+            )),
+        });
+        let (notification, details) =
+            crate::application::notifications::build_notification_content(&[task]).await;
         let advertised = format!("output_file: {}", path.display());
         assert!(envelope.content.contains(&advertised));
         assert!(notification.contains(&advertised));

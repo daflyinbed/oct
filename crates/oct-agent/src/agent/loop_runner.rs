@@ -640,7 +640,7 @@ pub async fn run_agent_loop(
 
             futures.spawn(async move {
                 let tool = tools.iter().find(|t| t.name() == tc.name);
-                let output = tools::dispatch::direct(
+                let output = crate::tool_host::dispatch::direct(
                     tool,
                     &tc.name,
                     args,

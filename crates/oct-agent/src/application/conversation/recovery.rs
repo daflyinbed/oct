@@ -328,7 +328,7 @@ async fn recover_one(job: &RecoveryJob, run: AgentRun) -> Result<()> {
                 locks,
                 // Recovery rebuilds the authorized tool snapshot against
                 // live instances; no crashed parent's toolset remains.
-                parent_toolset: None,
+                inheritance: None,
                 parent_env: None,
             })
             .await

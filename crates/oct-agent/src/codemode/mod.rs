@@ -2,8 +2,10 @@
 pub mod catalog;
 pub(crate) mod diagnostics;
 mod storage;
-use crate::agent::{AgentEvent, EventHub};
+use crate::events::EventHub;
 use crate::permissions::gate::PermissionGate;
+use crate::tool_contract::NestedProgressSink;
+use crate::tool_host::CodeHostEvents;
 use crate::tools::{AgentTool, OutputStream, ToolContext, ToolImage, ToolOutput};
 use anyhow::{Result, ensure};
 use async_trait::async_trait;
@@ -139,6 +141,7 @@ impl Prepared {
         self,
         base: Arc<Vec<Arc<dyn AgentTool>>>,
         gate: Arc<PermissionGate>,
+        events: CodeHostEvents,
     ) -> Arc<Vec<Arc<dyn AgentTool>>> {
         // Keep native discovery/editing and task controls available directly:
         // the read tools double as the SDK browser (the run's read-only root
@@ -154,7 +157,7 @@ impl Prepared {
             })
             .cloned()
             .collect();
-        visible.push(self.tool(base, gate));
+        visible.push(self.tool(gate, events));
         Arc::new(visible)
     }
 
@@ -172,11 +175,7 @@ impl Prepared {
         }
     }
 
-    pub fn tool(
-        self,
-        base: Arc<Vec<Arc<dyn AgentTool>>>,
-        gate: Arc<PermissionGate>,
-    ) -> Arc<dyn AgentTool> {
+    pub fn tool(self, gate: Arc<PermissionGate>, events: CodeHostEvents) -> Arc<dyn AgentTool> {
         let description = format!(
             "Execute a TypeScript ES module to orchestrate the authorized builtin file/bash and MCP tools. Discover this run's interfaces by read_file on {}/index.json (module import specifiers), then grep/read the .d.ts declarations and README.md under that directory. Import the exact virtual .js modules listed in index.json; relative imports start at the SDK root. Await every call; use text(value), console.log(value), image({{mimeType,data}}) for explicit output. Intermediate results stay in code. File/bash operations go through host tools with normal approvals, shared file locks and this agent's read state; JS has no direct filesystem/network/subprocess/npm. Task delegation is only available through the outer task tool; workers cannot start background commands. Cancellation does not undo side effects. Fresh VM per call; top-level await supported, top-level return unsupported.",
             self.sdk.display()
@@ -184,39 +183,28 @@ impl Prepared {
         Arc::new(CodeTool {
             prepared: self,
             gate,
-            _base: base,
+            events,
             description,
         })
     }
 }
 
 struct CodeTool {
+    // The prepared catalog retains the native/MCP host instances. Delegation
+    // holds its own inheritance descriptors, so no full root set is retained.
     prepared: Prepared,
     gate: Arc<PermissionGate>,
-    // TaskTool's weak parent slot must continue to resolve the unfiltered set.
-    _base: Arc<Vec<Arc<dyn AgentTool>>>,
+    events: CodeHostEvents,
     description: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
-pub struct NestedCall {
-    pub id: String,
-    pub name: String,
-    pub title: String,
-    pub status: String,
-    pub error: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error_code: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub started_at_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub duration_ms: Option<u64>,
-}
+pub use crate::tool_contract::NestedCall;
 
 struct Host {
     tools: BTreeMap<String, Arc<dyn AgentTool>>,
     gate: Arc<PermissionGate>,
     hub: Arc<EventHub>,
+    nested_progress: Arc<dyn NestedProgressSink>,
     context: ToolContext,
     approvals: Arc<AtomicUsize>,
     calls: Arc<Mutex<Vec<NestedCall>>>,
@@ -238,10 +226,7 @@ impl Host {
         file.write_all(&row)?;
         file.write_all(b"\n")?;
         file.flush()?;
-        self.hub.publish(AgentEvent::NestedToolUpdate {
-            parent_call_id: self.context.call_id().into(),
-            call: call.clone(),
-        });
+        self.nested_progress.update(self.context.call_id(), call);
         Ok(())
     }
     fn settle_unknown(&self) -> Vec<NestedCall> {
@@ -288,7 +273,7 @@ impl oct_codemode::Host for Host {
         };
         self.record(&call)?;
         self.calls.lock().unwrap().push(call.clone());
-        let output = crate::tools::dispatch::nested(
+        let output = crate::tool_host::dispatch::nested(
             tool,
             args,
             &ctx,
@@ -329,7 +314,7 @@ impl oct_codemode::Host for Host {
             *row = call.clone();
         }
         self.record(&call)?;
-        Ok(crate::tools::dispatch::result_value(output?))
+        Ok(crate::tool_host::dispatch::result_value(output?))
     }
     fn emit(&self, text: &str) -> Result<()> {
         use std::io::Write;
@@ -435,7 +420,8 @@ impl AgentTool for CodeTool {
         let host = Arc::new(Host {
             tools: self.prepared.catalog.tools.clone(),
             gate: self.gate.clone(),
-            hub: ctx.hub(),
+            hub: self.events.approvals.clone(),
+            nested_progress: self.events.nested.clone(),
             context: ctx.clone(),
             approvals: Arc::new(AtomicUsize::new(0)),
             calls: calls.clone(),

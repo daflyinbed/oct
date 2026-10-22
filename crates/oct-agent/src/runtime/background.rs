@@ -28,18 +28,14 @@
 //!   model a notification, and the task's own token (task_stop /
 //!   conversation deletion) is the only thing that kills it.
 
-mod notifications;
-
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock, Weak};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use dashmap::DashMap;
 use sqlx::SqlitePool;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
-
-use oct_llm_provider::core::{Message, Role};
 
 use crate::db::background as task_db;
 use crate::db::background::{BackgroundTask, TaskFinalStatus};
@@ -62,8 +58,6 @@ const REAP_TIMEOUT: Duration = Duration::from_secs(5);
 /// returning anyway (the row settles regardless, the caller just sees it
 /// still `running`).
 const CANCEL_SETTLE_WAIT: Duration = Duration::from_secs(10);
-/// How much of the output file the notification message inlines.
-pub(crate) const NOTIFICATION_TAIL_BYTES: u64 = 4096;
 
 /// One ACTIVE background task, as the in-memory registry holds it. Dropped
 /// from the map the moment the supervisor settles.
@@ -91,10 +85,8 @@ pub struct BashStart {
     pub cwd: PathBuf,
 }
 
-/// The background task manager: in-memory active registry + notification
-/// delivery. Two-phase wired into the [`crate::runtime::RunService`] exactly
-/// like the SubagentManager (the service owns the manager, the manager
-/// reaches back through a `OnceLock` to start wake runs).
+/// Owns active processes and their durable task rows. Settlement emits a wake
+/// address; application notification delivery is an independent channel consumer.
 pub struct BackgroundTaskManager {
     /// Output-file cap enforced by the size watchdog; interior mutability
     /// so the test harness can shrink it through the shared `Arc` (the
@@ -106,11 +98,9 @@ pub struct BackgroundTaskManager {
     /// file tools receive it as a read-only root; the model reads output
     /// through read_file/grep at the returned absolute output_file path.
     exec_dir: PathBuf,
-    service: OnceLock<Weak<crate::runtime::RunService>>,
+    wake_tx: mpsc::UnboundedSender<String>,
+    wake_rx: Mutex<Option<mpsc::UnboundedReceiver<String>>>,
     tasks: DashMap<String, ActiveTask>,
-    /// Conversations with a live notification drainer (the kick-once
-    /// marker): prevents stacking drainers for one conversation.
-    delivering: DashMap<String, ()>,
 }
 
 /// Where background task output files live: next to the database file
@@ -165,24 +155,28 @@ fn open_output_file(path: &Path) -> std::io::Result<std::fs::File> {
 
 impl BackgroundTaskManager {
     pub fn new(pool: SqlitePool, exec_dir: PathBuf) -> Self {
+        let (wake_tx, wake_rx) = mpsc::unbounded_channel();
         Self {
             output_limit_bytes: std::sync::atomic::AtomicU64::new(DEFAULT_OUTPUT_LIMIT_BYTES),
             pool,
             exec_dir: absolute_output_path(&exec_dir),
-            service: OnceLock::new(),
+            wake_tx,
+            wake_rx: Mutex::new(Some(wake_rx)),
             tasks: DashMap::new(),
-            delivering: DashMap::new(),
         }
     }
 
-    /// Two-phase wire (see the type comment); called right after the
-    /// RunService is constructed.
-    pub fn set_service(&self, service: Arc<crate::runtime::RunService>) {
-        let _ = self.service.set(Arc::downgrade(&service));
+    /// A kick carries no task payload: the DB remains the source of truth.
+    pub fn kick_notification(&self, conversation_id: &str) {
+        let _ = self.wake_tx.send(conversation_id.to_owned());
     }
 
-    fn service_handle(&self) -> Option<Arc<crate::runtime::RunService>> {
-        self.service.get().and_then(Weak::upgrade)
+    pub(crate) fn take_notifications(&self) -> mpsc::UnboundedReceiver<String> {
+        self.wake_rx
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+            .expect("notification drainer already started")
     }
 
     /// The pool the task rows live in (shared with the tools and the API).
@@ -237,7 +231,7 @@ impl BackgroundTaskManager {
         let file = open_output_file(&output_path)?;
         let stderr_file = file.try_clone()?;
 
-        let mut command = crate::tools::process::shell(&req.command);
+        let mut command = crate::process::shell(&req.command);
         command
             .current_dir(&req.cwd)
             .kill_on_drop(true)
@@ -256,13 +250,13 @@ impl BackgroundTaskManager {
         // SAFETY: same pre_exec contract as the execute tool (async-signal-
         // safe calls only).
         unsafe {
-            command.pre_exec(crate::tools::execute::set_pdeathsig);
+            command.pre_exec(crate::process::set_pdeathsig);
         }
 
         let mut child = command.spawn()?;
         let pgid = child.id();
         let process_lease = child.stdin.take();
-        let mut startup_guard = crate::tools::execute::GroupKillOnDrop(pgid);
+        let mut startup_guard = crate::process::GroupKillOnDrop(pgid);
 
         let task = match task_db::create_task(
             &self.pool,
@@ -390,7 +384,7 @@ async fn supervise_task(
     output_path: PathBuf,
     done_tx: watch::Sender<bool>,
 ) {
-    let _group_guard = crate::tools::execute::GroupKillOnDrop(pgid);
+    let _group_guard = crate::process::GroupKillOnDrop(pgid);
     enum KillReason {
         None,
         Cancelled,
@@ -529,91 +523,6 @@ async fn kill_group_graceful(
     }
 }
 
-/// Build the model-visible notification content and its UI details for one
-/// batch of settled tasks: one `<task-notification>` block per task, a
-/// bounded output tail inline, and the output-file path for the rest.
-pub(crate) async fn build_notification_content(
-    pending: &[BackgroundTask],
-) -> (String, serde_json::Value) {
-    let mut blocks = Vec::with_capacity(pending.len());
-    let mut details_tasks = Vec::with_capacity(pending.len());
-    for task in pending {
-        let output_path = absolute_output_path(Path::new(&task.output_path));
-        let tail = read_tail(&task.output_path, NOTIFICATION_TAIL_BYTES).await;
-        let tail_note = if tail.0 {
-            "[earlier output omitted]\n"
-        } else {
-            ""
-        };
-        let lost_note = if task.status == "lost" {
-            "note: interrupted by a backend restart — the command was terminated; the output below is partial.\n"
-        } else {
-            ""
-        };
-        let exit = task
-            .exit_code
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| "unknown (killed by a signal)".to_string());
-        blocks.push(format!(
-            "<task-notification>\n\
-             task_id: {id}\n\
-             command: {command}\n\
-             status: {status}\n\
-             exit_code: {exit}\n\
-             {lost_note}\
-             output_file: {path}\n\
-             Use read_file or grep on output_file for more output.\n\
-             output (tail):\n{tail_note}{tail}\n\
-             </task-notification>",
-            id = task.id,
-            command = task.command,
-            status = task.status,
-            path = output_path.display(),
-            tail = tail.1,
-        ));
-        details_tasks.push(serde_json::json!({
-            "task_id": task.id,
-            "command": task.command,
-            "status": task.status,
-            "exit_code": task.exit_code,
-            "error": task.error,
-            "output_path": output_path,
-            "created_at": task.created_at.format("%Y-%m-%dT%H:%M:%S").to_string(),
-            "finished_at": task.finished_at.map(|t| t.format("%Y-%m-%dT%H:%M:%S").to_string()),
-        }));
-    }
-    let content = format!(
-        "The following background command(s) started earlier have finished — process their results and continue:\n\n{}",
-        blocks.join("\n\n")
-    );
-    let details = serde_json::json!({
-        "kind": "background_task_notification",
-        "tasks": details_tasks,
-    });
-    (content, details)
-}
-
-/// Read the last `max` bytes of a file as lossy UTF-8. Returns
-/// `(was_truncated, text)`.
-pub(crate) async fn read_tail(path: &str, max: u64) -> (bool, String) {
-    use tokio::io::{AsyncReadExt, AsyncSeekExt};
-    let Ok(mut file) = tokio::fs::File::open(path).await else {
-        return (false, String::new());
-    };
-    let Ok(len) = file.metadata().await.map(|m| m.len()) else {
-        return (false, String::new());
-    };
-    let start = len.saturating_sub(max);
-    if file.seek(std::io::SeekFrom::Start(start)).await.is_err() {
-        return (false, String::new());
-    }
-    let mut buf = Vec::with_capacity((len - start) as usize);
-    // Reading past EOF simply ends early; the file may keep growing while
-    // we read (the command can still be flushing).
-    let _ = file.take(max).read_to_end(&mut buf).await;
-    (start > 0, String::from_utf8_lossy(&buf).into_owned())
-}
-
 /// One bounded slice of a task's output file, for the
 /// output REST endpoint: `offset` pages from the start, no offset takes
 /// the tail.
@@ -647,32 +556,6 @@ pub async fn read_output_chunk(
         next_offset,
         total_bytes: total,
     })
-}
-
-/// The send/resume catch-up: flush settled-but-unnotified tasks (typically
-/// `lost` rows after a restart, or deliveries the drainer could not start a
-/// wake run for) as one batched notification message. No wake run — the
-/// caller's own run is about to consume the message.
-pub async fn catch_up_notifications(
-    pool: &SqlitePool,
-    conversation_id: &str,
-) -> anyhow::Result<usize> {
-    let pending = task_db::list_pending_notifications(pool, conversation_id).await?;
-    if pending.is_empty() {
-        return Ok(0);
-    }
-    let (content, details) = build_notification_content(&pending).await;
-    let message = Message::text(Role::User, &content);
-    let task_ids: Vec<String> = pending.iter().map(|t| t.id.clone()).collect();
-    task_db::insert_notification_marking_tasks(
-        pool,
-        conversation_id,
-        &message,
-        Some(&details),
-        &task_ids,
-    )
-    .await?;
-    Ok(pending.len())
 }
 
 /// The bootstrap sweep (see `runtime::bootstrap`): background task rows a

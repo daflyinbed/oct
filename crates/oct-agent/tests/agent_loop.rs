@@ -4034,7 +4034,7 @@ use oct_agent::runtime::{RootRunRequest, RunService};
 use support::ScriptedObserver;
 
 /// A RunService wired like the test HTTP harness: same two-phase manager
-/// wiring, direct tool mode pinned (the app-level code-mode default would
+/// capabilities, direct tool mode pinned (the app-level code-mode default would
 /// otherwise depend on a helper binary next to the test binary).
 async fn spawn_run_service(env: &TestEnv) -> Arc<RunService> {
     oct_agent::db::settings::set(
@@ -4049,7 +4049,7 @@ async fn spawn_run_service(env: &TestEnv) -> Arc<RunService> {
         env.pool.clone(),
         env.dir.path().join("exec"),
     ));
-    let runs = Arc::new(RunService {
+    Arc::new(RunService {
         lifecycle: Default::default(),
         pool: env.pool.clone(),
         registry: Arc::new(oct_llm_provider::providers::default_registry()),
@@ -4066,10 +4066,7 @@ async fn spawn_run_service(env: &TestEnv) -> Arc<RunService> {
         gates: Arc::new(dashmap::DashMap::new()),
         prompt_envs: Arc::new(dashmap::DashMap::new()),
         prompt_env_locks: Arc::new(dashmap::DashMap::new()),
-    });
-    subagents.set_service(runs.clone());
-    background.set_service(runs.clone());
-    runs
+    })
 }
 
 /// Run ONE root turn over the production assembly path: insert the user

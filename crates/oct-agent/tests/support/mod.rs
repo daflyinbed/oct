@@ -414,6 +414,7 @@ pub struct TestApp {
     /// The server's shared store, including publication/sweep coordination.
     pub attachments: Arc<oct_agent::attachments::AttachmentService>,
     http: reqwest::Client,
+    _wake_drainer: Option<oct_agent::application::notifications::WakeDrainer>,
 }
 
 /// Wire-log test support: the sink and subscriber are process-global
@@ -449,6 +450,14 @@ impl TestApp {
     /// a process restart against the same persisted database — the new
     /// server's `runtime::bootstrap` sweep is part of what is under test.
     pub async fn new_with_dir(dir: tempfile::TempDir) -> Self {
+        Self::with_notifications(dir, true).await
+    }
+
+    pub async fn new_with_dir_without_wake_drainer(dir: tempfile::TempDir) -> Self {
+        Self::with_notifications(dir, false).await
+    }
+
+    async fn with_notifications(dir: tempfile::TempDir, notifications: bool) -> Self {
         let db_url = format!("sqlite://{}", dir.path().join("test.db").display());
         let pool = db::init_pool(&db_url).await.expect("init test database");
 
@@ -474,10 +483,9 @@ impl TestApp {
         let mcp = Arc::new(oct_agent::mcp::McpManager::default());
         let sessions: Arc<dashmap::DashMap<String, oct_agent::agent::RunHandle>> =
             Arc::new(dashmap::DashMap::new());
-        // Same two-phase wire as run_server (RunService owns the manager; the
-        // manager reaches back through a OnceLock). Background task output
-        // files live under the temp dir, mirroring the "next to the
-        // database" production placement.
+        // The composition root injects scoped tool capabilities and owns the
+        // notification drainer. Output files live under the temp dir, next to
+        // the database as in production.
         let subagents = Arc::new(oct_agent::subagent::SubagentManager::default());
         let background = Arc::new(oct_agent::runtime::background::BackgroundTaskManager::new(
             pool.clone(),
@@ -502,8 +510,8 @@ impl TestApp {
             prompt_envs: Arc::new(dashmap::DashMap::new()),
             prompt_env_locks: Arc::new(dashmap::DashMap::new()),
         });
-        subagents.set_service(runs.clone());
-        background.set_service(runs.clone());
+        let wake_drainer = notifications
+            .then(|| oct_agent::application::notifications::WakeDrainer::start(runs.clone()));
         let state = oct_agent::api::AppState {
             runs,
             pool: pool.clone(),
@@ -540,6 +548,7 @@ impl TestApp {
             background,
             attachments,
             http: reqwest::Client::new(),
+            _wake_drainer: wake_drainer,
         }
     }
 

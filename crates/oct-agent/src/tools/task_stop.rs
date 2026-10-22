@@ -10,8 +10,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 use super::{AgentTool, ToolContext, ToolOutput};
-use crate::db::background as task_db;
-use crate::runtime::background::BackgroundTaskManager;
+use crate::tool_contract::ports::{BackgroundCommands, BackgroundStop};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct TaskStopArgs {
@@ -20,16 +19,12 @@ struct TaskStopArgs {
 }
 
 pub struct TaskStopTool {
-    manager: Arc<BackgroundTaskManager>,
-    conversation_id: String,
+    commands: Arc<dyn BackgroundCommands>,
 }
 
 impl TaskStopTool {
-    pub fn new(manager: Arc<BackgroundTaskManager>, conversation_id: String) -> Self {
-        Self {
-            manager,
-            conversation_id,
-        }
+    pub fn new(commands: Arc<dyn BackgroundCommands>) -> Self {
+        Self { commands }
     }
 }
 
@@ -60,36 +55,21 @@ impl AgentTool for TaskStopTool {
         let args: TaskStopArgs =
             serde_json::from_value(args).context("Invalid arguments for task_stop")?;
 
-        // Scope check BEFORE any cancel: a task id from another conversation
-        // must not be stopped from here.
-        let Some(row) = task_db::get_visible_task(self.manager.pool(), &args.task_id)
-            .await?
-            .filter(|t| t.conversation_id == self.conversation_id)
-        else {
-            return Ok(unknown_task(&self.manager, &self.conversation_id, &args.task_id).await);
-        };
-
-        match row.status.as_str() {
-            "running" => {
-                // Active: cancel + bounded wait; report the settled row.
-                if let Some(settled) = self.manager.cancel_and_wait(&args.task_id).await {
-                    return Ok(stop_result(&settled.id, &settled.status));
+        match self.commands.stop(&args.task_id).await? {
+            BackgroundStop::Unknown { known_ids } => Ok(ToolOutput::error(format!(
+                "Unknown background task '{}' in this conversation. Known task ids: {}",
+                args.task_id,
+                if known_ids.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    known_ids.join(", ")
                 }
-                // Not in the registry but still running: the supervisor is
-                // mid-settlement (the DB write happens before the registry
-                // removal) — report what the row says right now.
-                Ok(ToolOutput::error(format!(
-                    "Task {} is settling; you will be notified when settlement finishes",
-                    row.id
-                )))
-            }
-            "lost" => {
-                // The backend restart already terminated the process; just
-                // persist the intent so the notification says cancelled.
-                task_db::cancel_lost_task(self.manager.pool(), &args.task_id).await?;
-                Ok(stop_result(&row.id, "cancelled"))
-            }
-            status => Ok(stop_result(&row.id, status)),
+            ))),
+            BackgroundStop::Settling => Ok(ToolOutput::error(format!(
+                "Task {} is settling; you will be notified when settlement finishes",
+                args.task_id
+            ))),
+            BackgroundStop::Settled { status } => Ok(stop_result(&args.task_id, &status)),
         }
     }
 }
@@ -102,23 +82,4 @@ fn stop_result(task_id: &str, status: &str) -> ToolOutput {
             "Task {task_id} had already exited before the stop (status: {status})"
         ))
     }
-}
-
-async fn unknown_task(
-    manager: &Arc<BackgroundTaskManager>,
-    conversation_id: &str,
-    task_id: &str,
-) -> ToolOutput {
-    let known = task_db::list_visible_tasks(manager.pool(), conversation_id)
-        .await
-        .unwrap_or_default();
-    let ids: Vec<String> = known.iter().map(|t| t.id.clone()).collect();
-    ToolOutput::error(format!(
-        "Unknown background task '{task_id}' in this conversation. Known task ids: {}",
-        if ids.is_empty() {
-            "(none)".to_string()
-        } else {
-            ids.join(", ")
-        }
-    ))
 }

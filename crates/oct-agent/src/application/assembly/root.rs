@@ -4,18 +4,19 @@ use std::time::Duration;
 
 use super::{AssemblyServices, log_prompt_env, workspace_roots};
 use crate::agent::{AgentContext, RunHandle, prompt::system_prompt};
+use crate::application::delegation::{DelegationService, TaskSpawnConfig};
 use crate::context::LlmView;
 use crate::db::projects::Project;
 use crate::error::AppResult;
 use crate::runtime::{background::BackgroundTaskManager, execution::AssembledRun, worker_config};
-use crate::subagent::{SubagentManager, TaskSpawnConfig, TaskTool};
+use crate::tools::task::TaskTool;
 use crate::tools::{self, shared::AgentReadState};
 use oct_llm_provider::{core::ReasoningRequest, model::ChatModel};
 
 pub(crate) struct RootAssembler {
     pub shared: AssemblyServices,
     pub background: Arc<BackgroundTaskManager>,
-    pub subagents: Arc<SubagentManager>,
+    pub delegation: DelegationService,
 }
 
 pub(crate) struct RootAssemblyInput {
@@ -127,24 +128,26 @@ impl RootAssembler {
 
         // Background execution surface: the default set's plain
         // execute tool is swapped in place for a background-enabled instance
-        // carrying this run's identity, and the two companion tools join the
-        // set. The swap is positional (schema order is otherwise unchanged).
+        // carrying this run's identity, and task_stop joins the set. The swap
+        // is positional (schema order is otherwise unchanged).
+        let background_commands =
+            Arc::new(crate::application::tool_ports::RunBackgroundCommands::new(
+                self.background.clone(),
+                conversation_id.clone(),
+                run_id.clone(),
+            ));
         for tool in run_tools.iter_mut() {
             if tool.name() == "execute_command" {
                 *tool = Arc::new(tools::execute::ExecuteCommandTool::with_background(
                     roots.clone(),
-                    tools::execute::ExecuteBackground {
-                        manager: self.background.clone(),
-                        conversation_id: conversation_id.clone(),
-                        parent_run_id: run_id.clone(),
-                    },
+                    background_commands.clone(),
                 ));
             }
         }
-        run_tools.push(Arc::new(tools::task_stop::TaskStopTool::new(
-            self.background.clone(),
-            conversation_id.clone(),
-        )) as Arc<dyn tools::AgentTool>);
+        run_tools.push(
+            Arc::new(tools::task_stop::TaskStopTool::new(background_commands))
+                as Arc<dyn tools::AgentTool>,
+        );
 
         // Bind the actual per-run native instances as well as MCP tools:
         // read/edit share this agent's state, and root bash keeps its background identity.
@@ -171,19 +174,14 @@ impl RootAssembler {
             None
         };
 
-        // The delegation tool for root runs of chat conversations: it hands
-        // the SubagentManager everything it needs to spawn a worker —
-        // including (through the OnceLock filled right below) the very
-        // toolset built here, which children re-derive as parent-minus-task.
-        // The slot pattern exists because the TaskTool is PART of the set it
-        // must reference: the lock is filled only after the full Arc'd set
-        // (task included) exists, and every read happens at execute time,
-        // long after.
-        let parent_toolset: crate::subagent::ToolsetSlot = Arc::new(std::sync::OnceLock::new());
+        // Capture worker inheritance before adding the delegation tool. The
+        // task port owns descriptors/MCP instances, without native/root controls.
+        let inheritance = Arc::new(crate::application::inheritance::WorkerInheritance::capture(
+            &run_tools,
+        ));
         if attach_task_tool {
-            let task: Arc<dyn tools::AgentTool> = Arc::new(TaskTool::new(
-                self.subagents.clone(),
-                Arc::new(TaskSpawnConfig {
+            let task: Arc<dyn tools::AgentTool> =
+                Arc::new(TaskTool::new(self.delegation.bind(TaskSpawnConfig {
                     parent_conversation_id: conversation_id.clone(),
                     parent_run_id: run_id.clone(),
                     root_conversation_id: conversation_id.clone(),
@@ -201,28 +199,18 @@ impl RootAssembler {
                     },
                     parent_cancel: handle.cancel.clone(),
                     parent_hub: handle.hub.clone(),
-                    parent_toolset: parent_toolset.clone(),
+                    inheritance,
                     // The parent's OWN frozen environment: children spawned
                     // from this live run inherit it verbatim instead of
                     // re-resolving the mutable cache, so a mid-run `/reload`
                     // (or a compaction dirty flag) cannot make a child drift
                     // from the parent that delegated to it.
                     parent_env: Arc::new(prompt_env.clone()),
-                }),
-            ));
+                })));
             run_tools.push(task);
         }
 
         let toolset = Arc::new(run_tools);
-        if attach_task_tool {
-            // Fill the slot now that the full set (task included) exists —
-            // as a WEAK reference, so the slot never keeps the toolset (and
-            // the run's hub, via the task tool's config) alive past the run
-            // (see TaskSpawnConfig::parent_toolset). Children exclude `task`
-            // by name when deriving their own sets.
-            let _ = parent_toolset.set(Arc::downgrade(&toolset));
-        }
-
         // The run's permission gate: project rules + this
         // conversation's mode, loaded once; `allow_always` decisions inject
         // into it live through the service's gate index.
@@ -238,11 +226,15 @@ impl RootAssembler {
             )
             .await?;
 
-        // Keep the full set alive through CodeTool; TaskTool's weak parent slot
-        // references it, so worker selection sees the original authorized tools.
+        // Code mode exposes its host tools while delegation retains its separate
+        // native/MCP inheritance set captured above.
         let code_section = prepared.as_ref().map(|p| p.prompt_section());
         let model_tools = match prepared {
-            Some(prepared) => prepared.expose(toolset.clone(), gate.clone()),
+            Some(prepared) => prepared.expose(
+                toolset.clone(),
+                gate.clone(),
+                crate::tool_host::CodeHostEvents::new(handle.hub.clone()),
+            ),
             None => toolset.clone(),
         };
         let mut prompt = system_prompt(

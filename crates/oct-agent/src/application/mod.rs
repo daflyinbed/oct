@@ -4,5 +4,10 @@
 pub mod conversation;
 
 pub(crate) mod assembly;
-pub(crate) mod execution;
+pub mod execution;
 pub(crate) mod title;
+
+pub mod delegation;
+pub mod inheritance;
+pub mod notifications;
+pub mod tool_ports;

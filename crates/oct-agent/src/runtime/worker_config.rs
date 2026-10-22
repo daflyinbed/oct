@@ -6,11 +6,13 @@ use crate::tools::{AgentTool, ToolContext, ToolOutput};
 use anyhow::{Result, ensure};
 use std::sync::Arc;
 
-pub(crate) fn select_tools(
-    parent: &[Arc<dyn AgentTool>],
-    choice: &ToolChoice,
-) -> Result<Vec<SnapshotTool>> {
-    let candidates: Vec<_> = parent
+#[cfg(test)]
+fn select_tools(parent: &[Arc<dyn AgentTool>], choice: &ToolChoice) -> Result<Vec<SnapshotTool>> {
+    select_candidates(&tool_candidates(parent), choice)
+}
+
+pub(crate) fn tool_candidates(parent: &[Arc<dyn AgentTool>]) -> Vec<SnapshotTool> {
+    parent
         .iter()
         .filter(|t| match t.selector() {
             ToolSelector::Builtin { name } => BUILTIN_TOOLS.contains(&name.as_str()),
@@ -21,9 +23,15 @@ pub(crate) fn select_tools(
             exposed_name: t.name().into(),
             exposed_description: t.description().to_string(),
         })
-        .collect();
+        .collect()
+}
+
+pub(crate) fn select_candidates(
+    candidates: &[SnapshotTool],
+    choice: &ToolChoice,
+) -> Result<Vec<SnapshotTool>> {
     let selected = match choice {
-        ToolChoice::Parent => candidates,
+        ToolChoice::Parent => candidates.to_vec(),
         ToolChoice::Allowlist { items } => items
             .iter()
             .map(|selector| {

@@ -1,5 +1,6 @@
 //! Shared model/tool/prompt assembly resources. Worker assembly has no
 //! delegation or background-execution service to call back into.
+mod code_recovery;
 mod prompt_env;
 mod root;
 mod worker;

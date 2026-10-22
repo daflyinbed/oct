@@ -81,3 +81,46 @@ mod tests {
         .expect("worker must die with its lease");
     }
 }
+
+/// pre_exec hook: arm PR_SET_PDEATHSIG in the forked child, before exec.
+/// Runs between fork and exec, so only async-signal-safe calls are allowed —
+/// `prctl` and `getppid` are raw syscall wrappers and qualify.
+///
+/// Complements `process_group(0)`: the process group makes *deliberate* kills
+/// (timeout, cancellation, scope exit) take down the whole tree, while
+/// PDEATHSIG covers the backend itself dying without a chance to run any of
+/// that glue. SIGTERM (not SIGKILL) so well-behaved children can trap it,
+/// clean up, and take their own descendants down.
+#[cfg(all(unix, target_os = "linux"))]
+pub(crate) fn set_pdeathsig() -> std::io::Result<()> {
+    unsafe {
+        libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+        // Race guard: if the parent died between fork and prctl, the signal
+        // will never fire (PDEATHSIG latches onto the parent as of prctl
+        // time). A reparented child (ppid == 1) means that already happened —
+        // exit now instead of running orphaned.
+        if libc::getppid() == 1 {
+            std::process::exit(1);
+        }
+    }
+    Ok(())
+}
+
+/// Kills the child's process group when this scope ends. `kill_on_drop(true)`
+/// only signals the `sh` process itself; backgrounded descendants share the
+/// group and would otherwise survive a dropped future (agent cancelled
+/// mid-execution) or a parent that exited before them. ESRCH when the group is
+/// already gone is harmless.
+pub(crate) struct GroupKillOnDrop(pub(crate) Option<u32>);
+
+impl Drop for GroupKillOnDrop {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(pgid) = self.0 {
+            // Best effort; the group is usually already empty here.
+            unsafe { libc::killpg(pgid as libc::pid_t, libc::SIGKILL) };
+        }
+        #[cfg(not(unix))]
+        let _ = self.0;
+    }
+}

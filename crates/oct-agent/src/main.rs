@@ -134,9 +134,7 @@ async fn run_server(
         prompt_envs: Arc::new(dashmap::DashMap::new()),
         prompt_env_locks: Arc::new(dashmap::DashMap::new()),
     });
-    subagents.set_service(runs.clone());
-    background.set_service(runs.clone());
-    background.resume_notifications();
+    let _wake_drainer = oct_agent::application::notifications::WakeDrainer::start(runs.clone());
 
     let state = api::AppState {
         runs,

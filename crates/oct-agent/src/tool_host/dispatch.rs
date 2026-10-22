@@ -1,7 +1,7 @@
 //! Tool execution shared by the model loop and nested code-mode calls.
-use super::{AgentTool, CodeToolResult, ToolContext, ToolOutput};
-use crate::agent::EventHub;
+use crate::events::EventHub;
 use crate::permissions::gate::{GateVerdict, PermissionGate};
+use crate::tool_contract::{AgentTool, CodeToolResult, ToolContext, ToolOutput};
 use anyhow::Result;
 use serde_json::Value;
 use std::sync::Arc;
@@ -75,7 +75,7 @@ pub async fn nested(
                         "{} failed: {}",
                         if matches!(
                             tool.selector(),
-                            crate::agent_settings::ToolSelector::Mcp { .. }
+                            crate::tool_contract::ToolSelector::Mcp { .. }
                         ) {
                             "MCP tool"
                         } else {

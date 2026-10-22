@@ -24,6 +24,7 @@ pub(crate) struct WorkerAssembler {
 pub(crate) struct WorkerAssemblyInput {
     pub run_id: String,
     pub epoch: i64,
+    pub hub: Arc<crate::events::EventHub>,
     pub conversation_id: String,
     pub project: Project,
     pub model: Box<dyn ChatModel>,
@@ -34,7 +35,7 @@ pub(crate) struct WorkerAssemblyInput {
     pub agent_config: Option<WorkerSnapshot>,
     pub roots: WorkspaceRoots,
     pub locks: Arc<WorkspaceFileLocks>,
-    pub parent_toolset: Option<Arc<Vec<Arc<dyn tools::AgentTool>>>>,
+    pub inheritance: Option<Arc<crate::application::inheritance::WorkerInheritance>>,
     pub parent_env: Option<Arc<FrozenPromptEnv>>,
 }
 
@@ -43,6 +44,7 @@ impl WorkerAssembler {
         let WorkerAssemblyInput {
             run_id,
             epoch,
+            hub,
             conversation_id,
             project,
             model,
@@ -53,7 +55,7 @@ impl WorkerAssembler {
             agent_config,
             roots,
             locks,
-            parent_toolset,
+            inheritance,
             parent_env,
         } = input;
         // The worker shares its tree's frozen environment (keyed by ROOT
@@ -111,10 +113,10 @@ impl WorkerAssembler {
         // tools rebuilt over the worker's scoped roots, shared locks and a
         // FRESH read state (the child's read records must be its own; MCP
         // tools are reused by Arc so connections stay shared). Recovery passes
-        // `parent_toolset = None`: the parent's instances died with the
+        // `inheritance = None`: the parent's instances died with the
         // crashed process, so the set is rebuilt from the same assembly
         // sources — which yields the same effective set.
-        let child_tools: Vec<Arc<dyn tools::AgentTool>> = match parent_toolset {
+        let child_tools: Vec<Arc<dyn tools::AgentTool>> = match inheritance {
             Some(parent) => derive_child_toolset(&parent, roots.clone(), locks.clone()),
             None => {
                 let mut rebuilt: Vec<Arc<dyn tools::AgentTool>> = tools::default_tools_with(
@@ -206,7 +208,11 @@ impl WorkerAssembler {
 
         let code_section = prepared.as_ref().map(|p| p.prompt_section());
         let model_tools = match prepared {
-            Some(prepared) => prepared.expose(child_tools, gate.clone()),
+            Some(prepared) => prepared.expose(
+                child_tools,
+                gate.clone(),
+                crate::tool_host::CodeHostEvents::new(hub),
+            ),
             None => child_tools,
         };
         let (_, additional) = workspace_roots(&project);
@@ -262,7 +268,7 @@ impl WorkerAssembler {
 /// companion (`task_stop`) are scoped to the root
 /// conversation and simply dropped.
 pub(crate) fn derive_child_toolset(
-    parent: &[Arc<dyn tools::AgentTool>],
+    parent: &crate::application::inheritance::WorkerInheritance,
     roots: WorkspaceRoots,
     locks: Arc<WorkspaceFileLocks>,
 ) -> Vec<Arc<dyn tools::AgentTool>> {
@@ -271,22 +277,6 @@ pub(crate) fn derive_child_toolset(
             .into_iter()
             .map(Arc::from)
             .collect();
-    const NOT_REUSED: [&str; 9] = [
-        "task",
-        "read_file",
-        "write_file",
-        "edit_file",
-        "list_dir",
-        "grep",
-        "glob",
-        "execute_command",
-        "task_stop",
-    ];
-    child.extend(
-        parent
-            .iter()
-            .filter(|t| !NOT_REUSED.contains(&t.name()))
-            .cloned(),
-    );
+    child.extend(parent.mcp_tools().iter().cloned());
     child
 }

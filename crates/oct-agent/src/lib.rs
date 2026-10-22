@@ -19,3 +19,9 @@ pub mod terminal;
 pub mod tools;
 
 pub mod error;
+
+pub mod events;
+pub mod tool_contract;
+pub mod tool_host;
+
+pub(crate) mod process;

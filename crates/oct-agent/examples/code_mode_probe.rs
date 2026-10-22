@@ -136,8 +136,9 @@ async fn main() -> Result<()> {
             let input: Value = serde_json::from_str(&args.arguments)?;
             // Return counts only, keeping browser/IDA data out of the terminal.
             let code = format!("import * as tools from {}; const r = await tools[{}]({}); text({{textBytes:r.text.length, structuredKeys:Object.keys(r.structuredContent ?? {{}}), images:r.images.length, isError:r.isError}});",server["importSpecifier"],tool["export"],input);
-            let tool = prepared.tool(Arc::new(tools.clone()), PermissionGate::permissive());
-            let ctx = ToolContext::new("manual-probe", Arc::new(EventHub::new()), tokio_util::sync::CancellationToken::new());
+            let hub = Arc::new(EventHub::new());
+            let tool = prepared.tool(PermissionGate::permissive(), oct_agent::tool_host::CodeHostEvents::new(hub.clone()));
+            let ctx = ToolContext::new("manual-probe", hub, tokio_util::sync::CancellationToken::new());
             let output = tool.execute(json!({"code":code}), &ctx).await?;
             println!("{}",output.content);
             ensure!(!output.is_error,"Code-mode smoke call failed");

@@ -53,7 +53,8 @@ async fn install_with_result(
 async fn nested_mcp_errors_share_the_direct_structured_content_fallback() {
     use oct_agent::agent::EventHub;
     use oct_agent::permissions::gate::PermissionGate;
-    use oct_agent::tools::{ToolContext, dispatch};
+    use oct_agent::tool_host::dispatch;
+    use oct_agent::tools::ToolContext;
     use std::sync::atomic::AtomicUsize;
     use tokio_util::sync::CancellationToken;
 
@@ -629,8 +630,8 @@ mod runtime {
         .await
         .unwrap();
         let tool = prepared.tool(
-            Arc::new(tools),
             oct_agent::permissions::gate::PermissionGate::permissive(),
+            oct_agent::tool_host::CodeHostEvents::new(Arc::new(oct_agent::agent::EventHub::new())),
         );
         let ctx = ToolContext::new(
             "timeout",
