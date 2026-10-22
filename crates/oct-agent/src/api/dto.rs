@@ -305,7 +305,7 @@ pub struct MessageDto {
     /// cleared copy superseded (exactly one hop).
     pub supersedes_message_id: Option<String>,
     /// Authoritative persisted cut; streaming placeholders never have one.
-    pub fork_cut: Option<crate::db::history::ForkCut>,
+    pub fork_cut: Option<super::history::ForkCut>,
     /// Shared history has no runtime ownership in the fork.
     pub inherited: Option<bool>,
     pub created_at: chrono::NaiveDateTime,
@@ -345,7 +345,7 @@ impl MessageDto {
             output_tokens: row.output_tokens,
             reasoning_tokens: row.reasoning_tokens,
             supersedes_message_id: row.supersedes_message_id.clone(),
-            fork_cut: crate::db::history::message_cut(row),
+            fork_cut: super::history::message_cut(row),
             inherited: None,
             created_at: row.created_at,
             started_at: (row.role == "user"

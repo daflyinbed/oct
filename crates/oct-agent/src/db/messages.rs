@@ -50,29 +50,11 @@ pub struct StoredMessage {
 
 impl StoredMessage {
     pub fn to_message(&self) -> Result<Message> {
-        let role = match self.role.as_str() {
-            "system" => Role::System,
-            "user" => Role::User,
-            "assistant" => Role::Assistant,
-            "tool" => Role::Tool,
-            other => anyhow::bail!("Unknown role: {other}"),
-        };
-        if role == Role::User
-            && let Some(content) = crate::attachment_types::UserContent::from_stored(
-                &self.parts_json,
-                self.details_json.as_deref(),
-            )
-        {
-            // Only v2 rows have a canonical frozen snapshot. Legacy rows
-            // retain their original request bytes through the v1 reader.
-            let details: Value =
-                serde_json::from_str(self.details_json.as_deref().unwrap_or("{}"))?;
-            if details.get("user_content").is_some() {
-                return Ok(content.to_message());
-            }
-        }
-        let parts: Vec<ContentPart> = serde_json::from_str(&self.parts_json)?;
-        Ok(Message { role, parts })
+        crate::history::content::parse_message(
+            &self.role,
+            &self.parts_json,
+            self.details_json.as_deref(),
+        )
     }
 }
 

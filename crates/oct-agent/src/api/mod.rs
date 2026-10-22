@@ -9,6 +9,7 @@ pub mod embed;
 pub mod error;
 pub mod files;
 pub mod git;
+pub mod history;
 pub mod mcp;
 pub mod permissions;
 pub mod projects;
@@ -67,10 +68,10 @@ pub struct AppState {
         crate::db::conversations::Conversation,
         crate::db::conversations::CreateConversationRequest,
         crate::db::conversations::UpdateConversationRequest,
-        crate::db::history::ForkCut,
-        crate::db::history::ForkSide,
-        crate::db::history::ForkRequest,
-        crate::db::history::ForkResponse,
+        history::ForkCut,
+        history::ForkSide,
+        history::ForkRequest,
+        history::ForkResponse,
         crate::db::messages::StoredMessage,
         crate::db::projects::Project,
         crate::db::projects::CreateProjectRequest,
@@ -220,8 +221,8 @@ fn api_routes(state: AppState) -> OpenApiRouter<AppState> {
         .routes(utoipa_axum::routes!(conversations::get_conversation))
         .routes(utoipa_axum::routes!(conversations::delete_conversation))
         .routes(utoipa_axum::routes!(conversations::update_conversation))
-        .routes(utoipa_axum::routes!(conversations::fork_conversation))
-        .routes(utoipa_axum::routes!(conversations::revert_conversation))
+        .routes(utoipa_axum::routes!(history::fork_conversation))
+        .routes(utoipa_axum::routes!(history::revert_conversation))
         // Tool approvals: pending list + decide
         .routes(utoipa_axum::routes!(approvals::list_pending_approvals))
         .routes(utoipa_axum::routes!(approvals::decide_approval))

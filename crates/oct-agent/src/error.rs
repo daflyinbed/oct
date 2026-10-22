@@ -79,3 +79,15 @@ impl From<crate::attachments::ServiceError> for AppError {
 }
 
 pub type AppResult<T> = std::result::Result<T, AppError>;
+
+impl From<crate::history::HistoryPolicyError> for AppError {
+    fn from(error: crate::history::HistoryPolicyError) -> Self {
+        match error {
+            crate::history::HistoryPolicyError::InvalidCut(message) => Self::InvalidCut(message),
+            crate::history::HistoryPolicyError::MessageNotFound => {
+                Self::NotFound(error.to_string())
+            }
+            crate::history::HistoryPolicyError::MalformedContent(error) => Self::Internal(error),
+        }
+    }
+}

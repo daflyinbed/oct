@@ -1,10 +1,9 @@
 //! Forks share immutable content, but own their timeline and runtime state.
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use oct_llm_provider::core::ContentPart;
 use serde::{Deserialize, Serialize};
 use sqlx::{SqliteConnection, SqlitePool};
-use utoipa::ToSchema;
 
 use super::{
     conversations::Conversation,
@@ -12,33 +11,19 @@ use super::{
 };
 use crate::{
     attachment_types::AttachmentDto,
-    context::details_kind,
     error::{AppError, AppResult},
 };
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ForkCut {
-    Head,
-    Message { message_id: String, side: ForkSide },
-}
+// Compatibility exports for callers using the former history transport types.
+// These request/cut values also preserve the durable receipt serde format.
+pub use crate::history::{
+    ForkRequest, HistoryCut as ForkCut, HistorySide as ForkSide, RevertRequest,
+};
+use crate::history::{
+    HistoryContent, HistoryEntry, HistoryMembership, HistoryPlan, HistorySnapshot, policy,
+};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ForkSide {
-    Before,
-    After,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
-pub struct ForkRequest {
-    pub operation_id: String,
-    pub expected_revision: i64,
-    pub cut: ForkCut,
-    pub title: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ForkResponse {
     pub conversation: Conversation,
     pub context_revision: i64,
@@ -49,14 +34,7 @@ pub struct ForkResponse {
     pub draft_attachments: Vec<AttachmentDto>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
-pub struct RevertRequest {
-    pub operation_id: String,
-    pub expected_revision: i64,
-    pub cut: ForkCut,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RevertResponse {
     pub conversation: Conversation,
     pub context_revision: i64,
@@ -162,22 +140,9 @@ async fn revert_once(
             "请先完成或停止后台任务，并处理待投递通知或唤醒轮次，再回退对话。".into(),
         ));
     }
-    if matches!(request.cut, ForkCut::Head) {
-        return Err(invalid("Revert requires a historical message cut"));
-    }
     let rows = messages::list_messages_in_tx(&mut tx, &source.id).await?;
-    let normalized = normalize(&mut tx, &rows, revision, &request.cut).await?;
-    if normalized.prefix.len() == rows.len()
-        && normalized
-            .prefix
-            .iter()
-            .zip(&rows)
-            .all(|(a, b)| a.id == b.id)
-    {
-        return Err(invalid(
-            "The selected cut does not change conversation history",
-        ));
-    }
+    let snapshot = load_snapshot(&mut tx, &rows, revision, &request.cut).await?;
+    let normalized = policy::plan_revert(&snapshot, &request.cut)?;
     let title = format!(
         "{}（回退前 · {}）",
         source.title,
@@ -192,7 +157,12 @@ async fn revert_once(
     backup.permission_mode = source.permission_mode.clone();
     backup.backup_of_conversation_id = Some(source.id.clone());
     backup.backup_at_revision = Some(revision);
-    copy_membership(&mut tx, &backup.id, &rows).await?;
+    copy_membership(
+        &mut tx,
+        &backup.id,
+        &rows.iter().map(HistoryMembership::from).collect::<Vec<_>>(),
+    )
+    .await?;
     sqlx::query!(
         "DELETE FROM conversation_messages WHERE conversation_id = $1",
         source.id
@@ -234,11 +204,11 @@ async fn revert_once(
 async fn copy_membership(
     tx: &mut SqliteConnection,
     id: &str,
-    rows: &[StoredMessage],
+    rows: &[HistoryMembership],
 ) -> AppResult<()> {
     for (index, row) in rows.iter().enumerate() {
         let ordering = index as i64 + 1;
-        sqlx::query!("INSERT INTO conversation_messages (conversation_id, message_id, ordering, appended_at_revision, swapped_at_revision) VALUES ($1, $2, $3, $4, $5)", id, row.id, ordering, row.appended_at_revision, row.swapped_at_revision)
+        sqlx::query!("INSERT INTO conversation_messages (conversation_id, message_id, ordering, appended_at_revision, swapped_at_revision) VALUES ($1, $2, $3, $4, $5)", id, row.message_id, ordering, row.appended_at_revision, row.swapped_at_revision)
             .execute(&mut *tx).await.map_err(anyhow::Error::from)?;
     }
     Ok(())
@@ -255,53 +225,6 @@ pub async fn visible_call_ids(pool: &SqlitePool, id: &str) -> anyhow::Result<Has
         }
     }
     Ok(calls)
-}
-
-fn invalid(message: &str) -> AppError {
-    AppError::InvalidCut(message.into())
-}
-
-/// Only real user prompts and complete assistant replies offer message cuts.
-pub fn message_cut(row: &StoredMessage) -> Option<ForkCut> {
-    let message = row.to_message().ok()?;
-    let side = match row.role.as_str() {
-        "user" if details_kind(row.details_json.as_deref()).is_none() => ForkSide::Before,
-        "assistant"
-            if !message
-                .parts
-                .iter()
-                .any(|part| matches!(part, ContentPart::ToolCall(_))) =>
-        {
-            ForkSide::After
-        }
-        _ => return None,
-    };
-    Some(ForkCut::Message {
-        message_id: row.id.clone(),
-        side,
-    })
-}
-
-/// A stopped tool round is a stable cut only after EVERY result has landed.
-/// The DTO names the final result row; the UI attaches it to its assistant card.
-pub fn tool_cuts(rows: &[StoredMessage]) -> HashMap<String, ForkCut> {
-    let mut validator = PrefixValidator::default();
-    let mut cuts = HashMap::new();
-    for row in rows {
-        if validator.append(row).is_err() {
-            break;
-        }
-        if row.role == "tool" && validator.pending.is_empty() {
-            cuts.insert(
-                row.id.clone(),
-                ForkCut::Message {
-                    message_id: row.id.clone(),
-                    side: ForkSide::After,
-                },
-            );
-        }
-    }
-    cuts
 }
 
 pub async fn replay(
@@ -366,13 +289,14 @@ pub async fn fork(
         ));
     }
     let rows = messages::list_messages_in_tx(&mut tx, &source.id).await?;
-    let NormalizedHistory {
+    let snapshot = load_snapshot(&mut tx, &rows, revision, &request.cut).await?;
+    let HistoryPlan {
         prefix,
         cut_revision,
         draft,
         draft_attachments,
         target,
-    } = normalize(&mut tx, &rows, revision, &request.cut).await?;
+    } = policy::plan_cut(&snapshot, &request.cut)?;
     let title = request
         .title
         .clone()
@@ -414,184 +338,205 @@ pub async fn fork(
     Ok(response)
 }
 
-struct NormalizedHistory {
-    prefix: Vec<StoredMessage>,
-    cut_revision: i64,
-    draft: Option<String>,
-    draft_attachments: Vec<AttachmentDto>,
-    target: Option<String>,
+/// Adapt storage rows at the repository boundary; pure rules never see sqlx
+/// models or provider/usage columns irrelevant to membership selection.
+impl From<&StoredMessage> for HistoryEntry {
+    fn from(row: &StoredMessage) -> Self {
+        Self {
+            content: HistoryContent {
+                id: row.id.clone(),
+                role: row.role.clone(),
+                parts_json: row.parts_json.clone(),
+                details_json: row.details_json.clone(),
+                supersedes_message_id: row.supersedes_message_id.clone(),
+            },
+            appended_at_revision: row.appended_at_revision,
+            swapped_at_revision: row.swapped_at_revision,
+        }
+    }
 }
 
-/// Shared by fork and revert: restore the historical prefix without mutating content.
-async fn normalize(
+impl From<&StoredMessage> for HistoryMembership {
+    fn from(row: &StoredMessage) -> Self {
+        Self {
+            message_id: row.id.clone(),
+            appended_at_revision: row.appended_at_revision,
+            swapped_at_revision: row.swapped_at_revision,
+        }
+    }
+}
+
+/// Load only the COW originals needed by the cut, inside the same write transaction
+/// that reads memberships, computes the plan, applies it and saves its receipt.
+async fn load_snapshot(
     tx: &mut SqliteConnection,
     rows: &[StoredMessage],
     revision: i64,
     cut: &ForkCut,
-) -> AppResult<NormalizedHistory> {
-    let mut draft_attachments = Vec::new();
-    let (length, cut_revision, draft, target) = match cut {
-        ForkCut::Head => {
-            if rows
-                .last()
-                .is_some_and(|row| message_cut(row).is_none() && row.role != "tool")
-            {
-                return Err(invalid(
-                    "The conversation does not end at a stable message or tool result boundary",
-                ));
-            }
-            (rows.len(), revision, None, None)
-        }
-        ForkCut::Message { message_id, side } => {
-            let index = rows
-                .iter()
-                .position(|row| &row.id == message_id)
-                .ok_or_else(|| {
-                    AppError::NotFound("Fork message does not belong to this conversation".into())
-                })?;
-            let row = &rows[index];
-            if message_cut(row).as_ref() != Some(cut)
-                && !(row.role == "tool" && *side == ForkSide::After)
-            {
-                return Err(invalid("Unsupported fork point"));
-            }
-            match side {
-                ForkSide::Before => {
-                    let content = crate::attachment_types::UserContent::from_stored(
-                        &row.parts_json,
-                        row.details_json.as_deref(),
-                    );
-                    let text = if let Some(content) = content {
-                        draft_attachments = content
-                            .attachments
-                            .into_iter()
-                            .map(|att| att.asset)
-                            .collect();
-                        content.body
-                    } else {
-                        row.to_message()?
-                            .parts
-                            .iter()
-                            .filter_map(|part| match part {
-                                ContentPart::Text(text) => Some(text.as_str()),
-                                _ => None,
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    };
-                    (
-                        index,
-                        row.appended_at_revision - 1,
-                        Some(text),
-                        Some(message_id.clone()),
-                    )
-                }
-                ForkSide::After => (
-                    index + 1,
-                    row.appended_at_revision,
-                    None,
-                    Some(message_id.clone()),
-                ),
-            }
-        }
+) -> AppResult<HistorySnapshot> {
+    let mut snapshot = HistorySnapshot {
+        revision,
+        entries: rows.iter().map(HistoryEntry::from).collect(),
+        originals: Default::default(),
     };
-    let mut prefix = Vec::new();
-    for row in rows
-        .iter()
-        .take(length)
-        .filter(|&row| row.appended_at_revision <= cut_revision)
-        .cloned()
-    {
-        let mut row = row;
-        if row
-            .swapped_at_revision
-            .is_some_and(|swapped| swapped > cut_revision)
-        {
-            let original = row
-                .supersedes_message_id
-                .as_deref()
-                .ok_or_else(|| invalid("Missing copy-on-write original"))?;
-            let content = sqlx::query!("SELECT id, role, parts_json, details_json, provider_id, model_id, input_tokens, output_tokens, reasoning_tokens, supersedes_message_id, created_at FROM messages WHERE id = $1", original)
-                .fetch_optional(&mut *tx).await.map_err(anyhow::Error::from)?
-                .ok_or_else(|| invalid("Missing copy-on-write original"))?;
-            if content.supersedes_message_id.is_some() {
-                return Err(invalid("Invalid copy-on-write chain"));
-            }
-            row.id = content.id;
-            row.role = content.role;
-            row.parts_json = content.parts_json;
-            row.details_json = content.details_json;
-            row.provider_id = content.provider_id;
-            row.model_id = content.model_id;
-            row.input_tokens = content.input_tokens;
-            row.output_tokens = content.output_tokens;
-            row.reasoning_tokens = content.reasoning_tokens;
-            row.created_at = content.created_at;
-            row.supersedes_message_id = None;
-            row.swapped_at_revision = None;
-        }
-        prefix.push(row);
+    let originals = policy::original_ids_to_restore(&snapshot, cut)?;
+    if !originals.is_empty() {
+        let ids = serde_json::to_string(&originals).map_err(anyhow::Error::from)?;
+        snapshot.originals = sqlx::query!("SELECT id, role, parts_json, details_json, supersedes_message_id FROM messages WHERE id IN (SELECT value FROM json_each($1))", ids)
+            .fetch_all(&mut *tx).await.map_err(anyhow::Error::from)?
+            .into_iter().map(|row| {
+                let content = HistoryContent { id: row.id, role: row.role, parts_json: row.parts_json, details_json: row.details_json, supersedes_message_id: row.supersedes_message_id };
+                (content.id.clone(), content)
+            }).collect();
     }
-    validate_prefix(&prefix)?;
-    Ok(NormalizedHistory {
-        prefix,
-        cut_revision,
-        draft,
-        draft_attachments,
-        target,
-    })
+    Ok(snapshot)
 }
 
-fn validate_prefix(rows: &[StoredMessage]) -> AppResult<()> {
-    let mut validator = PrefixValidator::default();
-    for row in rows {
-        validator.append(row)?;
-    }
-    if !validator.pending.is_empty() {
-        return Err(invalid("Fork point splits a tool call and its result"));
-    }
-    Ok(())
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oct_llm_provider::core::{Message, Role, ToolCall, ToolResult};
+    use serde_json::json;
 
-#[derive(Default)]
-struct PrefixValidator {
-    pending: HashSet<String>,
-    seen: HashSet<String>,
-}
+    async fn append(pool: &SqlitePool, id: &str, message: Message) -> StoredMessage {
+        messages::insert_message(pool, id, &message, None, None, None)
+            .await
+            .unwrap()
+    }
 
-impl PrefixValidator {
-    fn append(&mut self, row: &StoredMessage) -> AppResult<()> {
-        let message = row
-            .to_message()
-            .map_err(|_| invalid("Malformed message in fork history"))?;
-        if row.role == "tool"
-            && (message.parts.is_empty()
-                || message
-                    .parts
-                    .iter()
-                    .any(|part| !matches!(part, ContentPart::ToolResult(_))))
-        {
-            return Err(invalid("Malformed tool result in fork history"));
-        }
-        if row.role != "tool" && !self.pending.is_empty() {
-            return Err(invalid("Fork history contains unfinished tool calls"));
-        }
-        for part in message.parts {
-            match part {
-                ContentPart::ToolCall(call) => {
-                    if row.role != "assistant" || !self.seen.insert(call.id.clone()) {
-                        return Err(invalid("Invalid tool call in fork history"));
-                    }
-                    self.pending.insert(call.id);
-                }
-                ContentPart::ToolResult(result)
-                    if (row.role != "tool" || !self.pending.remove(&result.call_id)) =>
-                {
-                    return Err(invalid("Unpaired tool result in fork history"));
-                }
-                _ => {}
+    fn tool_result(call_id: &str, content: &str) -> Message {
+        Message::new(
+            Role::Tool,
+            vec![ContentPart::ToolResult(ToolResult {
+                call_id: call_id.into(),
+                content: json!(content),
+                is_error: false,
+                images: Vec::new(),
+            })],
+        )
+    }
+
+    #[tokio::test]
+    async fn snapshot_loads_only_originals_restored_by_the_selected_cut() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite://{}", dir.path().join("history.db").display());
+        let pool = crate::db::init_pool(&url).await.unwrap();
+        let project = crate::db::projects::create_project(
+            &pool,
+            &crate::db::projects::CreateProjectRequest {
+                name: "history".into(),
+                working_dir: dir.path().display().to_string(),
+                additional_dirs: None,
+            },
+        )
+        .await
+        .unwrap();
+        let conversation =
+            super::super::conversations::create_conversation(&pool, &project.id, None)
+                .await
+                .unwrap();
+        let id = &conversation.id;
+        let mut prompts = Vec::new();
+        let mut originals = Vec::new();
+        let mut answers = Vec::new();
+        for call_id in ["first", "middle", "last"] {
+            prompts.push(append(&pool, id, Message::text(Role::User, call_id)).await);
+            append(
+                &pool,
+                id,
+                Message::new(
+                    Role::Assistant,
+                    vec![ContentPart::ToolCall(ToolCall {
+                        id: call_id.into(),
+                        name: "read_file".into(),
+                        arguments: "{}".into(),
+                    })],
+                ),
+            )
+            .await;
+            originals.push(append(&pool, id, tool_result(call_id, &"x".repeat(50_000))).await);
+            answers.push(append(&pool, id, Message::text(Role::Assistant, "done")).await);
+            if call_id == "first" {
+                // This swap already existed at the middle cut and must stay cleared.
+                messages::apply_cow_swaps(
+                    &pool,
+                    id,
+                    &[messages::CowSwap {
+                        call_id: call_id.into(),
+                        copy: tool_result(call_id, crate::agent::micro::PLACEHOLDER_CONTENT),
+                        details: None,
+                    }],
+                )
+                .await
+                .unwrap();
             }
         }
-        Ok(())
+        let swaps = ["middle", "last"].map(|call_id| messages::CowSwap {
+            call_id: call_id.into(),
+            copy: tool_result(call_id, crate::agent::micro::PLACEHOLDER_CONTENT),
+            details: None,
+        });
+        messages::apply_cow_swaps(&pool, id, &swaps).await.unwrap();
+        // Later markers may be ordered inside the historical prefix.
+        let marker = messages::insert_message_at_ordering(
+            &pool,
+            id,
+            &Message::text(Role::User, "summary"),
+            None,
+            None,
+            Some(&json!({"kind": "compaction"})),
+            answers[1].ordering,
+        )
+        .await
+        .unwrap();
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        let rows = messages::list_messages_in_tx(&mut tx, id).await.unwrap();
+        let cases = [
+            (ForkCut::Head, HashSet::new()),
+            (
+                ForkCut::Message {
+                    message_id: answers[0].id.clone(),
+                    side: ForkSide::After,
+                },
+                HashSet::from([originals[0].id.as_str()]),
+            ),
+            (
+                ForkCut::Message {
+                    message_id: prompts[1].id.clone(),
+                    side: ForkSide::Before,
+                },
+                HashSet::new(),
+            ),
+            (
+                ForkCut::Message {
+                    message_id: answers[1].id.clone(),
+                    side: ForkSide::After,
+                },
+                HashSet::from([originals[1].id.as_str()]),
+            ),
+            (
+                ForkCut::Message {
+                    message_id: prompts[2].id.clone(),
+                    side: ForkSide::Before,
+                },
+                HashSet::from([originals[1].id.as_str()]),
+            ),
+        ];
+        for (cut, expected) in cases {
+            let snapshot = load_snapshot(&mut tx, &rows, marker.appended_at_revision, &cut)
+                .await
+                .unwrap();
+            assert_eq!(
+                snapshot
+                    .originals
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<HashSet<_>>(),
+                expected,
+                "unneeded original content must not be materialized for {cut:?}"
+            );
+            policy::plan_cut(&snapshot, &cut).unwrap();
+        }
+        tx.rollback().await.unwrap();
     }
 }

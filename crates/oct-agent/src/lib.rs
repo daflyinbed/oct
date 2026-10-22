@@ -25,3 +25,5 @@ pub mod tool_contract;
 pub mod tool_host;
 
 pub(crate) mod process;
+
+pub mod history;

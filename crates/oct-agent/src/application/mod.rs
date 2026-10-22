@@ -11,3 +11,5 @@ pub mod delegation;
 pub mod inheritance;
 pub mod notifications;
 pub mod tool_ports;
+
+pub mod history;

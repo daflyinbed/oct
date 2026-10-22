@@ -395,7 +395,7 @@ pub async fn get_messages(
         Err(_) => None, // Preserve tolerant display of legacy/corrupt rows.
     };
     tx.commit().await.map_err(anyhow::Error::from)?;
-    let tool_cuts = crate::db::history::tool_cuts(&messages);
+    let tool_cuts = super::history::tool_cuts(&messages);
     let data = messages
         .iter()
         .map(|row| {
