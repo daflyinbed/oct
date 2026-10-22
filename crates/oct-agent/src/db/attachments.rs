@@ -240,13 +240,46 @@ pub(crate) async fn delete_asset(pool: &SqlitePool, id: &str) -> Result<()> {
 }
 
 /// Resolve only the indexed asset's original bytes; paths never come from a
-/// model-authored URI. Workspace resolution and the permission gate still run.
-pub async fn resource_paths(pool: &SqlitePool) -> Result<Vec<(String, String)>> {
-    let rows = sqlx::query!("SELECT id, storage_key FROM attachment_assets")
+/// model-authored URI. Membership includes fork-shared messages and COW
+/// originals. The GC ownership index alone is not authorization: arbitrary
+/// text can pin a foreign URI, but only sent attachments and tool images grant
+/// file access. Workspace resolution and the permission gate still run.
+pub async fn resource_paths(
+    pool: &SqlitePool,
+    conversation_id: &str,
+) -> Result<Vec<(String, String)>> {
+    let rows = sqlx::query!(
+        "SELECT m.role, m.parts_json, m.details_json FROM conversation_messages cm JOIN messages current ON current.id = cm.message_id JOIN messages m ON m.id = current.id OR m.id = current.supersedes_message_id WHERE cm.conversation_id = $1 AND m.role IN ('user', 'tool') AND EXISTS (SELECT 1 FROM message_assets WHERE message_id = m.id)",
+        conversation_id
+    )
         .fetch_all(pool)
         .await?;
-    Ok(rows
-        .into_iter()
-        .map(|row| (row.id, row.storage_key))
-        .collect())
+    let mut references = HashSet::new();
+    for row in rows {
+        if row.role == "user" {
+            if let Some(content) = crate::attachment_types::UserContent::from_stored(
+                &row.parts_json,
+                row.details_json.as_deref(),
+            ) {
+                references.extend(content.attachments.into_iter().map(|a| a.asset.id));
+            }
+        } else if row.role == "tool" {
+            let parts: Vec<oct_llm_provider::core::ContentPart> =
+                serde_json::from_str(&row.parts_json)?;
+            for part in parts {
+                if let oct_llm_provider::core::ContentPart::ToolResult(result) = part {
+                    references.extend(result.images.into_iter().filter_map(|image| {
+                        crate::attachment_types::parse_attachment_id(&image.data).map(str::to_owned)
+                    }));
+                }
+            }
+        }
+    }
+    Ok(
+        assets_for_references(pool, &references.into_iter().collect::<Vec<_>>())
+            .await?
+            .into_iter()
+            .map(|row| (row.id, row.storage_key))
+            .collect(),
+    )
 }

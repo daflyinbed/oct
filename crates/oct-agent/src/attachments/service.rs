@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use sqlx::SqlitePool;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use tokio::sync::{RwLock, RwLockReadGuard};
 use uuid::Uuid;
 
@@ -55,7 +55,7 @@ pub struct AttachmentService {
     pool: SqlitePool,
     publication: Arc<RwLock<()>>,
     uploads: Arc<DashSet<PathBuf>>,
-    resources: Arc<DashMap<String, PathBuf>>,
+    resources: Arc<DashMap<String, Weak<DashMap<String, PathBuf>>>>,
 }
 
 /// Pins an upload's paths without holding a publication lock over network
@@ -143,7 +143,7 @@ pub(crate) struct PreparedToolMessage<'a> {
 }
 impl PreparedToolMessage<'_> {
     pub async fn commit(&self) -> anyhow::Result<StoredMessage> {
-        if self.ids.is_empty() {
+        let stored = if self.ids.is_empty() {
             messages::insert_message(
                 &self.service.pool,
                 &self.conversation_id,
@@ -152,9 +152,9 @@ impl PreparedToolMessage<'_> {
                 None,
                 self.output.details.as_ref(),
             )
-            .await
+            .await?
         } else {
-            Ok(db::claim_and_insert_message(
+            db::claim_and_insert_message(
                 &self.service.pool,
                 &self.conversation_id,
                 &self.ids,
@@ -163,8 +163,25 @@ impl PreparedToolMessage<'_> {
                 None,
                 self.output.details.as_ref(),
             )
-            .await?)
+            .await?
+        };
+        // Only committed media joins the live conversation's read grants;
+        // uploading a draft must not authorize it for any running model.
+        if !self.ids.is_empty()
+            && let Some(resources) = self
+                .service
+                .resources
+                .get(&self.conversation_id)
+                .and_then(|entry| entry.value().upgrade())
+        {
+            for asset in db::assets_for_references(&self.service.pool, &self.ids).await? {
+                resources.insert(
+                    attachment_url(&asset.id),
+                    self.service.store.path(&asset.storage_key)?,
+                );
+            }
         }
+        Ok(stored)
     }
 }
 
@@ -320,10 +337,6 @@ impl AttachmentService {
             asset_id: id.into(),
         };
         db::publish_upload(&self.pool, &asset, &ticket).await?;
-        self.resources.insert(
-            attachment_url(&asset.id),
-            self.store.path(&asset.storage_key)?,
-        );
         Ok(AttachmentDto {
             id: id.into(),
             filename: filename.into(),
@@ -486,12 +499,25 @@ impl AttachmentService {
             .map_err(|_| ServiceError::NotFound("Attachment file not found".into()))?;
         Ok((file, asset.mime_type))
     }
-    pub async fn resource_paths(&self) -> Result<Arc<DashMap<String, PathBuf>>, ServiceError> {
-        for (id, key) in db::resource_paths(&self.pool).await? {
-            self.resources
-                .insert(attachment_url(&id), self.store.path(&key)?);
+    pub async fn resource_paths(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Arc<DashMap<String, PathBuf>>, ServiceError> {
+        let resources = {
+            let mut entry = self.resources.entry(conversation_id.into()).or_default();
+            match entry.upgrade() {
+                Some(resources) => resources,
+                None => {
+                    let resources = Arc::new(DashMap::new());
+                    *entry = Arc::downgrade(&resources);
+                    resources
+                }
+            }
+        };
+        for (id, key) in db::resource_paths(&self.pool, conversation_id).await? {
+            resources.insert(attachment_url(&id), self.store.path(&key)?);
         }
-        Ok(self.resources.clone())
+        Ok(resources)
     }
     pub async fn assets(&self, ids: &[String]) -> Result<Vec<db::AssetRow>, ServiceError> {
         Ok(db::assets_for_references(&self.pool, ids).await?)
@@ -605,7 +631,11 @@ impl AttachmentService {
                 paths.insert(row.model_storage_key);
                 continue;
             }
-            self.resources.remove(&attachment_url(&row.id));
+            for entry in self.resources.iter() {
+                if let Some(resources) = entry.value().upgrade() {
+                    resources.remove(&attachment_url(&row.id));
+                }
+            }
             for key in [row.storage_key, row.model_storage_key] {
                 if let Err(error) = self.store.remove(&key).await {
                     tracing::warn!(%error, "cannot reclaim attachment file");

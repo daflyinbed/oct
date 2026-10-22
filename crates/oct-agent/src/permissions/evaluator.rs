@@ -167,9 +167,6 @@ pub fn decide(action: &PermissionAction, mode: PermissionMode, rules: &RuleSet) 
     if saw_allow {
         return Decision::Allow;
     }
-    if rules.allows_exec_read(action) {
-        return Decision::Allow;
-    }
     mode_default(action, mode)
 }
 
@@ -542,6 +539,9 @@ mod tests {
         // outside-read mode default (Ask) stands, not the built-in Deny.
         let bare = RuleSet::new(&root);
         let action = read(&under.display().to_string(), true);
+        for mode in [PermissionMode::Default, PermissionMode::AcceptEdits] {
+            assert_eq!(decide(&action, mode, &bare), Decision::Ask);
+        }
         for effect in [Effect::Ask, Effect::Deny] {
             let mut rules = bare.clone();
             rules.add(matching_rule(&action, effect));

@@ -206,10 +206,6 @@ impl RuleSet {
                 .canonicalize()
                 .is_ok_and(|root| path.starts_with(root))
     }
-
-    pub(crate) fn allows_exec_read(&self, action: &PermissionAction) -> bool {
-        matches!(action, PermissionAction::Read { path, .. } if self.under_exec_root(path))
-    }
 }
 
 #[cfg(test)]
@@ -363,10 +359,10 @@ mod tests {
         let set = RuleSet::new("some-exec-dir");
         let anchored = std::env::current_dir().unwrap().join("some-exec-dir");
         assert_eq!(set.exec_root(), anchored);
-        assert!(set.allows_exec_read(&read(
-            &anchored.join("conv/bg_1.log").display().to_string(),
-            true,
-        )));
+        assert!(set.denies_exec_root(&PermissionAction::Write {
+            path: anchored.join("conv/bg_1.log"),
+            outside: true,
+        }));
     }
 
     #[cfg(unix)]
@@ -384,7 +380,7 @@ mod tests {
             outside: true
         }));
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        assert!(rules.allows_exec_read(&PermissionAction::Read {
+        assert!(!rules.denies_exec_root(&PermissionAction::Read {
             path,
             outside: true
         }));

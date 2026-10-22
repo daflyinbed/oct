@@ -1375,10 +1375,9 @@ async fn frozen_text_and_logical_read_references_survive_storage_relocation() {
     tokio::fs::rename(&old_root, &new_root).await.unwrap();
     let service =
         oct_agent::attachments::AttachmentService::new(new_root.clone(), app.pool.clone());
-    let resources = service.resource_paths().await.unwrap();
+    let resources = service.resource_paths(&conv).await.unwrap();
     let roots =
         oct_agent::tools::workspace::WorkspaceRoots::new(app.dir.path().join("project"), vec![])
-            .with_read_only_root(new_root.clone())
             .with_resource_paths(resources);
     let resolved = roots
         .resolve_path(&format!("oct-attachment://{id}"))
@@ -1514,6 +1513,10 @@ async fn tool_images_use_the_shared_normalizer_and_remain_reachable_through_cow_
         .insert_connection_for_test(&server_id, "media", None, fake, listing);
     let project = app.create_project().await;
     let conv = app.create_conversation(&project).await;
+    let other = app.create_conversation(&project).await;
+    let resources = app.attachments.resource_paths(&conv).await.unwrap();
+    let other_resources = app.attachments.resource_paths(&other).await.unwrap();
+    assert!(resources.is_empty());
     app.set_permission_mode(&project, &conv, "bypass").await;
     let response = app.send_message(&conv, "take a screenshot").await;
     app.read_sse(response).await;
@@ -1532,6 +1535,14 @@ async fn tool_images_use_the_shared_normalizer_and_remain_reachable_through_cow_
     );
     let asset_id =
         oct_agent::attachment_types::parse_attachment_id(&result.images[0].data).unwrap();
+    assert!(
+        resources.contains_key(&result.images[0].data),
+        "committed tool media must reach the run's existing resource map"
+    );
+    assert!(
+        other_resources.is_empty(),
+        "tool media stays conversation-scoped"
+    );
     assert_eq!(
         app.attachments
             .asset(asset_id)
@@ -1567,6 +1578,18 @@ async fn tool_images_use_the_shared_normalizer_and_remain_reachable_through_cow_
     )
     .await
     .unwrap();
+    let reloaded = oct_agent::attachments::AttachmentService::new(
+        app.attachments.root().to_path_buf(),
+        app.pool.clone(),
+    );
+    assert!(
+        reloaded
+            .resource_paths(&conv)
+            .await
+            .unwrap()
+            .contains_key(&result.images[0].data),
+        "COW originals retain the conversation's attachment read grants"
+    );
     app.attachments.sweep().await;
     assert_eq!(
         app.get_raw(&format!("/api/attachments/{asset_id}"))

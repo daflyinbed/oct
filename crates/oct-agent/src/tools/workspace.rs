@@ -30,7 +30,7 @@ pub struct WorkspaceRoots {
     primary: PathBuf,
     additional: Vec<PathBuf>,
     read_only: Vec<PathBuf>,
-    resources: Arc<DashMap<String, PathBuf>>,
+    resources: Vec<Arc<DashMap<String, PathBuf>>>,
 }
 
 /// A resolved tool path plus its workspace classification.
@@ -52,7 +52,7 @@ impl WorkspaceRoots {
             primary,
             additional,
             read_only: Vec::new(),
-            resources: Arc::new(DashMap::new()),
+            resources: Vec::new(),
         }
     }
 
@@ -64,11 +64,32 @@ impl WorkspaceRoots {
     }
 
     /// Logical runtime resources resolve through the same classifier and
-    /// permission rules as absolute paths. The shared registry also learns
-    /// about assets produced by tools later in the current run.
+    /// permission rules as absolute paths. Only the registered files become
+    /// readable, never their containing directories. Each registry belongs to
+    /// one conversation and learns about its committed tool assets live.
     pub fn with_resource_paths(mut self, resources: Arc<DashMap<String, PathBuf>>) -> Self {
-        self.resources = resources;
+        self.resources.push(resources);
         self
+    }
+
+    fn candidate(&self, requested: &str) -> Result<PathBuf, ToolOutput> {
+        if let Some(path) = self
+            .resources
+            .iter()
+            .find_map(|resources| resources.get(requested).map(|entry| entry.value().clone()))
+        {
+            return Ok(path);
+        }
+        if requested.starts_with("oct-attachment://") {
+            return Err(ToolOutput::error(format!(
+                "Unknown attachment resource: {requested}"
+            )));
+        }
+        Ok(if Path::new(requested).is_absolute() {
+            PathBuf::from(requested)
+        } else {
+            self.primary.join(requested)
+        })
     }
 
     /// The primary working directory; the anchor for relative paths and the
@@ -111,18 +132,7 @@ impl WorkspaceRoots {
     /// Absolute requests are taken as-is; relative requests are joined onto
     /// the primary root.
     pub fn resolve_path(&self, requested: &str) -> Result<ResolvedPath, ToolOutput> {
-        if requested.starts_with("oct-attachment://") && !self.resources.contains_key(requested) {
-            return Err(ToolOutput::error(format!(
-                "Unknown attachment resource: {requested}"
-            )));
-        }
-        let candidate = if let Some(resource) = self.resources.get(requested) {
-            resource.value().clone()
-        } else if Path::new(requested).is_absolute() {
-            PathBuf::from(requested)
-        } else {
-            self.primary.join(requested)
-        };
+        let candidate = self.candidate(requested)?;
 
         let path = candidate
             .canonicalize()
@@ -134,6 +144,14 @@ impl WorkspaceRoots {
             .iter()
             .filter_map(|root| root.canonicalize().ok())
             .any(|root| resolved.path.starts_with(root))
+            || self.resources.iter().any(|resources| {
+                resources.iter().any(|resource| {
+                    resource
+                        .value()
+                        .canonicalize()
+                        .is_ok_and(|path| path == resolved.path)
+                })
+            })
         {
             resolved.outside = false;
         }
@@ -152,18 +170,7 @@ impl WorkspaceRoots {
     /// Nothing is rejected here — outside-workspace writes and writes through
     /// symlinks are the permission layer's call.
     pub fn resolve_write_path(&self, requested: &str) -> Result<ResolvedPath, ToolOutput> {
-        if requested.starts_with("oct-attachment://") && !self.resources.contains_key(requested) {
-            return Err(ToolOutput::error(format!(
-                "Unknown attachment resource: {requested}"
-            )));
-        }
-        let candidate = if let Some(resource) = self.resources.get(requested) {
-            resource.value().clone()
-        } else if Path::new(requested).is_absolute() {
-            PathBuf::from(requested)
-        } else {
-            self.primary.join(requested)
-        };
+        let candidate = self.candidate(requested)?;
 
         let path = if candidate.exists() {
             // Existing target (symlinks followed by canonicalize): the real

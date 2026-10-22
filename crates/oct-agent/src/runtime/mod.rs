@@ -119,10 +119,9 @@ pub struct RunService {
     /// Background bash task registry/lifecycle: same two-phase
     /// wiring — the manager starts wake runs through this service.
     pub background: Arc<background::BackgroundTaskManager>,
-    /// Chat attachment store: the run assembly grants its directory to the
-    /// file tools as a read-only root (uploaded files are readable by the
-    /// model), conversation deletion sweeps it, and the request assembly
-    /// hydrates `oct-attachment://` references through it.
+    /// Chat attachment store: run assembly grants the conversation's sent
+    /// assets to the file tools as read-only files, conversation deletion
+    /// sweeps it, and request assembly hydrates `oct-attachment://` references.
     pub attachments: Arc<crate::attachments::AttachmentService>,
     /// Pending tool-approval registry: every gate of this
     /// service parks its Ask arms here; one registry process-wide is all
@@ -195,6 +194,30 @@ pub(crate) fn workspace_roots(project: &project_db::Project) -> (WorkspaceRoots,
 }
 
 impl RunService {
+    /// Runtime data follows the conversation, not the global storage roots.
+    /// Workers also inherit their root conversation's outputs and attachments;
+    /// the same assembly applies on recovery when no parent toolset survives.
+    async fn runtime_roots(
+        &self,
+        mut roots: WorkspaceRoots,
+        conversation_id: &str,
+        root_conversation_id: &str,
+    ) -> AppResult<WorkspaceRoots> {
+        for id in std::iter::once(root_conversation_id)
+            .chain((conversation_id != root_conversation_id).then_some(conversation_id))
+        {
+            roots = roots
+                .with_read_only_root(self.background.exec_dir().join(id))
+                .with_resource_paths(
+                    self.attachments
+                        .resource_paths(id)
+                        .await
+                        .map_err(|error| AppError::Internal(anyhow::anyhow!(error)))?,
+                );
+        }
+        Ok(roots)
+    }
+
     fn codemode_root(&self) -> PathBuf {
         self.background
             .exec_dir()
@@ -282,7 +305,9 @@ impl RunService {
     ) -> Result<Arc<PermissionGate>, AppError> {
         let mut rules = RuleSet::new(self.background.exec_dir());
         rules.protect_read_only_roots(roots.read_only_roots());
-        rules.protect_read_only_roots(&[self.codemode_root()]);
+        // Write protection covers ALL runtime assets, independently of the
+        // much narrower read grants of this run.
+        rules.protect_read_only_roots(&[self.codemode_root(), self.attachments.root().into()]);
         match crate::db::permissions::list_rules_for_project(&self.pool, project_id).await {
             Ok(rows) => {
                 for row in &rows {
@@ -517,17 +542,11 @@ impl RunService {
             .expect("the occupancy guard guarantees the session entry");
 
         let (roots, additional) = workspace_roots(&project);
-        let mut roots = roots.with_read_only_root(self.background.exec_dir().to_path_buf());
         // Uploaded chat attachments are readable by the model (text files
         // beyond the inline budget point here explicitly).
-        roots = roots
-            .with_read_only_root(self.attachments.root().to_path_buf())
-            .with_resource_paths(
-                self.attachments
-                    .resource_paths()
-                    .await
-                    .map_err(|error| AppError::Internal(anyhow::anyhow!(error)))?,
-            );
+        let mut roots = self
+            .runtime_roots(roots, &conversation_id, &conversation_id)
+            .await?;
         // Frozen prompt environment (repo instruction block + MCP tool
         // identities), keyed by the root conversation: the first assembly
         // reads the files and snapshots the live MCP set; clean hits reuse
@@ -861,24 +880,18 @@ impl RunService {
             .as_ref()
             .map(|snapshot| snapshot.tool_mode)
             .unwrap_or_default();
-        let mut roots = roots.with_read_only_root(self.background.exec_dir().to_path_buf());
-        roots = roots
-            .with_read_only_root(self.attachments.root().to_path_buf())
-            .with_resource_paths(
-                self.attachments
-                    .resource_paths()
-                    .await
-                    .map_err(|error| AppError::Internal(anyhow::anyhow!(error)))?,
-            );
+        let mut roots = self
+            .runtime_roots(roots, &conversation_id, &root_conversation_id)
+            .await?;
         if tool_mode == crate::codemode::McpToolMode::Code {
             roots = roots
                 .with_read_only_root(self.codemode_root().join(&conversation_id).join(&run_id));
         }
 
-        // Effective toolset = parent set − task, with the three file tools
-        // rebuilt over the shared locks and a FRESH read state (the child's
-        // read records must be its own; stateless builtins and MCP tools are
-        // reused by Arc so connections stay shared). Recovery passes
+        // Effective toolset = parent set − task, with file/search/command
+        // tools rebuilt over the worker's scoped roots, shared locks and a
+        // FRESH read state (the child's read records must be its own; MCP
+        // tools are reused by Arc so connections stay shared). Recovery passes
         // `parent_toolset = None`: the parent's instances died with the
         // crashed process, so the set is rebuilt from the same assembly
         // sources — which yields the same effective set.

@@ -2,9 +2,9 @@
 use super::*;
 
 /// Derive a worker's toolset from the parent's live set:
-/// parent set − `task`, with `read_file`/`write_file`/`edit_file` rebuilt
-/// over the shared locks and a fresh read state. Everything else (stateless
-/// builtins, MCP tools) is Arc-cloned so connections and configs are reused
+/// parent set − `task`, with file tools rebuilt over the worker's scoped
+/// roots, shared locks and a fresh read state. Everything else (MCP tools)
+/// is Arc-cloned so connections and configs are reused
 /// verbatim — schema AND dispatch stay exactly parent-minus-task.
 ///
 /// `execute_command` is likewise rebuilt (background gate closed, schema
@@ -18,16 +18,18 @@ pub(crate) fn derive_child_toolset(
     locks: Arc<WorkspaceFileLocks>,
 ) -> Vec<Arc<dyn tools::AgentTool>> {
     let mut child: Vec<Arc<dyn tools::AgentTool>> =
-        tools::file_tools_with(roots.clone(), locks, Arc::new(AgentReadState::new()))
+        tools::default_tools_with(roots, locks, Arc::new(AgentReadState::new()))
             .into_iter()
             .map(Arc::from)
             .collect();
-    child.push(Arc::new(tools::execute::ExecuteCommandTool::new(roots)) as Arc<dyn tools::AgentTool>);
-    const NOT_REUSED: [&str; 6] = [
+    const NOT_REUSED: [&str; 9] = [
         "task",
         "read_file",
         "write_file",
         "edit_file",
+        "list_dir",
+        "grep",
+        "glob",
         "execute_command",
         "task_stop",
     ];
