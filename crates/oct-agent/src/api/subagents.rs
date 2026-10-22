@@ -205,7 +205,7 @@ pub async fn stream_subagent_events(
     path = "/subagents/{agentId}/cancel",
     params(("agentId" = String, Path, description = "Subagent (child conversation) ID")),
     responses(
-        (status = 200, description = "Cancellation requested (active run), or a lost run persisted as cancelled"),
+        (status = 200, description = "Cancellation requested (active or starting run), or an unowned recoverable run persisted as cancelled"),
         (status = 404, description = "No subagent, no run, or nothing cancellable")
     ),
     tag = "subagents"
@@ -216,32 +216,10 @@ pub async fn cancel_subagent(
 ) -> ApiResult<StatusCode> {
     require_subagent_conversation(&state, &agent_id).await?;
 
-    // Active run: cancel its token; the supervisor settles it as cancelled.
-    if state.runs.subagents.cancel(&agent_id).is_some() {
+    // The manager distinguishes live/startup owners from unowned DB rows,
+    // and serializes persisted cancellation against registration/recovery.
+    if state.runs.subagents.cancel_run(&agent_id).await? {
         return Ok(StatusCode::OK);
-    }
-
-    // NOT active, but the latest run is `lost` (a crashed execution instance
-    // with no live memory handle): persist it as cancelled so a later resume
-    // never restarts it.
-    if let Some(run) = run_db::latest_run_for_conversation(&state.pool, &agent_id).await?
-        && run.status == "lost"
-    {
-        // Lost-only guard: if a concurrent resume already bumped the row back
-        // to `running` with a fresh instance, that instance's own settlement
-        // owns the row — this cancel no-ops and the caller sees 404 (retry
-        // against the now-active run hits the live branch above).
-        let cancelled = run_db::cancel_lost_run(
-            &state.pool,
-            &run.id,
-            run.final_message_id.as_deref(),
-            run.input_tokens,
-            run.output_tokens,
-        )
-        .await?;
-        if cancelled {
-            return Ok(StatusCode::OK);
-        }
     }
 
     Err(AppError::NotFound(

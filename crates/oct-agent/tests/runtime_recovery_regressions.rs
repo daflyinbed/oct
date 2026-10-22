@@ -301,6 +301,169 @@ async fn missing_child_provider_keeps_lost_run_cancellable_and_notification_pend
 }
 
 #[tokio::test]
+async fn unowned_running_child_can_be_cancelled_without_restarting_the_server() {
+    let (app, llm, project, conv) = app(&[]).await;
+    let child = seed_lost_child(&app, &project, &conv, "mock-llm").await;
+    let epoch = runs::bump_execution_epoch(&app.pool, &child.id)
+        .await
+        .unwrap()
+        .unwrap();
+    // This is the original ghost state: the parent already answered its call,
+    // leaving no dangling delegation for resume to find.
+    msg::answer_tool_call_if_absent(&app.pool, &conv, "pending-task", "cancelled", true, None)
+        .await
+        .unwrap();
+    assert!(!app.state.sessions.contains_key(&child.conversation_id));
+    assert!(!app.state.runs.subagents.is_active(&child.conversation_id));
+    let response = app
+        .post_json(
+            &format!("/api/subagents/{}/cancel", child.conversation_id),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(response.status(), 200);
+    let settled = runs::get_run(&app.pool, &child.id).await.unwrap().unwrap();
+    assert_eq!(settled.status, "cancelled");
+    assert_eq!(settled.execution_epoch, epoch);
+    assert!(settled.finished_at.is_some());
+    assert!(!app.state.sessions.contains_key(&child.conversation_id));
+    assert!(
+        msg::find_dangling_tool_calls(&app.pool, &conv)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(llm.requests().is_empty());
+    let response = app
+        .post_json(
+            &format!("/api/subagents/{}/cancel", child.conversation_id),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(
+        response.status(),
+        404,
+        "terminal runs are not cancellable again"
+    );
+}
+
+#[tokio::test]
+async fn resume_recovers_an_unowned_running_child_on_the_same_row() {
+    let (app, llm, project, conv) = app(&["child recovered", "parent continued"]).await;
+    let child = seed_lost_child(&app, &project, &conv, "mock-llm").await;
+    let epoch = runs::bump_execution_epoch(&app.pool, &child.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let response = app.resume(&conv).await;
+    assert_eq!(response.status(), 200);
+    app.read_sse(response).await;
+    let settled = runs::get_run(&app.pool, &child.id).await.unwrap().unwrap();
+    assert_eq!(settled.status, "completed");
+    assert_eq!(settled.execution_epoch, epoch + 1);
+    assert_eq!(
+        runs::list_subagent_runs(&app.pool, &conv)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(llm.requests().len(), 2);
+    assert!(
+        msg::find_dangling_tool_calls(&app.pool, &conv)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn child_cancel_reaches_recovery_assembly_before_supervisor_takeover() {
+    use futures_util::StreamExt;
+    let (app, llm, project, conv) = app(&[]).await;
+    let child = seed_lost_child(&app, &project, &conv, "mock-llm").await;
+    // Recovery resolves the tree's prompt under this real application lock.
+    // Keep assembly waiting while HTTP cancellation remains able to use DB.
+    let lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+    app.state
+        .runs
+        .prompt_env_locks
+        .insert(conv.clone(), lock.clone());
+    let guard = lock.lock().await;
+    let response = app.resume(&conv).await;
+    assert_eq!(response.status(), 200);
+    let mut events = support::sse_payloads(response);
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while let Some(event) = events.next().await {
+            if event["type"] == "subagent_updated" && event["data"]["status"] == "running" {
+                return;
+            }
+        }
+        panic!("child never entered assembly");
+    })
+    .await
+    .unwrap();
+    let active = app
+        .state
+        .runs
+        .subagents
+        .child_by_agent(&child.conversation_id)
+        .unwrap();
+    assert!(
+        active.hub.upgrade().unwrap().snapshot().is_empty(),
+        "no replay metadata before preparation finishes"
+    );
+    let response = app
+        .post_json(
+            &format!("/api/subagents/{}/cancel", child.conversation_id),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(response.status(), 200);
+    assert!(
+        !app.state.sessions.get(&conv).unwrap().cancel.is_cancelled(),
+        "child cancellation must not cancel its parent"
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while events.next().await.is_some() {}
+    })
+    .await
+    .expect("cancellation must settle without releasing the prompt lock");
+    drop(guard);
+    let settled = runs::get_run(&app.pool, &child.id).await.unwrap().unwrap();
+    assert_eq!(settled.status, "cancelled");
+    assert_eq!(settled.execution_epoch, 2);
+    assert!(!app.state.runs.subagents.is_active(&child.conversation_id));
+    assert!(!app.state.sessions.contains_key(&child.conversation_id));
+    assert!(llm.requests().is_empty());
+}
+
+#[tokio::test]
+async fn assembly_read_failure_settles_child_and_releases_its_startup_handle() {
+    let (app, llm, project, conv) = app(&[]).await;
+    let child = seed_lost_child(&app, &project, &conv, "mock-llm").await;
+    sqlx::query("ALTER TABLE attachment_assets RENAME TO unavailable_attachment_assets")
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    let response = app.resume(&conv).await;
+    assert_eq!(response.status(), 200);
+    let events = app.read_sse(response).await;
+    sqlx::query("ALTER TABLE unavailable_attachment_assets RENAME TO attachment_assets")
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    assert!(events.iter().any(|event| event["type"] == "error"));
+    let settled = runs::get_run(&app.pool, &child.id).await.unwrap().unwrap();
+    assert_eq!(settled.status, "failed");
+    assert_eq!(settled.execution_epoch, 2);
+    assert!(settled.error.unwrap().contains("attachment_assets"));
+    assert!(!app.state.runs.subagents.is_active(&child.conversation_id));
+    assert!(!app.state.sessions.contains_key(&child.conversation_id));
+    assert!(llm.requests().is_empty());
+}
+
+#[tokio::test]
 async fn failure_after_execution_claim_settles_child_and_parent_can_retry() {
     let (app, llm, project, conv) = app(&["continued after startup failure"]).await;
     let child = seed_lost_child(&app, &project, &conv, "mock-llm").await;

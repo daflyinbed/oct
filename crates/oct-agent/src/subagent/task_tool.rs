@@ -32,6 +32,7 @@ pub type ToolsetSlot = Arc<std::sync::OnceLock<std::sync::Weak<Vec<Arc<dyn Agent
 /// Everything the manager needs to spawn a worker for ONE parent run. Built
 /// by the RunService when it assembles the root run's toolset (see the
 /// `parent_toolset` slot note there).
+#[derive(Clone)]
 pub struct TaskSpawnConfig {
     /// The conversation whose run is delegating.
     pub parent_conversation_id: String,

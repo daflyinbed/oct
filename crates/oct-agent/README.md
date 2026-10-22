@@ -31,6 +31,8 @@ oct 的后端服务 crate：Axum REST/SSE API + agent loop 运行时。既是 li
 - `attachment_types.rs` — 中性正文/附件/固定文本快照契约与旧格式兼容读取
 - `attachments/` — AttachmentService 生命周期、纯文件 AssetStore、共享 MediaNormalizer、请求物化 RequestAssembler；`context/projection.rs` 负责无 IO 的媒体选择与 usage 快照
 
+子代理从注册到监督接管由独立任务负责。取消父回合会通知启动中的子代理，子代理落到终态后释放会话占用；单独取消子代理也覆盖启动装配阶段。数据库中没有执行所有者的 `running` 子任务可直接取消，或在父委派仍未结算时恢复，无需重启服务。
+
 ## 数据库
 
 SQLite，位置解析两级：`DATABASE_URL` 显式设置优先 → 默认 `$XDG_DATA_HOME/oct/oct.db`（目录 0700、库文件 0600）。迁移在仓库根 `migrations/`，启动时自动执行；查询全部走 `sqlx::query!` 宏（`.sqlx/` 离线缓存已提交）。改 SQL 后对 scratch 库跑迁移再 `cargo sqlx prepare --workspace`。

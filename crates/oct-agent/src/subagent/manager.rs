@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use dashmap::DashMap;
+use futures_util::FutureExt;
 use serde_json::{Value, json};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -43,8 +44,8 @@ pub struct ChildRun {
     pub agent_id: String,
     pub description: String,
     pub cancel: CancellationToken,
-    /// Settled flag: `true` once the supervisor finished settlement. Await
-    /// with `watch` semantics — no polling.
+    /// Settled flag: `true` once startup or the loop supervisor finished
+    /// settlement. Await with `watch` semantics — no polling.
     pub done: watch::Receiver<bool>,
     /// The child's event hub (weak: never keeps a terminal child's hub alive).
     pub hub: Weak<EventHub>,
@@ -165,9 +166,8 @@ impl SubagentManager {
         self.service.get().and_then(Weak::upgrade)
     }
 
-    /// Record a freshly launched child (called by
-    /// [`RunService::start_child_run`] right before spawning the
-    /// supervisor).
+    /// Record a starting child (called by [`RunService::start_child_run`]
+    /// before assembly awaits, then retained by the loop supervisor).
     pub fn register_child(&self, child: ChildRun) {
         self.by_agent
             .insert(child.agent_id.clone(), child.run_id.clone());
@@ -201,6 +201,36 @@ impl SubagentManager {
             agent_id: None,
             run_id: None,
         })?;
+        let spawn = spawn.clone();
+        let parent_call_id = parent_call_id.to_owned();
+        let description = description.to_owned();
+        let prompt = prompt.to_owned();
+        // This owner outlives the tool future: JoinSet::shutdown may drop the
+        // caller even while the registration COMMIT is in flight. Cancellation
+        // travels through parent_cancel; it must never abort durable startup.
+        // Keep the weak toolset upgrade alive until startup/settlement finishes,
+        // even if the cancelled parent has already released its own tools.
+        let parent_tools = spawn.parent_toolset.get().and_then(Weak::upgrade);
+        tokio::spawn(async move {
+            let result = service
+                .subagents
+                .run_task_owned(&service, &spawn, &parent_call_id, &description, &prompt)
+                .await;
+            drop(parent_tools);
+            result
+        })
+        .await
+        .map_err(|error| task_err(anyhow!("task launcher panicked: {error}")))?
+    }
+
+    async fn run_task_owned(
+        &self,
+        service: &Arc<RunService>,
+        spawn: &TaskSpawnConfig,
+        parent_call_id: &str,
+        description: &str,
+        prompt: &str,
+    ) -> std::result::Result<run_db::AgentRun, TaskError> {
         let pool = service.pool.clone();
 
         // Server-side depth guard: only a ROOT run may delegate — workers
@@ -223,6 +253,9 @@ impl SubagentManager {
         }
 
         let registration = self.registration.lock().await;
+        if spawn.parent_cancel.is_cancelled() {
+            return Err(task_err(anyhow!("subagent startup cancelled")));
+        }
         // Registration idempotency: one child run per (parent_run_id,
         // parent_tool_call_id) — existing rows are awaited or continued,
         // never duplicated.
@@ -250,17 +283,8 @@ impl SubagentManager {
                         run_id: Some(existing.id.clone()),
                     });
             }
-            // Running-but-not-in-memory: a stale execution instance. Bump the
-            // epoch (its eventual settlement will no-op on the epoch guard)
-            // and continue the SAME row with a fresh instance.
-            let epoch = run_db::bump_execution_epoch(&pool, &existing.id)
-                .await
-                .map_err(task_err)?
-                .ok_or_else(|| TaskError {
-                    message: format!("child run {} already settled", existing.id),
-                    agent_id: Some(existing.conversation_id.clone()),
-                    run_id: Some(existing.id.clone()),
-                })?;
+            // Validate before claiming the stale execution: a failed read must
+            // leave a lost row recoverable rather than creating a new owner.
             let start = msg_db::first_user_message_id(&pool, &existing.conversation_id)
                 .await
                 .map_err(task_err)?
@@ -272,8 +296,19 @@ impl SubagentManager {
                     agent_id: Some(existing.conversation_id.clone()),
                     run_id: Some(existing.id.clone()),
                 })?;
+            // Running-but-not-in-memory: a stale execution instance. Bump the
+            // epoch (its eventual settlement will no-op on the epoch guard)
+            // and continue the SAME row with a fresh instance.
+            let epoch = run_db::bump_execution_epoch(&pool, &existing.id)
+                .await
+                .map_err(task_err)?
+                .ok_or_else(|| TaskError {
+                    message: format!("child run {} already settled", existing.id),
+                    agent_id: Some(existing.conversation_id.clone()),
+                    run_id: Some(existing.id.clone()),
+                })?;
             return self
-                .launch(&service, spawn, existing, epoch, start, registration)
+                .launch(service, spawn, existing, epoch, start, registration)
                 .await;
         }
 
@@ -357,18 +392,18 @@ impl SubagentManager {
                     .map_err(task_err)?;
                 let epoch = existing.execution_epoch;
                 return self
-                    .launch(&service, spawn, existing, epoch, start, registration)
+                    .launch(service, spawn, existing, epoch, start, registration)
                     .await;
             }
             Err(e) => return Err(task_err(e)),
         };
 
-        self.launch(&service, spawn, run, 1, start_message_id, registration)
+        self.launch(service, spawn, run, 1, start_message_id, registration)
             .await
     }
 
-    /// Resolve the child model from the run row's snapshot, occupy the child
-    /// conversation and hand the run to the RunService's child supervisor;
+    /// Occupy the child conversation, resolve its model from the run row's
+    /// snapshot and hand the run to the RunService's child supervisor;
     /// then wait for settlement (the parent's cancellation cascades through
     /// the token chain — a watch, never polling) and return the settled row.
     async fn launch(
@@ -381,7 +416,32 @@ impl SubagentManager {
         registration: tokio::sync::MutexGuard<'_, ()>,
     ) -> std::result::Result<run_db::AgentRun, TaskError> {
         let pool = service.pool.clone();
-        let prepared: Result<ChildHandle, TaskError> = async {
+        let cancel = spawn.parent_cancel.child_token();
+        // Occupy before any asynchronous preparation, so per-child cancel
+        // and recovery can see the startup owner as soon as registration ends.
+        let guard = match service.occupy_with(&run.conversation_id, cancel.clone()) {
+            Ok(guard) => guard,
+            Err(error) => {
+                // A busy child belongs to another launcher; a lifecycle error
+                // without an owner must still terminalize our registration.
+                if !service.sessions.contains_key(&run.conversation_id) {
+                    run_db::finish_run(
+                        &pool,
+                        &run.id,
+                        run_db::RunFinalStatus::Failed,
+                        None,
+                        Some(&error.to_string()),
+                        None,
+                        None,
+                        Some(epoch),
+                    )
+                    .await
+                    .map_err(task_err)?;
+                }
+                return Err(task_err_ctx(&run, error.into()));
+            }
+        };
+        let preparation = async {
             let provider_id = run
                 .provider_id
                 .clone()
@@ -419,77 +479,88 @@ impl SubagentManager {
                 .await
                 .map_err(|e| task_err_ctx(&run, e))?;
 
-            let cancel = spawn.parent_cancel.child_token();
-            let guard = service
-                .occupy_with(&run.conversation_id, cancel.clone())
-                .map_err(|e| TaskError {
-                    message: format!("child conversation is busy: {e}"),
-                    agent_id: Some(run.conversation_id.clone()),
-                    run_id: Some(run.id.clone()),
-                })?;
-
-            let (roots, _additional) = workspace_roots(&spawn.project);
-            let locks = service.file_locks_for(&spawn.project.id);
-            let description = run.description.clone().unwrap_or_default();
-            let parent_call_id = run.parent_tool_call_id.clone().unwrap_or_default();
-
-            service
-                .start_child_run(ChildRunRequest {
-                    guard,
-                    run_id: run.id.clone(),
-                    epoch,
-                    conversation_id: run.conversation_id.clone(),
-                    start_message_id,
-                    project: spawn.project.clone(),
-                    model,
-                    provider_id,
-                    model_id,
-                    view,
-                    context_window,
-                    agent_config,
-                    cancel,
-                    parent_hub: spawn.parent_hub.clone(),
-                    parent_call_id,
-                    description,
-                    roots,
-                    locks,
-                    parent_toolset: spawn
-                        .parent_toolset
-                        .get()
-                        .and_then(std::sync::Weak::upgrade),
-                    parent_env: Some(spawn.parent_env.clone()),
-                })
-                .await
-                .map_err(|e| TaskError {
-                    message: format!("failed to start the child run: {e}"),
-                    agent_id: Some(run.conversation_id.clone()),
-                    run_id: Some(run.id.clone()),
-                })
-        }
-        .await;
-        let handle = match prepared {
-            Ok(handle) => handle,
+            Ok((
+                model,
+                provider_id,
+                model_id,
+                agent_config,
+                context_window,
+                view,
+            ))
+        };
+        let prepared = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err(task_err_ctx(&run, anyhow!("subagent startup cancelled"))),
+            result = std::panic::AssertUnwindSafe(preparation).catch_unwind() => {
+                result.unwrap_or_else(|_| Err(task_err_ctx(&run, anyhow!("subagent startup panicked"))))
+            }
+        };
+        let (model, provider_id, model_id, agent_config, context_window, view) = match prepared {
+            Ok(prepared) => prepared,
             Err(error) => {
-                // Assembly has no supervisor yet. Persist its failure instead
-                // of leaving a registered child permanently "running".
-                // A busy child is owned by another launcher and must be left alone.
-                if !service.sessions.contains_key(&run.conversation_id) {
-                    run_db::finish_run(
-                        &pool,
-                        &run.id,
-                        run_db::RunFinalStatus::Failed,
-                        None,
-                        Some(&error.message),
-                        None,
-                        None,
-                        Some(epoch),
-                    )
-                    .await
-                    .map_err(task_err)?;
-                }
+                let hub = service
+                    .sessions
+                    .get(&run.conversation_id)
+                    .unwrap()
+                    .hub
+                    .clone();
+                let outcome = RunOutcome {
+                    status: if cancel.is_cancelled() {
+                        RunStatus::Cancelled
+                    } else {
+                        RunStatus::Failed
+                    },
+                    final_message_id: None,
+                    final_text: None,
+                    partial: false,
+                    usage: None,
+                    error: Some(error.message.clone()),
+                };
+                let (done_tx, _) = watch::channel(false);
+                self.settle(
+                    &pool,
+                    &run.id,
+                    &run.conversation_id,
+                    run.description.as_deref().unwrap_or_default(),
+                    epoch,
+                    run.parent_tool_call_id.as_deref().unwrap_or_default(),
+                    &outcome,
+                    &spawn.parent_hub,
+                    &hub,
+                    &done_tx,
+                )
+                .await;
+                drop(guard);
                 return Err(error);
             }
         };
+
+        let (roots, _additional) = workspace_roots(&spawn.project);
+        let handle = service
+            .start_child_run(ChildRunRequest {
+                guard,
+                run_id: run.id.clone(),
+                epoch,
+                conversation_id: run.conversation_id.clone(),
+                start_message_id,
+                project: spawn.project.clone(),
+                model,
+                provider_id,
+                model_id,
+                view,
+                context_window,
+                agent_config,
+                cancel,
+                parent_hub: spawn.parent_hub.clone(),
+                parent_call_id: run.parent_tool_call_id.clone().unwrap_or_default(),
+                description: run.description.clone().unwrap_or_default(),
+                roots,
+                locks: service.file_locks_for(&spawn.project.id),
+                parent_toolset: spawn.parent_toolset.get().and_then(Weak::upgrade),
+                parent_env: Some(spawn.parent_env.clone()),
+            })
+            .await
+            .map_err(|e| task_err_ctx(&run, anyhow!("failed to start the child run: {e}")))?;
 
         drop(registration);
         // Wait for settlement: DB row is the single source of truth for the
@@ -604,14 +675,64 @@ impl SubagentManager {
             .collect())
     }
 
-    /// Cancel one agent's active run (the subagent cancel endpoint). Also
-    /// returns the child when its run row is `lost` (not active) so callers
-    /// can distinguish "cancelled live" from "persisted a lost run as
-    /// cancelled" — see the API layer.
+    /// Cancel one agent's published active run.
     pub fn cancel(&self, agent_id: &str) -> Option<Arc<ChildRun>> {
         let child = self.child_by_agent(agent_id)?;
         child.cancel.cancel();
         Some(child)
+    }
+
+    /// Cancel an execution owner, including startup before its live child
+    /// handle exists. Without an owner, settle a recoverable DB row under
+    /// registration and occupancy so a concurrent launcher cannot revive it.
+    pub async fn cancel_run(&self, agent_id: &str) -> Result<bool> {
+        let service = self.service()?;
+        if self.cancel(agent_id).is_some() {
+            return Ok(true);
+        }
+        if let Some(handle) = service.sessions.get(agent_id) {
+            handle.cancel.cancel();
+            return Ok(true);
+        }
+
+        let _registration = self.registration.lock().await;
+        // Registration may have committed while this caller waited for its
+        // lock. The session is also recovery's owner before handle publication.
+        if self.cancel(agent_id).is_some() {
+            return Ok(true);
+        }
+        if let Some(handle) = service.sessions.get(agent_id) {
+            handle.cancel.cancel();
+            return Ok(true);
+        }
+        let _guard = match service.occupy_with(agent_id, CancellationToken::new()) {
+            Ok(guard) => guard,
+            Err(crate::error::AppError::SessionBusy(_)) => {
+                if let Some(handle) = service.sessions.get(agent_id) {
+                    handle.cancel.cancel();
+                    return Ok(true);
+                }
+                return Ok(false);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let Some(run) = run_db::latest_run_for_conversation(&service.pool, agent_id).await? else {
+            return Ok(false);
+        };
+        if !matches!(run.status.as_str(), "running" | "lost") {
+            return Ok(false);
+        }
+        run_db::finish_run(
+            &service.pool,
+            &run.id,
+            run_db::RunFinalStatus::Cancelled,
+            run.final_message_id.as_deref(),
+            run.error.as_deref(),
+            run.input_tokens,
+            run.output_tokens,
+            Some(run.execution_epoch),
+        )
+        .await
     }
 }
 

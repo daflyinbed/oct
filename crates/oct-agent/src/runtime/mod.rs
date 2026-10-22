@@ -51,6 +51,7 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use dashmap::DashMap;
+use futures_util::FutureExt;
 use sqlx::SqlitePool;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -835,254 +836,30 @@ impl RunService {
             model_id,
         } = req;
 
-        let mut replay_base = replay::ReplayBase::load(&self.pool, &conversation_id).await?;
-        replay_base.trigger_message_id = Some(start_message_id);
         let handle = self
             .sessions
             .get(&conversation_id)
             .map(|entry| entry.value().clone())
             .expect("the occupancy guard guarantees the session entry");
 
-        // The worker shares its tree's frozen environment (keyed by ROOT
-        // conversation id — the parent's own id for depth-1 tasks): same
-        // repo block, same MCP identity set, parent and children never
-        // drift mid-conversation. A child dispatched from a LIVE parent
-        // inherits the parent's own environment verbatim (the cache may
-        // have been replaced by a mid-run `/reload` — the parent keeps
-        // running on its original block, so the child must too); only the
-        // recovery path (no live parent) resolves the cache. Recovery
-        // included: this assembly IS the recovery path.
-        let root_conversation_id =
-            crate::db::conversations::get_conversation(&self.pool, &conversation_id)
-                .await?
-                .and_then(|conv| conv.root_conversation_id)
-                .unwrap_or_else(|| conversation_id.clone());
-        let prompt_env = match parent_env {
-            Some(env) => (*env).clone(),
-            None => {
-                self.resolve_prompt_env(&root_conversation_id, &project)
-                    .await
-            }
-        };
-        // Same generation rule as the root assembly, against the child's OWN
-        // view: an inherited environment still rejects anchors measured
-        // under a different prompt, checked per run (no consumed flag to
-        // race for between parent and children).
-        let mut view = view;
-        if let Some(anchor) = &view.anchor
-            && !prompt_env.accepts_anchor(anchor.prompt_generation)
-        {
-            view.anchor = None;
-        }
-        log_prompt_env(&root_conversation_id, &prompt_env);
-
-        let tool_mode = agent_config
-            .as_ref()
-            .map(|snapshot| snapshot.tool_mode)
-            .unwrap_or_default();
-        let mut roots = self
-            .runtime_roots(roots, &conversation_id, &root_conversation_id)
-            .await?;
-        if tool_mode == crate::codemode::McpToolMode::Code {
-            roots = roots
-                .with_read_only_root(self.codemode_root().join(&conversation_id).join(&run_id));
-        }
-
-        // Effective toolset = parent set − task, with file/search/command
-        // tools rebuilt over the worker's scoped roots, shared locks and a
-        // FRESH read state (the child's read records must be its own; MCP
-        // tools are reused by Arc so connections stay shared). Recovery passes
-        // `parent_toolset = None`: the parent's instances died with the
-        // crashed process, so the set is rebuilt from the same assembly
-        // sources — which yields the same effective set.
-        let child_tools: Vec<Arc<dyn tools::AgentTool>> = match parent_toolset {
-            Some(parent) => derive_child_toolset(&parent, roots.clone(), locks.clone()),
-            None => {
-                let mut rebuilt: Vec<Arc<dyn tools::AgentTool>> = tools::default_tools_with(
-                    roots.clone(),
-                    locks.clone(),
-                    Arc::new(AgentReadState::new()),
-                )
-                .into_iter()
-                .map(Arc::from)
-                .collect();
-                // Recovery deliberately does NOT filter by the conversation
-                // freeze: the worker's own sealed snapshot (restored strictly
-                // below) is the selection source, per the recovery contract —
-                // a server that was absent from a `/reload`-era freeze but is
-                // live again at resume must restore, not fail the run with
-                // "Worker snapshot tool is unavailable". Recovery is already
-                // a cache-breaking event, so freeze purity buys nothing here.
-                rebuilt.extend(
-                    self.mcp
-                        .tools_for_run(Some(&project.id))
-                        .into_iter()
-                        .map(Arc::from),
-                );
-                rebuilt
-            }
-        };
-        let child_tools = match &agent_config {
-            Some(snapshot) => match worker_config::restore_tools(child_tools, &snapshot.tools) {
-                Ok(tools) => tools,
-                Err(error) => {
-                    run_db::finish_run(
-                        &self.pool,
-                        &run_id,
-                        run_db::RunFinalStatus::Failed,
-                        None,
-                        Some(&error.to_string()),
-                        None,
-                        None,
-                        Some(epoch),
-                    )
-                    .await?;
-                    return Err(error.into());
-                }
-            },
-            None => child_tools,
-        };
-        // Code-mode workers discover their SDK through the regular read
-        // tools; the settings API rejects non-empty allowlists without them,
-        // and this guard covers configs sealed before a mode switch to code.
-        if tool_mode == crate::codemode::McpToolMode::Code && !child_tools.is_empty() {
-            let names: std::collections::HashSet<&str> =
-                child_tools.iter().map(|tool| tool.name()).collect();
-            let missing: Vec<&str> = ["read_file", "grep", "glob"]
-                .into_iter()
-                .filter(|name| !names.contains(name))
-                .collect();
-            if !missing.is_empty() {
-                let error = anyhow::anyhow!(
-                    "Code mode worker requires read_file/grep/glob in its tool set for SDK discovery; missing: {}",
-                    missing.join(", ")
-                );
-                run_db::finish_run(
-                    &self.pool,
-                    &run_id,
-                    run_db::RunFinalStatus::Failed,
-                    None,
-                    Some(&error.to_string()),
-                    None,
-                    None,
-                    Some(epoch),
-                )
-                .await?;
-                return Err(AppError::Internal(error));
-            }
-        }
-        let child_tools = Arc::new(child_tools);
-        let prepared = if tool_mode == crate::codemode::McpToolMode::Code && !child_tools.is_empty()
-        {
-            match crate::codemode::Prepared::for_worker(
-                self.codemode_root(),
-                &conversation_id,
-                &run_id,
-                epoch,
-                &child_tools,
-            )
-            .await
-            {
-                Ok(prepared) => Some(prepared),
-                Err(error) => {
-                    // A sealed code-mode worker must not silently change its
-                    // exposure mode on recovery when its helper is unavailable.
-                    run_db::finish_run(
-                        &self.pool,
-                        &run_id,
-                        run_db::RunFinalStatus::Failed,
-                        None,
-                        Some(&error.to_string()),
-                        None,
-                        None,
-                        Some(epoch),
-                    )
-                    .await?;
-                    return Err(error.into());
-                }
-            }
-        } else {
-            None
-        };
-
-        // The child's permission gate: rules load like
-        // a root run's, the MODE inherits the root conversation (child rows
-        // carry no effective mode — recovery included, since this assembly
-        // is the recovery path too). Worker approvals are also delivered
-        // to the parent surface while keeping their own run identity.
-        let gate_result = self
-            .assemble_gate(
-                &conversation_id,
-                &root_conversation_id,
-                &run_id,
-                &project.id,
-                &roots,
-                true,
-            )
-            .await;
-        let gate = match gate_result {
-            Ok(gate) => gate,
-            Err(error) => {
-                run_db::finish_run(
-                    &self.pool,
-                    &run_id,
-                    run_db::RunFinalStatus::Failed,
-                    None,
-                    Some(&error.to_string()),
-                    None,
-                    None,
-                    Some(epoch),
-                )
-                .await?;
-                return Err(error);
-            }
-        };
-
-        let code_section = prepared.as_ref().map(|p| p.prompt_section());
-        let model_tools = match prepared {
-            Some(prepared) => prepared.expose(child_tools, gate.clone()),
-            None => child_tools,
-        };
-        let (_, additional) = workspace_roots(&project);
-        let mut prompt = worker_system_prompt(
-            &PathBuf::from(&project.working_dir),
-            &additional,
-            &model_tools,
-            code_section.as_ref(),
-        );
-        // Repo instructions sit between the worker identity and the user's
-        // worker instructions: repository conventions override the built-in
-        // prompt, and the user's explicit configuration stays last (the
-        // escape hatch that must be able to win).
-        prompt.push_str(&prompt_env.repo.block);
-        if let Some(snapshot) = &agent_config
-            && !snapshot.instructions.is_empty()
-        {
-            prompt.push_str("\nAdditional worker instructions:\n");
-            prompt.push_str(&snapshot.instructions);
-        }
-        let ctx = AgentContext {
-            model: Arc::from(model),
-            tools: model_tools,
-            pool: self.pool.clone(),
-            system_prompt: prompt,
-            context_window,
-            idle: None,
-            reasoning: None,
-            input_modalities: self.resolve_input_modalities(&provider_id, &model_id).await,
-            max_output_tokens: None,
-            attachments: Some(self.attachments.clone()),
-            permission: gate,
-            prompt_env_refresh: Some(self.prompt_env_refresh(&root_conversation_id)),
-            prompt_generation: prompt_env.generation,
-        };
-
-        handle.hub.publish(replay_base.event(&run_id, epoch));
+        // Startup already owns the row and occupancy. Publish its cancellation
+        // handle before assembly can await; the same watch and guard transfer
+        // to the loop supervisor, or settle here on any startup failure.
+        let (done_tx, done_rx) = watch::channel(false);
+        let agent_id = conversation_id.clone();
+        self.subagents.register_child(crate::subagent::ChildRun {
+            run_id: run_id.clone(),
+            agent_id: agent_id.clone(),
+            description: description.clone(),
+            cancel: cancel.clone(),
+            done: done_rx.clone(),
+            hub: Arc::downgrade(&handle.hub),
+            epoch,
+        });
 
         // Publish the running transition on the PARENT hub (small events
         // only — the child's full stream stays on its own hub; the parent
         // stream must not be flooded with child deltas).
-        let agent_id = conversation_id.clone();
         parent_hub.publish(AgentEvent::SubagentUpdated {
             run_id: run_id.clone(),
             agent_id: agent_id.clone(),
@@ -1093,16 +870,235 @@ impl RunService {
             activity: None,
         });
 
-        let (done_tx, done_rx) = watch::channel(false);
-        self.subagents.register_child(crate::subagent::ChildRun {
-            run_id: run_id.clone(),
-            agent_id: agent_id.clone(),
-            description: description.clone(),
-            cancel: cancel.clone(),
-            done: done_rx.clone(),
-            hub: Arc::downgrade(&handle.hub),
-            epoch,
-        });
+        let preparation = async {
+            let mut replay_base = replay::ReplayBase::load(&self.pool, &conversation_id).await?;
+            replay_base.trigger_message_id = Some(start_message_id);
+
+            // The worker shares its tree's frozen environment (keyed by ROOT
+            // conversation id — the parent's own id for depth-1 tasks): same
+            // repo block, same MCP identity set, parent and children never
+            // drift mid-conversation. A child dispatched from a LIVE parent
+            // inherits the parent's own environment verbatim (the cache may
+            // have been replaced by a mid-run `/reload` — the parent keeps
+            // running on its original block, so the child must too); only the
+            // recovery path (no live parent) resolves the cache. Recovery
+            // included: this assembly IS the recovery path.
+            let root_conversation_id =
+                crate::db::conversations::get_conversation(&self.pool, &conversation_id)
+                    .await?
+                    .and_then(|conv| conv.root_conversation_id)
+                    .unwrap_or_else(|| conversation_id.clone());
+            let prompt_env = match parent_env {
+                Some(env) => (*env).clone(),
+                None => {
+                    self.resolve_prompt_env(&root_conversation_id, &project)
+                        .await
+                }
+            };
+            // Same generation rule as the root assembly, against the child's OWN
+            // view: an inherited environment still rejects anchors measured
+            // under a different prompt, checked per run (no consumed flag to
+            // race for between parent and children).
+            let mut view = view;
+            if let Some(anchor) = &view.anchor
+                && !prompt_env.accepts_anchor(anchor.prompt_generation)
+            {
+                view.anchor = None;
+            }
+            log_prompt_env(&root_conversation_id, &prompt_env);
+
+            let tool_mode = agent_config
+                .as_ref()
+                .map(|snapshot| snapshot.tool_mode)
+                .unwrap_or_default();
+            let mut roots = self
+                .runtime_roots(roots, &conversation_id, &root_conversation_id)
+                .await?;
+            if tool_mode == crate::codemode::McpToolMode::Code {
+                roots = roots
+                    .with_read_only_root(self.codemode_root().join(&conversation_id).join(&run_id));
+            }
+
+            // Effective toolset = parent set − task, with file/search/command
+            // tools rebuilt over the worker's scoped roots, shared locks and a
+            // FRESH read state (the child's read records must be its own; MCP
+            // tools are reused by Arc so connections stay shared). Recovery passes
+            // `parent_toolset = None`: the parent's instances died with the
+            // crashed process, so the set is rebuilt from the same assembly
+            // sources — which yields the same effective set.
+            let child_tools: Vec<Arc<dyn tools::AgentTool>> = match parent_toolset {
+                Some(parent) => derive_child_toolset(&parent, roots.clone(), locks.clone()),
+                None => {
+                    let mut rebuilt: Vec<Arc<dyn tools::AgentTool>> = tools::default_tools_with(
+                        roots.clone(),
+                        locks.clone(),
+                        Arc::new(AgentReadState::new()),
+                    )
+                    .into_iter()
+                    .map(Arc::from)
+                    .collect();
+                    // Recovery deliberately does NOT filter by the conversation
+                    // freeze: the worker's own sealed snapshot (restored strictly
+                    // below) is the selection source, per the recovery contract —
+                    // a server that was absent from a `/reload`-era freeze but is
+                    // live again at resume must restore, not fail the run with
+                    // "Worker snapshot tool is unavailable". Recovery is already
+                    // a cache-breaking event, so freeze purity buys nothing here.
+                    rebuilt.extend(
+                        self.mcp
+                            .tools_for_run(Some(&project.id))
+                            .into_iter()
+                            .map(Arc::from),
+                    );
+                    rebuilt
+                }
+            };
+            let child_tools = match &agent_config {
+                Some(snapshot) => worker_config::restore_tools(child_tools, &snapshot.tools)?,
+                None => child_tools,
+            };
+            // Code-mode workers discover their SDK through the regular read
+            // tools; the settings API rejects non-empty allowlists without them,
+            // and this guard covers configs sealed before a mode switch to code.
+            if tool_mode == crate::codemode::McpToolMode::Code && !child_tools.is_empty() {
+                let names: std::collections::HashSet<&str> =
+                    child_tools.iter().map(|tool| tool.name()).collect();
+                let missing: Vec<&str> = ["read_file", "grep", "glob"]
+                    .into_iter()
+                    .filter(|name| !names.contains(name))
+                    .collect();
+                if !missing.is_empty() {
+                    let error = anyhow::anyhow!(
+                        "Code mode worker requires read_file/grep/glob in its tool set for SDK discovery; missing: {}",
+                        missing.join(", ")
+                    );
+                    return Err(AppError::Internal(error));
+                }
+            }
+            let child_tools = Arc::new(child_tools);
+            let prepared =
+                if tool_mode == crate::codemode::McpToolMode::Code && !child_tools.is_empty() {
+                    match crate::codemode::Prepared::for_worker(
+                        self.codemode_root(),
+                        &conversation_id,
+                        &run_id,
+                        epoch,
+                        &child_tools,
+                    )
+                    .await
+                    {
+                        Ok(prepared) => Some(prepared),
+                        Err(error) => {
+                            // A sealed code-mode worker must not silently change its
+                            // exposure mode on recovery when its helper is unavailable.
+                            return Err(error.into());
+                        }
+                    }
+                } else {
+                    None
+                };
+
+            // The child's permission gate: rules load like
+            // a root run's, the MODE inherits the root conversation (child rows
+            // carry no effective mode — recovery included, since this assembly
+            // is the recovery path too). Worker approvals are also delivered
+            // to the parent surface while keeping their own run identity.
+            let gate = self
+                .assemble_gate(
+                    &conversation_id,
+                    &root_conversation_id,
+                    &run_id,
+                    &project.id,
+                    &roots,
+                    true,
+                )
+                .await?;
+
+            let code_section = prepared.as_ref().map(|p| p.prompt_section());
+            let model_tools = match prepared {
+                Some(prepared) => prepared.expose(child_tools, gate.clone()),
+                None => child_tools,
+            };
+            let (_, additional) = workspace_roots(&project);
+            let mut prompt = worker_system_prompt(
+                &PathBuf::from(&project.working_dir),
+                &additional,
+                &model_tools,
+                code_section.as_ref(),
+            );
+            // Repo instructions sit between the worker identity and the user's
+            // worker instructions: repository conventions override the built-in
+            // prompt, and the user's explicit configuration stays last (the
+            // escape hatch that must be able to win).
+            prompt.push_str(&prompt_env.repo.block);
+            if let Some(snapshot) = &agent_config
+                && !snapshot.instructions.is_empty()
+            {
+                prompt.push_str("\nAdditional worker instructions:\n");
+                prompt.push_str(&snapshot.instructions);
+            }
+            let ctx = AgentContext {
+                model: Arc::from(model),
+                tools: model_tools,
+                pool: self.pool.clone(),
+                system_prompt: prompt,
+                context_window,
+                idle: None,
+                reasoning: None,
+                input_modalities: self.resolve_input_modalities(&provider_id, &model_id).await,
+                max_output_tokens: None,
+                attachments: Some(self.attachments.clone()),
+                permission: gate,
+                prompt_env_refresh: Some(self.prompt_env_refresh(&root_conversation_id)),
+                prompt_generation: prompt_env.generation,
+            };
+
+            handle.hub.publish(replay_base.event(&run_id, epoch));
+            Ok((ctx, view))
+        };
+        let prepared = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err(AppError::Internal(anyhow::anyhow!("subagent startup cancelled"))),
+            result = std::panic::AssertUnwindSafe(preparation).catch_unwind() => {
+                result.unwrap_or_else(|_| Err(AppError::Internal(anyhow::anyhow!("subagent startup panicked"))))
+            }
+        };
+        let (ctx, view) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let status = if cancel.is_cancelled() {
+                    handle.hub.publish(AgentEvent::Cancelled);
+                    RunStatus::Cancelled
+                } else {
+                    handle.hub.publish(AgentEvent::Error(error.to_string()));
+                    RunStatus::Failed
+                };
+                publish_cancelled_approvals(self.approvals.as_ref(), &run_id, &handle.hub);
+                self.subagents
+                    .settle(
+                        &self.pool,
+                        &run_id,
+                        &agent_id,
+                        &description,
+                        epoch,
+                        &parent_call_id,
+                        &RunOutcome {
+                            status,
+                            final_message_id: None,
+                            final_text: None,
+                            partial: false,
+                            usage: None,
+                            error: Some(error.to_string()),
+                        },
+                        &parent_hub,
+                        &handle.hub,
+                        &done_tx,
+                    )
+                    .await;
+                drop(guard);
+                return Err(error);
+            }
+        };
 
         let pool = self.pool.clone();
         let approvals = self.approvals.clone();
