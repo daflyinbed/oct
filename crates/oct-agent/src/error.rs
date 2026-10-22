@@ -68,4 +68,14 @@ impl From<sqlx::Error> for AppError {
     }
 }
 
+impl From<crate::attachments::ServiceError> for AppError {
+    fn from(error: crate::attachments::ServiceError) -> Self {
+        match error {
+            crate::attachments::ServiceError::Invalid(message) => Self::BadRequest(message),
+            crate::attachments::ServiceError::NotFound(message) => Self::NotFound(message),
+            crate::attachments::ServiceError::Internal(error) => Self::Internal(error),
+        }
+    }
+}
+
 pub type AppResult<T> = std::result::Result<T, AppError>;

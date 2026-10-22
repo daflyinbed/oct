@@ -1,11 +1,11 @@
 //! Application-layer run lifecycle: the RunService owns
 //! conversation occupancy, run-row persistence, model/tool assembly, loop
-//! startup and terminal-state settlement — the pieces the HTTP chat handlers
-//! used to stitch together by hand. The API layer keeps only its
-//! HTTP-specific concerns (spec resolution, repair, user-message insertion,
-//! the manual compaction transaction) and hands the resolved pieces to
-//! [`RunService::start_root_run`]; the `task` tool starts subagent runs
-//! through this same service (via [`crate::subagent::SubagentManager`])
+//! startup and terminal-state settlement. The conversation application owns
+//! request validation, history preparation, user-message insertion and manual
+//! compaction, handing resolved pieces to [`RunService::start_root_run`].
+//! HTTP adapters translate commands and encode responses; the `task` tool
+//! starts subagent runs through this same service (via
+//! [`crate::subagent::SubagentManager`])
 //! instead of calling REST handlers.
 //!
 //! Lifecycle of a root run:
@@ -148,7 +148,7 @@ pub struct RunService {
 }
 
 /// Everything [`RunService::start_root_run`] needs to launch one root run.
-/// The HTTP layer resolves the model/window/idle and performs its own
+/// The application resolves the model/window/idle and performs its
 /// ordering-sensitive writes (repair, user-message insert) BEFORE handing
 /// the guard over — from here on the run is supervised end to end.
 pub struct RootRunRequest {

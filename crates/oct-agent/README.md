@@ -15,6 +15,7 @@ oct 的后端服务 crate：Axum REST/SSE API + agent loop 运行时。既是 li
 
 ## 模块地图
 
+- `application/conversation/` — send/resume/compact/wake 应用入口：校验、历史准备、附件认领、恢复编排与运行交接；HTTP 与后台调度共用
 - `api/` — REST + SSE 路由、utoipa OpenAPI（`/scalar` UI、`/api/openapi.json`）、嵌入前端（`embed.rs`）
 - `agent/` — agent loop、上下文压缩（`compact.rs`）、microcompact（`micro.rs`）、repo instructions 与冻结 prompt 环境（`repo_instructions.rs`）
 - `runtime/` — `RunService`（会话占用/run 持久化/装配/监督/崩溃恢复）、后台 bash 任务（`background.rs`）、worker 配置（`worker_config.rs`）、prompt 环境（`prompt_env.rs`）、code 恢复（`code_recovery.rs`）

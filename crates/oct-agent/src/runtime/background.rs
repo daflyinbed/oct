@@ -64,8 +64,6 @@ const REAP_TIMEOUT: Duration = Duration::from_secs(5);
 const CANCEL_SETTLE_WAIT: Duration = Duration::from_secs(10);
 /// How much of the output file the notification message inlines.
 pub(crate) const NOTIFICATION_TAIL_BYTES: u64 = 4096;
-/// Poll period while the drainer waits for the conversation to go idle.
-const DELIVERY_IDLE_RETRY: Duration = Duration::from_secs(1);
 
 /// One ACTIVE background task, as the in-memory registry holds it. Dropped
 /// from the map the moment the supervisor settles.

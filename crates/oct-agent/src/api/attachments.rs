@@ -109,11 +109,7 @@ pub async fn upload_attachment(
 }
 
 pub(super) fn service_error(error: ServiceError) -> AppError {
-    match error {
-        ServiceError::Invalid(message) => AppError::BadRequest(message),
-        ServiceError::NotFound(message) => AppError::NotFound(message),
-        ServiceError::Internal(error) => AppError::Internal(error),
-    }
+    error.into()
 }
 
 async fn ensure_writable_conversation(state: &AppState, id: &str) -> ApiResult<()> {

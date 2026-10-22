@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod agent_settings;
 pub mod api;
+pub mod application;
 pub mod attachment_types;
 pub mod attachments;
 pub mod codemode;

@@ -3,7 +3,7 @@
 //! Fires alongside the first user message's agent run but is fully decoupled
 //! from it: an independent, tool-less, NON-streaming model call — the loop
 //! never knows a title is being written. Guard/trigger logic (default title?
-//! first user message?) lives with the chat endpoint; this module owns the
+//! first user message?) lives with the send application; this module owns the
 //! prompt, output normalization, the fallback, and the write-then-publish
 //! order. Failure never escalates: the fallback title is used, and if even
 //! that is impossible the conversation keeps its default title.
