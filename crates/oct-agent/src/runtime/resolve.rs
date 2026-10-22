@@ -2,7 +2,7 @@
 //! `ChatModel` the server builds. The API layer (send / resume / manual
 //! compact / background title generation), the `task` tool and the crash
 //! recovery orchestrator all resolve through
-//! [`RunService::resolve_model`](super::RunService::resolve_model), which
+//! [`ModelResolver::resolve_model`], which
 //! funnels into [`resolve_chat_model`] here; nothing else constructs
 //! models.
 //!
@@ -21,8 +21,11 @@
 //! Blank DB values mean "not configured" and fall back, never "override
 //! with empty" (see [`ConnectionConfig::from_row_fields`]).
 
+use std::sync::Arc;
+
 use oct_llm_provider::model::ChatModel;
 use oct_llm_provider::provider::{ConnectionConfig, ProviderRegistry};
+use sqlx::SqlitePool;
 
 use crate::db::providers as provider_db;
 use crate::error::AppError;
@@ -93,5 +96,87 @@ pub(super) fn resolve_chat_model(
         other => Err(AppError::BadRequest(format!(
             "Unknown adapter_type: '{other}'"
         ))),
+    }
+}
+
+/// DB-driven model access shared by run assembly and independent title jobs.
+/// It carries no sessions, toolsets, managers or run lifecycle.
+#[derive(Clone)]
+pub struct ModelResolver {
+    pool: SqlitePool,
+    registry: Arc<ProviderRegistry>,
+}
+
+impl ModelResolver {
+    pub fn new(pool: SqlitePool, registry: Arc<ProviderRegistry>) -> Self {
+        Self { pool, registry }
+    }
+    /// Resolve `provider_id:model_id` into a live `ChatModel` (moved here
+    /// from the API layer so subagents and the recovery orchestrator resolve
+    /// exactly like a chat turn does). Errors map 404/400 as before.
+    ///
+    /// Every call re-reads the provider row, so the DB configuration drives
+    /// each request afresh — a settings change takes effect on the next
+    /// run. Construction rules (adapter dispatch, DB-over-env fallback
+    /// order) live in [`resolve_chat_model`].
+    pub async fn resolve_model(
+        &self,
+        provider_spec: &str,
+    ) -> Result<(Box<dyn ChatModel>, String, String), AppError> {
+        let (provider_id, model_id) = provider_spec.split_once(':').ok_or_else(|| {
+            AppError::BadRequest(format!(
+                "Invalid provider_spec format: '{}'. Expected 'provider_id:model_id'",
+                provider_spec
+            ))
+        })?;
+
+        let provider = crate::db::providers::get_provider(&self.pool, provider_id)
+            .await
+            .map_err(AppError::from)?
+            .ok_or_else(|| AppError::NotFound(format!("Provider '{}' not found", provider_id)))?;
+
+        let model = resolve_chat_model(&self.registry, &provider, provider_id, model_id)?;
+
+        Ok((model, provider_id.to_string(), model_id.to_string()))
+    }
+
+    /// Context window for compaction decisions: built-in provider info first
+    /// (Anthropic/Moonshot carry their limits in code), then the models
+    /// table's `limit_context` (seeded from models.dev or set on custom
+    /// models). `None` means unknown — auto compaction stays disabled,
+    /// manual still works.
+    pub async fn resolve_context_window(
+        &self,
+        model: &dyn ChatModel,
+        provider_id: &str,
+        model_id: &str,
+    ) -> Option<u32> {
+        if let Some(window) = model.info().limits.max_input_tokens.filter(|w| *w > 0) {
+            return Some(window);
+        }
+        let row = crate::db::models::get_model(&self.pool, provider_id, model_id)
+            .await
+            .ok()
+            .flatten()?;
+        row.limit_context
+            .and_then(|v| u32::try_from(v).ok())
+            .filter(|w| *w > 0)
+    }
+
+    /// Input modalities of the resolved model from the models table
+    /// (`modalities_input`, seeded from models.dev or set on custom models).
+    /// No row / NULL / unparsable → `Unknown`, which keeps the historical
+    /// allow-everything gating behavior.
+    pub async fn resolve_input_modalities(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+    ) -> crate::modality::InputModalities {
+        crate::db::models::get_model(&self.pool, provider_id, model_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|row| crate::modality::InputModalities::parse(row.modalities_input.as_deref()))
+            .unwrap_or(crate::modality::InputModalities::Unknown)
     }
 }

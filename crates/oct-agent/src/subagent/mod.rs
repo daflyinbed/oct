@@ -13,6 +13,7 @@
 
 pub mod manager;
 pub mod recover;
+pub(crate) mod registry;
 pub mod task_tool;
 
 pub use manager::{

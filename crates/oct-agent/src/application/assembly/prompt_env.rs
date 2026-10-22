@@ -1,6 +1,6 @@
 //! Conversation-level frozen prompt environment: the repo-instruction block
 //! plus the MCP tool identities a conversation's system prompt was built
-//! from, cached in [`RunService`] under the ROOT conversation id and reused
+//! from, cached in the shared assembly services under the ROOT conversation id and reused
 //! byte-for-byte while clean.
 //!
 //! Freezing exists for the provider prefix cache: the block sits at the head
@@ -22,14 +22,14 @@
 
 use std::path::PathBuf;
 
-use super::RunService;
+use super::AssemblyServices;
 use crate::agent::repo_instructions::{
     FrozenPromptEnv, PromptEnvRefresh, discover_chain, render_block,
 };
 use crate::agent_settings::SnapshotTool;
 use crate::db::projects as project_db;
 
-impl RunService {
+impl AssemblyServices {
     /// The per-conversation serialization lock shared by environment
     /// resolution and `/reload`: whichever starts second waits, so a run
     /// starting during a reload always resolves the FRESH entry (the user's

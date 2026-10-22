@@ -18,7 +18,8 @@ oct 的后端服务 crate：Axum REST/SSE API + agent loop 运行时。既是 li
 - `application/conversation/` — send/resume/compact/wake 应用入口：校验、历史准备、附件认领、恢复编排与运行交接；HTTP 与后台调度共用
 - `api/` — REST + SSE 路由、utoipa OpenAPI（`/scalar` UI、`/api/openapi.json`）、嵌入前端（`embed.rs`）
 - `agent/` — agent loop、上下文压缩（`compact.rs`）、microcompact（`micro.rs`）、repo instructions 与冻结 prompt 环境（`repo_instructions.rs`）
-- `runtime/` — `RunService`（会话占用/run 持久化/装配/监督/崩溃恢复）、后台 bash 任务（`background.rs`）、worker 配置（`worker_config.rs`）、prompt 环境（`prompt_env.rs`）、code 恢复（`code_recovery.rs`）
+- `application/assembly/` — 根/worker 装配器与共享权限、资源、冻结 prompt 环境；`application/execution.rs` 持有独立启动任务，`application/title.rs` 独立准备标题任务
+- `runtime/` — `RunService` 兼容入口与会话占用；`execution.rs` 统一监督根/子 loop、终态持久化和收尾；`ModelResolver` 独立解析模型；另有后台 bash（`background.rs`）、worker 配置（`worker_config.rs`）、code 恢复（`code_recovery.rs`）
 - `subagent/` — `task` 工具委派的子代理运行时
 - `permissions/` — 权限规则求值（rules/evaluator/descriptor/gate/registry）
 - `tools/` — `read`/`write`/`edit_file`/`listdir`/`grep`/`glob`/`execute`/`task_stop`
@@ -32,7 +33,7 @@ oct 的后端服务 crate：Axum REST/SSE API + agent loop 运行时。既是 li
 - `attachment_types.rs` — 中性正文/附件/固定文本快照契约与旧格式兼容读取
 - `attachments/` — AttachmentService 生命周期、纯文件 AssetStore、共享 MediaNormalizer、请求物化 RequestAssembler；`context/projection.rs` 负责无 IO 的媒体选择与 usage 快照
 
-子代理从注册到监督接管由独立任务负责。取消父回合会通知启动中的子代理，子代理落到终态后释放会话占用；单独取消子代理也覆盖启动装配阶段。数据库中没有执行所有者的 `running` 子任务可直接取消，或在父委派仍未结算时恢复，无需重启服务。
+发送准备和根/子运行启动由独立任务负责；断开请求或丢弃等待 future 不会中止已经提交的准备工作。子代理从注册到监督接管同样持续拥有执行者。取消父回合会通知启动中的子代理，子代理落到终态后释放会话占用；单独取消子代理也覆盖启动装配阶段。数据库中没有执行所有者的 `running` 子任务可直接取消，或在父委派仍未结算时恢复，无需重启服务。
 
 ## 数据库
 

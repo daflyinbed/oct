@@ -2,3 +2,7 @@
 //! Transport adapters pass commands; preparation and execution handoff live here.
 
 pub mod conversation;
+
+pub(crate) mod assembly;
+pub(crate) mod execution;
+pub(crate) mod title;

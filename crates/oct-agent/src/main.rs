@@ -125,14 +125,14 @@ async fn run_server(
         registry: registry.clone(),
         mcp: mcp.clone(),
         sessions: sessions.clone(),
-        file_locks: dashmap::DashMap::new(),
+        file_locks: Arc::new(dashmap::DashMap::new()),
         subagents: subagents.clone(),
         background: background.clone(),
         attachments: attachments.clone(),
         approvals: Arc::new(oct_agent::permissions::registry::ApprovalRegistry::new()),
         gates: Arc::new(dashmap::DashMap::new()),
         prompt_envs: Arc::new(dashmap::DashMap::new()),
-        prompt_env_locks: dashmap::DashMap::new(),
+        prompt_env_locks: Arc::new(dashmap::DashMap::new()),
     });
     subagents.set_service(runs.clone());
     background.set_service(runs.clone());

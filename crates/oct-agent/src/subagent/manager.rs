@@ -12,7 +12,6 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
-use dashmap::DashMap;
 use futures_util::FutureExt;
 use serde_json::{Value, json};
 use tokio::sync::watch;
@@ -21,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 use oct_llm_provider::core::{ContentPart, Message, Role};
 use oct_llm_provider::model::ChatModel;
 
-use crate::agent::{AgentEvent, EventHub, RunOutcome, RunStatus, SubagentRunStatus};
+use crate::agent::{AgentEvent, EventHub, RunOutcome, RunStatus};
 use crate::context::LlmView;
 use crate::db::{
     conversations as conv_db, messages as msg_db, projects as project_db, runs as run_db,
@@ -127,10 +126,9 @@ pub struct SubagentManager {
     /// Two-phase wire: set once, right after the RunService is constructed
     /// (`main.rs` and the test harness do this).
     service: std::sync::OnceLock<Weak<RunService>>,
-    /// key = run id — ACTIVE children only.
-    children: DashMap<String, Arc<ChildRun>>,
-    /// key = agent (child conversation) id → run id — ACTIVE children only.
-    by_agent: DashMap<String, String>,
+    /// Active children and agent → run lookup. Completion observers only
+    /// retain this index, never the full manager or its service callback.
+    pub(crate) registry: Arc<super::registry::ChildRegistry>,
     /// Protect registration through publishing the live handle. Released
     /// before waiting for execution, so independent children remain parallel.
     registration: tokio::sync::Mutex<()>,
@@ -140,8 +138,7 @@ impl Default for SubagentManager {
     fn default() -> Self {
         Self {
             service: std::sync::OnceLock::new(),
-            children: DashMap::new(),
-            by_agent: DashMap::new(),
+            registry: Arc::new(super::registry::ChildRegistry::default()),
             registration: tokio::sync::Mutex::new(()),
         }
     }
@@ -169,20 +166,17 @@ impl SubagentManager {
     /// Record a starting child (called by [`RunService::start_child_run`]
     /// before assembly awaits, then retained by the loop supervisor).
     pub fn register_child(&self, child: ChildRun) {
-        self.by_agent
-            .insert(child.agent_id.clone(), child.run_id.clone());
-        self.children.insert(child.run_id.clone(), Arc::new(child));
+        self.registry.register(child);
     }
 
     /// The ACTIVE child run of an agent conversation, if any.
     pub fn child_by_agent(&self, agent_id: &str) -> Option<Arc<ChildRun>> {
-        let run_id = self.by_agent.get(agent_id)?.value().clone();
-        self.children.get(&run_id).map(|c| c.value().clone())
+        self.registry.child_by_agent(agent_id)
     }
 
     /// Whether an agent conversation currently has an active in-memory run.
     pub fn is_active(&self, agent_id: &str) -> bool {
-        self.by_agent.contains_key(agent_id)
+        self.registry.is_active(agent_id)
     }
 
     /// The `task` tool's execution path: register (or
@@ -601,63 +595,30 @@ impl SubagentManager {
         child_hub: &Arc<EventHub>,
         done_tx: &watch::Sender<bool>,
     ) {
-        let final_status = match outcome.status {
-            RunStatus::Completed => run_db::RunFinalStatus::Completed,
-            RunStatus::Failed => run_db::RunFinalStatus::Failed,
-            RunStatus::Cancelled => run_db::RunFinalStatus::Cancelled,
+        let identity = crate::runtime::execution::ExecutionIdentity {
+            run_id: run_id.to_owned(),
+            conversation_id: agent_id.to_owned(),
+            epoch: Some(epoch),
         };
-        let committed = run_db::finish_run(
+        let observer = super::registry::ChildCompletion {
+            registry: self.registry.clone(),
+            agent_id: agent_id.to_owned(),
+            parent_call_id: parent_call_id.to_owned(),
+            description: description.to_owned(),
+            parent_hub: parent_hub.clone(),
+            done: done_tx.clone(),
+        };
+        if let Err(error) = crate::runtime::execution::finish_execution(
             pool,
-            run_id,
-            final_status,
-            outcome.final_message_id.as_deref(),
-            outcome.error.as_deref(),
-            outcome
-                .usage
-                .as_ref()
-                .map(|u| i64::try_from(u.input_tokens).unwrap_or(i64::MAX)),
-            outcome
-                .usage
-                .as_ref()
-                .map(|u| i64::try_from(u.output_tokens).unwrap_or(i64::MAX)),
-            Some(epoch),
+            &identity,
+            outcome,
+            child_hub,
+            Some(&observer),
         )
-        .await;
-        // A stale epoch cannot publish a terminal transition or evict the
-        // current instance. Closed-pool failures never produce a success watch.
-        if !matches!(committed, Ok(true)) {
-            return;
+        .await
+        {
+            tracing::error!(%run_id, %error, "failed to settle child run");
         }
-
-        let status = match outcome.status {
-            RunStatus::Completed => "completed",
-            RunStatus::Failed => "failed",
-            RunStatus::Cancelled => "cancelled",
-        };
-
-        // Best-effort activity: the last tool call the child hub saw.
-        let activity = child_hub.snapshot().iter().rev().find_map(|e| match e {
-            AgentEvent::ToolCallStart { title, .. } => Some(title.clone()),
-            _ => None,
-        });
-
-        parent_hub.publish(AgentEvent::SubagentUpdated {
-            run_id: run_id.to_string(),
-            agent_id: agent_id.to_string(),
-            parent_call_id: parent_call_id.to_string(),
-            status: SubagentRunStatus::from_run_status(status),
-            execution_epoch: u64::try_from(epoch).unwrap_or(u64::MAX),
-            description: description.to_string(),
-            activity,
-        });
-
-        // Done watch first (waiters wake and re-read the settled row), then
-        // drop the in-memory entries — a terminal child's hub must not be
-        // kept alive by the manager.
-        let _ = done_tx.send(true);
-        self.children
-            .remove_if(run_id, |_, child| child.epoch == epoch);
-        self.by_agent.remove_if(agent_id, |_, id| id == run_id);
     }
 
     /// The ACTIVE children of a root conversation (used by conversation

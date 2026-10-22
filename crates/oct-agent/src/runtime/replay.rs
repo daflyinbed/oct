@@ -6,7 +6,7 @@ use sqlx::SqlitePool;
 use crate::agent::AgentEvent;
 use crate::error::AppResult;
 
-pub(super) struct ReplayBase {
+pub(crate) struct ReplayBase {
     revision: i64,
     history_epoch: i64,
     pub trigger_message_id: Option<String>,

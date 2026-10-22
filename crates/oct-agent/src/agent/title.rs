@@ -1,23 +1,15 @@
-//! One-shot background conversation-title generation.
+//! Title prompt, generation and normalization.
 //!
 //! Fires alongside the first user message's agent run but is fully decoupled
 //! from it: an independent, tool-less, NON-streaming model call — the loop
 //! never knows a title is being written. Guard/trigger logic (default title?
 //! first user message?) lives with the send application; this module owns the
-//! prompt, output normalization, the fallback, and the write-then-publish
-//! order. Failure never escalates: the fallback title is used, and if even
-//! that is impossible the conversation keeps its default title.
-
-use std::sync::Weak;
-use std::time::Duration;
-
-use tracing::debug;
+//! prompt, raw model generation, output normalization and fallback text.
+//! The application owns the independent deadline and write-then-publish order;
+//! a failed title never changes the chat run's outcome.
 
 use oct_llm_provider::core::{ContentPart, GenerateOptions, Message, Role};
 use oct_llm_provider::model::ChatRequest;
-
-use super::{AgentEvent, EventHub};
-use crate::db::conversations as conv_db;
 
 /// Cap on the first user message text sent to the model (chars).
 const INPUT_MAX_CHARS: usize = 2000;
@@ -25,8 +17,6 @@ const INPUT_MAX_CHARS: usize = 2000;
 const TITLE_MAX_CHARS: usize = 80;
 /// Fallback titles take this many chars of the first user message.
 const FALLBACK_MAX_CHARS: usize = 50;
-/// Hard timeout for the model call; on expiry the fallback title is used.
-const MODEL_TIMEOUT: Duration = Duration::from_secs(30);
 
 const TITLE_PROMPT: &str = "\
 Generate a short title for the conversation the user message below starts.\n\
@@ -35,81 +25,23 @@ Generate a short title for the conversation the user message below starts.\n\
 - Describe what the user wants to do; keep technical terms, file names, numbers and error codes exact.\n\
 - Output ONLY the title: no quotes, no explanation, no markdown, no trailing punctuation.";
 
-/// Everything the background task owns. The hub is held WEAKLY on purpose:
-/// holding an `Arc` would keep the run's hub (and with it every SSE body)
-/// alive past the run's end until this call finishes or times out. If the run
-/// is already gone when the title lands, publishing is skipped — the DB has
-/// the title and the next conversation-list fetch picks it up.
-pub struct TitleJob {
-    pub runs: std::sync::Arc<crate::runtime::RunService>,
-    pub project_id: String,
-    pub parent_provider_id: String,
-    pub parent_model_id: String,
-    pub pool: sqlx::SqlitePool,
-    pub conversation_id: String,
-    pub first_user_content: String,
-    pub hub: Weak<EventHub>,
-}
-
-/// Fire-and-forget: detach a task that generates the title and applies it.
-pub fn spawn(job: TitleJob) {
-    tokio::spawn(async move {
-        run(job).await;
-    });
-}
-
-async fn run(job: TitleJob) {
-    // Include configuration/model preparation in the independent title deadline.
-    let generated = tokio::time::timeout(MODEL_TIMEOUT, call_model(&job))
-        .await
-        .map_err(|_| anyhow::anyhow!("title model call timed out"))
-        .and_then(|result| result);
-    let title = match &generated {
-        Ok(text) => normalize_title(text).or_else(|| fallback_title(&job.first_user_content)),
-        Err(e) => {
-            // High-frequency background path: debug only, never error-level.
-            debug!("title generation failed, using fallback: {e}");
-            fallback_title(&job.first_user_content)
-        }
-    };
-    let Some(title) = title else {
-        return;
-    };
-
-    // Write first, publish second: anyone who sees the event can also see
-    // the row. `Ok(false)` means the user renamed in the meantime — their
-    // name wins and no event is sent.
-    match conv_db::set_auto_title(&job.pool, &job.conversation_id, &title).await {
-        Ok(true) => {
-            if let Some(hub) = job.hub.upgrade() {
-                hub.publish(AgentEvent::TitleUpdated { title });
-            }
-        }
-        Ok(false) => {}
-        Err(e) => debug!("failed to persist generated title: {e}"),
-    }
-}
-
-async fn call_model(job: &TitleJob) -> anyhow::Result<String> {
-    let settings =
-        crate::agent_settings::read_for_run(&job.pool, "title", Some(&job.project_id)).await?;
-    let (provider_id, model_id) = settings
-        .effective
-        .model
-        .identity(&job.parent_provider_id, &job.parent_model_id);
-    let (model, _, _) = job
-        .runs
-        .resolve_model(&format!("{provider_id}:{model_id}"))
-        .await?;
-    let prompt = if settings.effective.instructions.is_empty() {
+/// Generate a raw title with an already selected model and instructions.
+/// The application owns configuration, timeout, fallback and persistence.
+pub(crate) async fn generate_title(
+    model: &dyn oct_llm_provider::model::ChatModel,
+    instructions: &str,
+    content: &str,
+    conversation_id: &str,
+) -> anyhow::Result<String> {
+    let prompt = if instructions.is_empty() {
         TITLE_PROMPT.to_string()
     } else {
         format!(
             "{TITLE_PROMPT}\nAdditional title instructions:\n{}",
-            settings.effective.instructions
+            instructions
         )
     };
-    let input = truncate_chars(&job.first_user_content, INPUT_MAX_CHARS);
+    let input = truncate_chars(content, INPUT_MAX_CHARS);
     let request = ChatRequest {
         messages: vec![
             Message::text(Role::System, prompt),
@@ -126,7 +58,7 @@ async fn call_model(job: &TitleJob) -> anyhow::Result<String> {
     // with_tags scope — so this call carries the conversation explicitly
     // (no run_id) plus purpose=title for the wire log.
     let title_tags = oct_llm_provider::wire::Tags {
-        conversation_id: Some(job.conversation_id.clone()),
+        conversation_id: Some(conversation_id.to_owned()),
         purpose: Some("title".to_string()),
         ..Default::default()
     };
@@ -154,7 +86,7 @@ async fn call_model(job: &TitleJob) -> anyhow::Result<String> {
 /// Clean a raw model reply into a usable title: first non-empty line,
 /// wrapping quote pairs (straight/curly/CJK) stripped, whitespace collapsed,
 /// capped on a char boundary. `None` when nothing usable remains.
-fn normalize_title(raw: &str) -> Option<String> {
+pub(crate) fn normalize_title(raw: &str) -> Option<String> {
     let first_line = raw.lines().map(str::trim).find(|l| !l.is_empty())?;
     let stripped = strip_wrapping_quotes(first_line).trim();
     let collapsed = collapse_whitespace(stripped);
@@ -167,7 +99,7 @@ fn normalize_title(raw: &str) -> Option<String> {
 /// Fallback when the model call fails or returns nothing usable: the first
 /// user message itself, whitespace-collapsed and truncated (ellipsis when
 /// cut). `None` only for blank input.
-fn fallback_title(content: &str) -> Option<String> {
+pub(crate) fn fallback_title(content: &str) -> Option<String> {
     let collapsed = collapse_whitespace(content);
     if collapsed.is_empty() {
         return None;

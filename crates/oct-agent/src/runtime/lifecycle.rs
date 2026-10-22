@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Lifecycle {
     pub admission: Arc<RwLock<()>>,
     deleting: Arc<DashSet<String>>,

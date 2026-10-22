@@ -4055,7 +4055,7 @@ async fn spawn_run_service(env: &TestEnv) -> Arc<RunService> {
         registry: Arc::new(oct_llm_provider::providers::default_registry()),
         mcp: Arc::new(oct_agent::mcp::McpManager::default()),
         sessions: Arc::new(dashmap::DashMap::new()),
-        file_locks: dashmap::DashMap::new(),
+        file_locks: Arc::new(dashmap::DashMap::new()),
         subagents: subagents.clone(),
         background: background.clone(),
         attachments: Arc::new(oct_agent::attachments::AttachmentService::new(
@@ -4065,7 +4065,7 @@ async fn spawn_run_service(env: &TestEnv) -> Arc<RunService> {
         approvals: Arc::new(oct_agent::permissions::registry::ApprovalRegistry::new()),
         gates: Arc::new(dashmap::DashMap::new()),
         prompt_envs: Arc::new(dashmap::DashMap::new()),
-        prompt_env_locks: dashmap::DashMap::new(),
+        prompt_env_locks: Arc::new(dashmap::DashMap::new()),
     });
     subagents.set_service(runs.clone());
     background.set_service(runs.clone());

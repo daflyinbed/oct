@@ -77,7 +77,15 @@ impl ConversationApplication {
     }
 
     pub async fn send(&self, command: SendCommand) -> AppResult<RunSubscription> {
-        send::send(&self.runs, command).await
+        // Preparation can commit a user/attachment receipt before a run row
+        // exists. Its owner must survive a dropped HTTP/application waiter
+        // through that interval as well as through registered-run assembly.
+        let runs = self.runs.clone();
+        tokio::spawn(async move { send::send(&runs, command).await })
+            .await
+            .map_err(|error| {
+                AppError::Internal(anyhow::anyhow!("send preparation panicked: {error}"))
+            })?
     }
 
     pub async fn resume(&self, command: ResumeCommand) -> AppResult<RunSubscription> {

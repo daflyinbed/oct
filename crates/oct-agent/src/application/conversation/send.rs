@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use crate::agent::{AgentEvent, title};
+use crate::agent::AgentEvent;
+use crate::application::title;
 use crate::db::{conversations as conv_db, messages as msg_db, projects as project_db};
 use crate::error::{AppError, AppResult};
 use crate::runtime::{RootRunRequest, RunService};
@@ -132,7 +133,7 @@ pub(super) async fn send(runs: &Arc<RunService>, req: SendCommand) -> AppResult<
             .map(|entry| Arc::downgrade(&entry.value().hub));
         if let Some(hub) = hub {
             title::spawn(title::TitleJob {
-                runs: runs.clone(),
+                resolver: runs.model_resolver(),
                 project_id: project.id.clone(),
                 parent_provider_id: provider_id.clone(),
                 parent_model_id: model_id.clone(),
