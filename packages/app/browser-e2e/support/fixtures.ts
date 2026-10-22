@@ -303,3 +303,20 @@ export function usageEvent(
     },
   };
 }
+
+/** Ready boundary shared by the original connection and execution replay. */
+export function runMeta(
+  revision: number,
+  triggerMessageId: string,
+): AgentEvent {
+  return {
+    type: "run_meta",
+    data: {
+      run_id: "scripted-run",
+      execution_epoch: 1,
+      history_epoch: 0,
+      replay_after_revision: revision,
+      trigger_message_id: triggerMessageId,
+    },
+  };
+}

@@ -32,6 +32,7 @@
 //! done-watch + memory cleanup) before dropping the guard.
 
 mod code_recovery;
+mod replay;
 /// DB-driven model resolution (the single ChatModel construction path).
 mod resolve;
 mod supervision;
@@ -239,23 +240,12 @@ impl RunService {
                 entry.insert(RunHandle {
                     hub: Arc::new(EventHub::new()),
                     cancel,
-                    start_message_id: None,
                 });
                 Ok(OccupancyGuard {
                     sessions: self.sessions.clone(),
                     conv_id: id.to_string(),
                 })
             }
-        }
-    }
-
-    /// Record the run boundary on the (already live) session entry: the user
-    /// message row is the divide between DB history and this run's event
-    /// log. GET /events reports it as run_meta so a reconnecting frontend
-    /// truncates its history exactly here before replaying the run's events.
-    pub fn set_start_message_id(&self, conv_id: &str, msg_id: &str) {
-        if let Some(mut entry) = self.sessions.get_mut(conv_id) {
-            entry.value_mut().start_message_id = Some(msg_id.to_string());
         }
     }
 
@@ -494,6 +484,10 @@ impl RunService {
         } else {
             None
         };
+
+        // Preparation has finished; capture the durable base before assembly
+        // can publish any content. Membership revisions survive COW/reordering.
+        let replay_base = replay::ReplayBase::load(&self.pool, &conversation_id).await?;
 
         // The run row lands before anything is spawned: a run that never
         // settles (crash) is identifiable from persistence alone, and the
@@ -760,6 +754,10 @@ impl RunService {
             prompt_generation: prompt_env.generation,
         };
 
+        handle
+            .hub
+            .publish(replay_base.event(&run.id, run.execution_epoch));
+
         let run_id = run.id.clone();
         let pool = self.pool.clone();
         let approvals = self.approvals.clone();
@@ -818,7 +816,8 @@ impl RunService {
             model_id,
         } = req;
 
-        self.set_start_message_id(&conversation_id, &start_message_id);
+        let mut replay_base = replay::ReplayBase::load(&self.pool, &conversation_id).await?;
+        replay_base.trigger_message_id = Some(start_message_id);
         let handle = self
             .sessions
             .get(&conversation_id)
@@ -1064,6 +1063,8 @@ impl RunService {
             prompt_env_refresh: Some(self.prompt_env_refresh(&root_conversation_id)),
             prompt_generation: prompt_env.generation,
         };
+
+        handle.hub.publish(replay_base.event(&run_id, epoch));
 
         // Publish the running transition on the PARENT hub (small events
         // only — the child's full stream stays on its own hub; the parent

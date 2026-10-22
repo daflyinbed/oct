@@ -326,7 +326,6 @@ pub async fn spawn_agent_with_gate(
     let handle = RunHandle {
         hub: Arc::new(EventHub::new()),
         cancel,
-        start_message_id: None,
     };
     let stream = handle.subscribe();
 

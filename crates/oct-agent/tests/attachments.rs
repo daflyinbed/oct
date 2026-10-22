@@ -1817,7 +1817,6 @@ async fn missing_image_usage_is_reused_only_while_the_delivered_prefix_is_unchan
         let handle = || RunHandle {
             hub: Arc::new(EventHub::new()),
             cancel: tokio_util::sync::CancellationToken::new(),
-            start_message_id: None,
         };
         if reload {
             let first = ScriptedModel::new(vec![Turn::Stream(vec![

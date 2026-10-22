@@ -1,11 +1,13 @@
 import { expect, it } from "vitest";
 import { nextTick } from "vue";
+import { mountApp } from "./support/app";
 import {
   conversationFixture,
   finishEvent,
   projectFixture,
   providerFixture,
   reasoningDelta,
+  runMeta,
   storedMessage,
   textDelta,
   toolCallStart,
@@ -13,7 +15,7 @@ import {
   toolResult,
 } from "./support/fixtures";
 import { bootConversation, chatText, sendChatMessage } from "./support/harness";
-import { setScenario } from "./support/mock";
+import { openGate, resetMock, setScenario } from "./support/mock";
 
 // 历史 API 未提供主轮工时，重进时仅比较正文/卡片，不比较实时计时标签。
 async function replayContent(): Promise<string> {
@@ -119,4 +121,86 @@ it("history replay renders identically to the finished live stream", async () =>
   await expect.poll(replayContent).toBe(liveText);
 
   mounted.unmount();
+});
+
+it("keeps persisted tools visible throughout a resumed execution replay", async () => {
+  await resetMock();
+  await setScenario({
+    projects: [projectFixture()],
+    conversations: [conversationFixture()],
+    providers: [providerFixture()],
+    running: { c1: true },
+    contextRevisions: { c1: 4 },
+    messages: {
+      c1: [
+        storedMessage("user", [{ type: "text", text: "original request" }], {
+          id: "original-user",
+          ordering: 10,
+          appended_at_revision: 1,
+        }),
+        storedMessage(
+          "assistant",
+          [
+            {
+              type: "tool_call",
+              id: "old-call",
+              name: "read_file",
+              arguments: '{"path":"before-restart.txt"}',
+            },
+          ],
+          { ordering: 30, appended_at_revision: 2 },
+        ),
+        storedMessage(
+          "tool",
+          [
+            {
+              type: "tool_result",
+              call_id: "old-call",
+              content: "persisted result",
+              is_error: false,
+            },
+          ],
+          {
+            id: "copied-result",
+            supersedes_message_id: "original-result",
+            details: { extra: { title: "before-restart.txt" } },
+            ordering: 50,
+            appended_at_revision: 3,
+          },
+        ),
+        storedMessage(
+          "assistant",
+          [{ type: "text", text: "persisted continuation prefix" }],
+          { ordering: 70, appended_at_revision: 4 },
+        ),
+      ],
+    },
+    scripts: {
+      c1: [
+        {
+          type: "events",
+          events: [
+            runMeta(3, "original-user"),
+            textDelta(
+              "persisted continuation prefix / live continuation after restart",
+            ),
+          ],
+        },
+        { type: "gate", name: "replay-live" },
+        { type: "events", events: [finishEvent()] },
+      ],
+    },
+  });
+  const mounted = await mountApp();
+  try {
+    await mounted.router.push("/conversation/c1");
+    await expect.poll(chatText).toContain("live continuation after restart");
+    await expect.poll(chatText).toContain("before-restart.txt");
+    expect(
+      (await chatText()).match(/persisted continuation prefix/g),
+    ).toHaveLength(1);
+  } finally {
+    await openGate("replay-live");
+    mounted.unmount();
+  }
 });

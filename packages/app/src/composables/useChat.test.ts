@@ -44,21 +44,27 @@ const {
 // 测试数据构造
 // ---------------------------------------------------------------------------
 
+let membershipRevision = 0;
+const membershipRevisions = new Map<string, number>();
+
 /** 后端 MessageDto 的最小形状（仅用到本 composable 读的字段）。 */
 function storedMessage(
   role: string,
   parts: string | components["schemas"]["MessagePart"][],
   extra: Partial<components["schemas"]["MessageDto"]> = {},
 ): components["schemas"]["MessageDto"] {
-  return {
+  const message = {
     id: `msg-${Math.random().toString(36).slice(2)}`,
     role,
     parts: typeof parts === "string" ? legacyParts(parts) : parts,
     details: null,
     ordering: 0,
+    appended_at_revision: ++membershipRevision,
     created_at: "2026-09-20T00:00:00",
     ...extra,
   };
+  membershipRevisions.set(message.id, message.appended_at_revision ?? 0);
+  return message;
 }
 
 /**
@@ -157,11 +163,17 @@ function toolResult(
 const finishEvent = { type: "finish" };
 const cancelledEvent = { type: "cancelled" };
 const errorEvent = (data: string) => ({ type: "error", data });
-// 重连重放的合成锚点事件（仅 events 端点注入，不进 reducer）
+// 执行日志的 ready 边界控制事件，不进入消息 reducer。
 function runMeta(start_message_id: string) {
   return {
     type: "run_meta",
-    data: { start_message_id },
+    data: {
+      run_id: "test-run",
+      execution_epoch: 1,
+      history_epoch: 0,
+      replay_after_revision: membershipRevisions.get(start_message_id) ?? 0,
+      trigger_message_id: start_message_id,
+    },
   };
 }
 // 重放重建的流式消息 id 前缀（attachRun 内约定）
@@ -193,6 +205,8 @@ function nextConvId(): string {
 beforeEach(() => {
   clearMessages();
   clearContextUsage();
+  membershipRevision = 0;
+  membershipRevisions.clear();
   GET.mockReset();
   POST.mockReset();
   vi.unstubAllGlobals();
@@ -1223,9 +1237,9 @@ describe("attachRun 重连重放", () => {
     expect(sending.value).toBe(false);
   });
 
-  it("无 run_meta 的兜底：锚点退回最后一条 user 消息（含）", async () => {
+  it("缺少执行边界时保留已加载历史并结束订阅", async () => {
     const conv = nextConvId();
-    // resume 续跑的 run 没有新 user 消息：DB 尾部是悬空的第一轮 assistant
+    // 旧协议无法证明重放起点：保留 DB 中已加载的 assistant。
     stubGetQueue(
       {
         data: [
@@ -1243,12 +1257,10 @@ describe("attachRun 重连重放", () => {
     await fetchMessages(conv);
     await attachRun(conv);
 
-    // 兜底锚到 u1：a1 丢弃，重放从零重建
-    expect(messages.value.map((m) => m.id)).toEqual([
-      "u1",
-      expect.stringMatching(RE_reattachedId),
-    ]);
-    expect(messages.value[1]!.parts).toEqual([{ kind: "text", text: "续答" }]);
+    expect(messages.value.slice(0, 2).map((m) => m.id)).toEqual(["u1", "a1"]);
+    expect(JSON.stringify(messages.value)).toContain("中断的半截回答");
+    expect(JSON.stringify(messages.value)).not.toContain("续答");
+    expect(JSON.stringify(messages.value)).toContain("执行边界");
     expect(sending.value).toBe(false);
   });
 
@@ -3659,4 +3671,298 @@ describe("流所有权", () => {
     await disposedRefresh;
     expect(session.pendingApprovals.value.get("parent")).toEqual([]);
   });
+});
+
+describe("execution replay boundary", () => {
+  it.each(["conversation", "subagent"] as const)(
+    "%s keeps pre-restart tools visible while replaying a newer snapshot",
+    async (kind) => {
+      const session = createChatSession({ contextUsage: false });
+      const history = [
+        storedMessage("user", [{ type: "text", text: "original request" }], {
+          id: "original-user",
+          ordering: 10,
+          appended_at_revision: 1,
+        }),
+        storedMessage(
+          "assistant",
+          [
+            {
+              type: "tool_call",
+              id: "before-restart",
+              name: "list_dir",
+              arguments: "{}",
+            },
+          ],
+          { ordering: 30, appended_at_revision: 2 },
+        ),
+        storedMessage(
+          "tool",
+          [
+            {
+              type: "tool_result",
+              call_id: "before-restart",
+              content: "persisted result",
+              is_error: false,
+            },
+          ],
+          {
+            id: "copy-of-result",
+            ordering: 50,
+            appended_at_revision: 3,
+            supersedes_message_id: "original-result",
+          },
+        ),
+        storedMessage(
+          "assistant",
+          [{ type: "text", text: "continued after restart" }],
+          { ordering: 70, appended_at_revision: 4 },
+        ),
+      ];
+      GET.mockImplementation(async (path: string) => {
+        if (path.endsWith("/run")) return { data: { running: true } } as never;
+        if (path.endsWith("/approvals")) return { data: [] } as never;
+        return {
+          data: history,
+          response: new Response(null, {
+            headers: { "X-Context-Revision": "4", "X-History-Epoch": "2" },
+          }),
+        } as never;
+      });
+      let controller!: ReadableStreamDefaultController<Uint8Array>;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(c) {
+                controller = c;
+              },
+            }),
+          ),
+        ),
+      );
+      if (kind === "conversation") await session.fetchMessages("recovered");
+      const attached =
+        kind === "conversation"
+          ? session.attachRun("recovered")
+          : session.attachSubagent("recovered");
+      controller.enqueue(
+        new TextEncoder().encode(
+          `${[
+            {
+              type: "run_meta",
+              data: {
+                run_id: "recovered-run",
+                execution_epoch: 2,
+                history_epoch: 2,
+                replay_after_revision: 3,
+                trigger_message_id: "original-user",
+              },
+            },
+            textDelta("continued after restart"),
+          ]
+            .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+            .join("")}`,
+        ),
+      );
+      try {
+        await vi.waitFor(() => {
+          expect(session.messages.value.at(-1)?.isStreaming).toBe(true);
+          expect(session.messages.value.at(-1)?.parts).toContainEqual({
+            kind: "text",
+            text: "continued after restart",
+          });
+        });
+        const parts = session.messages.value.flatMap(
+          (message) => message.parts,
+        );
+        expect(
+          parts.filter(
+            (part) =>
+              part.kind === "tool_call" && part.callId === "before-restart",
+          ),
+        ).toHaveLength(1);
+        expect(
+          parts.filter(
+            (part) =>
+              part.kind === "text" && part.text === "continued after restart",
+          ),
+        ).toHaveLength(1);
+        expect(session.sending.value).toBe(true);
+        expect(session.contextRevision.value).toBeNull();
+      } finally {
+        controller.enqueue(
+          new TextEncoder().encode('data: {"type":"finish"}\n\n'),
+        );
+        controller.close();
+        await attached;
+        session.dispose();
+      }
+    },
+  );
+
+  it("reloads history after asynchronous recovery preparation before replaying content", async () => {
+    const session = createChatSession({ contextUsage: false });
+    const user = storedMessage("user", "request", {
+      id: "recovery-user",
+      appended_at_revision: 1,
+    });
+    const repaired = [
+      user,
+      storedMessage("assistant", "persisted preparation", {
+        appended_at_revision: 3,
+      }),
+    ];
+    let historyLoads = 0;
+    GET.mockImplementation(async (path: string) => {
+      if (path.endsWith("/run")) return { data: { running: true } } as never;
+      if (path.endsWith("/approvals")) return { data: [] } as never;
+      ++historyLoads;
+      return {
+        data: historyLoads === 1 ? [user] : repaired,
+        response: new Response(null, {
+          headers: {
+            "X-Context-Revision": historyLoads === 1 ? "1" : "3",
+            "X-History-Epoch": "0",
+          },
+        }),
+      } as never;
+    });
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(c) {
+              stream = c;
+            },
+          }),
+        ),
+      ),
+    );
+    await session.fetchMessages("preparing");
+    const attached = session.attachRun("preparing");
+    stream.enqueue(
+      new TextEncoder().encode(
+        `data: ${JSON.stringify({ type: "run_meta", data: { run_id: "ready-run", execution_epoch: 1, history_epoch: 0, replay_after_revision: 3, trigger_message_id: user.id } })}\n\ndata: ${JSON.stringify(textDelta("new continuation"))}\n\n`,
+      ),
+    );
+    try {
+      await vi.waitFor(() =>
+        expect(JSON.stringify(session.messages.value)).toContain(
+          "new continuation",
+        ),
+      );
+      expect(JSON.stringify(session.messages.value)).toContain(
+        "persisted preparation",
+      );
+      expect(historyLoads).toBe(2);
+    } finally {
+      stream.enqueue(new TextEncoder().encode('data: {"type":"finish"}\n\n'));
+      stream.close();
+      await attached;
+      session.dispose();
+    }
+  });
+
+  it("confirms a send once when ready metadata replaces its optimistic overlay", async () => {
+    const session = createChatSession({ contextUsage: false });
+    const accepted = vi.fn();
+    let requestId = "";
+    GET.mockImplementation(
+      async () =>
+        ({
+          data: [
+            storedMessage("user", "submitted", {
+              id: "durable-user",
+              appended_at_revision: 1,
+              details: { extra: { client_request_id: requestId } },
+            }),
+          ],
+          response: new Response(null, {
+            headers: { "X-Context-Revision": "1", "X-History-Epoch": "0" },
+          }),
+        }) as never,
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url, init) => {
+        requestId = JSON.parse(init.body).client_request_id;
+        return sse([
+          {
+            type: "run_meta",
+            data: {
+              run_id: "new-run",
+              execution_epoch: 1,
+              history_epoch: 0,
+              replay_after_revision: 1,
+              trigger_message_id: "durable-user",
+            },
+          },
+          textDelta("live response"),
+          finishEvent,
+        ]);
+      }),
+    );
+    await session.sendMessage(
+      "send-ready",
+      "submitted",
+      null,
+      null,
+      [],
+      accepted,
+    );
+    expect(accepted).toHaveBeenCalledTimes(1);
+    expect(session.messages.value[0]?.id).toBe("durable-user");
+    expect(fetch).toHaveBeenCalledTimes(1);
+    session.dispose();
+  });
+});
+
+it("does not mutate approval state when a decision response arrives after disposal", async () => {
+  const session = createChatSession({ contextUsage: false });
+  GET.mockResolvedValue({ data: [] } as never);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue(
+      sse([
+        {
+          type: "approval_requested",
+          data: {
+            approval_id: "pending-decision",
+            agent_id: null,
+            call_id: "write",
+            tool: "write_file",
+            kind: "write",
+            title: "out.txt",
+            outside: false,
+          },
+        },
+        finishEvent,
+      ]),
+    ),
+  );
+  await session.sendMessage("approval-disposal", "write");
+  expect(session.pendingApprovals.value.get("approval-disposal")).toHaveLength(
+    1,
+  );
+  let settle!: (value: unknown) => void;
+  POST.mockReturnValue(
+    new Promise((resolve) => {
+      settle = resolve;
+    }) as never,
+  );
+  const deciding = session.decideApproval(
+    "approval-disposal",
+    "pending-decision",
+    "allow",
+  );
+  session.dispose();
+  settle({ response: new Response(), data: { resolved: true } });
+  expect(await deciding).toBe(true);
+  expect(session.pendingApprovals.value.get("approval-disposal")).toHaveLength(
+    1,
+  );
 });

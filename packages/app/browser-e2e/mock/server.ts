@@ -812,6 +812,13 @@ async function handleApi(
         return sendJson(res, reply.status, { error: "History unavailable" });
       if (s.contextRevisions?.[id] != null)
         res.setHeader("X-Context-Revision", String(s.contextRevisions[id]));
+      const conversation = s.conversations?.find(
+        (value) => (value as { id?: string }).id === id,
+      ) as { history_epoch?: number } | undefined;
+      res.setHeader(
+        "X-History-Epoch",
+        String(conversation?.history_epoch ?? 0),
+      );
       return sendJson(res, 200, s.messages?.[id] ?? []);
     }
     if (req.method === "POST") {

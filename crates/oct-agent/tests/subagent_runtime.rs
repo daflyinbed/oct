@@ -826,7 +826,8 @@ async fn restart_recovery_resumes_child_then_parent() {
     );
 
     let mut events = sse_payloads(app.send_message(&conv, "please research").await);
-    next_event(&mut events, updated("A", "running")).await;
+    let initial_child = next_event(&mut events, updated("A", "running")).await;
+    let agent_id = initial_child["data"]["agent_id"].as_str().unwrap();
 
     // Simulate the crash: checkpoint the WAL, copy the db file, boot a NEW
     // app over the copy. Its startup sweep marks the interrupted parent and
@@ -859,14 +860,50 @@ async fn restart_recovery_resumes_child_then_parent() {
         "pending_recovery"
     );
 
+    // A closed tool batch from the preceding execution must survive replay.
+    // A plain final assistant would instead exercise the completion shortcut.
+    use oct_llm_provider::core::{ContentPart, Message, Role, ToolCall, ToolResult};
+    for message in [
+        Message {
+            role: Role::Assistant,
+            parts: vec![ContentPart::ToolCall(ToolCall {
+                id: "before-restart-call".into(),
+                name: "read_file".into(),
+                arguments: "{}".into(),
+            })],
+        },
+        Message {
+            role: Role::Tool,
+            parts: vec![ContentPart::ToolResult(ToolResult {
+                call_id: "before-restart-call".into(),
+                content: json!("before-restart"),
+                is_error: false,
+                images: vec![],
+            })],
+        },
+    ] {
+        oct_agent::db::messages::insert_message(
+            &app2.pool,
+            agent_id,
+            &message,
+            Some("mock-llm"),
+            Some("snapshot-model"),
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    let (recovered_tx, recovered_rx) = gate();
+
     // One resume: the child restarts on its ORIGINAL run row (epoch bumps),
     // its result lands exactly once, then the parent continues.
     llm.push_marker_turns(
         "TASKA-7f3a",
-        vec![LlmTurn::Complete(vec![
-            text_chunk("done-a-recovered"),
-            finish_chunk("stop"),
-        ])],
+        vec![LlmTurn::Gated {
+            pre: vec![text_chunk("done-a-recovered")],
+            gate: recovered_rx,
+            post: vec![finish_chunk("stop")],
+        }],
     );
     llm.push_turns(vec![LlmTurn::Complete(vec![
         text_chunk("parent final"),
@@ -874,6 +911,38 @@ async fn restart_recovery_resumes_child_then_parent() {
     ])]);
     let mut events2 = sse_payloads(app2.resume(&conv).await);
     next_event(&mut events2, updated("A", "running")).await;
+    let mut child_events = sse_payloads(
+        app2.get_json(&format!("/api/subagents/{agent_id}/events"))
+            .await,
+    );
+    let ready = next_event(&mut child_events, |v| v["type"] == "run_meta").await;
+    assert_eq!(ready["data"]["run_id"], initial_child["data"]["run_id"]);
+    assert_eq!(ready["data"]["execution_epoch"], 2);
+    next_event(&mut child_events, |v| v["type"] == "text_delta").await;
+    let snapshot = app2
+        .get_json(&format!("/api/subagents/{agent_id}/messages"))
+        .await;
+    let revision: i64 = snapshot.headers()["X-Context-Revision"]
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(snapshot.headers()["X-History-Epoch"], "0");
+    let child_history: Vec<Value> = snapshot.json().await.unwrap();
+    assert!(
+        child_history
+            .iter()
+            .any(|m| m["parts"].to_string().contains("before-restart"))
+    );
+    assert_eq!(ready["data"]["replay_after_revision"], revision);
+    assert!(
+        child_history
+            .iter()
+            .all(|m| m["appended_at_revision"].as_i64().unwrap() <= revision)
+    );
+    recovered_tx.send(true).unwrap();
+    drain_to_end(&mut child_events).await;
+
     next_event(&mut events2, updated("A", "completed")).await;
     next_event(&mut events2, |v| v["type"] == "finish").await;
     drain_to_end(&mut events2).await;

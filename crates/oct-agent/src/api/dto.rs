@@ -293,6 +293,9 @@ pub struct MessageDto {
     /// Timeline slot within the conversation. `None` on original-content
     /// responses (a superseded row no longer has a membership slot).
     pub ordering: Option<i64>,
+    /// Immutable membership insertion revision; replay boundaries use this
+    /// instead of ordering (marker insertion renumbers) or content id (COW).
+    pub appended_at_revision: Option<i64>,
     pub provider_id: Option<String>,
     pub model_id: Option<String>,
     pub input_tokens: Option<i64>,
@@ -335,6 +338,7 @@ impl MessageDto {
                 .flatten(),
             details: parse_details(row.details_json.as_deref()),
             ordering: Some(row.ordering),
+            appended_at_revision: Some(row.appended_at_revision),
             provider_id: row.provider_id.clone(),
             model_id: row.model_id.clone(),
             input_tokens: row.input_tokens,
@@ -371,6 +375,7 @@ impl MessageDto {
                 .flatten(),
             details: parse_details(row.details_json.as_deref()),
             ordering: None,
+            appended_at_revision: None,
             provider_id: None,
             model_id: None,
             input_tokens: None,

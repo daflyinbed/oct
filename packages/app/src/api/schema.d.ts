@@ -1248,14 +1248,19 @@ export interface components {
             type: "error";
         } | {
             /**
-             * @description Run-boundary metadata for a reconnecting subscriber: the id of the
-             *     user message row that started this run. NEVER enters the hub's replay
-             *     log and is never published by the agent loop — the events endpoint
-             *     injects it (per subscriber) in front of the replay so the frontend can
-             *     truncate its DB-loaded history exactly at the run boundary.
+             * @description Ready boundary for one execution instance, recorded once in its hub
+             *     after durable preparation and before content events. Subscribers keep
+             *     memberships appended at/before this revision, then replay this epoch.
              */
             data: {
-                start_message_id: string;
+                /** Format: int64 */
+                execution_epoch: number;
+                /** Format: int64 */
+                history_epoch: number;
+                /** Format: int64 */
+                replay_after_revision: number;
+                run_id: string;
+                trigger_message_id?: string | null;
             };
             /** @enum {string} */
             type: "run_meta";
@@ -1902,6 +1907,12 @@ export interface components {
          *     fields. `parts_json`/`details_json` never leave the backend.
          */
         MessageDto: {
+            /**
+             * Format: int64
+             * @description Immutable membership insertion revision; replay boundaries use this
+             *     instead of ordering (marker insertion renumbers) or content id (COW).
+             */
+            appended_at_revision?: number | null;
             /** Format: date-time */
             created_at: string;
             details?: components["schemas"]["MessageDetails"] | null;
@@ -2951,7 +2962,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description SSE stream: a synthetic run_meta event (when the run records its start message) followed by the run's full event log replayed from its start, then live events */
+            /** @description SSE stream: the execution log including ready run_meta metadata, followed by live events */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -5279,7 +5290,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description SSE stream of the ACTIVE child run: a synthetic run_meta event (the delegation message boundary) followed by the run's full event log replayed from its start, then live events */
+            /** @description SSE stream of the ACTIVE child run: the execution log including ready run_meta metadata, followed by live events */
             200: {
                 headers: {
                     [name: string]: unknown;

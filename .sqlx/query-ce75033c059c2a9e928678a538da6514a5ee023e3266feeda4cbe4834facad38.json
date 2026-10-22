@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT context_revision, forked_at_revision, origin_kind FROM conversations WHERE id = $1",
+  "query": "SELECT context_revision, history_epoch, forked_at_revision, origin_kind FROM conversations WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -15,8 +15,19 @@
         }
       },
       {
-        "name": "forked_at_revision",
+        "name": "history_epoch",
         "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "conversations",
+            "name": "history_epoch"
+          }
+        }
+      },
+      {
+        "name": "forked_at_revision",
+        "ordinal": 2,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -27,7 +38,7 @@
       },
       {
         "name": "origin_kind",
-        "ordinal": 2,
+        "ordinal": 3,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -42,9 +53,10 @@
     },
     "nullable": [
       false,
+      false,
       true,
       false
     ]
   },
-  "hash": "a6315f542d552a186f71c4eeac8151b21fee405606de17b71bb62d1758326eee"
+  "hash": "ce75033c059c2a9e928678a538da6514a5ee023e3266feeda4cbe4834facad38"
 }

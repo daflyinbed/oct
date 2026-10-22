@@ -144,13 +144,17 @@ pub enum AgentEvent {
     #[serde(rename = "error")]
     Error(String),
 
-    /// Run-boundary metadata for a reconnecting subscriber: the id of the
-    /// user message row that started this run. NEVER enters the hub's replay
-    /// log and is never published by the agent loop — the events endpoint
-    /// injects it (per subscriber) in front of the replay so the frontend can
-    /// truncate its DB-loaded history exactly at the run boundary.
+    /// Ready boundary for one execution instance, recorded once in its hub
+    /// after durable preparation and before content events. Subscribers keep
+    /// memberships appended at/before this revision, then replay this epoch.
     #[serde(rename = "run_meta")]
-    RunMeta { start_message_id: String },
+    RunMeta {
+        run_id: String,
+        execution_epoch: i64,
+        history_epoch: i64,
+        replay_after_revision: i64,
+        trigger_message_id: Option<String>,
+    },
 
     /// A subagent task of this run changed state (started / settled /
     /// recovered). Published on the PARENT run's hub only — small by design:
@@ -349,11 +353,6 @@ pub struct RunHandle {
     /// loop (publisher), tool contexts (publisher) and every SSE subscriber.
     pub hub: Arc<EventHub>,
     pub cancel: CancellationToken,
-    /// The user message row that started this run — the boundary between the
-    /// DB history (everything up to and including it) and this run's event
-    /// log (everything after it). `None` for resumed runs (no new user
-    /// message) and in the brief window before the user message is inserted.
-    pub start_message_id: Option<String>,
 }
 
 impl RunHandle {

@@ -999,7 +999,6 @@ async fn tool_event_overflow_stops_before_compaction_or_another_model_request() 
     let handle = RunHandle {
         hub: Arc::new(oct_agent::agent::EventHub::new()),
         cancel: tokio_util::sync::CancellationToken::new(),
-        start_message_id: None,
     };
     let ctx = AgentContext {
         model: Arc::new(model),

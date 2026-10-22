@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT c.context_revision, c.history_epoch,\n                (SELECT m.id FROM conversation_messages cm\n                 JOIN messages m ON m.id = cm.message_id\n                 WHERE cm.conversation_id = c.id AND m.role = 'user'\n                   AND COALESCE(CASE WHEN json_valid(m.details_json) THEN json_extract(m.details_json, '$.kind') END, '') != 'compaction'\n                 ORDER BY cm.ordering DESC LIMIT 1) AS \"trigger_message_id: String\"\n               FROM conversations c WHERE c.id = $1",
+  "describe": {
+    "columns": [
+      {
+        "name": "context_revision",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "conversations",
+            "name": "context_revision"
+          }
+        }
+      },
+      {
+        "name": "history_epoch",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "conversations",
+            "name": "history_epoch"
+          }
+        }
+      },
+      {
+        "name": "trigger_message_id: String",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "6832b98e8530c13eb7533d8f1a16dd53a969b36ab2d71dc0aa79aa66f66cc7a8"
+}

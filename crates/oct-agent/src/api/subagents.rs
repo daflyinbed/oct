@@ -19,8 +19,7 @@ use super::AppState;
 use super::dto;
 use super::error::{ApiResult, AppError};
 use super::sse::sse_event;
-use crate::agent::AgentEvent;
-use crate::db::{conversations as conv_db, messages as msg_db, runs as run_db};
+use crate::db::{conversations as conv_db, runs as run_db};
 
 /// One row of the subagent task list: the persisted run row merged with the
 /// live in-memory activity. Field names are the fixed frontend contract.
@@ -156,13 +155,11 @@ async fn require_subagent_conversation(
 pub async fn get_subagent_messages(
     State(state): State<AppState>,
     Path(agent_id): Path<String>,
-) -> ApiResult<Json<Vec<dto::MessageDto>>> {
+) -> ApiResult<Response> {
     require_subagent_conversation(&state, &agent_id).await?;
 
-    let messages = msg_db::list_messages(&state.pool, &agent_id).await?;
-    Ok(Json(
-        messages.iter().map(dto::MessageDto::from_stored).collect(),
-    ))
+    // Use the same transactional snapshot and revision/epoch headers as roots.
+    super::chat::get_messages(State(state), Path(agent_id)).await
 }
 
 #[utoipa::path(
@@ -170,7 +167,7 @@ pub async fn get_subagent_messages(
     path = "/subagents/{agentId}/events",
     params(("agentId" = String, Path, description = "Subagent (child conversation) ID")),
     responses(
-        (status = 200, description = "SSE stream of the ACTIVE child run: a synthetic run_meta event (the delegation message boundary) followed by the run's full event log replayed from its start, then live events"),
+        (status = 200, description = "SSE stream of the ACTIVE child run: the execution log including ready run_meta metadata, followed by live events"),
         (status = 404, description = "No active run for this subagent (it ended or was lost — read the history instead)")
     ),
     tag = "subagents"
@@ -194,18 +191,9 @@ pub async fn stream_subagent_events(
         .upgrade()
         .ok_or_else(|| AppError::NotFound("No active run for this subagent".into()))?;
 
-    // Same per-subscriber run_meta contract as the chat events endpoint: the
-    // delegation message is the boundary where a reconnecting panel truncates
-    // its DB-loaded history. Never published to the hub itself.
-    let start_message_id = state
-        .sessions
-        .get(&agent_id)
-        .and_then(|entry| entry.value().start_message_id.clone());
-    let meta = start_message_id.map(|start_message_id| AgentEvent::RunMeta { start_message_id });
-
-    let stream = futures_util::stream::iter(meta)
-        .chain(hub.subscribe())
-        .map(|e| Ok::<_, Infallible>(sse_event(&e)));
+    // Metadata and replay come from the same execution hub; recovery never
+    // reuses the original delegation as the event-log boundary.
+    let stream = hub.subscribe().map(|e| Ok::<_, Infallible>(sse_event(&e)));
 
     Ok(Sse::new(stream)
         .keep_alive(KeepAlive::default())

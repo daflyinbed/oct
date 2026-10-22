@@ -167,7 +167,6 @@ impl BackgroundTaskManager {
 
         let view = crate::db::messages::load_llm_view(&self.pool, conversation_id).await?;
 
-        service.set_start_message_id(conversation_id, &start_message_id);
         // Same pre-run connection sync a user turn performs (best effort).
         if !service
             .mcp

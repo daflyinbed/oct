@@ -126,7 +126,12 @@ async fn cancellation_needs_no_finished_timestamp() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(first["type"], "text_delta");
+    assert_eq!(first["type"], "run_meta");
+    let delta = tokio::time::timeout(Duration::from_secs(10), stream.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(delta["type"], "text_delta");
     assert_eq!(app.cancel(&conversation).await.status(), 200);
     let events: Vec<_> = tokio::time::timeout(Duration::from_secs(10), stream.collect())
         .await

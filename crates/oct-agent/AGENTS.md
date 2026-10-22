@@ -28,7 +28,8 @@
 - Send 带 `expected_revision`（history 准备前校验）与可选 `attachment_ids`（staged 附件认领）；`POST …/attachments`（multipart 上传，路由级 body limit）与 `GET /attachments/{id}`（图片按类型读取，文本统一 text/plain + nosniff，immutable 缓存头）；`POST …/{id}/resume` 兼作子代理崩溃恢复入口（orchestrator 先重建任务树再续父 loop）；`GET …/{id}/run` + `GET …/{id}/events` 供前端刷新后接回在飞 run。
 - **Fork**：切点=head / before-user / after-assistant / 闭合 tool 批之后（并行批不可拆）；共享内容行、复制 membership，**绝不**复制 runs/tasks/read grants；请求带 `operation_id`+`expected_revision`；切点丢弃其后的 marker、恢复其后被 COW 换掉的原文；before-user 的 `draft` 仅含用户正文，`draft_attachments` 保留图片/文本元数据，前端经 `POST …/attachments/{attachment_id}/copy` 签发目标会话的新 staged 票据（共享资产）后才可重发（revert 同源）；以 tool 结果结尾的 fork 可无 run 恢复且不得重放历史工具。
 - **Revert**：整段 pre-revert membership 存为只读备份（origin_kind='revert_backup'），单事务替换原时间线；context_revision/history_epoch 递增；活动受管任务/未通知后台任务/未完成 wake 阻塞 revert；备份会话拒绝 send/resume/compact/revert/权限变更（rename/delete/fork 可用）。
-- `GET /messages` 同一读快照带 `X-Context-Revision` 与 `X-Context-Tokens`。
+- 根/子 `GET /messages` 共用事务快照，带 `X-Context-Revision`、`X-History-Epoch` 与 `X-Context-Tokens`；DTO 的 `appended_at_revision` 是不可变 membership 插入版本。
+- `runtime/replay.rs` 在准备写入完成后冻结持久化边界，在内容事件之前向该 execution 的 hub 发布一次 `run_meta {run_id, execution_epoch, history_epoch, replay_after_revision, trigger_message_id}`。原 send/resume 订阅和 GET events 重连共享同一条控制记录；恢复期间允许子任务状态早于 ready，但不能让内容事件早于 ready。trigger 只标识 UI 轮次，不是重放边界；ordering 会被 marker 重排，不能代替 membership revision。
 
 ## Database Schema
 

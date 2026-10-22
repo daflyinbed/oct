@@ -2019,6 +2019,8 @@ async fn chat_conflict_cancel_then_session_frees() {
     let mut first = sse_payloads(first);
     // Wait until the first scripted model turn has actually been consumed;
     // cancellation during preparation would leave its Hang for the next run.
+    let ready = next_event(&mut first).await.expect("ready metadata");
+    assert_eq!(ready["type"], "run_meta");
     let pre = next_event(&mut first).await.expect("first run delta");
     assert_eq!(pre["type"], "text_delta");
 
@@ -2333,6 +2335,8 @@ async fn reconnect_replays_from_run_start_and_continues_live() {
     assert_eq!(first.status(), 200);
     let mut original = sse_payloads(first);
     // 确定性地等 pre delta 已发布：原连接收到它 ⟺ hub 日志已记录它。
+    let ready = next_event(&mut original).await.expect("ready metadata");
+    assert_eq!(ready["type"], "run_meta");
     let pre = next_event(&mut original)
         .await
         .expect("original stream should deliver the pre delta");
@@ -2349,11 +2353,11 @@ async fn reconnect_replays_from_run_start_and_continues_live() {
     assert_eq!(reconnected_resp.status(), 200);
     let mut reconnected = sse_payloads(reconnected_resp);
 
-    // 重放部分：run_meta（锚定本次 run 的 user 消息行）+ 已发布的 delta。
+    // 重放部分：相同 execution 的 ready metadata + 已发布的 delta。
     let meta = next_event(&mut reconnected).await.expect("run_meta first");
     assert_eq!(meta["type"], "run_meta");
     let user_id = stored_messages(&app, &conv_id).await[0]["id"].clone();
-    assert_eq!(meta["data"]["start_message_id"], user_id);
+    assert_eq!(meta["data"]["trigger_message_id"], user_id);
     let replayed = next_event(&mut reconnected).await.expect("replayed delta");
     assert_eq!(
         replayed, pre,
@@ -2374,14 +2378,15 @@ async fn reconnect_replays_from_run_start_and_continues_live() {
     );
     assert_eq!(text_of(&reconnected_events), "你好，世界");
 
-    // 原连接与重连并存（多订阅者），各自完整地收到增量，且原连接不含 run_meta。
-    let mut original_events = vec![pre];
+    // 原连接与重连接收同一边界和完整增量。
+    assert_eq!(ready, reconnected_events[0]);
+    let mut original_events = vec![ready, pre];
     while let Some(e) = next_event(&mut original).await {
         original_events.push(e);
     }
     assert_eq!(
         event_types(&original_events),
-        vec!["text_delta", "text_delta", "finish"]
+        vec!["run_meta", "text_delta", "text_delta", "finish"]
     );
     assert_eq!(text_of(&original_events), "你好，世界");
 
@@ -2418,6 +2423,8 @@ async fn reconnect_supports_multiple_concurrent_event_subscribers() {
     let first = app.send_message(&conv_id, "hi").await;
     assert_eq!(first.status(), 200);
     let mut original = sse_payloads(first);
+    let ready = next_event(&mut original).await.expect("ready metadata");
+    assert_eq!(ready["type"], "run_meta");
     let pre = next_event(&mut original).await.expect("pre delta");
     assert_eq!(pre["data"], "部分");
 
@@ -2460,6 +2467,8 @@ async fn reconnect_stream_receives_cancelled() {
     let first = app.send_message(&conv_id, "slow one").await;
     assert_eq!(first.status(), 200);
     let mut original = sse_payloads(first);
+    let ready = next_event(&mut original).await.expect("ready metadata");
+    assert_eq!(ready["type"], "run_meta");
     let pre = next_event(&mut original).await.expect("pre delta");
     assert_eq!(pre["data"], "part");
 
@@ -3540,6 +3549,8 @@ async fn cancelled_run_settles_row_and_re_send_works() {
     let mut stream = sse_payloads(first);
     // Observe the first mock turn before cancellation, so a later send cannot
     // accidentally consume the still-queued hanging response.
+    let ready = next_event(&mut stream).await.expect("ready metadata");
+    assert_eq!(ready["type"], "run_meta");
     let pre = next_event(&mut stream).await.expect("first text delta");
     assert_eq!(pre["type"], "text_delta");
     let cancel = app.cancel(&conv_id).await;
@@ -5098,5 +5109,68 @@ async fn reasoning_resume_restores_real_user_choice_past_compaction_marker() {
             .await
             .unwrap()
             .is_none()
+    );
+}
+
+#[tokio::test]
+async fn resumed_replay_boundary_includes_repaired_history_before_continuation() {
+    let (gate_tx, gate_rx) = llm::gate();
+    let model = llm::spawn_llm_mock(vec![LlmTurn::Gated {
+        pre: vec![text_chunk("continued")],
+        gate: gate_rx,
+        post: vec![text_chunk(" response"), finish_chunk("stop")],
+    }])
+    .await;
+    let app = TestApp::new().await;
+    app.register_llm_provider(&model).await;
+    let project = app.create_project().await;
+    let conv = app.create_conversation(&project).await;
+    seed_dangling_tool_call(&app, &conv).await;
+
+    let mut original = sse_payloads(app.resume(&conv).await);
+    let ready = next_event(&mut original).await.expect("ready after repair");
+    assert_eq!(ready["type"], "run_meta");
+    let delta = next_event(&mut original).await.expect("live continuation");
+    assert_eq!(delta["type"], "text_delta");
+    let response = app
+        .get_json(&format!("/api/conversations/{conv}/messages"))
+        .await;
+    assert_eq!(response.headers()["X-History-Epoch"], "0");
+    let revision: i64 = response.headers()["X-Context-Revision"]
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let history: Vec<Value> = response.json().await.unwrap();
+    assert_eq!(
+        history.len(),
+        3,
+        "repair landed before ready, continuation is still live"
+    );
+    assert_eq!(history[2]["role"], "tool");
+    assert_eq!(ready["data"]["replay_after_revision"], revision);
+    assert_eq!(ready["data"]["trigger_message_id"], history[0]["id"]);
+    assert!(
+        history
+            .iter()
+            .all(|row| row["appended_at_revision"].as_i64().unwrap() <= revision)
+    );
+    let mut reconnected = sse_payloads(app.run_events(&conv).await);
+    assert_eq!(next_event(&mut reconnected).await.unwrap(), ready);
+    assert_eq!(next_event(&mut reconnected).await.unwrap(), delta);
+
+    gate_tx.send(true).unwrap();
+    while next_event(&mut original).await.is_some() {}
+    let mut rest = Vec::new();
+    while let Some(event) = next_event(&mut reconnected).await {
+        rest.push(event);
+    }
+    assert_eq!(rest.last().unwrap()["type"], "finish");
+    let stored = stored_messages(&app, &conv).await;
+    assert!(
+        stored.last().unwrap()["appended_at_revision"]
+            .as_i64()
+            .unwrap()
+            > revision
     );
 }

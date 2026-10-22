@@ -8,6 +8,7 @@ import {
   finishEvent,
   projectFixture,
   providerFixture,
+  runMeta,
   storedMessage,
   textDelta,
 } from "./support/fixtures";
@@ -27,9 +28,12 @@ it("reattaches a running conversation before the configured catalog returns and 
     conversations: [conversationFixture()],
     providers: [provider],
     running: { c1: true },
+    contextRevisions: { c1: 1 },
     messages: {
       c1: [
         storedMessage("user", [{ type: "text", text: "previous request" }], {
+          id: "previous-user",
+          appended_at_revision: 1,
           provider_id: provider.id,
           model_id: "model-a",
           details: { extra: { reasoning: { type: "effort", effort: "high" } } },
@@ -38,7 +42,13 @@ it("reattaches a running conversation before the configured catalog returns and 
     },
     scripts: {
       c1: [
-        { type: "events", events: [textDelta("reattached before models")] },
+        {
+          type: "events",
+          events: [
+            runMeta(1, "previous-user"),
+            textDelta("reattached before models"),
+          ],
+        },
         { type: "gate", name: "run-end" },
         { type: "events", events: [finishEvent()] },
       ],

@@ -36,3 +36,5 @@ SQLite，位置解析两级：`DATABASE_URL` 显式设置优先 → 默认 `$XDG
 ## 测试
 
 `tests/` 全部集成测试，共享 `tests/support/`（`TestApp` 真实 axum 服务器 + OpenAI 兼容 LLM mock + FakeMcpConnection），CI 铁律：绝不调用真实模型。架构细节与各测试文件说明见本目录 `AGENTS.md`。
+
+聊天重连以执行实例为边界：SSE 的 `run_meta` 给出 run/epoch 和持久化基底版本，消息接口给出不可变 membership 插入版本及快照 revision/history epoch。根会话和子代理使用同一协议，恢复后保留上次执行已持久化的工作。修改该协议时前后端需一起更新。

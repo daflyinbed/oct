@@ -261,16 +261,13 @@ pub async fn send_message(
     if let Some(reasoning) = &req.reasoning {
         details["reasoning"] = serde_json::to_value(reasoning).map_err(anyhow::Error::from)?;
     }
-    let stored_user = prepared
+    prepared
         .commit(&provider_id, &model_id, details)
         .await
         .map_err(super::attachments::service_error)?;
 
-    // Record the run boundary on the (already live) session entry: the user
-    // message row is the divide between DB history and this run's event log.
-    // GET /events reports it as run_meta so a reconnecting frontend truncates
-    // its history exactly here before replaying the run's events.
-    state.runs.set_start_message_id(&id, &stored_user.id);
+    // Runtime captures the durable replay base after preparation and before
+    // publishing this execution's content events.
 
     let view = msg_db::load_llm_view(&state.pool, &id)
         .await
@@ -809,7 +806,7 @@ pub async fn get_run_status(
     path = "/conversations/{id}/events",
     params(("id" = String, Path, description = "Conversation ID")),
     responses(
-        (status = 200, description = "SSE stream: a synthetic run_meta event (when the run records its start message) followed by the run's full event log replayed from its start, then live events"),
+        (status = 200, description = "SSE stream: the execution log including ready run_meta metadata, followed by live events"),
         (status = 404, description = "No agent running for this conversation (the run has ended)")
     ),
     tag = "chat"
@@ -821,23 +818,18 @@ pub async fn stream_run_events(
     // Clone what we need and drop the shard guard immediately; the returned
     // SSE stream must NOT keep the run handle alive, or the hub would never
     // be dropped when the run ends and the stream would never reach EOF.
-    let (hub, start_message_id) = {
+    let hub = {
         let Some(handle) = state.sessions.get(&id) else {
             return Err(AppError::NotFound(
                 "No agent running for this conversation".into(),
             ));
         };
-        (handle.hub.clone(), handle.start_message_id.clone())
+        handle.hub.clone()
     };
 
-    // Synthetic boundary event for THIS subscriber only — never published to
-    // the hub. It tells the frontend where the run's event log begins so it
-    // can truncate its DB-loaded history before applying the replay.
-    let meta = start_message_id.map(|start_message_id| AgentEvent::RunMeta { start_message_id });
-
-    let stream = futures_util::stream::iter(meta)
-        .chain(hub.subscribe())
-        .map(|e| Ok::<_, Infallible>(sse_event(&e)));
+    // Ready metadata is part of this same hub's log, including subscriptions
+    // opened while resume is still preparing its durable history.
+    let stream = hub.subscribe().map(|e| Ok::<_, Infallible>(sse_event(&e)));
 
     Ok(Sse::new(stream)
         .keep_alive(KeepAlive::default())
@@ -860,7 +852,7 @@ pub async fn get_messages(
 ) -> ApiResult<Response> {
     let mut tx = state.pool.begin().await.map_err(anyhow::Error::from)?;
     let snapshot = sqlx::query!(
-        "SELECT context_revision, forked_at_revision, origin_kind FROM conversations WHERE id = $1",
+        "SELECT context_revision, history_epoch, forked_at_revision, origin_kind FROM conversations WHERE id = $1",
         id
     )
     .fetch_optional(&mut *tx)
@@ -906,6 +898,14 @@ pub async fn get_messages(
         "X-Context-Revision",
         snapshot
             .context_revision
+            .to_string()
+            .parse()
+            .expect("decimal header"),
+    );
+    response.headers_mut().insert(
+        "X-History-Epoch",
+        snapshot
+            .history_epoch
             .to_string()
             .parse()
             .expect("decimal header"),
