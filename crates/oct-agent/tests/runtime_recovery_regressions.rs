@@ -25,6 +25,70 @@ async fn app(replies: &[&str]) -> (TestApp, LlmMock, String, String) {
     (app, llm, project, conv)
 }
 
+async fn assert_root_assembly_failure_settles_run(table: &str) {
+    let (app, llm, _project, conv) = app(&["resumed after assembly failure"]).await;
+    let (hide, restore) = match table {
+        "attachment_assets" => (
+            "ALTER TABLE attachment_assets RENAME TO unavailable_table",
+            "ALTER TABLE unavailable_table RENAME TO attachment_assets",
+        ),
+        "permission_rules" => (
+            "ALTER TABLE permission_rules RENAME TO unavailable_table",
+            "ALTER TABLE unavailable_table RENAME TO permission_rules",
+        ),
+        _ => panic!("unsupported fault injection: {table}"),
+    };
+    // These reads happen after the user message and running row are durable,
+    // but before a supervisor owns the run. Restore the table without a
+    // bootstrap sweep so the assertions observe startup's own settlement.
+    sqlx::query(hide).execute(&app.pool).await.unwrap();
+    let response = app.send_message(&conv, "durable request").await;
+    sqlx::query(restore).execute(&app.pool).await.unwrap();
+    assert_eq!(response.status(), 500);
+
+    let failed = runs::latest_run_for_conversation(&app.pool, &conv)
+        .await
+        .unwrap()
+        .expect("assembly failure must retain the registered run");
+    assert_eq!(failed.status, "failed");
+    assert!(failed.finished_at.is_some());
+    assert!(failed.error.as_deref().unwrap().contains(table));
+    assert!(!app.state.sessions.contains_key(&conv));
+    assert!(llm.requests().is_empty(), "the agent loop never started");
+    assert_eq!(msg::count_user_messages(&app.pool, &conv).await.unwrap(), 1);
+
+    let response = app.resume(&conv).await;
+    assert_eq!(response.status(), 200);
+    let events = app.read_sse(response).await;
+    assert!(events.iter().any(|event| event["type"] == "finish"));
+    assert_eq!(llm.requests().len(), 1);
+    assert_eq!(msg::count_user_messages(&app.pool, &conv).await.unwrap(), 1);
+    let resumed = runs::latest_run_for_conversation(&app.pool, &conv)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(resumed.id, failed.id);
+    assert_eq!(resumed.status, "completed");
+    assert_eq!(
+        runs::get_run(&app.pool, &failed.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "failed"
+    );
+}
+
+#[tokio::test]
+async fn root_attachment_assembly_failure_settles_run_and_allows_resume() {
+    assert_root_assembly_failure_settles_run("attachment_assets").await;
+}
+
+#[tokio::test]
+async fn root_permission_assembly_failure_settles_run_and_allows_resume() {
+    assert_root_assembly_failure_settles_run("permission_rules").await;
+}
+
 async fn seed_call(app: &TestApp, conv: &str, name: &str, call_id: &str) {
     msg::insert_message(
         &app.pool,
