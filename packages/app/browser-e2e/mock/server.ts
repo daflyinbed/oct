@@ -128,6 +128,8 @@ export interface Scenario {
   >;
   /** GET /api/providers 的返回体(ProviderResponse[])。 */
   providers?: unknown[];
+  /** 刷新后仍在运行的会话，GET events 使用同一 SSE 剧本重放。 */
+  running?: Record<string, boolean>;
   /** Agent editor read snapshots and explicit save replies, keyed by global/project id. */
   agentSettings?: Record<string, components["schemas"]["AgentSettingsView"][]>;
   agentTools?: components["schemas"]["AgentToolOption"][];
@@ -841,11 +843,16 @@ async function handleApi(
   m = pathname.match(RE_CONVERSATION_RUN);
   if (m && req.method === "GET") {
     const id = decodeURIComponent(m[1]);
-    const running = (state.streams.get(id) ?? []).size > 0;
+    const running = s.running?.[id] ?? (state.streams.get(id) ?? []).size > 0;
     return sendJson(res, 200, {
       running,
       resumable: s.resumable?.[id] ?? false,
     });
+  }
+
+  m = pathname.match(/^\/api\/conversations\/([^/]+)\/events$/);
+  if (m && req.method === "GET") {
+    return handleSse(req, res, decodeURIComponent(m[1]));
   }
 
   m = pathname.match(RE_CONVERSATION_RESUME);

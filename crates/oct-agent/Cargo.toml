@@ -43,6 +43,7 @@ tokio-stream = { version = "0.1", features = [ "sync" ] }
 # 0.7 for ServeDir::with_backend + the fs::Backend trait (embedded assets get
 # the full ServeDir feature set: mime, ETag/304, range requests).
 tower-http = { version = "0.7", features = [
+  "compression-gzip",
   "cors",
   "fs" 
 ] }
@@ -83,6 +84,7 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+flate2 = "1"
 # Manual catalog/runtime probe reads existing OpenCode JSONC configurations.
 jsonc-parser = { version = "0.34", features = ["serde"] }
 # sse_payloads() (reconnect e2e) reads response bodies incrementally, which

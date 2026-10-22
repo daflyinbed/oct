@@ -439,7 +439,7 @@ const emit = defineEmits<{
   close: [];
 }>();
 
-const { providers } = useProviders();
+const { providers, fetchProviderCatalog } = useProviders();
 const { servers: mcpServers, fetchServers: fetchMcpServers } = useMcpServers();
 const { projects } = useProjects();
 const {
@@ -456,7 +456,10 @@ const wireLogPending = ref(false);
 watch(
   () => props.visible,
   (visible) => {
-    if (visible) void loadSettings();
+    if (visible) {
+      void loadSettings();
+      void fetchProviderCatalog();
+    }
   },
   { immediate: true },
 );

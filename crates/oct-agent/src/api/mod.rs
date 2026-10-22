@@ -21,6 +21,7 @@ use axum::{Router, handler::HandlerWithoutStateExt};
 use dashmap::DashMap;
 use sqlx::SqlitePool;
 use std::sync::Arc;
+use tower_http::compression::CompressionLayer;
 use tower_http::services::ServeDir;
 use utoipa::OpenApi;
 use utoipa_axum::router::{OpenApiRouter, UtoipaMethodRouterExt};
@@ -161,6 +162,10 @@ pub fn build_router(state: AppState) -> Router {
             ServeDir::with_backend("", embed::EmbedBackend)
                 .fallback(embed::spa_fallback.into_service()),
         )
+        .layer(axum::middleware::from_fn(embed::cache_control))
+        // The default predicate excludes text/event-stream so SSE events are
+        // flushed immediately rather than buffered by the gzip encoder.
+        .layer(CompressionLayer::new())
         .with_state(state)
 }
 
