@@ -62,8 +62,8 @@ impl LoopStop {
 struct RunProgress {
     // RunOutcome bookkeeping: the most recent successfully
     // persisted assistant row `(id, text)` — text may be empty when the row
-    // carried only reasoning/tool parts — and the usage aggregate over every
-    // Usage event seen during the run (absent ⇒ unknown, not zero).
+    // carried only reasoning/tool parts — and the latest usage counts of each
+    // request during the run (absent ⇒ unknown, not zero).
     last_assistant: Option<(String, String)>,
     usage: UsageAccumulator,
 }

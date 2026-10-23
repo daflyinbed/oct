@@ -131,6 +131,160 @@ async fn plain_text_turn_streams_and_persists_assistant_message() {
 }
 
 #[tokio::test]
+async fn request_usage_preserves_split_cache_measurements_in_history() {
+    use oct_llm_provider::core::{StreamEvent, Usage};
+
+    for separate_cache in [false, true] {
+        let env = TestEnv::new().await;
+        let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+        let mut initial = Usage::new(Some(if separate_cache { 40 } else { 160 }), Some(1), None);
+        initial.cached_input_tokens = Some(100);
+        if separate_cache {
+            initial.provider_details.insert(
+                "raw".into(),
+                json!({
+                    "cache_creation_input_tokens": 20,
+                    "cache_read_input_tokens": 100,
+                }),
+            );
+        }
+        let mut final_usage = Usage::new(None, Some(8), None);
+        if separate_cache {
+            final_usage
+                .provider_details
+                .insert("cache_creation_input_tokens".into(), json!(0));
+        }
+        let model = ScriptedModel::new(vec![Turn::Stream(vec![
+            Ok(StreamEvent::Usage(initial)),
+            text("done"),
+            Ok(StreamEvent::Usage(final_usage)),
+            finish(FinishReason::Stop),
+        ])]);
+        let (_handle, mut rx) = spawn_agent(model, vec![], env.pool.clone(), &conv_id, "hi").await;
+        let events = collect_events(&mut rx, is_terminal).await;
+        let stored = db::messages::list_messages(&env.pool, &conv_id)
+            .await
+            .unwrap();
+        assert_eq!(stored[0].input_tokens, Some(160));
+        assert_eq!(stored[0].output_tokens, Some(8));
+        assert!(events.contains(&AgentEvent::Usage {
+            input_tokens: Some(160),
+            output_tokens: Some(8),
+            reasoning_tokens: None,
+            context_window_tokens: None,
+        }));
+        let reloaded = db::messages::load_llm_view(&env.pool, &conv_id)
+            .await
+            .unwrap();
+        assert_eq!(reloaded.anchor.unwrap().tokens, 168);
+        let details: serde_json::Value =
+            serde_json::from_str(stored[0].details_json.as_deref().unwrap()).unwrap();
+        assert_eq!(details["usage"]["input_tokens"], 160);
+        assert_eq!(details["usage"]["output_tokens"], 8);
+        assert_eq!(details["usage"]["cached_input_tokens"], 100);
+        assert_eq!(
+            details["usage"]["cache_creation_input_tokens"],
+            if separate_cache {
+                json!(20)
+            } else {
+                json!(null)
+            }
+        );
+    }
+}
+
+#[tokio::test]
+async fn split_cached_usage_triggers_compaction_on_the_next_tool_round() {
+    use oct_agent::agent::loop_runner::run_agent_loop;
+    use oct_agent::agent::{AgentContext, RunStatus};
+    use oct_llm_provider::core::{Message, StreamEvent, Usage};
+
+    let env = TestEnv::new().await;
+    let conv_id = new_conversation(&env.pool, env.dir.path()).await;
+    for index in 0..8 {
+        let role = if index % 2 == 0 {
+            Role::User
+        } else {
+            Role::Assistant
+        };
+        db::messages::insert_message(
+            &env.pool,
+            &conv_id,
+            &Message::text(role, "old context ".repeat(40)),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    let mut initial = Usage::new(Some(40), Some(1), None);
+    initial.cached_input_tokens = Some(1700);
+    initial.provider_details.insert(
+        "raw".into(),
+        json!({ "cache_creation_input_tokens": 20, "cache_read_input_tokens": 1700 }),
+    );
+    let mut final_usage = Usage::new(None, Some(8), None);
+    final_usage
+        .provider_details
+        .insert("cache_creation_input_tokens".into(), json!(0));
+    let model = ScriptedModel::new(vec![
+        Turn::Stream(vec![
+            Ok(StreamEvent::Usage(initial)),
+            tool_call("call-1", "unknown_tool", json!({})),
+            Ok(StreamEvent::Usage(final_usage)),
+            finish(FinishReason::ToolCalls),
+        ]),
+        Turn::Stream(vec![text("done"), usage(80, 4), finish(FinishReason::Stop)]),
+    ]);
+    model.push_generation(Ok("Earlier context summarized.".into()));
+    let observer = model.observer();
+    let view = db::messages::load_llm_view(&env.pool, &conv_id)
+        .await
+        .unwrap();
+    let handle = RunHandle {
+        hub: Arc::new(oct_agent::events::EventHub::new()),
+        cancel: tokio_util::sync::CancellationToken::new(),
+    };
+    let mut rx = handle.subscribe();
+    let ctx = AgentContext {
+        model: Arc::new(model),
+        tools: Arc::new(vec![]),
+        pool: env.pool.clone(),
+        system_prompt: "test system prompt".into(),
+        context_window: Some(2000),
+        idle: None,
+        reasoning: None,
+        input_modalities: oct_agent::modality::InputModalities::Unknown,
+        max_output_tokens: None,
+        attachments: None,
+        permission: oct_agent::permissions::gate::PermissionGate::permissive(),
+        prompt_env_refresh: None,
+        prompt_generation: 0,
+    };
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(30),
+        run_agent_loop(ctx, conv_id, view, handle),
+    )
+    .await
+    .unwrap();
+    let events = collect_events(&mut rx, is_terminal).await;
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::Compacted { .. })),
+        "events: {events:?}; summary requests: {}",
+        observer.generate_requests().len()
+    );
+    assert_eq!(observer.generate_requests().len(), 1);
+    assert_eq!(events.last(), Some(&AgentEvent::Finish));
+    assert_eq!(outcome.status, RunStatus::Completed);
+    let total = outcome.usage.unwrap();
+    assert_eq!(total.input_tokens, 1840);
+    assert_eq!(total.output_tokens, 12);
+}
+
+#[tokio::test]
 async fn reasoning_deltas_persist_and_feed_back_into_next_request() {
     let env = TestEnv::new().await;
     let conv_id = new_conversation(&env.pool, env.dir.path()).await;

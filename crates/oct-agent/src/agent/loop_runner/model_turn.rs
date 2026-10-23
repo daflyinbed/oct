@@ -5,7 +5,9 @@ use crate::context::ContextState;
 use crate::db::messages as msg_db;
 use crate::events::AgentEvent;
 use futures_util::StreamExt;
-use oct_llm_provider::core::{ContentPart, FinishReason, Message, Role, StreamEvent, ToolCall};
+use oct_llm_provider::core::{
+    ContentPart, FinishReason, Message, Role, StreamEvent, ToolCall, Usage,
+};
 use oct_llm_provider::model::ChatRequest;
 use serde_json::json;
 use std::time::Instant;
@@ -16,7 +18,7 @@ pub(super) struct ModelTurn {
     text: String,
     tool_calls: Vec<ToolCall>,
     finish_reason: FinishReason,
-    usage: Option<(Option<u32>, Option<u32>, Option<u32>)>,
+    usage: Option<Usage>,
     anchor: Option<u64>,
     reasoning_duration_ms: Option<u64>,
 }
@@ -68,7 +70,7 @@ pub(super) async fn collect(
     let mut reasoning_ended_at: Option<Instant> = None;
     let mut pending_tool_calls: Vec<ToolCall> = Vec::new();
     let mut finish_reason = None;
-    let mut last_usage: Option<(Option<u32>, Option<u32>, Option<u32>)> = None;
+    let mut last_usage: Option<Usage> = None;
     // input+output of the request currently streaming; committed as the
     // usage anchor once the assistant message lands in full_messages.
     let mut pending_anchor: Option<u64> = None;
@@ -133,31 +135,32 @@ pub(super) async fn collect(
                         pending_tool_calls.push(tc);
                     }
                     Ok(StreamEvent::Usage(event_usage)) => {
-                        // Run aggregate for the RunOutcome (alongside the
-                        // per-request anchor bookkeeping below).
+                        let previous_input = last_usage.as_ref().and_then(request_input_tokens).unwrap_or(0);
+                        let previous_output = last_usage.as_ref().and_then(|usage| usage.output_tokens).unwrap_or(0);
+                        // Providers may split input/cache counts and final output across events.
+                        let snapshot = last_usage.get_or_insert_with(Usage::default);
+                        snapshot.input_tokens = event_usage.input_tokens.or(snapshot.input_tokens);
+                        snapshot.output_tokens = event_usage.output_tokens.or(snapshot.output_tokens);
+                        snapshot.reasoning_tokens = event_usage.reasoning_tokens.or(snapshot.reasoning_tokens);
+                        snapshot.cached_input_tokens = event_usage.cached_input_tokens.or(snapshot.cached_input_tokens);
+                        snapshot.provider_details.extend(event_usage.provider_details.clone());
+                        let input = request_input_tokens(snapshot);
+                        // Run aggregates replace this request's cumulative counts instead of adding each event.
                         usage.seen = true;
-                        usage.total.input_tokens +=
-                            u64::from(event_usage.input_tokens.unwrap_or(0));
-                        usage.total.output_tokens +=
-                            u64::from(event_usage.output_tokens.unwrap_or(0));
-                        last_usage = Some((
-                            event_usage.input_tokens,
-                            event_usage.output_tokens,
-                            event_usage.reasoning_tokens,
-                        ));
+                        usage.total.input_tokens = usage.total.input_tokens - u64::from(previous_input)
+                            + u64::from(input.unwrap_or(0));
+                        usage.total.output_tokens = usage.total.output_tokens - u64::from(previous_output)
+                            + u64::from(snapshot.output_tokens.unwrap_or(0));
                         // Provider-truth anchor for the NEXT estimate:
                         // everything after this request is a local
                         // increment on top of these tokens.
-                        if event_usage.input_tokens.is_some() || event_usage.output_tokens.is_some() {
-                            pending_anchor = Some(
-                                u64::from(event_usage.input_tokens.unwrap_or(0))
-                                    + u64::from(event_usage.output_tokens.unwrap_or(0)),
-                            );
-                        }
+                        pending_anchor = input.filter(|input| *input > 0).map(|input| {
+                            u64::from(input) + u64::from(snapshot.output_tokens.unwrap_or(0))
+                        });
                         handle.hub.publish(AgentEvent::Usage {
-                            input_tokens: event_usage.input_tokens,
-                            output_tokens: event_usage.output_tokens,
-                            reasoning_tokens: event_usage.reasoning_tokens,
+                            input_tokens: input,
+                            output_tokens: snapshot.output_tokens,
+                            reasoning_tokens: snapshot.reasoning_tokens,
                             context_window_tokens: ctx.context_window,
                         });
                     }
@@ -230,6 +233,9 @@ pub(super) async fn persist(
     // must deduct only content that THIS model actually received.
     reasoning_details["input_modalities"] = json!(ctx.input_modalities);
     reasoning_details["projection"] = json!(context.projection());
+    if let Some(usage) = &turn.usage {
+        reasoning_details["usage"] = usage_details(usage);
+    }
     let reasoning_details = Some(reasoning_details);
     // Parts and text were assembled together while streaming. Move the
     // message into context after persistence, keeping its text for the
@@ -252,9 +258,15 @@ pub(super) async fn persist(
         .map_err(|error| {
             LoopStop::failed(format!("Failed to persist assistant message: {error}"))
         })?;
-        if let Some((input, output, reasoning)) = turn.usage
-            && let Err(error) =
-                msg_db::update_message_usage(&ctx.pool, &stored.id, input, output, reasoning).await
+        if let Some(usage) = turn.usage
+            && let Err(error) = msg_db::update_message_usage(
+                &ctx.pool,
+                &stored.id,
+                request_input_tokens(&usage),
+                usage.output_tokens,
+                usage.reasoning_tokens,
+            )
+            .await
         {
             error!("Failed to persist usage for message {}: {error}", stored.id);
         }
@@ -275,5 +287,46 @@ pub(super) async fn persist(
             Vec::new()
         },
         finish_reason: turn.finish_reason,
+    })
+}
+
+fn cache_creation_tokens(usage: &Usage) -> Option<u64> {
+    let raw = usage.provider_details.get("raw");
+    let creation = usage
+        .provider_details
+        .get("cache_creation_input_tokens")
+        .and_then(serde_json::Value::as_u64);
+    let initial_creation = raw
+        .and_then(|v| v.get("cache_creation_input_tokens"))
+        .and_then(serde_json::Value::as_u64);
+    match (creation, initial_creation) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// Anthropic excludes cache reads/writes from input_tokens; OpenAI-compatible providers include them.
+fn request_input_tokens(usage: &Usage) -> Option<u32> {
+    let creation = cache_creation_tokens(usage);
+    let raw = usage.provider_details.get("raw");
+    let separate_cache =
+        creation.is_some() || raw.and_then(|v| v.get("cache_read_input_tokens")).is_some();
+    usage.input_tokens.and_then(|input| {
+        let cache = if separate_cache {
+            u64::from(usage.cached_input_tokens.unwrap_or(0)).saturating_add(creation.unwrap_or(0))
+        } else {
+            0
+        };
+        u32::try_from(u64::from(input).saturating_add(cache)).ok()
+    })
+}
+
+fn usage_details(usage: &Usage) -> serde_json::Value {
+    json!({
+        "input_tokens": request_input_tokens(usage),
+        "output_tokens": usage.output_tokens,
+        "reasoning_tokens": usage.reasoning_tokens,
+        "cached_input_tokens": usage.cached_input_tokens,
+        "cache_creation_input_tokens": cache_creation_tokens(usage),
     })
 }

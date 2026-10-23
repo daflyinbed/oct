@@ -146,20 +146,18 @@
           }}</span>
         </div>
         <div class="flex items-center gap-0.5 p-2">
-          <span class="flex-1" />
-
           <!-- 工具权限模式：三档切换，bypass 警示色 -->
           <AppSelect
             :model-value="permissionMode"
             :options="PERMISSION_MODE_OPTIONS"
             placeholder="权限"
             title="工具权限模式"
-            align="end"
+            align="start"
             :trigger-class="`max-w-[128px] ${permissionMode === 'bypass' ? 'text-warning-10' : 'text-dim'}`"
             :disabled="!conversationId"
             @update:model-value="(v: string) => $emit('setPermissionMode', v)"
           />
-          <span class="mx-0.5 flex-none text-sm text-faint">/</span>
+          <span class="flex-1" />
 
           <!-- 上下文占用圆环：hover 弹出容量详情 -->
           <ContextRing class="mr-1" />

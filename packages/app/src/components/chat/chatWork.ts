@@ -1,4 +1,6 @@
+import { UNKNOWN_TOKEN_USAGE } from "@/composables/chat/tokenUsage";
 import type { DisplayMessage, DisplayWork } from "@/composables/chat/display";
+import type { TokenUsage } from "@/composables/chat/tokenUsage";
 
 export interface ChatWork {
   kind: "work";
@@ -36,6 +38,7 @@ function splitWork(
   messages: DisplayMessage[],
   key: string,
   interrupted: boolean,
+  turnUsage: readonly TokenUsage[],
   trigger?: DisplayMessage,
 ): ChatWork {
   const last = messages.at(-1)!;
@@ -95,6 +98,7 @@ function splitWork(
     const message = messages[answerMessage]!;
     if (answerPart > 0) history.push(fragment(message, 0, answerPart));
     answer = fragment(message, answerPart, answerPart + 1);
+    answer.turnUsage = turnUsage;
     if (answerPart + 1 < message.parts.length)
       following.push(fragment(message, answerPart + 1, message.parts.length));
     following.push(...messages.slice(answerMessage + 1));
@@ -132,6 +136,7 @@ export function buildChatRenderUnits(
   let assistants: DisplayMessage[] = [];
   let triggerId: string | undefined;
   let trigger: DisplayMessage | undefined;
+  let turnUsage: TokenUsage[] = [];
   let segment = 0;
   const flush = (latest: boolean) => {
     if (assistants.length === 0) return;
@@ -140,6 +145,7 @@ export function buildChatRenderUnits(
         assistants,
         `${triggerId ?? assistants[0]!.id}:work:${segment++}`,
         latest && Boolean(options.interrupted),
+        turnUsage,
         trigger,
       ),
     );
@@ -152,10 +158,12 @@ export function buildChatRenderUnits(
       if (message.role === "user" || message.role === "notification") {
         triggerId = message.id;
         trigger = message;
+        turnUsage = [];
         segment = 0;
       }
       continue;
     }
+    turnUsage.push(message.usage ?? UNKNOWN_TOKEN_USAGE);
     // 压缩分隔条始终可见，并保留原始顺序；不能被收入工作过程。
     let start = 0;
     for (const [index, part] of message.parts.entries()) {

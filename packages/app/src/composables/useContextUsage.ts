@@ -1,16 +1,39 @@
-import { readonly, ref } from "vue";
+import { computed, readonly, ref, watch } from "vue";
+import { useProviders } from "./useProviders";
 import type { components } from "@/api/schema";
 
 type ApiMessage = components["schemas"]["MessageDto"];
 
 /**
- * 上下文占用状态（模块级单例，useMcpStatus 同款模式）：数据源两条——
- * SSE usage 事件（后端每轮推送，含窗口大小）与会话加载时从 stored
- * assistant 行的 input_tokens 播种。供状态栏指示器消费。
+ * 上下文占用状态（模块级单例，useMcpStatus 同款模式）：SSE usage
+ * 事件更新真实用量与窗口，会话加载时从 stored assistant 行播种用量；
+ * 尚无实时窗口时读取当前模型目录的 limit_context。供状态栏指示器消费。
  */
 const inputTokens = ref<number | null>(null);
-const windowTokens = ref<number | null>(null);
+const reportedWindowTokens = ref<number | null>(null);
 const compacting = ref(false);
+const { providers, selectedProviderId, selectedModelId, getProviderSpec } =
+  useProviders();
+
+const windowTokens = computed(() => {
+  if (reportedWindowTokens.value != null) return reportedWindowTokens.value;
+  const provider = providers.value.find(
+    (p) => p.id === selectedProviderId.value,
+  );
+  const window = provider?.models.find(
+    (m) => m.model_id === selectedModelId.value,
+  )?.limit_context;
+  return window != null && window > 0 ? window : null;
+});
+
+// 实时窗口只适用于当前模型；目录首次就绪前收到的事件仍然有效。
+watch(
+  getProviderSpec,
+  (_current, previous) => {
+    if (previous != null) reportedWindowTokens.value = null;
+  },
+  { flush: "sync" },
+);
 
 /** SSE usage 事件落地：input_tokens 是 provider 报告的真实请求体积。 */
 export function recordUsageEvent(data: {
@@ -19,7 +42,7 @@ export function recordUsageEvent(data: {
 }): void {
   if (data.input_tokens != null) inputTokens.value = data.input_tokens;
   if (data.context_window_tokens != null) {
-    windowTokens.value = data.context_window_tokens;
+    reportedWindowTokens.value = data.context_window_tokens;
   }
 }
 
@@ -39,10 +62,10 @@ export function seedContextUsage(stored: readonly ApiMessage[]): void {
   }
 }
 
-/** 离开会话（空态）时清空。 */
+/** 离开会话（空态）时清空用量和实时窗口；模型窗口仍由当前选择决定。 */
 export function clearContextUsage(): void {
   inputTokens.value = null;
-  windowTokens.value = null;
+  reportedWindowTokens.value = null;
   compacting.value = false;
 }
 

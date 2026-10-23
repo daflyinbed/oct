@@ -74,10 +74,21 @@
       </div>
     </div>
     <div
-      v-if="!message.isStreaming && revertEnabled && message.forkCut"
+      v-if="
+        messageTime ||
+        (!message.isStreaming && revertEnabled && message.forkCut)
+      "
       class="flex items-center gap-0.5"
     >
+      <time
+        v-if="messageTime"
+        :datetime="messageTime.iso"
+        :title="messageTime.full"
+        class="mr-1 text-xs text-faint tabular-nums"
+        >{{ messageTime.label }}</time
+      >
       <button
+        v-if="!message.isStreaming && revertEnabled && message.forkCut"
         type="button"
         :class="ACTION_BUTTON_CLASS"
         title="回退并编辑"
@@ -120,7 +131,7 @@
       </div>
       <!-- 最终回复常驻复制/分支；中间工具步骤只在下方间隙提供分支入口。 -->
       <div
-        v-if="showReplyCopy || showReplyFork"
+        v-if="showReplyCopy || showReplyFork || messageTime || showReplyUsage"
         class="flex items-center gap-0.5"
       >
         <button
@@ -142,6 +153,14 @@
         >
           <i-lucide-git-branch class="h-3.5 w-3.5" />
         </button>
+        <MessageUsage v-if="showReplyUsage" :usage="replyUsage" />
+        <time
+          v-if="messageTime"
+          :datetime="messageTime.iso"
+          :title="messageTime.full"
+          class="ml-1 text-xs text-faint tabular-nums"
+          >{{ messageTime.label }}</time
+        >
       </div>
     </div>
 
@@ -173,6 +192,7 @@ import { computed, ref } from "vue";
 import ImagePreview from "@/components/ui/ImagePreview.vue";
 import CompactionDivider from "./CompactionDivider.vue";
 import MarkdownText from "./MarkdownText.vue";
+import MessageUsage from "./MessageUsage.vue";
 import TaskCard from "./TaskCard.vue";
 import TaskNotificationDivider from "./TaskNotificationDivider.vue";
 import ThinkingCard from "./ThinkingCard.vue";
@@ -231,6 +251,41 @@ const isToolStep = computed(
     !props.message.isStreaming &&
     props.message.forkCut?.kind === "message" &&
     props.message.forkCut.message_id !== props.message.id,
+);
+
+const timeFormatter = new Intl.DateTimeFormat(undefined, {
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+});
+// 使用消息自身的发送/完成时间；完整日期放在悬停提示中。
+const messageTime = computed(() => {
+  if (props.process || props.message.isStreaming || isToolStep.value)
+    return null;
+  const timestamp =
+    props.message.role === "user"
+      ? props.message.startedAt
+      : props.message.finishedAt;
+  if (timestamp == null || !Number.isFinite(timestamp)) return null;
+  const date = new Date(timestamp);
+  return {
+    iso: date.toISOString(),
+    label: timeFormatter.format(date),
+    full: date.toLocaleString(undefined, { hour12: false }),
+  };
+});
+const replyUsage = computed(
+  () =>
+    props.message.turnUsage ??
+    (props.message.usage ? [props.message.usage] : []),
+);
+const showReplyUsage = computed(
+  () =>
+    !props.process &&
+    !props.message.isStreaming &&
+    !isToolStep.value &&
+    replyUsage.value.length > 0,
 );
 /** 中间工具步骤不提供复制，即使该记录包含模型的过程说明文字。 */
 const showReplyCopy = computed(

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { newToolCard, storedToDisplayList } from "@/composables/chat/display";
+import { sumTokens } from "@/composables/chat/tokenUsage";
 import { buildChatRenderUnits, formatWorkDuration } from "./chatWork";
 import type { ChatWork } from "./chatWork";
 import type {
@@ -122,6 +123,130 @@ describe("chat work segmentation", () => {
     const work = lastWork([user, assistant("reply", [text("直接回答")])]);
     expect(work.history).toEqual([]);
     expect(work.answer?.parts).toEqual([text("直接回答")]);
+  });
+
+  it("totals the whole user turn across compaction without including later turns", () => {
+    const rows: ApiMessage[] = [
+      { id: "u", role: "user", parts: [], created_at: "2026-10-23T00:00:00Z" },
+      {
+        id: "step",
+        role: "assistant",
+        parts: [{ type: "text", text: "检查" }],
+        input_tokens: 100,
+        output_tokens: 10,
+        created_at: "2026-10-23T00:00:01Z",
+      },
+      {
+        id: "marker",
+        role: "user",
+        parts: [],
+        details: { kind: "compaction" },
+        created_at: "2026-10-23T00:00:02Z",
+      },
+      {
+        id: "reply",
+        role: "assistant",
+        parts: [{ type: "text", text: "完成" }],
+        input_tokens: 200,
+        output_tokens: 20,
+        created_at: "2026-10-23T00:00:03Z",
+      },
+      {
+        id: "notice",
+        role: "user",
+        parts: [],
+        details: { extra: { kind: "background_task_notification", tasks: [] } },
+        created_at: "2026-10-23T00:00:04Z",
+      },
+      {
+        id: "wake",
+        role: "assistant",
+        parts: [{ type: "text", text: "通知回复" }],
+        input_tokens: 400,
+        output_tokens: 40,
+        created_at: "2026-10-23T00:00:05Z",
+      },
+      { id: "u2", role: "user", parts: [], created_at: "2026-10-23T00:00:06Z" },
+      {
+        id: "reply2",
+        role: "assistant",
+        parts: [{ type: "text", text: "下轮" }],
+        input_tokens: 800,
+        output_tokens: 80,
+        created_at: "2026-10-23T00:00:07Z",
+      },
+    ];
+    const works = buildChatRenderUnits(storedToDisplayList(rows)).filter(
+      (unit): unit is ChatWork => unit.kind === "work",
+    );
+    expect(sumTokens(works[1]!.answer!.turnUsage!, "inputTokens")).toBe(300);
+    expect(sumTokens(works[1]!.answer!.turnUsage!, "outputTokens")).toBe(30);
+    expect(sumTokens(works[2]!.answer!.turnUsage!, "inputTokens")).toBe(400);
+    expect(sumTokens(works[3]!.answer!.turnUsage!, "inputTokens")).toBe(800);
+  });
+
+  it("keeps totals unknown when a model request did not report usage", () => {
+    const messages = storedToDisplayList([
+      {
+        id: "u",
+        role: "user",
+        parts: [],
+        provider_id: "provider",
+        model_id: "model",
+        created_at: "2026-10-23T00:00:00Z",
+      },
+      {
+        id: "step",
+        role: "assistant",
+        parts: [{ type: "text", text: "检查" }],
+        created_at: "2026-10-23T00:00:01Z",
+      },
+      {
+        id: "reply",
+        role: "assistant",
+        parts: [{ type: "text", text: "完成" }],
+        input_tokens: 200,
+        output_tokens: 20,
+        details: { extra: { usage: { cached_input_tokens: 100 } } },
+        created_at: "2026-10-23T00:00:02Z",
+      },
+    ]);
+    const usage = lastWork(messages).answer!.turnUsage!;
+    expect(sumTokens(usage, "inputTokens")).toBeNull();
+    expect(sumTokens(usage, "outputTokens")).toBeNull();
+    expect(sumTokens(usage, "cachedInputTokens")).toBeNull();
+    expect(usage[0]?.providerId).toBe("provider");
+    expect(usage[0]?.modelId).toBe("model");
+  });
+
+  it("counts a message once when its display is split around compaction", () => {
+    const usage = {
+      providerId: "p",
+      modelId: "m",
+      inputTokens: 300,
+      outputTokens: 30,
+      reasoningTokens: null,
+      cachedInputTokens: 200,
+      cacheCreationTokens: 0,
+    };
+    const message = {
+      ...assistant("reply", [
+        tool,
+        {
+          kind: "compaction",
+          summary: "摘要",
+          triggeredBy: "auto",
+          compactedMessages: 6,
+          estTokensBefore: 1000,
+          estTokensAfter: 200,
+        },
+        text("完成"),
+      ]),
+      usage,
+    };
+    const result = lastWork([user, message]);
+    expect(sumTokens(result.answer!.turnUsage!, "inputTokens")).toBe(300);
+    expect(sumTokens(result.answer!.turnUsage!, "outputTokens")).toBe(30);
   });
 
   it("keeps compaction and task notifications visible in their original order", () => {

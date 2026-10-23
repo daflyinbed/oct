@@ -1,3 +1,5 @@
+import { messageTokenUsage } from "./tokenUsage";
+import type { TokenUsage } from "./tokenUsage";
 import type { components } from "@/api/schema";
 
 export type ApiMessage = components["schemas"]["MessageDto"];
@@ -194,6 +196,8 @@ export interface DisplayMessage {
   work?: DisplayWork;
   startedAt?: number;
   finishedAt?: number;
+  usage?: TokenUsage;
+  turnUsage?: readonly TokenUsage[];
 }
 
 /** Internal mutable shape used while building/merging messages. */
@@ -206,6 +210,7 @@ export interface BuildableMessage {
   work?: DisplayWork;
   startedAt?: number;
   finishedAt?: number;
+  usage?: TokenUsage;
 }
 
 /** Tail cap per tool call for live output kept in the DOM. */
@@ -452,6 +457,8 @@ export function storedToDisplayList(stored: ApiMessage[]): DisplayMessage[] {
   const out: BuildableMessage[] = [];
   const cardsByCallId = new Map<string, ToolCallPart>();
   let lastAssistant: BuildableMessage | null = null;
+  let providerId: string | null = null;
+  let modelId: string | null = null;
 
   const fillCard = (
     card: ToolCallPart,
@@ -557,6 +564,8 @@ export function storedToDisplayList(stored: ApiMessage[]): DisplayMessage[] {
         forkCut: m.fork_cut,
         startedAt: messageTimestamp(m.started_at),
       };
+      providerId = m.provider_id ?? null;
+      modelId = m.model_id ?? null;
       if (m.user_content) {
         if (m.user_content.body) pushText(msg, m.user_content.body);
         for (const attachment of m.user_content.attachments) {
@@ -622,6 +631,7 @@ export function storedToDisplayList(stored: ApiMessage[]): DisplayMessage[] {
         parts: [],
         forkCut: m.fork_cut,
         finishedAt: messageTimestamp(m.finished_at),
+        usage: messageTokenUsage(m, providerId, modelId),
       };
       // Thinking duration is UI metadata (DTO details), not a message part.
       const storedDurationMs = m.details?.reasoning_duration_ms ?? null;
