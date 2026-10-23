@@ -31,6 +31,17 @@ async function open() {
     projects: [],
     directoryReplies: {
       "": { body: home },
+      "~": { body: home },
+      "~/": { body: home },
+      "~/Documents/oct": {
+        body: listing("/home/me/Documents", ["oct"], "oct"),
+      },
+      "~/Documents/oct/": {
+        body: listing("/home/me/Documents/oct", [".git", "crates", "docs"]),
+      },
+      "~/shared space": {
+        body: listing("/home/me", ["shared space"], "shared space"),
+      },
       "/home/me/": { body: home },
       "/home/me/Doc": { body: { ...home, query: "Doc" } },
       "/home/me/Documents/": { body: listing("/home/me/Documents", ["oct"]) },
@@ -154,6 +165,65 @@ it("supports parent navigation, empty/error states and choosing additional direc
       working_dir: "/home/me/Documents/oct",
       additional_dirs: ["/opt/shared space"],
     });
+});
+
+it.each([
+  ["~", "/home/me"],
+  ["~/", "/home/me/"],
+  ["~/Documents/oct", "/home/me/Documents/oct"],
+  ["~/Documents/oct/", "/home/me/Documents/oct/"],
+])(
+  "expands %s and additional home paths on direct submission",
+  async (path, expected) => {
+    await open();
+    await page
+      .getByRole("textbox", { name: "Project name" })
+      .fill("custom name");
+    await directory().fill(path);
+    await expect.poll(options).not.toEqual([]);
+    await userEvent.keyboard("{Escape}");
+    await expect.poll(pathValue).toBe(path);
+    await page.getByRole("button", { name: "+ 添加目录", exact: true }).click();
+    const additional = page.getByRole("combobox", {
+      name: "Additional directory 1",
+      exact: true,
+    });
+    await additional.fill("~/shared space");
+    await expect.poll(options).toEqual(["shared space"]);
+    await userEvent.keyboard("{Escape}");
+    await page.getByRole("button", { name: "Create", exact: true }).click();
+    await expect
+      .poll(async () => (await creates())[0]?.body)
+      .toEqual({
+        name: "custom name",
+        working_dir: expected,
+        additional_dirs: ["/home/me/shared space"],
+      });
+  },
+);
+
+it("keeps the form open when home resolution fails and allows retrying", async () => {
+  await open();
+  await page.getByRole("textbox", { name: "Project name" }).fill("oct");
+  await directory().fill("~/Documents/oct/");
+  await expect.poll(options).toContain("crates");
+  await userEvent.keyboard("{Escape}");
+  await setScenario({ directoryReplies: { "~": { status: 400 } } });
+  await page.getByRole("button", { name: "Create", exact: true }).click();
+  await expect
+    .poll(async () => (await page.getByRole("alert").element()).textContent)
+    .toContain("无法读取用户主目录");
+  await expect.element(page.getByRole("dialog")).toBeVisible();
+  await expect.poll(pathValue).toBe("~/Documents/oct/");
+  expect(await creates()).toEqual([]);
+
+  await setScenario({
+    directoryReplies: { "~": { body: listing("/home/me", []) } },
+  });
+  await page.getByRole("button", { name: "Create", exact: true }).click();
+  await expect
+    .poll(async () => (await creates())[0]?.body)
+    .toEqual({ name: "oct", working_dir: "/home/me/Documents/oct/" });
 });
 
 it("discards a slow response after the user has changed the path", async () => {

@@ -116,6 +116,7 @@ import {
   DialogTitle,
 } from "reka-ui";
 import { computed, ref, watch } from "vue";
+import client from "@/api/client";
 import { useProjects } from "@/composables/useProjects";
 import DirectoryPicker from "@/components/ui/DirectoryPicker.vue";
 import type { components } from "@/api/schema";
@@ -170,30 +171,58 @@ function suggestName(path: string) {
 
 async function submit() {
   if (!canSubmit.value || submitting.value) return;
-  const dirs = additionalDirs.value.map((dir) => dir.trim()).filter(Boolean);
+  const projectId = props.project?.id;
+  const projectName = name.value.trim();
+  let primaryDir = workingDir.value.trim();
+  let dirs = additionalDirs.value.map((dir) => dir.trim()).filter(Boolean);
   submitting.value = true;
   submitError.value = null;
   try {
+    if (
+      [primaryDir, ...dirs].some((dir) => dir === "~" || dir.startsWith("~/"))
+    ) {
+      // 保存时独立解析服务端主目录，不依赖补全请求是否已完成或已被关闭。
+      const { data, error } = await client.GET("/api/directories", {
+        params: { query: { path: "~" } },
+      });
+      if (error || !data) {
+        submitError.value = "无法读取用户主目录，请检查连接和访问权限后重试。";
+        return;
+      }
+      const home = data.directory.replace(/\/$/, "");
+      const expand = (dir: string) =>
+        dir === "~"
+          ? data.directory
+          : dir.startsWith("~/")
+            ? `${home}/${dir.slice(2)}`
+            : dir;
+      primaryDir = expand(primaryDir);
+      dirs = dirs.map(expand);
+    }
     // 失败时保持对话框打开并提示：网络错/相对路径 400 等，静默关闭会让
     // 用户以为已保存。
-    const ok = props.project
-      ? await updateProject(props.project.id, {
-          name: name.value.trim(),
-          working_dir: workingDir.value.trim(),
+    const ok = projectId
+      ? await updateProject(projectId, {
+          name: projectName,
+          working_dir: primaryDir,
           additional_dirs: dirs,
         })
       : (await createProject(
-          name.value.trim(),
-          workingDir.value.trim(),
+          projectName,
+          primaryDir,
           dirs.length > 0 ? dirs : undefined,
         )) !== null;
     if (ok) {
       emit("close");
     } else {
-      submitError.value = props.project
+      submitError.value = projectId
         ? "保存失败，请检查后重试（附加目录必须是绝对路径）。"
         : "创建失败，请检查后重试（附加目录必须是绝对路径）。";
     }
+  } catch {
+    submitError.value = projectId
+      ? "保存失败，请检查连接后重试。"
+      : "创建失败，请检查连接后重试。";
   } finally {
     submitting.value = false;
   }
