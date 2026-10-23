@@ -11,7 +11,7 @@
     >
       <div
         ref="messageContent"
-        class="mx-auto max-w-[760px] pb-3 pl-12 pr-7 pt-[18px]"
+        class="mx-auto max-w-[1000px] pb-3 pl-12 pr-7 pt-[18px]"
       >
         <!-- 普通消息与工作段保持 18px 回合间距；段内工具批次的延续维持 8px。 -->
         <div
