@@ -114,7 +114,7 @@ pub async fn list_pending_approvals(
         .await?
         .ok_or_else(|| AppError::NotFound("Conversation not found".into()))?;
 
-    let pending = state.runs.approvals.pending_for_conversation(&id);
+    let pending = state.approvals.pending_for_conversation(&id);
     Ok(Json(
         pending
             .into_iter()
@@ -154,7 +154,6 @@ pub async fn decide_approval(
         .ok_or_else(|| AppError::NotFound("Conversation not found".into()))?;
     let decision = parse_decision(&req.decision)?;
     let lock = state
-        .runs
         .approvals
         .decision_lock(&approval_id)
         .ok_or_else(|| AppError::NotFound("Approval is unknown or already resolved".into()))?;
@@ -164,7 +163,6 @@ pub async fn decide_approval(
     // of another conversation (or an unknown/already-decided id) is the
     // same indistinguishable 404 (the idempotent decide).
     let meta = state
-        .runs
         .approvals
         .pending_for_conversation(&id)
         .into_iter()
@@ -197,7 +195,7 @@ pub async fn decide_approval(
             )
             .await?;
             rule_id = Some(rule.id);
-            for gate in state.runs.active_gates(
+            for gate in state.permissions.active_gates(
                 meta.parent_conversation_id
                     .as_deref()
                     .unwrap_or(&meta.conversation_id),
@@ -215,7 +213,6 @@ pub async fn decide_approval(
     // run was cancelled and its cleanup raced us) — still a 404, the
     // approval is settled either way.
     state
-        .runs
         .approvals
         .resolve_with_rule(&approval_id, decision, rule_id)
         .map_err(|_| AppError::NotFound("Approval is unknown or already resolved".into()))?;

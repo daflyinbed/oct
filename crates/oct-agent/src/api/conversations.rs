@@ -20,8 +20,8 @@ pub async fn list_conversations(
     State(state): State<AppState>,
     Path(project_id): Path<String>,
 ) -> ApiResult<Json<Vec<db::Conversation>>> {
-    let _admission = state.runs.lifecycle.admission.read().await;
-    state.runs.lifecycle.check("project", &project_id)?;
+    let _admission = state.admission.admission.read().await;
+    state.admission.check("project", &project_id)?;
     if project_db::get_project(&state.pool, &project_id)
         .await?
         .is_none()
@@ -49,8 +49,8 @@ pub async fn create_conversation(
     Path(project_id): Path<String>,
     Json(req): Json<db::CreateConversationRequest>,
 ) -> ApiResult<(StatusCode, Json<db::Conversation>)> {
-    let _admission = state.runs.lifecycle.admission.read().await;
-    state.runs.lifecycle.check("project", &project_id)?;
+    let _admission = state.admission.admission.read().await;
+    state.admission.check("project", &project_id)?;
     if project_db::get_project(&state.pool, &project_id)
         .await?
         .is_none()
@@ -118,7 +118,7 @@ pub async fn delete_conversation(
             "Delete managed conversations through their parent".into(),
         ));
     }
-    let deleted = state.runs.delete_conversation(&id).await?;
+    let deleted = state.lifecycle.delete_conversation(&id).await?;
     if deleted {
         Ok(StatusCode::NO_CONTENT)
     } else {
@@ -172,7 +172,9 @@ pub async fn update_conversation(
     )
     .await?;
     if let Some(mode) = mode {
-        state.runs.set_conversation_permission_mode(&id, mode);
+        state
+            .permissions
+            .set_conversation_permission_mode(&id, mode);
     }
     Ok(StatusCode::OK)
 }

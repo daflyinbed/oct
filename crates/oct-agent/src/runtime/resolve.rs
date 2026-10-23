@@ -3,7 +3,7 @@
 //! compact / background title generation), the `task` tool and the crash
 //! recovery orchestrator all resolve through
 //! [`ModelResolver::resolve_model`], which
-//! funnels into [`resolve_chat_model`] here; nothing else constructs
+//! funnels into `resolve_chat_model` here; nothing else constructs
 //! models.
 //!
 //! Resolution is per-run: every call re-reads the provider row, so a
@@ -118,7 +118,7 @@ impl ModelResolver {
     /// Every call re-reads the provider row, so the DB configuration drives
     /// each request afresh — a settings change takes effect on the next
     /// run. Construction rules (adapter dispatch, DB-over-env fallback
-    /// order) live in [`resolve_chat_model`].
+    /// order) live in `resolve_chat_model`.
     pub async fn resolve_model(
         &self,
         provider_spec: &str,

@@ -18,7 +18,7 @@ use crate::permissions::{
     registry::ApprovalRegistry,
     rules::{Effect, Rule, RuleSet},
 };
-use crate::runtime::{ModelResolver, workspace_roots};
+use crate::runtime::ModelResolver;
 use crate::tools::{shared::WorkspaceFileLocks, workspace::WorkspaceRoots};
 use dashmap::DashMap;
 use prompt_env::log_prompt_env;
@@ -177,4 +177,20 @@ impl AssemblyServices {
             .resolve_input_modalities(provider_id, model_id)
             .await
     }
+}
+
+/// The roots (and their additional-dirs shadow) of a project's workspace,
+/// re-resolved from the project row on every run so directory edits take
+/// effect on the next turn.
+pub(crate) fn workspace_roots(
+    project: &crate::db::projects::Project,
+) -> (WorkspaceRoots, Vec<PathBuf>) {
+    let additional: Vec<PathBuf> = project
+        .additional_dirs
+        .0
+        .iter()
+        .map(PathBuf::from)
+        .collect();
+    let roots = WorkspaceRoots::new(PathBuf::from(&project.working_dir), additional.clone());
+    (roots, additional)
 }

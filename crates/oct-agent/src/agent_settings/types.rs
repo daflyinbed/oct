@@ -21,7 +21,7 @@ pub enum ModelChoice {
     },
 }
 
-pub use crate::tool_contract::ToolSelector;
+use crate::tool_contract::ToolSelector;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]

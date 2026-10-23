@@ -1,11 +1,15 @@
 //! Active child execution index and completion publication. This observer
-//! knows no RunService, assembler, database pool or delegation launcher.
+//! knows no ApplicationServices, assembler, database pool or delegation launcher.
 use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::sync::watch;
 
 use super::ChildRun;
-use crate::agent::{AgentEvent, EventHub, RunOutcome, RunStatus, SubagentRunStatus};
+use crate::agent::RunOutcome;
+use crate::agent::RunStatus;
+use crate::events::AgentEvent;
+use crate::events::EventHub;
+use crate::events::SubagentRunStatus;
 use crate::runtime::execution::{ExecutionIdentity, ExecutionObserver};
 
 #[derive(Default)]

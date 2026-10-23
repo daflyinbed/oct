@@ -11,8 +11,9 @@ use utoipa::ToSchema;
 
 use super::AppState;
 use super::error::ApiResult;
-use crate::codemode::{self, McpToolMode};
+use crate::codemode;
 use crate::db::settings as db;
+use crate::tool_contract::McpToolMode;
 
 #[derive(Debug, Clone, Copy, Serialize, ToSchema)]
 pub struct AppSettings {

@@ -82,7 +82,6 @@ pub async fn upload_attachment(
     // The service owns validation, immutable asset publication and tickets.
     let attachment_id = Uuid::new_v4().to_string();
     let (upload, mut file) = state
-        .runs
         .attachments
         .begin_upload(&id, &attachment_id)
         .await
@@ -100,7 +99,6 @@ pub async fn upload_attachment(
     file.sync_all().await.map_err(anyhow::Error::from)?;
     drop(file);
     let dto = state
-        .runs
         .attachments
         .finish_upload(&id, &attachment_id, &filename, &mime, upload)
         .await
@@ -148,7 +146,6 @@ pub async fn copy_attachment(
 ) -> ApiResult<(StatusCode, Json<AttachmentDto>)> {
     ensure_writable_conversation(&state, &id).await?;
     let dto = state
-        .runs
         .attachments
         .copy_attachment(&id, &attachment_id)
         .await
@@ -182,12 +179,7 @@ pub async fn get_attachment(
     if Uuid::parse_str(&id).is_err() {
         return Err(AppError::NotFound("Attachment not found".into()));
     }
-    let (file, mime) = state
-        .runs
-        .attachments
-        .open(&id)
-        .await
-        .map_err(service_error)?;
+    let (file, mime) = state.attachments.open(&id).await.map_err(service_error)?;
 
     let stream = tokio_util::io::ReaderStream::new(file);
     let body = Body::from_stream(stream);

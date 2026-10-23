@@ -1,12 +1,16 @@
 //! Worker registration and launch orchestration. This service owns only
 //! worker assembly, occupancy and execution capabilities; no root assembler.
+use super::assembly::workspace_roots;
+use super::execution::ChildRunRequest;
 use super::inheritance::WorkerInheritance;
 use super::{assembly::AssemblyServices, execution::ChildLauncher};
-use crate::agent::{EventHub, RunOutcome, RunStatus};
+use crate::agent::RunOutcome;
+use crate::agent::RunStatus;
 use crate::db::{conversations as conv_db, messages as msg_db, projects::Project, runs as run_db};
-use crate::runtime::{RunOccupancy, workspace_roots};
+use crate::events::EventHub;
+use crate::runtime::RunOccupancy;
 use crate::subagent::manager::is_terminal_status;
-use crate::subagent::{ChildRunRequest, SubagentManager, build_task_envelope};
+use crate::subagent::{SubagentManager, build_task_envelope};
 use crate::tool_contract::ports::{TaskDelegation, TaskError, TaskResult};
 use crate::tools::{shared::WorkspaceFileLocks, workspace::WorkspaceRoots};
 use anyhow::{Result, anyhow};
@@ -209,8 +213,8 @@ impl DelegationService {
             tools: selected,
             sources: settings.sources,
             tool_mode: spawn.tool_mode,
-            code_catalog_version: (spawn.tool_mode == crate::codemode::McpToolMode::Code)
-                .then_some(crate::codemode::catalog::VERSION),
+            code_catalog_version: (spawn.tool_mode == crate::tool_contract::McpToolMode::Code)
+                .then_some(crate::tool_contract::CODE_CATALOG_VERSION),
         };
         let (run, start_message_id) = match register_child_tx(
             &pool,
@@ -254,7 +258,7 @@ impl DelegationService {
     }
 
     /// Occupy the child conversation, resolve its model from the run row's
-    /// snapshot and hand the run to the RunService's child supervisor;
+    /// snapshot and hand the run to the application child launcher;
     /// then wait for settlement (the parent's cancellation cascades through
     /// the token chain — a watch, never polling) and return the settled row.
     async fn launch(
@@ -515,7 +519,7 @@ pub struct TaskSpawnConfig {
     pub model_id: String,
     pub context_window: Option<u32>,
     /// Effective parent exposure mode; persisted with each worker's tool set.
-    pub tool_mode: crate::codemode::McpToolMode,
+    pub tool_mode: crate::tool_contract::McpToolMode,
     /// The parent run's cancellation token: children derive `child_token()`
     /// from it, so cancelling the parent cascades to every worker.
     pub parent_cancel: CancellationToken,

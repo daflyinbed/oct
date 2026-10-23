@@ -107,7 +107,7 @@ pub struct WorkerSnapshot {
     pub tools: Vec<SnapshotTool>,
     pub sources: SettingSources,
     #[serde(default)]
-    pub tool_mode: crate::codemode::McpToolMode,
+    pub tool_mode: crate::tool_contract::McpToolMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code_catalog_version: Option<u32>,
 }

@@ -4,10 +4,10 @@ mod support;
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use oct_agent::agent::AgentEvent;
 use oct_agent::application::conversation::{ConversationApplication, ResumeCommand, SendCommand};
 use oct_agent::db::{messages, runs};
 use oct_agent::error::AppError;
+use oct_agent::events::AgentEvent;
 use oct_llm_provider::core::{ContentPart, Message, Role, ToolCall};
 use serde_json::json;
 use support::llm::{LlmTurn, finish_chunk, spawn_llm_mock, text_chunk};
@@ -59,7 +59,7 @@ async fn direct_send_checks_revision_before_repair_and_releases_occupancy() {
     .await
     .unwrap();
 
-    let application = ConversationApplication::new(app.state.runs.clone());
+    let application = ConversationApplication::new(app.services.clone());
     let mut request = command(&conversation);
     request.expected_revision = Some(0);
     let Err(error) = application.send(request).await else {
@@ -85,7 +85,7 @@ async fn direct_send_checks_revision_before_repair_and_releases_occupancy() {
             .unwrap()
             .is_none()
     );
-    let _guard = app.state.runs.occupy(&conversation).unwrap();
+    let _guard = app.services.occupancy().occupy(&conversation).unwrap();
 }
 
 #[tokio::test]
@@ -99,7 +99,7 @@ async fn direct_resume_continues_a_committed_send_after_assembly_failure() {
     app.register_llm_provider(&llm).await;
     let project = app.create_project().await;
     let conversation = app.create_conversation(&project).await;
-    let application = ConversationApplication::new(app.state.runs.clone());
+    let application = ConversationApplication::new(app.services.clone());
 
     sqlx::query("ALTER TABLE permission_rules RENAME TO unavailable_rules")
         .execute(&app.pool)

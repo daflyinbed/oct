@@ -76,20 +76,16 @@ function renderer() {
   return terminal;
 }
 
-const statusText = computed(() => {
-  switch (connection.status.value) {
-    case "connecting":
-      return "连接中…";
-    case "connected":
-      return "已连接";
-    case "disconnected":
-      return "已断开";
-    case "error":
-      return "连接异常";
-    case "exited":
-      return `已退出${connection.exitCode.value === null ? "" : ` (${connection.exitCode.value})`}`;
-  }
-});
+const statusText = computed(
+  () =>
+    ({
+      connecting: "连接中…",
+      connected: "已连接",
+      disconnected: "已断开",
+      error: "连接异常",
+      exited: `已退出${connection.exitCode.value === null ? "" : ` (${connection.exitCode.value})`}`,
+    })[connection.status.value],
+);
 
 function fitTerminal() {
   if (

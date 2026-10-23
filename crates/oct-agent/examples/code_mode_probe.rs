@@ -1,11 +1,12 @@
 //! Opt-in manual probe. Cargo tests never connect to configured servers.
 use anyhow::{Context, Result, ensure};
 use clap::Parser;
-use oct_agent::agent::EventHub;
 use oct_agent::codemode::{Prepared, catalog::Catalog};
+use oct_agent::events::EventHub;
 use oct_agent::mcp::tool::McpTool;
 use oct_agent::permissions::gate::PermissionGate;
-use oct_agent::tools::{AgentTool, ToolContext};
+use oct_agent::tool_contract::AgentTool;
+use oct_agent::tool_contract::ToolContext;
 use oct_mcp::{HttpServerConfig, McpConnection, StdioServerConfig};
 use serde_json::{Value, json};
 use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};

@@ -1,6 +1,6 @@
 //! Bounded diagnostic reads; never execute source or reconstruct a VM.
 use super::NestedCall;
-use crate::tools::ToolOutput;
+use crate::tool_contract::ToolOutput;
 use serde_json::json;
 use std::{
     collections::BTreeMap,

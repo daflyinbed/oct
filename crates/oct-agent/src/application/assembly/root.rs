@@ -86,7 +86,7 @@ impl RootAssembler {
             view.anchor = None;
         }
         log_prompt_env(&conversation_id, &prompt_env);
-        let live_mcp: Vec<Arc<dyn tools::AgentTool>> = self
+        let live_mcp: Vec<Arc<dyn crate::tool_contract::AgentTool>> = self
             .shared
             .mcp
             .tools_for_run(Some(&project.id))
@@ -101,7 +101,7 @@ impl RootAssembler {
         let use_code = crate::codemode::mode(&self.shared.pool, Some(&project.id))
             .await
             .unwrap_or_default()
-            == crate::codemode::McpToolMode::Code;
+            == crate::tool_contract::McpToolMode::Code;
         let worker_roots = roots.clone();
         if use_code {
             roots = roots.with_read_only_root(
@@ -119,7 +119,7 @@ impl RootAssembler {
         // one flat toolset; MCP names are the mcp__{server}__{tool} forms
         // deduplicated across servers). The file tools share the project's
         // lock set so subagents serialize with this run on the same paths.
-        let mut run_tools: Vec<Arc<dyn tools::AgentTool>> =
+        let mut run_tools: Vec<Arc<dyn crate::tool_contract::AgentTool>> =
             tools::default_tools_with(roots.clone(), locks.clone(), reads)
                 .into_iter()
                 .map(Arc::from)
@@ -146,7 +146,7 @@ impl RootAssembler {
         }
         run_tools.push(
             Arc::new(tools::task_stop::TaskStopTool::new(background_commands))
-                as Arc<dyn tools::AgentTool>,
+                as Arc<dyn crate::tool_contract::AgentTool>,
         );
 
         // Bind the actual per-run native instances as well as MCP tools:
@@ -180,7 +180,7 @@ impl RootAssembler {
             &run_tools,
         ));
         if attach_task_tool {
-            let task: Arc<dyn tools::AgentTool> =
+            let task: Arc<dyn crate::tool_contract::AgentTool> =
                 Arc::new(TaskTool::new(self.delegation.bind(TaskSpawnConfig {
                     parent_conversation_id: conversation_id.clone(),
                     parent_run_id: run_id.clone(),
@@ -193,9 +193,9 @@ impl RootAssembler {
                     model_id: model_id.clone(),
                     context_window,
                     tool_mode: if prepared.is_some() {
-                        crate::codemode::McpToolMode::Code
+                        crate::tool_contract::McpToolMode::Code
                     } else {
-                        crate::codemode::McpToolMode::Direct
+                        crate::tool_contract::McpToolMode::Direct
                     },
                     parent_cancel: handle.cancel.clone(),
                     parent_hub: handle.hub.clone(),

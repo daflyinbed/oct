@@ -352,7 +352,7 @@ pub struct FrozenPromptEnv {
     /// generation of the prompt their request actually RAN under, so an
     /// in-flight request completing after a `/reload` still carries the OLD
     /// generation and is rejected by the new entry — see
-    /// [`Self::accepts_anchor`].
+    /// `Self::accepts_anchor`.
     pub generation: u64,
 }
 
@@ -402,7 +402,7 @@ fn fresh_generation() -> u64 {
 /// Handle for marking one root conversation's frozen environment dirty.
 /// Carried by the agent context and the compaction requests so the shared
 /// compaction/microcompaction transactions can flag their own conversation
-/// without a `RunService` reference. Marking only sets the flag — the
+/// without retaining application resources. Marking only sets the flag — the
 /// refresh itself always lands at the NEXT run's assembly, keeping a run's
 /// prompt constant for its whole lifetime.
 #[derive(Clone)]
@@ -412,10 +412,7 @@ pub struct PromptEnvRefresh {
 }
 
 impl PromptEnvRefresh {
-    pub(crate) fn new(
-        envs: Arc<DashMap<String, FrozenPromptEnv>>,
-        root_conversation_id: &str,
-    ) -> Self {
+    pub fn new(envs: Arc<DashMap<String, FrozenPromptEnv>>, root_conversation_id: &str) -> Self {
         Self {
             envs,
             root_conversation_id: root_conversation_id.to_string(),

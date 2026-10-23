@@ -387,10 +387,12 @@ export function createSession(options: SessionOptions = {}) {
     runs.endHistoryChange();
     if (!reload || runs.disposed) return;
     clearMessages();
-    await refreshMessages(id);
+    selectConversation(id);
     const lease = runs.captureView();
+    await timeline.loadMessages(id);
+    if (!lease || !runs.ownsView(lease)) return;
     const data = await chatApi.status(id);
-    if (lease && runs.ownsView(lease)) {
+    if (runs.ownsView(lease)) {
       serverResumable.value = data?.resumable ?? false;
       // Navigation may have skipped attachment during the history transaction.
       if (data?.running) void attachRun(id);

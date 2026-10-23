@@ -4,9 +4,13 @@ pub(crate) mod diagnostics;
 mod storage;
 use crate::events::EventHub;
 use crate::permissions::gate::PermissionGate;
+use crate::tool_contract::AgentTool;
 use crate::tool_contract::NestedProgressSink;
+use crate::tool_contract::OutputStream;
+use crate::tool_contract::ToolContext;
+use crate::tool_contract::ToolImage;
+use crate::tool_contract::ToolOutput;
 use crate::tool_host::CodeHostEvents;
-use crate::tools::{AgentTool, OutputStream, ToolContext, ToolImage, ToolOutput};
 use anyhow::{Result, ensure};
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -15,7 +19,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, atomic::AtomicUsize};
 
-pub use crate::tool_contract::McpToolMode;
+use crate::tool_contract::McpToolMode;
 
 pub const SETTING: &str = crate::db::settings::KEY_MCP_TOOL_MODE;
 
@@ -123,7 +127,7 @@ impl Prepared {
             .filter(|tool| {
                 !matches!(
                     tool.selector(),
-                    crate::agent_settings::ToolSelector::Mcp { .. }
+                    crate::tool_contract::ToolSelector::Mcp { .. }
                 )
             })
             .cloned()
@@ -169,7 +173,7 @@ struct CodeTool {
     description: String,
 }
 
-pub use crate::tool_contract::NestedCall;
+use crate::tool_contract::NestedCall;
 
 struct Host {
     tools: BTreeMap<String, Arc<dyn AgentTool>>,

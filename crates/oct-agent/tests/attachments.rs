@@ -1767,10 +1767,12 @@ async fn cow_reload_deducts_the_measured_projection_instead_of_omitted_images() 
 
 #[tokio::test]
 async fn missing_image_usage_is_reused_only_while_the_delivered_prefix_is_unchanged() {
-    use oct_agent::agent::{
-        AgentContext, EventHub, RunHandle, RunStatus, loop_runner::run_agent_loop,
-    };
+    use oct_agent::agent::AgentContext;
+    use oct_agent::agent::RunHandle;
+    use oct_agent::agent::RunStatus;
+    use oct_agent::agent::loop_runner::run_agent_loop;
     use oct_agent::db::messages;
+    use oct_agent::events::EventHub;
     use oct_llm_provider::core::FinishReason;
     use std::sync::Arc;
     use support::{ScriptedModel, Turn, finish, text, tool_call, usage};
@@ -1895,7 +1897,7 @@ async fn missing_image_usage_is_reused_only_while_the_delivered_prefix_is_unchan
         );
         assert_eq!(
             run.hub.snapshot().iter().any(|event| matches!(event,
-                oct_agent::agent::AgentEvent::Compacted { est_tokens_before, .. } if *est_tokens_before >= 90_010
+                oct_agent::events::AgentEvent::Compacted { est_tokens_before, .. } if *est_tokens_before >= 90_010
             )),
             !restored,
             "compaction must use matching measured usage (reload={reload}, restored={restored})"

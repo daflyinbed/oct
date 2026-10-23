@@ -8,10 +8,11 @@ use std::task::Poll;
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use oct_agent::agent::{AgentEvent, EventHub};
+use oct_agent::application::delegation::TaskSpawnConfig;
 use oct_agent::db::{messages, projects, runs};
-use oct_agent::subagent::TaskSpawnConfig;
-use oct_agent::tools::AgentTool;
+use oct_agent::events::AgentEvent;
+use oct_agent::events::EventHub;
+use oct_agent::tool_contract::AgentTool;
 use oct_agent::tools::shared::{AgentReadState, WorkspaceFileLocks};
 use oct_agent::tools::workspace::WorkspaceRoots;
 use oct_llm_provider::core::{ContentPart, Message, Role, ToolCall};
@@ -82,7 +83,12 @@ async fn spawn_config(app: &support::TestApp) -> (TaskSpawnConfig, Arc<Vec<Arc<d
         .map(Arc::from)
         .collect(),
     );
-    let env = app.state.runs.reload_prompt_env(&conv, &project).await;
+    let env = app
+        .state
+        .conversations
+        .reload_instructions(&conv)
+        .await
+        .unwrap();
     (
         TaskSpawnConfig {
             parent_conversation_id: conv.clone(),
@@ -95,7 +101,7 @@ async fn spawn_config(app: &support::TestApp) -> (TaskSpawnConfig, Arc<Vec<Arc<d
             provider_id: "mock-llm".into(),
             model_id: "test-model".into(),
             context_window: None,
-            tool_mode: oct_agent::codemode::McpToolMode::Direct,
+            tool_mode: oct_agent::tool_contract::McpToolMode::Direct,
             parent_cancel: CancellationToken::new(),
             parent_hub: Arc::new(EventHub::new()),
             inheritance: Arc::new(
@@ -147,8 +153,8 @@ async fn registration_gate(
 fn start_task(
     app: &support::TestApp,
     spawn: &TaskSpawnConfig,
-) -> tokio::task::JoinHandle<Result<runs::AgentRun, oct_agent::subagent::TaskError>> {
-    let manager = app.state.runs.delegation_service();
+) -> tokio::task::JoinHandle<Result<runs::AgentRun, oct_agent::tool_contract::ports::TaskError>> {
+    let manager = app.state.delegation.clone();
     let spawn = spawn.clone();
     tokio::spawn(async move {
         manager
@@ -160,7 +166,7 @@ fn start_task(
 async fn assert_settled(
     app: &support::TestApp,
     spawn: &TaskSpawnConfig,
-    events: &mut oct_agent::agent::events::SubscribeStream,
+    events: &mut oct_agent::events::SubscribeStream,
     status: &str,
 ) -> runs::AgentRun {
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -184,7 +190,7 @@ async fn assert_settled(
     assert_eq!(run.status, status);
     assert!(run.finished_at.is_some());
     assert!(!app.state.sessions.contains_key(&run.conversation_id));
-    assert!(!app.state.runs.subagents.is_active(&run.conversation_id));
+    assert!(!app.state.subagents.is_active(&run.conversation_id));
     run
 }
 
@@ -195,8 +201,8 @@ async fn dropping_tool_future_after_registration_still_settles_cancelled_child()
     app.register_llm_provider(&llm).await;
     let (spawn, tools) = spawn_config(&app).await;
     let parent_guard = app
-        .state
-        .runs
+        .services
+        .occupancy()
         .occupy_with(&spawn.parent_conversation_id, spawn.parent_cancel.clone())
         .unwrap();
     let mut events = spawn.parent_hub.subscribe();
@@ -227,7 +233,7 @@ async fn dropping_tool_future_after_registration_still_settles_cancelled_child()
             .await
             .unwrap();
     assert!(
-        !app.state.runs.subagents.is_active(&child.1),
+        !app.state.subagents.is_active(&child.1),
         "supervision has not taken over"
     );
 
@@ -284,8 +290,8 @@ async fn dropping_tool_future_during_registration_does_not_abandon_commit() {
     app.register_llm_provider(&llm).await;
     let (spawn, tools) = spawn_config(&app).await;
     let _parent_guard = app
-        .state
-        .runs
+        .services
+        .occupancy()
         .occupy_with(&spawn.parent_conversation_id, spawn.parent_cancel.clone())
         .unwrap();
     let mut events = spawn.parent_hub.subscribe();
@@ -316,8 +322,8 @@ async fn dropped_waiter_and_duplicate_delegation_share_one_execution() {
     app.register_llm_provider(&llm).await;
     let (spawn, tools) = spawn_config(&app).await;
     let _parent_guard = app
-        .state
-        .runs
+        .services
+        .occupancy()
         .occupy_with(&spawn.parent_conversation_id, spawn.parent_cancel.clone())
         .unwrap();
     let (held, inserted, release) = registration_gate(&app).await;
@@ -328,7 +334,7 @@ async fn dropped_waiter_and_duplicate_delegation_share_one_execution() {
         .unwrap();
     first.abort();
     assert!(matches!(first.await, Err(error) if error.is_cancelled()));
-    let delegation = app.state.runs.delegation_service();
+    let delegation = app.state.delegation.clone();
     let mut duplicate =
         Box::pin(delegation.run_task(&spawn, "startup-task", "startup", "delegation"));
     assert!(

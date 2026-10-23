@@ -17,7 +17,9 @@ use std::time::{Duration, Instant, SystemTime};
 use super::search_common::{search_walk_builder, timeout_note};
 use super::truncate::{MAX_TOOL_OUTPUT_BYTES, truncate_middle};
 use super::workspace::{WorkspaceRoots, relativize_roots};
-use super::{AgentTool, ToolContext, ToolOutput};
+use crate::tool_contract::AgentTool;
+use crate::tool_contract::ToolContext;
+use crate::tool_contract::ToolOutput;
 
 /// Wall-clock budget for one glob run.
 const GLOB_TIMEOUT: Duration = Duration::from_secs(10);
@@ -236,7 +238,7 @@ mod tests {
     fn noop_ctx() -> ToolContext {
         ToolContext::new(
             "test",
-            std::sync::Arc::new(crate::agent::EventHub::new()),
+            std::sync::Arc::new(crate::events::EventHub::new()),
             tokio_util::sync::CancellationToken::new(),
         )
     }

@@ -1,4 +1,5 @@
 use super::{policy, *};
+use crate::tool_contract::ToolSelector;
 
 #[test]
 fn patch_preserves_inheritance_and_explicit_empty_values() {

@@ -9,7 +9,9 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use std::sync::Arc;
 
-use super::{AgentTool, ToolContext, ToolOutput};
+use crate::tool_contract::AgentTool;
+use crate::tool_contract::ToolContext;
+use crate::tool_contract::ToolOutput;
 use crate::tool_contract::ports::{BackgroundCommands, BackgroundStop};
 
 #[derive(Debug, Deserialize, JsonSchema)]

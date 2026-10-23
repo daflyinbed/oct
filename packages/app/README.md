@@ -36,4 +36,5 @@ pnpm --filter frontend test:browser   # 浏览器 e2e 拦截层（首次需 play
 
 - 后端改了 API（路由/DTO）→ 启动后端后跑 `generate-api`，`schema.d.ts` 变更随 PR 提交；fixture 显式对齐该类型，字段不匹配会编译期报错。
 - 发布顺序：先 `pnpm --filter frontend build` 再 `cargo build --release`（否则嵌入的是旧产物或空表，仅启动 warn）。
+- 聊天经 `useChat` 公开 API 驱动；主面板与子代理各有独立 session。timeline 独占消息展示写入，session 负责异步编排，历史刷新、重连和回退收尾只在仍拥有对应视图/操作时提交结果。
 - 开发约定（composables 职责、单测/浏览器 e2e 基建、reka-ui 优先等）见本目录 `AGENTS.md`。

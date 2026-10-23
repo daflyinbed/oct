@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use super::shared::{AgentReadState, WorkspaceFileLocks, file_mtime};
 use super::workspace::WorkspaceRoots;
-use super::{AgentTool, ToolContext, ToolOutput};
+use crate::tool_contract::AgentTool;
+use crate::tool_contract::ToolContext;
+use crate::tool_contract::ToolOutput;
 
 pub struct WriteFileTool {
     roots: WorkspaceRoots,
@@ -150,7 +152,7 @@ mod tests {
     fn noop_ctx() -> ToolContext {
         ToolContext::new(
             "test",
-            std::sync::Arc::new(crate::agent::EventHub::new()),
+            std::sync::Arc::new(crate::events::EventHub::new()),
             tokio_util::sync::CancellationToken::new(),
         )
     }

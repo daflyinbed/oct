@@ -15,16 +15,18 @@ oct 的后端服务 crate：Axum REST/SSE API + agent loop 运行时。既是 li
 
 ## 模块地图
 
-- `application/conversation/` — send/resume/compact/wake 应用入口：校验、历史准备、附件认领、恢复编排与运行交接；HTTP 与后台调度共用
+- `application/conversation/` — send/resume/compact/wake、指令重载与恢复资格应用入口：校验、历史准备、附件认领、恢复编排与运行交接；HTTP 与后台调度共用
 - `history/` — 无 SQL 的切点、工具批闭合、COW 恢复和草稿策略；`application/history.rs` 管 admission/占用，`db/history.rs` 在同一写事务内读快照、计划和提交；`api/history.rs` 仅负责公开 DTO 与 HTTP 转换
 - `agent_settings/` — 配置继承、PATCH 与快照的中性类型/纯规则；`application/settings.rs` 提供编辑读取、运行读取和事务更新，`db/agent_settings.rs` 读写配置及引用事实，`api/agent_settings.rs` 转换公开 DTO 和 PATCH 三态
 - `api/` — REST + SSE 路由、utoipa OpenAPI（`/scalar` UI、`/api/openapi.json`）、嵌入前端（`embed.rs`）
 - `agent/` — agent loop、上下文压缩（`compact.rs`）、microcompact（`micro.rs`）、repo instructions 与冻结 prompt 环境（`repo_instructions.rs`）
 - `application/assembly/` — 根/worker 装配器与共享权限、资源、冻结 prompt 环境；`application/execution.rs` 持有独立启动任务，`application/title.rs` 独立准备标题任务；code 恢复在 `assembly/code_recovery.rs`
-- `runtime/` — `RunService` 兼容入口与会话占用；`execution.rs` 统一监督根/子 loop、终态持久化和收尾；`ModelResolver` 独立解析模型；另有后台进程管理（`background.rs`）与 worker 快照选择/恢复（`worker_config.rs`）
+- `application/services.rs` — 共享资源装配；HTTP state 持会话/历史/删除/权限应用命令和查询组件，运行材料只在应用层流转
+- `application/lifecycle.rs` + `permissions.rs` — 会话/项目删除的执行 drain 与资源回收、活动权限门操作
+- `runtime/` — 会话占用和 admission/tombstone；`execution.rs` 统一监督根/子 loop、终态持久化和收尾；`ModelResolver` 独立解析模型；另有后台进程管理（`background.rs`）与 worker 快照选择/恢复（`worker_config.rs`）
 - `application/delegation.rs` + `inheritance.rs` — 委派注册、幂等、取消与 worker 启动；父工具继承只保留冻结描述及 MCP 实例
 - `application/notifications.rs` + `tool_ports.rs` — 通知聚合/wake 重试与按 run 绑定的后台能力；启动入口持有并关闭 drainer
-- `subagent/` — 活动子代理索引、完成观察与持久结果信封；不回调 RunService
+- `subagent/` — 活动子代理索引、完成观察与持久结果信封；不回调应用服务
 - `permissions/` — 权限规则求值（rules/evaluator/descriptor/gate/registry）
 - `tool_contract/` — 中性工具身份、调用上下文、输出与 scoped ports；`tool_host/` — 权限派发与进度事件适配；`events/` — SSE 事件类型与内存 replay hub
 - `tools/` — `read`/`write`/`edit_file`/`listdir`/`grep`/`glob`/`execute`/`task_stop`/`task`；原生工具只依赖契约和注入能力

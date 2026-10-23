@@ -100,7 +100,7 @@ impl WorkerAssembler {
             .shared
             .runtime_roots(roots, &conversation_id, &root_conversation_id)
             .await?;
-        if tool_mode == crate::codemode::McpToolMode::Code {
+        if tool_mode == crate::tool_contract::McpToolMode::Code {
             roots = roots.with_read_only_root(
                 self.shared
                     .codemode_root()
@@ -116,17 +116,18 @@ impl WorkerAssembler {
         // `inheritance = None`: the parent's instances died with the
         // crashed process, so the set is rebuilt from the same assembly
         // sources — which yields the same effective set.
-        let child_tools: Vec<Arc<dyn tools::AgentTool>> = match inheritance {
+        let child_tools: Vec<Arc<dyn crate::tool_contract::AgentTool>> = match inheritance {
             Some(parent) => derive_child_toolset(&parent, roots.clone(), locks.clone()),
             None => {
-                let mut rebuilt: Vec<Arc<dyn tools::AgentTool>> = tools::default_tools_with(
-                    roots.clone(),
-                    locks.clone(),
-                    Arc::new(AgentReadState::new()),
-                )
-                .into_iter()
-                .map(Arc::from)
-                .collect();
+                let mut rebuilt: Vec<Arc<dyn crate::tool_contract::AgentTool>> =
+                    tools::default_tools_with(
+                        roots.clone(),
+                        locks.clone(),
+                        Arc::new(AgentReadState::new()),
+                    )
+                    .into_iter()
+                    .map(Arc::from)
+                    .collect();
                 // Recovery deliberately does NOT filter by the conversation
                 // freeze: the worker's own sealed snapshot (restored strictly
                 // below) is the selection source, per the recovery contract —
@@ -151,7 +152,7 @@ impl WorkerAssembler {
         // Code-mode workers discover their SDK through the regular read
         // tools; the settings API rejects non-empty allowlists without them,
         // and this guard covers configs sealed before a mode switch to code.
-        if tool_mode == crate::codemode::McpToolMode::Code && !child_tools.is_empty() {
+        if tool_mode == crate::tool_contract::McpToolMode::Code && !child_tools.is_empty() {
             let names: std::collections::HashSet<&str> =
                 child_tools.iter().map(|tool| tool.name()).collect();
             let missing: Vec<&str> = ["read_file", "grep", "glob"]
@@ -167,27 +168,27 @@ impl WorkerAssembler {
             }
         }
         let child_tools = Arc::new(child_tools);
-        let prepared = if tool_mode == crate::codemode::McpToolMode::Code && !child_tools.is_empty()
-        {
-            match crate::codemode::Prepared::for_worker(
-                self.shared.codemode_root(),
-                &conversation_id,
-                &run_id,
-                epoch,
-                &child_tools,
-            )
-            .await
-            {
-                Ok(prepared) => Some(prepared),
-                Err(error) => {
-                    // A sealed code-mode worker must not silently change its
-                    // exposure mode on recovery when its helper is unavailable.
-                    return Err(error.into());
+        let prepared =
+            if tool_mode == crate::tool_contract::McpToolMode::Code && !child_tools.is_empty() {
+                match crate::codemode::Prepared::for_worker(
+                    self.shared.codemode_root(),
+                    &conversation_id,
+                    &run_id,
+                    epoch,
+                    &child_tools,
+                )
+                .await
+                {
+                    Ok(prepared) => Some(prepared),
+                    Err(error) => {
+                        // A sealed code-mode worker must not silently change its
+                        // exposure mode on recovery when its helper is unavailable.
+                        return Err(error.into());
+                    }
                 }
-            }
-        } else {
-            None
-        };
+            } else {
+                None
+            };
 
         // The child's permission gate: rules load like
         // a root run's, the MODE inherits the root conversation (child rows
@@ -271,8 +272,8 @@ pub(crate) fn derive_child_toolset(
     parent: &crate::application::inheritance::WorkerInheritance,
     roots: WorkspaceRoots,
     locks: Arc<WorkspaceFileLocks>,
-) -> Vec<Arc<dyn tools::AgentTool>> {
-    let mut child: Vec<Arc<dyn tools::AgentTool>> =
+) -> Vec<Arc<dyn crate::tool_contract::AgentTool>> {
+    let mut child: Vec<Arc<dyn crate::tool_contract::AgentTool>> =
         tools::default_tools_with(roots, locks, Arc::new(AgentReadState::new()))
             .into_iter()
             .map(Arc::from)

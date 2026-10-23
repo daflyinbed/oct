@@ -11,8 +11,9 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use super::conversation::{ConversationApplication, WakeCommand};
+use super::services::ApplicationServices;
 use crate::db::background::{self as task_db, BackgroundTask};
-use crate::runtime::{RunService, background::absolute_output_path};
+use crate::runtime::background::absolute_output_path;
 
 /// How much of the output file the notification message inlines.
 const NOTIFICATION_TAIL_BYTES: u64 = 4096;
@@ -39,7 +40,7 @@ impl WakeDrainer {
         }
     }
 
-    pub fn start(runs: Arc<RunService>) -> Self {
+    pub fn start(runs: Arc<ApplicationServices>) -> Self {
         let mut receiver = runs.background.take_notifications();
         let pool = runs.pool.clone();
         let application = ConversationApplication::new(runs);

@@ -1,9 +1,9 @@
 //! Conversation commands over shared preparation, application launchers and
-//! the execution kernel. RunService remains the compatibility facade.
+//! the execution kernel; assembly resources stay private to the application.
 
 mod compact;
-pub mod preparation;
-pub mod recovery;
+pub(crate) mod preparation;
+pub(crate) mod recovery;
 mod resume;
 mod send;
 mod validation;
@@ -13,15 +13,16 @@ use std::sync::Arc;
 
 use oct_llm_provider::core::ReasoningRequest;
 
-use crate::agent::events::SubscribeStream;
+use super::execution::launch_root;
+use crate::application::{execution::StartedRun, services::ApplicationServices};
 use crate::db::conversations::Conversation;
 use crate::error::{AppError, AppResult};
-use crate::runtime::{RootRunRequest, RunService, StartedRun};
+use crate::events::SubscribeStream;
 use validation::{conversation_idle, validate_reasoning};
 
 #[derive(Clone)]
 pub struct ConversationApplication {
-    runs: Arc<RunService>,
+    runs: Arc<ApplicationServices>,
 }
 
 pub struct SendCommand {
@@ -72,8 +73,44 @@ pub struct CompactOutcome {
 }
 
 impl ConversationApplication {
-    pub fn new(runs: Arc<RunService>) -> Self {
+    pub fn new(runs: Arc<ApplicationServices>) -> Self {
         Self { runs }
+    }
+
+    /// Editing the instruction environment is an explicit application operation;
+    /// managed workers share their root's entry and read-only backups cannot run.
+    pub async fn reload_instructions(
+        &self,
+        id: &str,
+    ) -> AppResult<crate::agent::repo_instructions::FrozenPromptEnv> {
+        let runs = &self.runs;
+        let conversation = crate::db::conversations::get_conversation(&runs.pool, id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Conversation not found".into()))?;
+        // Managed subagent sessions share their ROOT conversation's entry —
+        // reload through the parent (or the root id itself).
+        ensure_not_managed(&conversation)?;
+        // Read-only backups (revert) never run and must not mint a frozen entry.
+        conversation.ensure_writable()?;
+        let project = crate::db::projects::get_project(&runs.pool, &conversation.project_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Project not found".into()))?;
+
+        // Same reconcile a chat turn performs, so newly-enabled servers join
+        // the fresh identity snapshot (best-effort; failed servers contribute
+        // no tools, as ever).
+        runs.mcp
+            .ensure_connections(&runs.pool, Some(&project.id))
+            .await;
+
+        Ok(runs
+            .assembly_services()
+            .reload_prompt_env(id, &project)
+            .await)
+    }
+
+    pub async fn can_resume(&self, id: &str) -> AppResult<bool> {
+        preparation::can_resume(&self.runs.pool, id).await
     }
 
     pub async fn send(&self, command: SendCommand) -> AppResult<RunSubscription> {
@@ -102,12 +139,6 @@ impl ConversationApplication {
     pub async fn wake(&self, command: WakeCommand) -> AppResult<()> {
         wake::wake(&self.runs, &command.conversation_id).await
     }
-}
-
-/// Shared handoff for send, recovered roots and background wake executions.
-/// Registration, replay metadata and supervised settlement remain in runtime.
-async fn launch_root(runs: &RunService, request: RootRunRequest) -> AppResult<StartedRun> {
-    runs.start_root_run(request).await
 }
 
 /// 409 when the conversation is a managed subagent session: send / resume /

@@ -1,8 +1,8 @@
 use oct_llm_provider::core::ReasoningRequest;
 
+use crate::application::services::ApplicationServices;
 use crate::db::messages as msg_db;
 use crate::error::AppError;
-use crate::runtime::RunService;
 
 // Send preparation rejects dangling managed delegations before repairing
 // ordinary tool calls; the application preparation module owns that rule.
@@ -10,7 +10,7 @@ use crate::runtime::RunService;
 /// 避免档位落到 wire 层才被 provider 拒绝。DB 缺少目录元数据时仍校验
 /// adapter 支持范围与预算上限，但不猜测 effort 的合法值。
 pub(super) async fn validate_reasoning(
-    runs: &RunService,
+    runs: &ApplicationServices,
     provider_id: &str,
     model_id: &str,
     reasoning: &ReasoningRequest,
@@ -65,7 +65,10 @@ pub(super) async fn validate_reasoning(
 
 /// How long the conversation sat idle before this request, per the stored
 /// history's last message timestamp.
-pub(super) async fn conversation_idle(runs: &RunService, id: &str) -> Option<std::time::Duration> {
+pub(super) async fn conversation_idle(
+    runs: &ApplicationServices,
+    id: &str,
+) -> Option<std::time::Duration> {
     msg_db::last_activity(&runs.pool, id)
         .await
         .ok()

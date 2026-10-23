@@ -6,21 +6,86 @@ use std::sync::Arc;
 use futures_util::FutureExt;
 use tokio::sync::watch;
 
-use crate::agent::{AgentEvent, RunOutcome, RunStatus, SubagentRunStatus};
+use super::services::ApplicationServices;
+use crate::agent::RunOutcome;
+use crate::agent::RunStatus;
 use crate::db::runs as run_db;
 use crate::error::{AppError, AppResult};
+use crate::events::AgentEvent;
 use crate::events::EventHub;
+use crate::events::SubagentRunStatus;
 use crate::permissions::gate::publish_cancelled_approvals;
 use crate::runtime::execution::{ExecutionIdentity, RunExecutor};
 use crate::runtime::replay::ReplayBase;
-use crate::runtime::{RootRunRequest, RunService};
 use crate::subagent::registry::ChildCompletion;
 use crate::subagent::{ChildHandle, ChildRun};
 use tokio_util::sync::CancellationToken;
 
 use super::assembly::{RootAssembler, RootAssemblyInput, WorkerAssembler, WorkerAssemblyInput};
 
-pub(crate) async fn launch_root(runs: &RunService, request: RootRunRequest) -> AppResult<String> {
+/// Everything [`launch_root`] needs to launch one root run.
+/// The application resolves the model/window/idle and performs its
+/// ordering-sensitive writes (repair, user-message insert) BEFORE handing
+/// the guard over — from here on the run is supervised end to end.
+pub struct RootRunRequest {
+    /// Consumed: moved into the supervisor so occupancy lasts the whole run
+    /// (and auto-releases on any failure before supervision takes over).
+    pub guard: crate::runtime::OccupancyGuard,
+    pub conversation_id: String,
+    pub project: crate::db::projects::Project,
+    pub model: Box<dyn oct_llm_provider::model::ChatModel>,
+    pub provider_id: String,
+    pub model_id: String,
+    pub view: crate::context::LlmView,
+    pub context_window: Option<u32>,
+    /// How long the conversation sat idle BEFORE this run started — the
+    /// microcompact idle trigger.
+    pub idle: Option<std::time::Duration>,
+    /// 用户为本次 run 选择的思考档位（send 请求携带；resume 从 user 消息
+    /// details 恢复；wake 等内部启动为 `None`）。
+    pub reasoning: Option<oct_llm_provider::core::ReasoningRequest>,
+    /// Whether to attach the `task` delegation tool: root runs of kind
+    /// `chat` conversations get it; resumed roots included. Workers never
+    /// do (depth <= 1 is enforced server-side on top).
+    pub attach_task_tool: bool,
+}
+
+/// A successfully launched run's event subscription and persisted identity.
+/// The subscription receives events without owning the executing task.
+pub struct StartedRun {
+    pub events: crate::events::SubscribeStream,
+    pub run_id: String,
+}
+
+/// Create the run's persistence row, subscribe to its event hub,
+/// assemble the agent context, and hand the whole run to the supervisor.
+/// The SSE response stream is live from the very first event. On any
+/// assembly failure the row is settled as failed before the consumed
+/// guard drops, releasing the conversation.
+pub async fn launch_root(runs: &ApplicationServices, req: RootRunRequest) -> AppResult<StartedRun> {
+    // Read the session entry the guard guarantees and subscribe to its
+    // hub BEFORE spawning so the response stream is live from the very
+    // first event (the hub log would replay them anyway — subscribing
+    // first is just the cheaper path).
+    let handle = runs
+        .sessions
+        .get(&req.conversation_id)
+        .map(|entry| entry.value().clone())
+        .expect("the occupancy guard guarantees the session entry");
+    let stream = handle.hub.subscribe();
+
+    let run_id = register_and_launch_root(runs, req).await?;
+
+    Ok(StartedRun {
+        events: stream,
+        run_id,
+    })
+}
+
+async fn register_and_launch_root(
+    runs: &ApplicationServices,
+    request: RootRunRequest,
+) -> AppResult<String> {
     let assembler = RootAssembler {
         shared: runs.assembly_services(),
         background: runs.background.clone(),
@@ -302,7 +367,7 @@ impl ChildLauncher {
 }
 
 pub(crate) async fn launch_child(
-    runs: &RunService,
+    runs: &ApplicationServices,
     request: ChildRunRequest,
 ) -> AppResult<ChildHandle> {
     ChildLauncher::new(runs.assembly_services(), runs.subagents.registry.clone())
@@ -329,10 +394,10 @@ fn startup_outcome(cancelled: bool, error: &AppError) -> RunOutcome {
     }
 }
 
-/// Everything [`crate::runtime::RunService::start_child_run`] needs to supervise one
+/// Everything the application child launcher needs to supervise one
 /// subagent run over its (already-registered, already-occupied) child
 /// conversation.
-pub struct ChildRunRequest {
+pub(crate) struct ChildRunRequest {
     /// Consumed: moved into the child supervisor so the child conversation's
     /// occupancy lasts the whole run.
     pub guard: crate::runtime::OccupancyGuard,

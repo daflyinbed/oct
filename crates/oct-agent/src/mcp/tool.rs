@@ -17,9 +17,11 @@ use tracing::warn;
 
 use oct_mcp::{McpCallResult, McpConnection, McpToolInfo};
 
+use crate::tool_contract::ToolContext;
+use crate::tool_contract::ToolImage;
+use crate::tool_contract::ToolOutput;
 use crate::tools::truncate::MAX_TOOL_OUTPUT_BYTES;
 use crate::tools::truncate::truncate_middle;
-use crate::tools::{ToolContext, ToolImage, ToolOutput};
 
 /// Cap (in chars) on the LLM-visible description of an MCP tool. The
 /// ellipsis is appended on top of the cap.
@@ -71,7 +73,7 @@ pub(crate) fn result_content(text: &str, structured: Option<&Value>) -> String {
     }
 }
 
-/// One MCP tool behind the [`crate::tools::AgentTool`] trait. The LLM
+/// One MCP tool behind the [`crate::tool_contract::AgentTool`] trait. The LLM
 /// addresses it by the deduplicated exposed name; `execute` dispatches over
 /// `connection` under the original server-side name, bounded by `timeout`.
 pub struct McpTool {
@@ -156,9 +158,9 @@ impl McpTool {
 }
 
 #[async_trait]
-impl crate::tools::AgentTool for McpTool {
-    fn selector(&self) -> crate::agent_settings::ToolSelector {
-        crate::agent_settings::ToolSelector::Mcp {
+impl crate::tool_contract::AgentTool for McpTool {
+    fn selector(&self) -> crate::tool_contract::ToolSelector {
+        crate::tool_contract::ToolSelector::Mcp {
             server_id: self.server_id.clone(),
             tool: self.original_name.clone(),
         }
@@ -201,9 +203,9 @@ impl crate::tools::AgentTool for McpTool {
         &self,
         args: Value,
         ctx: &ToolContext,
-    ) -> anyhow::Result<crate::tools::CodeToolResult> {
+    ) -> anyhow::Result<crate::tool_contract::CodeToolResult> {
         let result = self.invoke(args, ctx).await?;
-        Ok(crate::tools::CodeToolResult {
+        Ok(crate::tool_contract::CodeToolResult {
             text: result.text,
             structured_content: result.structured_json,
             images: result

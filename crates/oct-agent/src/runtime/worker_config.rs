@@ -1,8 +1,12 @@
 //! Seal the effective tools of a worker and restore their stable dispatch identities.
-use crate::agent_settings::{
-    BUILTIN_TOOLS, SnapshotTool, ToolChoice, ToolSelector, validate_tool_list,
-};
-use crate::tools::{AgentTool, ToolContext, ToolOutput};
+use crate::agent_settings::BUILTIN_TOOLS;
+use crate::agent_settings::SnapshotTool;
+use crate::agent_settings::ToolChoice;
+use crate::agent_settings::validate_tool_list;
+use crate::tool_contract::AgentTool;
+use crate::tool_contract::ToolContext;
+use crate::tool_contract::ToolOutput;
+use crate::tool_contract::ToolSelector;
 use anyhow::{Result, ensure};
 use std::sync::Arc;
 
@@ -169,7 +173,7 @@ impl AgentTool for AliasedTool {
         &self,
         args: serde_json::Value,
         ctx: &ToolContext,
-    ) -> Result<crate::tools::CodeToolResult> {
+    ) -> Result<crate::tool_contract::CodeToolResult> {
         self.inner.execute_for_code(args, ctx).await
     }
 }
@@ -177,7 +181,7 @@ impl AgentTool for AliasedTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::EventHub;
+    use crate::events::EventHub;
     use serde_json::json;
     use tokio_util::sync::CancellationToken;
 

@@ -1,6 +1,6 @@
 //! Declaration files and virtual bindings are two views of one run catalog.
-use crate::agent_settings::ToolSelector;
-use crate::tools::AgentTool;
+use crate::tool_contract::AgentTool;
+use crate::tool_contract::ToolSelector;
 use anyhow::{Result, ensure};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -9,7 +9,6 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
-pub const VERSION: u32 = crate::tool_contract::CODE_CATALOG_VERSION;
 const GENERATOR: &str = "oct-sdk-v3";
 const SPLIT_BYTES: usize = 32 * 1024;
 const SPLIT_TOOLS: usize = 24;

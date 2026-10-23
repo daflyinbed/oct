@@ -1,5 +1,5 @@
 pub mod compact;
-pub use crate::events;
+use crate::events;
 pub mod loop_runner;
 pub mod micro;
 pub mod prompt;
@@ -11,10 +11,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-pub use crate::events::{
-    AgentEvent, ApprovalOutcome, CompactionTrigger, EventHub, MicrocompactReplacement,
-    MicrocompactTrigger, SubagentRunStatus,
-};
+use crate::events::EventHub;
 use crate::tool_contract::AgentTool;
 use oct_llm_provider::model::ChatModel;
 
@@ -31,7 +28,7 @@ pub struct AgentContext {
     /// disables AUTO compaction (manual still works).
     pub context_window: Option<u32>,
     /// How long the conversation sat idle before this run started, captured
-    /// in the API layer BEFORE the repair/new-user-message writes (anything
+    /// in the application BEFORE the repair/new-user-message writes (anything
     /// later would always look "just active"). Drives microcompact's idle
     /// entry; `None`/short values mean waterline-only.
     pub idle: Option<std::time::Duration>,
@@ -47,10 +44,10 @@ pub struct AgentContext {
     /// thinking tokens. Other adapters retain their existing defaults.
     pub max_output_tokens: Option<u32>,
     /// 附件存储：请求装配时把 `oct-attachment://` 引用水合成 data URL。
-    /// `None` = 装配不经 RunService（测试装配），引用原样保留。
+    /// `None` = 测试直接装配，引用原样保留。
     pub attachments: Option<std::sync::Arc<crate::attachments::AttachmentService>>,
     /// The run's permission gate: every tool call passes
-    /// `check` before `execute`. Assembled by the RunService (root and
+    /// `check` before `execute`. Assembled by the application (root and
     /// subagent runs alike) from the persisted rules, the conversation's
     /// mode and the workspace roots.
     pub permission: std::sync::Arc<crate::permissions::gate::PermissionGate>,
@@ -58,7 +55,7 @@ pub struct AgentContext {
     /// when compaction/microcompaction rewrites the history (the prefix
     /// cache breaks anyway; the refresh itself lands at the NEXT run's
     /// assembly — a run's prompt is constant for its whole lifetime).
-    /// `None` for contexts assembled outside the RunService (test
+    /// `None` for contexts assembled outside application assembly (test
     /// harnesses), where the flag has nothing to act on.
     pub prompt_env_refresh: Option<repo_instructions::PromptEnvRefresh>,
     /// Identity of the prompt environment this run's system prompt was built

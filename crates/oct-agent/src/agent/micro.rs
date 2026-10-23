@@ -38,9 +38,12 @@ use sqlx::SqlitePool;
 use oct_llm_provider::core::{ContentPart, Message, ToolResult, ToolSpec};
 
 use super::compact;
-use super::{AgentEvent, EventHub, MicrocompactReplacement, MicrocompactTrigger};
 use crate::context::ContextState;
 use crate::db::messages::{self as msg_db, CowSwap};
+use crate::events::AgentEvent;
+use crate::events::EventHub;
+use crate::events::MicrocompactReplacement;
+use crate::events::MicrocompactTrigger;
 
 /// Waterline: estimated context at or above this fraction of the window
 /// triggers a clear. Deliberately below summary compaction's 85% so the

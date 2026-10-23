@@ -1,22 +1,25 @@
 use std::sync::Arc;
 
-use crate::agent::AgentEvent;
 use crate::application::title;
+use crate::application::{execution::RootRunRequest, services::ApplicationServices};
 use crate::db::{conversations as conv_db, messages as msg_db, projects as project_db};
 use crate::error::{AppError, AppResult};
-use crate::runtime::{RootRunRequest, RunService};
+use crate::events::AgentEvent;
 
 use super::{
     RunSubscription, SendCommand, conversation_idle, ensure_not_managed, launch_root, preparation,
     validate_reasoning,
 };
 
-pub(super) async fn send(runs: &Arc<RunService>, req: SendCommand) -> AppResult<RunSubscription> {
+pub(super) async fn send(
+    runs: &Arc<ApplicationServices>,
+    req: SendCommand,
+) -> AppResult<RunSubscription> {
     let id = req.conversation_id.clone();
     // The occupancy guard takes the session entry up front (concurrent
     // starts get their 409 here) and releases it on drop — every `?` below
     // frees the conversation, no manual cleanup needed.
-    let guard = runs.occupy(&id)?;
+    let guard = runs.occupancy().occupy(&id)?;
 
     let conversation = conv_db::get_conversation(&runs.pool, &id)
         .await
@@ -48,11 +51,17 @@ pub(super) async fn send(runs: &Arc<RunService>, req: SendCommand) -> AppResult<
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::NotFound("Project not found".into()))?;
 
-    let (chat_model, provider_id, model_id) = runs.resolve_model(&req.provider_spec).await?;
+    let (chat_model, provider_id, model_id) = runs
+        .assembly_services()
+        .models
+        .resolve_model(&req.provider_spec)
+        .await?;
     if let Some(reasoning) = &req.reasoning {
         validate_reasoning(runs, &provider_id, &model_id, reasoning).await?;
     }
     let context_window = runs
+        .assembly_services()
+        .models
         .resolve_context_window(chat_model.as_ref(), &provider_id, &model_id)
         .await;
 
@@ -133,7 +142,7 @@ pub(super) async fn send(runs: &Arc<RunService>, req: SendCommand) -> AppResult<
             .map(|entry| Arc::downgrade(&entry.value().hub));
         if let Some(hub) = hub {
             title::spawn(title::TitleJob {
-                resolver: runs.model_resolver(),
+                resolver: runs.assembly_services().models,
                 project_id: project.id.clone(),
                 parent_provider_id: provider_id.clone(),
                 parent_model_id: model_id.clone(),

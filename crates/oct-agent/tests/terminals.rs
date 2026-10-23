@@ -375,7 +375,7 @@ async fn deleting_project_waits_for_terminal_creation() {
     ));
     // The first database await pauses creation after admission, without sleeps.
     assert!(futures_util::poll!(create.as_mut()).is_pending());
-    assert!(app.state.runs.lifecycle.admission.try_write().is_err());
+    assert!(app.state.admission.admission.try_write().is_err());
     let mut delete = Box::pin(delete_project(
         State(app.state.clone()),
         Path(project.clone()),
@@ -403,7 +403,7 @@ async fn deleting_project_waits_for_terminal_creation() {
 async fn terminal_creation_after_project_deletion_returns_not_found() {
     let app = TestApp::new().await;
     let project = app.create_project().await;
-    let admission = app.state.runs.lifecycle.admission.write().await;
+    let admission = app.state.admission.admission.write().await;
     let mut delete = Box::pin(delete_project(
         State(app.state.clone()),
         Path(project.clone()),

@@ -176,7 +176,7 @@ pub async fn cancel_background_task(
         .ok_or_else(|| AppError::NotFound("Background task not found".into()))?;
 
     let settled = if row.status == "running" {
-        state.runs.background.cancel_and_wait(&id).await
+        state.background.cancel_and_wait(&id).await
     } else if row.status == "lost" {
         task_db::cancel_lost_task(&state.pool, &id).await?;
         task_db::get_visible_task(&state.pool, &id).await?

@@ -33,7 +33,7 @@ async fn committed_revert_replays_before_occupancy_and_conflicting_requests_stil
             .id,
         );
     }
-    let application = HistoryApplication::new(app.state.runs.clone());
+    let application = HistoryApplication::new(app.services.clone());
     let request = RevertRequest {
         operation_id: uuid::Uuid::new_v4().to_string(),
         expected_revision: 4,
@@ -43,7 +43,7 @@ async fn committed_revert_replays_before_occupancy_and_conflicting_requests_stil
         },
     };
     let first = application.revert(&source, request.clone()).await.unwrap();
-    let occupancy = app.state.runs.occupy(&source).unwrap();
+    let occupancy = app.services.occupancy().occupy(&source).unwrap();
     let replay = application.revert(&source, request.clone()).await.unwrap();
     assert_eq!(replay.backup_conversation_id, first.backup_conversation_id);
     assert_eq!(replay.context_revision, first.context_revision);

@@ -1,13 +1,14 @@
-use crate::agent::{CompactionTrigger, compact};
+use crate::agent::compact;
+use crate::application::services::ApplicationServices;
 use crate::context::{self, LlmView};
 use crate::db::{conversations as conv_db, messages as msg_db};
 use crate::error::{AppError, AppResult};
-use crate::runtime::RunService;
+use crate::events::CompactionTrigger;
 
 use super::{CompactCommand, CompactOutcome, ensure_not_managed, preparation};
 
 pub(super) async fn compact(
-    runs: &RunService,
+    runs: &ApplicationServices,
     command: CompactCommand,
 ) -> AppResult<CompactOutcome> {
     let id = command.conversation_id.clone();
@@ -15,7 +16,7 @@ pub(super) async fn compact(
     // concurrent manual compact gets a 409. The occupancy guard releases the
     // entry on drop at every exit path below (a synchronous request, unlike
     // the SSE run endpoints).
-    let _guard = runs.occupy(&id)?;
+    let _guard = runs.occupancy().occupy(&id)?;
 
     let conversation = conv_db::get_conversation(&runs.pool, &id)
         .await?
@@ -33,7 +34,7 @@ pub(super) async fn compact(
 }
 
 async fn run_manual_compact(
-    runs: &RunService,
+    runs: &ApplicationServices,
     id: &str,
     provider_spec: Option<&str>,
 ) -> AppResult<CompactOutcome> {
@@ -52,8 +53,11 @@ async fn run_manual_compact(
             }
         },
     };
-    let (chat_model, provider_id, model_id) = runs.resolve_model(&spec).await?;
+    let (chat_model, provider_id, model_id) =
+        runs.assembly_services().models.resolve_model(&spec).await?;
     let window = runs
+        .assembly_services()
+        .models
         .resolve_context_window(chat_model.as_ref(), &provider_id, &model_id)
         .await;
 
@@ -100,7 +104,7 @@ async fn run_manual_compact(
                 trigger: CompactionTrigger::Manual,
                 hub: None,
                 cancel: None,
-                prompt_env_refresh: Some(runs.prompt_env_refresh(id)),
+                prompt_env_refresh: Some(runs.assembly_services().prompt_env_refresh(id)),
             },
         ),
     );

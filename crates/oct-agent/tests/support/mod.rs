@@ -27,10 +27,13 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use tokio_util::sync::CancellationToken;
 
-use oct_agent::agent::events::SubscribeStream;
+use oct_agent::agent::AgentContext;
+use oct_agent::agent::RunHandle;
 use oct_agent::agent::loop_runner::run_agent_loop;
-use oct_agent::agent::{AgentContext, AgentEvent, EventHub, RunHandle};
 use oct_agent::db;
+use oct_agent::events::AgentEvent;
+use oct_agent::events::EventHub;
+use oct_agent::events::SubscribeStream;
 use oct_llm_provider::core::{FinishReason, ModelError, Role, StreamEvent, ToolCall, Usage};
 use oct_llm_provider::model::{ChatModel, ChatRequest, ChatResponse, ChatStream};
 use oct_llm_provider::provider::{ModelCapabilities, ModelInfo, ModelLimits};
@@ -245,7 +248,7 @@ pub async fn new_conversation(pool: &sqlx::SqlitePool, working_dir: &std::path::
 /// can be missed.
 pub async fn spawn_agent(
     model: ScriptedModel,
-    tools: Vec<Box<dyn oct_agent::tools::AgentTool>>,
+    tools: Vec<Box<dyn oct_agent::tool_contract::AgentTool>>,
     pool: sqlx::SqlitePool,
     conv_id: &str,
     user_message: &str,
@@ -267,7 +270,7 @@ pub async fn spawn_agent(
 /// window (auto compaction is driven by the window: `None` disables it).
 pub async fn spawn_agent_with(
     model: ScriptedModel,
-    tools: Vec<Box<dyn oct_agent::tools::AgentTool>>,
+    tools: Vec<Box<dyn oct_agent::tool_contract::AgentTool>>,
     pool: sqlx::SqlitePool,
     conv_id: &str,
     view: oct_agent::db::messages::LlmView,
@@ -279,7 +282,7 @@ pub async fn spawn_agent_with(
 /// [`spawn_agent_with`] plus the idle duration for microcompact's idle entry.
 pub async fn spawn_agent_full(
     model: ScriptedModel,
-    tools: Vec<Box<dyn oct_agent::tools::AgentTool>>,
+    tools: Vec<Box<dyn oct_agent::tool_contract::AgentTool>>,
     pool: sqlx::SqlitePool,
     conv_id: &str,
     view: oct_agent::db::messages::LlmView,
@@ -313,7 +316,7 @@ pub async fn spawn_agent_full(
 // input of the operation; a param struct would only shuffle names.
 pub async fn spawn_agent_with_gate(
     model: ScriptedModel,
-    tools: Vec<Box<dyn oct_agent::tools::AgentTool>>,
+    tools: Vec<Box<dyn oct_agent::tool_contract::AgentTool>>,
     pool: sqlx::SqlitePool,
     conv_id: &str,
     view: oct_agent::db::messages::LlmView,
@@ -335,7 +338,7 @@ pub async fn spawn_agent_with_gate(
             tools
                 .into_iter()
                 .map(std::sync::Arc::from)
-                .collect::<Vec<std::sync::Arc<dyn oct_agent::tools::AgentTool>>>(),
+                .collect::<Vec<std::sync::Arc<dyn oct_agent::tool_contract::AgentTool>>>(),
         ),
         pool,
         system_prompt: "test system prompt".to_string(),
@@ -403,11 +406,14 @@ pub struct TestApp {
     pub pool: sqlx::SqlitePool,
     /// Shared server state for deterministic lifecycle coordination.
     pub state: oct_agent::api::AppState,
+    pub services: Arc<oct_agent::application::services::ApplicationServices>,
+    pub resources: oct_agent::application::services::ServiceResources,
+
     /// The very `Arc<McpManager>` the server's AppState holds: lets tests
     /// inject scripted MCP connections (see [`mcp::FakeMcpConnection`])
     /// instead of spawning real server processes.
     pub mcp: Arc<oct_agent::mcp::McpManager>,
-    /// The very `Arc<BackgroundTaskManager>` the server's RunService holds:
+    /// The very `Arc<BackgroundTaskManager>` the server's ApplicationServices holds:
     /// lets tests inspect the active-task registry and shrink the output
     /// limit for watchdog coverage.
     pub background: Arc<oct_agent::runtime::background::BackgroundTaskManager>,
@@ -475,7 +481,7 @@ impl TestApp {
         oct_agent::db::settings::set(
             &pool,
             oct_agent::codemode::SETTING,
-            oct_agent::codemode::McpToolMode::Direct.as_str(),
+            oct_agent::tool_contract::McpToolMode::Direct.as_str(),
         )
         .await
         .expect("pin direct tool mode");
@@ -495,7 +501,7 @@ impl TestApp {
             dir.path().join("attachments"),
             pool.clone(),
         ));
-        let runs = Arc::new(oct_agent::runtime::RunService {
+        let resources = oct_agent::application::services::ServiceResources {
             lifecycle: Default::default(),
             pool: pool.clone(),
             registry: Arc::new(default_registry()),
@@ -509,26 +515,24 @@ impl TestApp {
             gates: Arc::new(dashmap::DashMap::new()),
             prompt_envs: Arc::new(dashmap::DashMap::new()),
             prompt_env_locks: Arc::new(dashmap::DashMap::new()),
-        });
+        };
+        let runs = Arc::new(oct_agent::application::services::ApplicationServices::new(
+            resources.clone(),
+        ));
         let wake_drainer = notifications
             .then(|| oct_agent::application::notifications::WakeDrainer::start(runs.clone()));
-        let state = oct_agent::api::AppState {
-            runs,
-            pool: pool.clone(),
-            registry: Arc::new(default_registry()),
-            sessions,
-            mcp: mcp.clone(),
-            oauth_flows: Arc::new(oct_agent::oauth::OAuthFlowStore::default()),
-            wire_log: wire_test_setup(),
+        let state = oct_agent::api::AppState::new(
+            runs.clone(),
+            wire_test_setup(),
             // Terminal tests must not source the developer's shell rc files.
-            terminals: Arc::new(oct_agent::terminal::TerminalManager::with_shell(
+            Arc::new(oct_agent::terminal::TerminalManager::with_shell(
                 if cfg!(windows) {
                     "powershell.exe"
                 } else {
                     "/bin/sh"
                 },
             )),
-        };
+        );
         let app = oct_agent::api::build_router(state.clone());
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -544,6 +548,8 @@ impl TestApp {
             base_url: format!("http://127.0.0.1:{port}"),
             pool,
             state,
+            services: runs,
+            resources,
             mcp,
             background,
             attachments,

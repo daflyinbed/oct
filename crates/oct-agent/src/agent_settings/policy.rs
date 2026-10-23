@@ -1,5 +1,6 @@
 //! Pure configuration inheritance, patching, validation and snapshot rules.
 use super::types::*;
+use crate::tool_contract::ToolSelector;
 
 impl WorkerSnapshot {
     pub fn decode(raw: Option<&str>) -> anyhow::Result<Option<Self>> {

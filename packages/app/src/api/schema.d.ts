@@ -1227,7 +1227,7 @@ export interface components {
             type: "finish";
         } | {
             /**
-             * @description The background title task (see [`title`]) landed an auto-generated
+             * @description The background title task (see `application/title.rs`) landed an auto-generated
              *     conversation title. Published on the run's hub — not by the agent loop
              *     — so live subscribers and reconnecting replays both see it; handling
              *     must be idempotent (a replay delivers it again). Conversation
@@ -2460,6 +2460,7 @@ export interface components {
             data: string;
             mime_type: string;
         };
+        /** @description Stable identity independent of model-facing aliases and settings storage. */
         ToolSelector: {
             /** @enum {string} */
             kind: "builtin";
@@ -5262,7 +5263,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Cancellation requested (active run), or a lost run persisted as cancelled */
+            /** @description Cancellation requested (active or starting run), or an unowned recoverable run persisted as cancelled */
             200: {
                 headers: {
                     [name: string]: unknown;

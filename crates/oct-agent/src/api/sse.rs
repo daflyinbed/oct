@@ -1,4 +1,4 @@
-use crate::agent::AgentEvent;
+use crate::events::AgentEvent;
 use axum::response::sse::Event;
 
 /// Serialize an AgentEvent as an SSE `data:` payload.

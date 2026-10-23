@@ -5,11 +5,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use oct_agent::application::notifications::WakeDrainer;
+use oct_agent::application::services::ApplicationServices;
 use oct_agent::db::background::{self, NewBackgroundTask, TaskFinalStatus};
-use oct_agent::runtime::RunService;
 
-fn service(env: &support::TestEnv) -> Arc<RunService> {
-    Arc::new(RunService {
+fn service(
+    env: &support::TestEnv,
+) -> (
+    Arc<ApplicationServices>,
+    oct_agent::application::services::ServiceResources,
+) {
+    let resources = oct_agent::application::services::ServiceResources {
         lifecycle: Default::default(),
         pool: env.pool.clone(),
         registry: Arc::new(oct_llm_provider::providers::default_registry()),
@@ -29,15 +34,19 @@ fn service(env: &support::TestEnv) -> Arc<RunService> {
         gates: Arc::new(dashmap::DashMap::new()),
         prompt_envs: Arc::new(dashmap::DashMap::new()),
         prompt_env_locks: Arc::new(dashmap::DashMap::new()),
-    })
+    };
+    (
+        Arc::new(ApplicationServices::new(resources.clone())),
+        resources,
+    )
 }
 
 #[tokio::test]
 async fn startup_reconciles_without_a_signal_and_shutdown_releases_busy_waiters() {
     let env = support::TestEnv::new().await;
     let conv = support::new_conversation(&env.pool, env.dir.path()).await;
-    let runs = service(&env);
-    let guard = runs.occupy(&conv).unwrap();
+    let (runs, resources) = service(&env);
+    let guard = runs.occupancy().occupy(&conv).unwrap();
     let task = background::create_task(
         &env.pool,
         NewBackgroundTask {
@@ -74,8 +83,8 @@ async fn startup_reconciles_without_a_signal_and_shutdown_releases_busy_waiters(
     .await
     .expect("startup reconciliation must own a delivery waiter");
     let weak = Arc::downgrade(&runs);
-    let background = runs.background.clone();
-    let subagents = runs.subagents.clone();
+    let background = resources.background.clone();
+    let subagents = resources.subagents.clone();
     drop(runs);
     drainer.shutdown().await;
     assert!(

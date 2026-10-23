@@ -3170,7 +3170,7 @@ async fn dangling_tool_call_before_marker_is_not_repaired() {
     // the LLM view past it.
     seed_dangling_tool_call(&app, &conv).await;
     let marker = compact::build_marker_message("already summarized");
-    let details = compact::marker_details(oct_agent::agent::CompactionTrigger::Manual, 2, 100, 20);
+    let details = compact::marker_details(oct_agent::events::CompactionTrigger::Manual, 2, 100, 20);
     msg_db::insert_message(&app.pool, &conv, &marker, None, None, Some(&details))
         .await
         .unwrap();
@@ -5069,7 +5069,7 @@ async fn reasoning_resume_restores_real_user_choice_past_compaction_marker() {
     .unwrap();
     let marker = oct_agent::agent::compact::build_marker_message("the task so far");
     let details = oct_agent::agent::compact::marker_details(
-        oct_agent::agent::CompactionTrigger::Auto,
+        oct_agent::events::CompactionTrigger::Auto,
         7,
         100,
         50,

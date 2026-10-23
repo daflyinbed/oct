@@ -94,10 +94,9 @@ async fn run_server(
     // left `running` become `lost` before this process accepts traffic.
     oct_agent::runtime::bootstrap(&pool).await?;
 
-    // Two-phase wire: the RunService owns the SubagentManager and the
-    // background task manager; each manager reaches back into the service
-    // through a OnceLock (set immediately below) — no reference cycle the
-    // process needs to break.
+    // Assemble shared components first. Scoped tool capabilities point down to
+    // worker/background services; managers never receive the application back.
+    // The composition root owns the notification drainer's lifetime.
     let subagents = Arc::new(oct_agent::subagent::SubagentManager::default());
     let exec_dir = std::env::var("OCT_EXEC_DIR")
         .map(std::path::PathBuf::from)
@@ -119,33 +118,30 @@ async fn run_server(
     ));
     attachments.ensure_root().await?;
     attachments.sweep().await;
-    let runs = Arc::new(oct_agent::runtime::RunService {
-        lifecycle: Default::default(),
-        pool: pool.clone(),
-        registry: registry.clone(),
-        mcp: mcp.clone(),
-        sessions: sessions.clone(),
-        file_locks: Arc::new(dashmap::DashMap::new()),
-        subagents: subagents.clone(),
-        background: background.clone(),
-        attachments: attachments.clone(),
-        approvals: Arc::new(oct_agent::permissions::registry::ApprovalRegistry::new()),
-        gates: Arc::new(dashmap::DashMap::new()),
-        prompt_envs: Arc::new(dashmap::DashMap::new()),
-        prompt_env_locks: Arc::new(dashmap::DashMap::new()),
-    });
+    let runs = Arc::new(oct_agent::application::services::ApplicationServices::new(
+        oct_agent::application::services::ServiceResources {
+            lifecycle: Default::default(),
+            pool: pool.clone(),
+            registry: registry.clone(),
+            mcp: mcp.clone(),
+            sessions: sessions.clone(),
+            file_locks: Arc::new(dashmap::DashMap::new()),
+            subagents: subagents.clone(),
+            background: background.clone(),
+            attachments: attachments.clone(),
+            approvals: Arc::new(oct_agent::permissions::registry::ApprovalRegistry::new()),
+            gates: Arc::new(dashmap::DashMap::new()),
+            prompt_envs: Arc::new(dashmap::DashMap::new()),
+            prompt_env_locks: Arc::new(dashmap::DashMap::new()),
+        },
+    ));
     let _wake_drainer = oct_agent::application::notifications::WakeDrainer::start(runs.clone());
 
-    let state = api::AppState {
+    let state = api::AppState::new(
         runs,
-        pool,
-        registry,
-        sessions,
-        mcp,
-        oauth_flows: Arc::new(oct_agent::oauth::OAuthFlowStore::default()),
         wire_log,
-        terminals: Arc::new(oct_agent::terminal::TerminalManager::default()),
-    };
+        Arc::new(oct_agent::terminal::TerminalManager::default()),
+    );
 
     let app = api::build_router(state).layer(CorsLayer::permissive());
 

@@ -12,13 +12,11 @@ use super::AppState;
 use super::dto;
 use super::error::{ApiResult, AppError};
 use super::sse::sse_event;
-use crate::application::conversation::{
-    CompactCommand, ConversationApplication, ResumeCommand, SendCommand, ensure_not_managed,
-};
+use crate::application::conversation::{CompactCommand, ResumeCommand, SendCommand};
 use crate::context;
-use crate::db::{conversations as conv_db, messages as msg_db, projects as project_db};
+use crate::db::{conversations as conv_db, messages as msg_db};
 
-fn event_response(events: crate::agent::events::SubscribeStream) -> Response {
+fn event_response(events: crate::events::SubscribeStream) -> Response {
     Sse::new(events.map(|event| Ok::<_, Infallible>(sse_event(&event))))
         .keep_alive(KeepAlive::default())
         .into_response()
@@ -98,9 +96,7 @@ pub async fn send_message(
         reasoning: req.reasoning.map(|value| value.to_core()),
         attachment_ids: req.attachment_ids.unwrap_or_default(),
     };
-    let subscription = ConversationApplication::new(state.runs)
-        .send(command)
-        .await?;
+    let subscription = state.conversations.send(command).await?;
     Ok(event_response(subscription.events))
 }
 
@@ -120,7 +116,8 @@ pub async fn resume_turn(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> ApiResult<Response> {
-    let subscription = ConversationApplication::new(state.runs)
+    let subscription = state
+        .conversations
         .resume(ResumeCommand {
             conversation_id: id,
         })
@@ -171,7 +168,8 @@ pub async fn compact_conversation(
     Path(id): Path<String>,
     axum::extract::Query(query): axum::extract::Query<CompactQuery>,
 ) -> ApiResult<Json<CompactResult>> {
-    let outcome = ConversationApplication::new(state.runs)
+    let outcome = state
+        .conversations
         .compact(CompactCommand {
             conversation_id: id,
             provider_spec: query.provider_spec,
@@ -229,27 +227,7 @@ pub async fn reload_instructions(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<InstructionsReloadResult>> {
-    let conversation = conv_db::get_conversation(&state.pool, &id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Conversation not found".into()))?;
-    // Managed subagent sessions share their ROOT conversation's entry —
-    // reload through the parent (or the root id itself).
-    ensure_not_managed(&conversation)?;
-    // Read-only backups (revert) never run and must not mint a frozen entry.
-    conversation.ensure_writable()?;
-    let project = project_db::get_project(&state.pool, &conversation.project_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Project not found".into()))?;
-
-    // Same reconcile a chat turn performs, so newly-enabled servers join
-    // the fresh identity snapshot (best-effort; failed servers contribute
-    // no tools, as ever).
-    state
-        .mcp
-        .ensure_connections(&state.pool, Some(&project.id))
-        .await;
-
-    let env = state.runs.reload_prompt_env(&id, &project).await;
+    let env = state.conversations.reload_instructions(&id).await?;
     Ok(Json(InstructionsReloadResult {
         repo_files: env
             .repo
@@ -311,7 +289,7 @@ pub async fn get_run_status(
 ) -> ApiResult<Json<RunningStatus>> {
     Ok(Json(RunningStatus {
         running: state.sessions.contains_key(&id),
-        resumable: crate::runtime::preparation::can_resume(&state.pool, &id).await?,
+        resumable: state.conversations.can_resume(&id).await?,
     }))
 }
 

@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use super::shared::{AgentReadState, ReadCheck, WorkspaceFileLocks, file_mtime};
 use super::workspace::WorkspaceRoots;
-use super::{AgentTool, ToolContext, ToolOutput};
+use crate::tool_contract::AgentTool;
+use crate::tool_contract::ToolContext;
+use crate::tool_contract::ToolOutput;
 
 /// Cap for the file line quoted in the nearest-match hint, in bytes.
 const HINT_LINE_MAX_BYTES: usize = 200;
@@ -348,7 +350,7 @@ mod tests {
     fn noop_ctx() -> ToolContext {
         ToolContext::new(
             "test",
-            std::sync::Arc::new(crate::agent::EventHub::new()),
+            std::sync::Arc::new(crate::events::EventHub::new()),
             tokio_util::sync::CancellationToken::new(),
         )
     }

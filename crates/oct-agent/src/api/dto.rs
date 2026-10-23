@@ -19,8 +19,8 @@ use utoipa::ToSchema;
 
 use oct_llm_provider::core::ContentPart;
 
-use crate::agent::CompactionTrigger;
 use crate::db::messages::{MessageContent, StoredMessage};
+use crate::events::CompactionTrigger;
 
 /// One message part of the messages API, tagged by `type`.
 #[derive(Debug, Clone, Serialize, ToSchema)]

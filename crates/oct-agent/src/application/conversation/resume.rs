@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
+use crate::application::services::ApplicationServices;
 use crate::db::{conversations as conv_db, messages as msg_db, projects as project_db};
 use crate::error::{AppError, AppResult};
-use crate::runtime::RunService;
 
 use super::recovery::{RecoveryJob, orchestrate};
 use super::{ResumeCommand, RunSubscription, conversation_idle, ensure_not_managed, preparation};
 
 pub(super) async fn resume(
-    runs: &Arc<RunService>,
+    runs: &Arc<ApplicationServices>,
     command: ResumeCommand,
 ) -> AppResult<RunSubscription> {
     let id = command.conversation_id;
@@ -18,7 +18,7 @@ pub(super) async fn resume(
     // the parent run started at the end reuses the same session handle — so
     // the cancel endpoint covers both phases.
     let cancel = tokio_util::sync::CancellationToken::new();
-    let guard = runs.occupy_with(&id, cancel.clone())?;
+    let guard = runs.occupancy().occupy_with(&id, cancel.clone())?;
 
     let conversation = conv_db::get_conversation(&runs.pool, &id)
         .await
@@ -61,8 +61,14 @@ pub(super) async fn resume(
         }
     };
 
-    let (chat_model, provider_id, model_id) = runs.resolve_model(&provider_spec).await?;
+    let (chat_model, provider_id, model_id) = runs
+        .assembly_services()
+        .models
+        .resolve_model(&provider_spec)
+        .await?;
     let context_window = runs
+        .assembly_services()
+        .models
         .resolve_context_window(chat_model.as_ref(), &provider_id, &model_id)
         .await;
 

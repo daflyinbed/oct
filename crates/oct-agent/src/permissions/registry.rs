@@ -8,7 +8,9 @@ use dashmap::DashMap;
 use std::sync::{Arc, Weak};
 use tokio::sync::oneshot;
 
-use crate::agent::{AgentEvent, ApprovalOutcome, EventHub};
+use crate::events::AgentEvent;
+use crate::events::ApprovalOutcome;
+use crate::events::EventHub;
 use crate::permissions::evaluator::{PermissionAction, rule_suggestion};
 
 /// What the user answered to an approval request — the REST decide body.
@@ -142,7 +144,7 @@ pub struct UnknownApproval;
 
 /// In-memory registry of pending approvals: memory-only by design —
 /// the only durable traces of an approval are the rules it produced and
-/// the ToolResult it gated. Mounts on `RunService` in the wiring PR; safe
+/// the ToolResult it gated. Mounts on `ApplicationServices` in the wiring PR; safe
 /// to share across threads.
 #[derive(Default)]
 pub struct ApprovalRegistry {

@@ -118,7 +118,7 @@ pub async fn delete_project(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
-    let deleted = state.runs.delete_project(&id).await?;
+    let deleted = state.lifecycle.delete_project(&id).await?;
     if deleted {
         let terminals = state.terminals.clone();
         tokio::task::spawn_blocking(move || terminals.remove_project(&id))

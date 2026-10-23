@@ -11,16 +11,19 @@ use oct_llm_provider::core::{
 };
 use oct_llm_provider::model::ChatRequest;
 
+use crate::agent::AgentContext;
+use crate::agent::RunHandle;
+use crate::agent::RunOutcome;
+use crate::agent::RunStatus;
+use crate::agent::RunUsage;
 use crate::agent::compact::{self, CompactAttempt};
 use crate::agent::micro::{self, MicroAttempt};
-use crate::agent::{
-    AgentContext, AgentEvent, MicrocompactTrigger, RunHandle, RunOutcome, RunStatus, RunUsage,
-};
 use crate::attachments::RequestAssembler;
 use crate::context::projection::MediaPolicy;
 use crate::context::{ContextState, LlmView};
 use crate::db::messages as msg_db;
-use crate::tools;
+use crate::events::AgentEvent;
+use crate::events::MicrocompactTrigger;
 
 /// Final-message fields from the run's assistant-row bookkeeping `(id, text)`:
 /// the row id always (when one exists), the text only when non-empty.
@@ -94,7 +97,7 @@ pub async fn run_agent_loop(
     let tool_specs: Vec<_> = ctx
         .tools
         .iter()
-        .map(|t| tools::to_tool_spec(t.as_ref()))
+        .map(|t| crate::tool_contract::to_tool_spec(t.as_ref()))
         .collect();
 
     let assembler = RequestAssembler::new(ctx.attachments.as_deref(), MediaPolicy::default());
@@ -598,7 +601,7 @@ pub async fn run_agent_loop(
         // ToolContext per call, parallel to `indexed_calls` (same idx). Kept
         // here so the completion branch can flush the smoother's remainder
         // before the final ToolResult event.
-        let mut contexts: Vec<tools::ToolContext> = Vec::with_capacity(total);
+        let mut contexts: Vec<crate::tool_contract::ToolContext> = Vec::with_capacity(total);
 
         for (idx, tc) in &indexed_calls {
             let tc = tc.clone();
@@ -617,8 +620,11 @@ pub async fn run_agent_loop(
             // The run's cancel token rides along so long-running tools
             // (execute, MCP) can abort in-flight work the moment the user
             // cancels, instead of running to their own timeout.
-            let tool_ctx =
-                tools::ToolContext::new(tc.id.clone(), handle.hub.clone(), handle.cancel.clone());
+            let tool_ctx = crate::tool_contract::ToolContext::new(
+                tc.id.clone(),
+                handle.hub.clone(),
+                handle.cancel.clone(),
+            );
             contexts.push(tool_ctx.clone());
 
             // Announce the call at dispatch time so the frontend learns the tool
@@ -751,7 +757,9 @@ pub async fn run_agent_loop(
                         .iter()
                         .find(|t| t.name() == tc.name)
                         .and_then(|t| t.interrupted_output(&tc.id))
-                        .unwrap_or_else(|| tools::ToolOutput::error("用户取消了执行"));
+                        .unwrap_or_else(|| {
+                            crate::tool_contract::ToolOutput::error("用户取消了执行")
+                        });
                     let cancel_msg = Message {
                         role: Role::Tool,
                         parts: vec![ContentPart::ToolResult(ToolResult {

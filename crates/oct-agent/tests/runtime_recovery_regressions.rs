@@ -378,7 +378,7 @@ async fn unowned_running_child_can_be_cancelled_without_restarting_the_server() 
         .await
         .unwrap();
     assert!(!app.state.sessions.contains_key(&child.conversation_id));
-    assert!(!app.state.runs.subagents.is_active(&child.conversation_id));
+    assert!(!app.state.subagents.is_active(&child.conversation_id));
     let response = app
         .post_json(
             &format!("/api/subagents/{}/cancel", child.conversation_id),
@@ -449,8 +449,7 @@ async fn child_cancel_reaches_recovery_assembly_before_supervisor_takeover() {
     // Recovery resolves the tree's prompt under this real application lock.
     // Keep assembly waiting while HTTP cancellation remains able to use DB.
     let lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
-    app.state
-        .runs
+    app.resources
         .prompt_env_locks
         .insert(conv.clone(), lock.clone());
     let guard = lock.lock().await;
@@ -469,7 +468,6 @@ async fn child_cancel_reaches_recovery_assembly_before_supervisor_takeover() {
     .unwrap();
     let active = app
         .state
-        .runs
         .subagents
         .child_by_agent(&child.conversation_id)
         .unwrap();
@@ -497,7 +495,7 @@ async fn child_cancel_reaches_recovery_assembly_before_supervisor_takeover() {
     let settled = runs::get_run(&app.pool, &child.id).await.unwrap().unwrap();
     assert_eq!(settled.status, "cancelled");
     assert_eq!(settled.execution_epoch, 2);
-    assert!(!app.state.runs.subagents.is_active(&child.conversation_id));
+    assert!(!app.state.subagents.is_active(&child.conversation_id));
     assert!(!app.state.sessions.contains_key(&child.conversation_id));
     assert!(llm.requests().is_empty());
 }
@@ -522,7 +520,7 @@ async fn assembly_read_failure_settles_child_and_releases_its_startup_handle() {
     assert_eq!(settled.status, "failed");
     assert_eq!(settled.execution_epoch, 2);
     assert!(settled.error.unwrap().contains("attachment_assets"));
-    assert!(!app.state.runs.subagents.is_active(&child.conversation_id));
+    assert!(!app.state.subagents.is_active(&child.conversation_id));
     assert!(!app.state.sessions.contains_key(&child.conversation_id));
     assert!(llm.requests().is_empty());
 }

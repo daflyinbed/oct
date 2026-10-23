@@ -14,11 +14,8 @@ use crate::{
     error::{AppError, AppResult},
 };
 
-// Compatibility exports for callers using the former history transport types.
-// These request/cut values also preserve the durable receipt serde format.
-pub use crate::history::{
-    ForkRequest, HistoryCut as ForkCut, HistorySide as ForkSide, RevertRequest,
-};
+// Neutral request/cut values preserve the durable receipt serde format.
+use crate::history::{ForkRequest, HistoryCut, RevertRequest};
 use crate::history::{
     HistoryContent, HistoryEntry, HistoryMembership, HistoryPlan, HistorySnapshot, policy,
 };
@@ -27,7 +24,7 @@ use crate::history::{
 pub struct ForkResponse {
     pub conversation: Conversation,
     pub context_revision: i64,
-    pub cut: ForkCut,
+    pub cut: HistoryCut,
     pub draft: Option<String>,
     /// Sent source attachments to copy into the destination's staging queue.
     #[serde(default)]
@@ -40,7 +37,7 @@ pub struct RevertResponse {
     pub context_revision: i64,
     pub backup_conversation_id: String,
     pub backup: Conversation,
-    pub cut: ForkCut,
+    pub cut: HistoryCut,
     pub draft: Option<String>,
     #[serde(default)]
     pub draft_attachments: Vec<AttachmentDto>,
@@ -372,7 +369,7 @@ async fn load_snapshot(
     tx: &mut SqliteConnection,
     rows: &[StoredMessage],
     revision: i64,
-    cut: &ForkCut,
+    cut: &HistoryCut,
 ) -> AppResult<HistorySnapshot> {
     let mut snapshot = HistorySnapshot {
         revision,
@@ -395,6 +392,7 @@ async fn load_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::history::HistorySide;
     use oct_llm_provider::core::{Message, Role, ToolCall, ToolResult};
     use serde_json::json;
 
@@ -492,32 +490,32 @@ mod tests {
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
         let rows = messages::list_messages_in_tx(&mut tx, id).await.unwrap();
         let cases = [
-            (ForkCut::Head, HashSet::new()),
+            (HistoryCut::Head, HashSet::new()),
             (
-                ForkCut::Message {
+                HistoryCut::Message {
                     message_id: answers[0].id.clone(),
-                    side: ForkSide::After,
+                    side: HistorySide::After,
                 },
                 HashSet::from([originals[0].id.as_str()]),
             ),
             (
-                ForkCut::Message {
+                HistoryCut::Message {
                     message_id: prompts[1].id.clone(),
-                    side: ForkSide::Before,
+                    side: HistorySide::Before,
                 },
                 HashSet::new(),
             ),
             (
-                ForkCut::Message {
+                HistoryCut::Message {
                     message_id: answers[1].id.clone(),
-                    side: ForkSide::After,
+                    side: HistorySide::After,
                 },
                 HashSet::from([originals[1].id.as_str()]),
             ),
             (
-                ForkCut::Message {
+                HistoryCut::Message {
                     message_id: prompts[2].id.clone(),
-                    side: ForkSide::Before,
+                    side: HistorySide::Before,
                 },
                 HashSet::from([originals[1].id.as_str()]),
             ),

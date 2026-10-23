@@ -1,6 +1,5 @@
 //! History transport DTOs and translation to application commands.
 use super::{AppState, error::ApiResult};
-use crate::application::history::HistoryApplication;
 use crate::attachment_types::AttachmentDto;
 use crate::db::{conversations::Conversation, messages::StoredMessage};
 use crate::history::{self as domain, HistoryEntry, policy};
@@ -81,9 +80,7 @@ pub async fn revert_conversation(
     Path(id): Path<String>,
     Json(request): Json<RevertRequest>,
 ) -> ApiResult<Json<RevertResponse>> {
-    let response = HistoryApplication::new(state.runs)
-        .revert(&id, request.into())
-        .await?;
+    let response = state.history.revert(&id, request.into()).await?;
     Ok(Json(response.into()))
 }
 
@@ -105,9 +102,7 @@ pub async fn fork_conversation(
     Path(id): Path<String>,
     Json(request): Json<ForkRequest>,
 ) -> ApiResult<(StatusCode, Json<ForkResponse>)> {
-    let response = HistoryApplication::new(state.runs)
-        .fork(&id, request.into())
-        .await?;
+    let response = state.history.fork(&id, request.into()).await?;
     Ok((StatusCode::CREATED, Json(response.into())))
 }
 

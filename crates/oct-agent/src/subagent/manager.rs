@@ -6,10 +6,10 @@
 //! SSE EOF guarantee). The manager has no application service callback;
 //! active child hubs are weak while occupancy owns the strong handle.
 
-pub use super::envelope::{TaskEnvelope, build_task_envelope};
-use crate::agent::{AgentEvent, EventHub, RunOutcome};
+use crate::agent::RunOutcome;
 use crate::db::runs as run_db;
-pub use crate::tool_contract::ports::TaskError;
+use crate::events::AgentEvent;
+use crate::events::EventHub;
 use anyhow::Result;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
@@ -70,7 +70,7 @@ impl Default for SubagentManager {
 }
 
 impl SubagentManager {
-    /// Record a starting child (called by [`crate::runtime::RunService::start_child_run`]
+    /// Record a starting child (called by the application child launcher
     /// before assembly awaits, then retained by the loop supervisor).
     pub fn register_child(&self, child: ChildRun) {
         self.registry.register(child);

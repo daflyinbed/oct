@@ -2,8 +2,10 @@
 mod support;
 
 use async_trait::async_trait;
-use oct_agent::agent::AgentEvent;
-use oct_agent::tools::{AgentTool, ToolContext, ToolOutput};
+use oct_agent::events::AgentEvent;
+use oct_agent::tool_contract::AgentTool;
+use oct_agent::tool_contract::ToolContext;
+use oct_agent::tool_contract::ToolOutput;
 use oct_llm_provider::core::{ContentPart, FinishReason};
 use serde_json::{Value, json};
 use std::sync::Arc;

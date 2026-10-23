@@ -4,9 +4,9 @@ use oct_llm_provider::core::{Message, Role};
 use tokio_util::sync::CancellationToken;
 
 use crate::application::notifications::build_notification_content;
+use crate::application::{execution::RootRunRequest, services::ApplicationServices};
 use crate::db::background as task_db;
 use crate::error::{AppError, AppResult};
-use crate::runtime::{RootRunRequest, RunService};
 
 use super::{launch_root, preparation};
 
@@ -18,7 +18,7 @@ const DELIVERY_IDLE_RETRY: Duration = Duration::from_secs(1);
 /// occupancy first (retrying while busy) so the message insert and the
 /// run start are serialized against send/resume/compact exactly like a
 /// user turn.
-pub(super) async fn wake(service: &RunService, conversation_id: &str) -> AppResult<()> {
+pub(super) async fn wake(service: &ApplicationServices, conversation_id: &str) -> AppResult<()> {
     // The conversation must still exist (deletion cascades the task
     // rows away — a stale pending list simply yields nothing below).
     let conversation = crate::db::conversations::get_conversation(&service.pool, conversation_id)
@@ -35,7 +35,10 @@ pub(super) async fn wake(service: &RunService, conversation_id: &str) -> AppResu
     // the whole insert + run start.
     let cancel = CancellationToken::new();
     let guard = loop {
-        match service.occupy_with(conversation_id, cancel.clone()) {
+        match service
+            .occupancy()
+            .occupy_with(conversation_id, cancel.clone())
+        {
             Ok(guard) => break guard,
             Err(crate::error::AppError::SessionBusy(_)) => {
                 tokio::time::sleep(DELIVERY_IDLE_RETRY).await;
@@ -53,7 +56,10 @@ pub(super) async fn wake(service: &RunService, conversation_id: &str) -> AppResu
         return Ok(());
     }
     preparation::ensure_no_pending_recovery(&service.pool, conversation_id).await?;
-    service.repair_dangling_tools(conversation_id, &[]).await?;
+    service
+        .assembly_services()
+        .repair_dangling_tools(conversation_id, &[])
+        .await?;
     let start_message_id = if pending.is_empty() {
         previous.expect("checked above")
     } else {
@@ -85,7 +91,12 @@ pub(super) async fn wake(service: &RunService, conversation_id: &str) -> AppResu
         )));
     };
     let spec = format!("{provider_id}:{model_id}");
-    let (model, provider_id, model_id) = match service.resolve_model(&spec).await {
+    let (model, provider_id, model_id) = match service
+        .assembly_services()
+        .models
+        .resolve_model(&spec)
+        .await
+    {
         Ok(resolved) => resolved,
         Err(e) => {
             tracing::warn!(
@@ -96,6 +107,8 @@ pub(super) async fn wake(service: &RunService, conversation_id: &str) -> AppResu
         }
     };
     let context_window = service
+        .assembly_services()
+        .models
         .resolve_context_window(model.as_ref(), &provider_id, &model_id)
         .await;
 

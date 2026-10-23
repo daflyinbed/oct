@@ -1,18 +1,18 @@
 //! Admission and occupancy for history commands, shared independently of HTTP.
 use std::sync::Arc;
 
+use crate::application::services::ApplicationServices;
 use crate::db::{conversations, history};
 use crate::error::{AppError, AppResult};
 use crate::history::{ForkRequest, RevertRequest};
-use crate::runtime::RunService;
 
 #[derive(Clone)]
 pub struct HistoryApplication {
-    runs: Arc<RunService>,
+    runs: Arc<ApplicationServices>,
 }
 
 impl HistoryApplication {
-    pub fn new(runs: Arc<RunService>) -> Self {
+    pub fn new(runs: Arc<ApplicationServices>) -> Self {
         Self { runs }
     }
 
@@ -46,7 +46,7 @@ impl HistoryApplication {
         if let Some(response) = history::replay(&runs.pool, source_id, &request).await? {
             return Ok(response);
         }
-        let _occupancy = runs.occupy(source_id)?;
+        let _occupancy = runs.occupancy().occupy(source_id)?;
         super::conversation::preparation::ensure_no_pending_recovery(&runs.pool, source_id).await?;
         if !runs
             .subagents
@@ -83,7 +83,7 @@ impl HistoryApplication {
         if let Some(response) = history::replay_revert(&runs.pool, source_id, &request).await? {
             return Ok(response);
         }
-        let _occupancy = runs.occupy(source_id)?;
+        let _occupancy = runs.occupancy().occupy(source_id)?;
         super::conversation::preparation::ensure_no_pending_recovery(&runs.pool, source_id).await?;
         if !runs
             .subagents

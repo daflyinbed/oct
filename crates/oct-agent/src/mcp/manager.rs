@@ -17,13 +17,13 @@
 //! ([`McpManager::tools_for_run`] filters by the entry's scope).
 //!
 //! Reconcile concurrency: the decision phase runs under a short
-//! [`decide_lock`](McpManager::decide_lock) with no network awaits, and
+//! `decide_lock` with no network awaits, and
 //! every connect/disconnect takes only ITS server's gate — one project's
 //! slow server never queues another project's reconcile. Concurrent
 //! reconciles that decide the same server needs connecting converge on the
 //! gate: the first runs the handshake, the others re-check afterwards and
 //! find nothing left to do. OAuth invalidation bumps the server's
-//! [`epoch`](McpManager::epochs) instead of waiting out an in-flight
+//! `epoch` instead of waiting out an in-flight
 //! handshake; a connect commits only while its captured epoch still
 //! matches, so a stale-credential result can never re-enter the map.
 
@@ -45,7 +45,7 @@ use oct_mcp::{
 
 use crate::db;
 use crate::db::mcp::McpServer;
-use crate::tools::AgentTool;
+use crate::tool_contract::AgentTool;
 
 use super::catalog::spawn_tool_list_refresh_task;
 use super::connect::{ServerCatalog, connect_server};
@@ -444,7 +444,7 @@ impl McpManager {
     /// Does NOT wait out an in-flight handshake (the API call must not hang
     /// behind a 15s connect): instead it bumps the server's invalidation
     /// epoch, and the in-flight connect drops its result when the epochs no
-    /// longer match (see [`Self::connect_one`]). A connect that starts
+    /// longer match (see `Self::connect_one`). A connect that starts
     /// AFTER the bump is unaffected — it reads the fresh credential anyway.
     pub async fn invalidate(&self, server_id: &str) {
         let connections = {
@@ -956,8 +956,10 @@ mod tests {
     use crate::mcp::tool::NO_CONTENT;
     use crate::mcp::tool::NO_DESCRIPTION;
     use crate::mcp::tool::tool_description;
+    use crate::tool_contract::ToolContext;
+    use crate::tool_contract::ToolImage;
+    use crate::tool_contract::ToolOutput;
     use crate::tools::truncate::MAX_TOOL_OUTPUT_BYTES;
-    use crate::tools::{ToolContext, ToolImage, ToolOutput};
 
     /// Minimal scripted connection for unit tests (the richer
     /// tests/support version is not visible from inside the crate).
@@ -1211,7 +1213,7 @@ mod tests {
     async fn run(tool: &McpTool) -> ToolOutput {
         let ctx = ToolContext::new(
             "call-1",
-            Arc::new(crate::agent::EventHub::new()),
+            Arc::new(crate::events::EventHub::new()),
             CancellationToken::new(),
         );
         tool.execute(json!({"a": 1}), &ctx).await.unwrap()
@@ -1222,7 +1224,7 @@ mod tests {
     async fn run_cancelled(tool: &McpTool) -> ToolOutput {
         let token = CancellationToken::new();
         token.cancel();
-        let ctx = ToolContext::new("call-1", Arc::new(crate::agent::EventHub::new()), token);
+        let ctx = ToolContext::new("call-1", Arc::new(crate::events::EventHub::new()), token);
         tool.execute(json!({"a": 1}), &ctx).await.unwrap()
     }
 

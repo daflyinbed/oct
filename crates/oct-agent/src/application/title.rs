@@ -4,8 +4,10 @@ use std::sync::Weak;
 use std::time::Duration;
 use tracing::debug;
 
-use crate::agent::{AgentEvent, EventHub, title};
+use crate::agent::title;
 use crate::db::conversations as conv_db;
+use crate::events::AgentEvent;
+use crate::events::EventHub;
 use crate::runtime::ModelResolver;
 
 /// Hard timeout for the model call, including configuration preparation;

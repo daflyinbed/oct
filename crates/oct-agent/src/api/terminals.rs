@@ -87,8 +87,8 @@ pub async fn create_terminal(
 ) -> ApiResult<(StatusCode, Json<TerminalInfo>)> {
     check_origin(&headers)?;
     validate_size(request.cols, request.rows).map_err(|e| AppError::BadRequest(e.to_string()))?;
-    let admission = state.runs.lifecycle.admission.clone().read_owned().await;
-    state.runs.lifecycle.check("project", &project_id)?;
+    let admission = state.admission.admission.clone().read_owned().await;
+    state.admission.check("project", &project_id)?;
     let project = crate::db::projects::get_project(&state.pool, &project_id)
         .await?
         .ok_or_else(|| AppError::NotFound("Project not found".into()))?;

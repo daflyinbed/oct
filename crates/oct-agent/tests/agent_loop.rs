@@ -11,10 +11,13 @@ use std::time::Instant;
 use async_trait::async_trait;
 use serde_json::json;
 
-use oct_agent::agent::AgentEvent;
 use oct_agent::db;
+use oct_agent::events::AgentEvent;
 use oct_agent::mcp::{McpManager, McpTool};
-use oct_agent::tools::{self, AgentTool, ToolContext, ToolOutput};
+use oct_agent::tool_contract::AgentTool;
+use oct_agent::tool_contract::ToolContext;
+use oct_agent::tool_contract::ToolOutput;
+use oct_agent::tools;
 use oct_llm_provider::core::{
     ContentPart, FinishReason, ModelError, Role, ToolCall, ToolResult, ToolResultImage,
 };
@@ -997,7 +1000,7 @@ async fn tool_event_overflow_stops_before_compaction_or_another_model_request() 
     ]);
     let observer = model.observer();
     let handle = RunHandle {
-        hub: Arc::new(oct_agent::agent::EventHub::new()),
+        hub: Arc::new(oct_agent::events::EventHub::new()),
         cancel: tokio_util::sync::CancellationToken::new(),
     };
     let ctx = AgentContext {
@@ -1547,7 +1550,7 @@ async fn auto_compaction_replaces_history_persists_marker_and_streams_events() {
     else {
         unreachable!()
     };
-    assert_eq!(*triggered_by, oct_agent::agent::CompactionTrigger::Auto);
+    assert_eq!(*triggered_by, oct_agent::events::CompactionTrigger::Auto);
     assert_eq!(*context_window_tokens, Some(500));
     assert_eq!(
         *compacted_messages, 8,
@@ -1881,7 +1884,7 @@ async fn load_llm_view_starts_at_last_marker_drops_orphans_and_anchors() {
 
     // The marker row.
     let marker = compact::build_marker_message("the summary");
-    let details = compact::marker_details(oct_agent::agent::CompactionTrigger::Auto, 2, 100, 20);
+    let details = compact::marker_details(oct_agent::events::CompactionTrigger::Auto, 2, 100, 20);
     msg_db::insert_message(&env.pool, &conv_id, &marker, None, None, Some(&details))
         .await
         .unwrap();
@@ -2763,7 +2766,7 @@ async fn microcompact_waterline_clears_old_results_and_keeps_recent() {
     };
     assert_eq!(
         *triggered_by,
-        oct_agent::agent::MicrocompactTrigger::Waterline
+        oct_agent::events::MicrocompactTrigger::Waterline
     );
     // 8 results − trailing round (none, ends on user) − 5 protected = 3.
     assert_eq!(replacements.len(), 3);
@@ -2911,7 +2914,7 @@ async fn waterline_micro_still_fires_after_summary_failure() {
         };
         assert_eq!(
             *triggered_by,
-            oct_agent::agent::MicrocompactTrigger::Waterline
+            oct_agent::events::MicrocompactTrigger::Waterline
         );
     }
     // The turn-3 clear includes results that only exist because the run kept
@@ -2963,7 +2966,7 @@ async fn microcompact_idle_entry_fires_without_a_window() {
     else {
         unreachable!()
     };
-    assert_eq!(*triggered_by, oct_agent::agent::MicrocompactTrigger::Idle);
+    assert_eq!(*triggered_by, oct_agent::events::MicrocompactTrigger::Idle);
     assert_eq!(replacements.len(), 3);
 
     let serialized = serde_json::to_string(&observer.requests()[0].messages).unwrap();
@@ -3455,7 +3458,7 @@ async fn split_migration_down_restores_cow_and_folds_losslessly() {
 
 use futures_util::StreamExt as _;
 use oct_agent::agent::RunHandle;
-use oct_agent::agent::events::SubscribeStream;
+use oct_agent::events::SubscribeStream;
 use oct_agent::permissions::evaluator::PermissionMode;
 use oct_agent::permissions::gate::{PermissionGate, publish_cancelled_approvals};
 use oct_agent::permissions::registry::{ApprovalDecision, ApprovalRegistry};
@@ -3773,7 +3776,7 @@ async fn permission_pending_cancel_resolves_cancelled() {
             matches!(
                 e,
                 AgentEvent::ApprovalResolved {
-                    outcome: oct_agent::agent::ApprovalOutcome::Cancelled,
+                    outcome: oct_agent::events::ApprovalOutcome::Cancelled,
                     ..
                 }
             )
@@ -4019,28 +4022,34 @@ async fn permission_worker_ask_waits_for_user_decision() {
 
 // --- Repository instructions & the frozen prompt environment -----------------
 //
-// These tests drive the RunService's own assembly (`run_root_with_guard`),
+// These tests drive the application launcher and assembly (`launch_root`),
 // the production path the HTTP layer uses, so the system prompt asserted on
 // is exactly what a real run would send: base prompt + code-mode section +
 // the frozen `<repo-instructions>` block.
 
 // `compact`, `msg_db` and `Message` are already imported by the compaction
 // section above; everything else this section needs is pulled here.
-use oct_agent::agent::MicrocompactTrigger;
 use oct_agent::agent::repo_instructions::PromptEnvRefresh;
+use oct_agent::application::execution::RootRunRequest;
+use oct_agent::application::services::ApplicationServices;
 use oct_agent::context::ContextEntry;
-use oct_agent::runtime::{RootRunRequest, RunService};
+use oct_agent::events::MicrocompactTrigger;
 
 use support::ScriptedObserver;
 
-/// A RunService wired like the test HTTP harness: same two-phase manager
+/// A ApplicationServices wired like the test HTTP harness: independent manager
 /// capabilities, direct tool mode pinned (the app-level code-mode default would
 /// otherwise depend on a helper binary next to the test binary).
-async fn spawn_run_service(env: &TestEnv) -> Arc<RunService> {
+async fn spawn_run_service(
+    env: &TestEnv,
+) -> (
+    Arc<ApplicationServices>,
+    oct_agent::application::services::ServiceResources,
+) {
     oct_agent::db::settings::set(
         &env.pool,
         oct_agent::codemode::SETTING,
-        oct_agent::codemode::McpToolMode::Direct.as_str(),
+        oct_agent::tool_contract::McpToolMode::Direct.as_str(),
     )
     .await
     .expect("pin direct tool mode");
@@ -4049,7 +4058,7 @@ async fn spawn_run_service(env: &TestEnv) -> Arc<RunService> {
         env.pool.clone(),
         env.dir.path().join("exec"),
     ));
-    Arc::new(RunService {
+    let resources = oct_agent::application::services::ServiceResources {
         lifecycle: Default::default(),
         pool: env.pool.clone(),
         registry: Arc::new(oct_llm_provider::providers::default_registry()),
@@ -4066,19 +4075,26 @@ async fn spawn_run_service(env: &TestEnv) -> Arc<RunService> {
         gates: Arc::new(dashmap::DashMap::new()),
         prompt_envs: Arc::new(dashmap::DashMap::new()),
         prompt_env_locks: Arc::new(dashmap::DashMap::new()),
-    })
+    };
+    (
+        Arc::new(ApplicationServices::new(resources.clone())),
+        resources,
+    )
 }
 
 /// Run ONE root turn over the production assembly path: insert the user
 /// message, load the view, occupy, subscribe, and hand everything to
-/// `run_root_with_guard`. Draining the subscription to EOF waits for the
+/// `launch_root`. Draining the subscription to EOF waits for the
 /// supervisor's settlement (the hub drops with the occupancy guard), so the
 /// conversation is free for the next turn when this returns. `window` is the
 /// run's context window — callers keep it large enough that the turn-top
 /// waterline triggers stay silent unless a test wants them.
 async fn run_root_turn(
     env: &TestEnv,
-    runs: &Arc<RunService>,
+    runs: &(
+        Arc<ApplicationServices>,
+        oct_agent::application::services::ServiceResources,
+    ),
     conv_id: &str,
     model: ScriptedModel,
     window: u32,
@@ -4106,12 +4122,17 @@ async fn run_root_turn(
         .await
         .expect("load view");
 
-    let guard = runs.occupy(conv_id).expect("conversation is free");
+    let guard = runs
+        .0
+        .occupancy()
+        .occupy(conv_id)
+        .expect("conversation is free");
     // Subscribe through a short-lived hub borrow: holding the hub Arc (or a
     // whole RunHandle clone) for the drain below would keep the hub alive
     // past the supervisor's settlement and the stream would never EOF.
     let mut stream = {
         let hub = runs
+            .1
             .sessions
             .get(conv_id)
             .expect("occupancy guarantees the entry")
@@ -4120,19 +4141,22 @@ async fn run_root_turn(
             .clone();
         hub.subscribe()
     };
-    runs.run_root_with_guard(RootRunRequest {
-        guard,
-        conversation_id: conv_id.to_string(),
-        project,
-        model: Box::new(model),
-        provider_id: "test".to_string(),
-        model_id: "scripted".to_string(),
-        view,
-        context_window: Some(window),
-        idle: None,
-        reasoning: None,
-        attach_task_tool: false,
-    })
+    oct_agent::application::execution::launch_root(
+        &runs.0,
+        RootRunRequest {
+            guard,
+            conversation_id: conv_id.to_string(),
+            project,
+            model: Box::new(model),
+            provider_id: "test".to_string(),
+            model_id: "scripted".to_string(),
+            view,
+            context_window: Some(window),
+            idle: None,
+            reasoning: None,
+            attach_task_tool: false,
+        },
+    )
     .await
     .expect("root run starts");
 
@@ -4315,10 +4339,10 @@ async fn manual_compaction_refreshes_the_frozen_block_on_the_next_run() {
             system_prompt: None,
             tool_specs: &[],
             window: Some(1024),
-            trigger: oct_agent::agent::CompactionTrigger::Manual,
+            trigger: oct_agent::events::CompactionTrigger::Manual,
             hub: None,
             cancel: None,
-            prompt_env_refresh: Some(runs.prompt_env_refresh(&conv_id)),
+            prompt_env_refresh: Some(PromptEnvRefresh::new(runs.1.prompt_envs.clone(), &conv_id)),
         },
     )
     .await
@@ -4410,8 +4434,8 @@ async fn microcompaction_refreshes_the_frozen_block_on_the_next_run() {
         .await
         .expect("load view");
     let mut context = oct_agent::context::ContextState::new("sys".into(), view);
-    let hub = oct_agent::agent::EventHub::new();
-    let refresh: PromptEnvRefresh = runs.prompt_env_refresh(&conv_id);
+    let hub = oct_agent::events::EventHub::new();
+    let refresh: PromptEnvRefresh = PromptEnvRefresh::new(runs.1.prompt_envs.clone(), &conv_id);
     let attempt = oct_agent::agent::micro::run_microcompaction(
         &env.pool,
         &conv_id,

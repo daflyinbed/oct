@@ -22,7 +22,7 @@ use dashmap::DashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::ToolOutput;
+use crate::tool_contract::ToolOutput;
 
 /// The workspace roots shared by all tools of one agent run.
 #[derive(Debug, Clone)]

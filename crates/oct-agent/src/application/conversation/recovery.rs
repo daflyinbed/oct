@@ -32,18 +32,26 @@ use tokio_util::sync::CancellationToken;
 use oct_llm_provider::core::ContentPart;
 use oct_llm_provider::model::ChatModel;
 
-use crate::agent::{AgentEvent, EventHub, SubagentRunStatus};
+use crate::application::{
+    assembly::workspace_roots,
+    execution::{RootRunRequest, launch_child},
+    services::ApplicationServices,
+};
 use crate::db::projects::Project;
 use crate::db::runs::AgentRun;
 use crate::db::{messages as msg_db, runs as run_db};
-use crate::runtime::{OccupancyGuard, RootRunRequest, RunService, workspace_roots};
+use crate::events::AgentEvent;
+use crate::events::EventHub;
+use crate::events::SubagentRunStatus;
+use crate::runtime::OccupancyGuard;
 
-use crate::subagent::manager::{build_task_envelope, is_terminal_status};
+use crate::subagent::build_task_envelope;
+use crate::subagent::manager::is_terminal_status;
 
 /// Everything the orchestrator needs; built by the resume command after its
 /// read-only probes and model resolution.
 pub struct RecoveryJob {
-    pub runs: Arc<RunService>,
+    pub runs: Arc<ApplicationServices>,
     /// The parent conversation's hub — already streaming to the returned SSE
     /// response; errors and child transitions publish here.
     pub hub: Arc<EventHub>,
@@ -117,6 +125,7 @@ async fn orchestrate_inner(job: RecoveryJob) -> Result<()> {
         .filter_map(|r| r.parent_tool_call_id.clone())
         .collect();
     job.runs
+        .assembly_services()
         .repair_dangling_tools(&job.conversation_id, &managed_call_ids)
         .await
         .context("repairing unmanaged dangling tool calls")?;
@@ -230,6 +239,8 @@ async fn recover_one(job: &RecoveryJob, run: AgentRun) -> Result<()> {
         let spec = format!("{provider_id}:{model_id}");
         let (model, provider_id, model_id) = job
             .runs
+            .assembly_services()
+            .models
             .resolve_model(&spec)
             .await
             .map_err(|e| anyhow!("resolving the child model {spec} (run {}): {e}", run.id))?;
@@ -254,6 +265,7 @@ async fn recover_one(job: &RecoveryJob, run: AgentRun) -> Result<()> {
     let cancel = job.cancel.child_token();
     let guard = job
         .runs
+        .occupancy()
         .occupy_with(&run.conversation_id, cancel.clone())
         .map_err(|e| anyhow!("child conversation is busy: {e}"))?;
 
@@ -292,12 +304,13 @@ async fn recover_one(job: &RecoveryJob, run: AgentRun) -> Result<()> {
 
     let (model, provider_id, model_id, agent_config, start_message_id) =
         prepared.expect("an unfinished child was prepared above");
-    // From the claim until start_child_run hands ownership to its
+    // From the claim until the child launcher hands ownership to its
     // supervisor, every returned error must settle this epoch. This also
     // covers failures during repair/view loading, before the service's own
     // assembly-error settlement is reached.
     let started = async {
         job.runs
+            .assembly_services()
             .repair_dangling_tools(&run.conversation_id, &[])
             .await
             .context("repairing the child conversation's dangling tool calls")?;
@@ -305,9 +318,10 @@ async fn recover_one(job: &RecoveryJob, run: AgentRun) -> Result<()> {
             .await
             .context("loading the child view")?;
         let (roots, _additional) = workspace_roots(&job.project);
-        let locks = job.runs.file_locks_for(&job.project.id);
-        job.runs
-            .start_child_run(crate::subagent::ChildRunRequest {
+        let locks = job.runs.assembly_services().file_locks_for(&job.project.id);
+        launch_child(
+            &job.runs,
+            crate::application::execution::ChildRunRequest {
                 guard,
                 run_id: run.id.clone(),
                 epoch,
@@ -330,9 +344,10 @@ async fn recover_one(job: &RecoveryJob, run: AgentRun) -> Result<()> {
                 // live instances; no crashed parent's toolset remains.
                 inheritance: None,
                 parent_env: None,
-            })
-            .await
-            .map_err(|e| anyhow!("starting the recovered child run: {e}"))
+            },
+        )
+        .await
+        .map_err(|e| anyhow!("starting the recovered child run: {e}"))
     }
     .await;
     let handle = match started {

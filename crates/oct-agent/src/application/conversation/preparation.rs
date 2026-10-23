@@ -1,8 +1,8 @@
 //! History invariants shared by user and background entry points.
 use crate::{
+    application::services::ApplicationServices,
     db::{messages as msg_db, runs as run_db},
     error::AppError,
-    runtime::RunService,
 };
 
 pub async fn ensure_no_pending_recovery(pool: &sqlx::SqlitePool, id: &str) -> Result<(), AppError> {
@@ -27,9 +27,11 @@ pub async fn ensure_no_pending_recovery(pool: &sqlx::SqlitePool, id: &str) -> Re
 /// Close the previous tool batch before appending any synthetic user message.
 /// Resume calls this after managed task backfills; send calls it before its
 /// new user message. The caller owns the conversation's occupancy throughout.
-pub async fn prepare_history(runs: &RunService, id: &str) -> Result<(), AppError> {
+pub async fn prepare_history(runs: &ApplicationServices, id: &str) -> Result<(), AppError> {
     ensure_no_pending_recovery(&runs.pool, id).await?;
-    runs.repair_dangling_tools(id, &[]).await?;
+    runs.assembly_services()
+        .repair_dangling_tools(id, &[])
+        .await?;
     // Notification storage is retried by the durable drainer. Its failure
     // must not block the user's turn, but a successful insert must always
     // follow all results of the interrupted tool batch.

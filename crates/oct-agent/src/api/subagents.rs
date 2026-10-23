@@ -83,7 +83,7 @@ pub async fn list_subagents(
     let tasks = rows
         .into_iter()
         .map(|row| {
-            let running = state.runs.subagents.is_active(&row.conversation_id);
+            let running = state.subagents.is_active(&row.conversation_id);
             SubagentTaskDto {
                 run_id: row.id,
                 agent_id: row.conversation_id,
@@ -182,7 +182,6 @@ pub async fn stream_subagent_events(
     // a hub to subscribe to (a terminal child's info lives in the DB and the
     // panel falls back to the history endpoint).
     let child = state
-        .runs
         .subagents
         .child_by_agent(&agent_id)
         .ok_or_else(|| AppError::NotFound("No active run for this subagent".into()))?;
@@ -218,12 +217,7 @@ pub async fn cancel_subagent(
 
     // The manager distinguishes live/startup owners from unowned DB rows,
     // and serializes persisted cancellation against registration/recovery.
-    if state
-        .runs
-        .delegation_service()
-        .cancel_run(&agent_id)
-        .await?
-    {
+    if state.delegation.cancel_run(&agent_id).await? {
         return Ok(StatusCode::OK);
     }
 

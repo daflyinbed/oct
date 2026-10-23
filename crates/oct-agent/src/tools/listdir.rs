@@ -6,7 +6,9 @@ use serde::Serialize;
 
 use super::truncate::{MAX_TOOL_OUTPUT_BYTES, truncate_middle};
 use super::workspace::WorkspaceRoots;
-use super::{AgentTool, ToolContext, ToolOutput};
+use crate::tool_contract::AgentTool;
+use crate::tool_contract::ToolContext;
+use crate::tool_contract::ToolOutput;
 
 pub struct ListDirTool {
     roots: WorkspaceRoots,

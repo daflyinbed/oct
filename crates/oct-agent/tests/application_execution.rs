@@ -5,10 +5,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use oct_agent::agent::{AgentEvent, EventHub, RunOutcome, RunStatus};
+use oct_agent::agent::RunOutcome;
+use oct_agent::agent::RunStatus;
 use oct_agent::application::conversation::{ConversationApplication, SendCommand};
+use oct_agent::application::execution::RootRunRequest;
 use oct_agent::db::{messages, projects, runs};
-use oct_agent::runtime::RootRunRequest;
+use oct_agent::events::AgentEvent;
+use oct_agent::events::EventHub;
 use oct_agent::subagent::ChildRun;
 use oct_llm_provider::core::{Message, Role};
 use support::llm::{LlmTurn, finish_chunk, spawn_llm_mock, text_chunk};
@@ -39,22 +42,20 @@ async fn dropped_root_startup_waiter(cancel: bool) {
     )
     .await
     .unwrap();
-    let (model, provider_id, model_id) = app
-        .state
-        .runs
-        .resolve_model("mock-llm:test-model")
-        .await
-        .unwrap();
+    let (model, provider_id, model_id) =
+        oct_agent::runtime::ModelResolver::new(app.pool.clone(), app.state.registry.clone())
+            .resolve_model("mock-llm:test-model")
+            .await
+            .unwrap();
     let view = messages::load_llm_view(&app.pool, &conversation)
         .await
         .unwrap();
     let lock = Arc::new(Mutex::new(()));
-    app.state
-        .runs
+    app.resources
         .prompt_env_locks
         .insert(conversation.clone(), lock.clone());
     let lock_guard = lock.lock().await;
-    let guard = app.state.runs.occupy(&conversation).unwrap();
+    let guard = app.services.occupancy().occupy(&conversation).unwrap();
     let mut events = app
         .state
         .sessions
@@ -62,11 +63,12 @@ async fn dropped_root_startup_waiter(cancel: bool) {
         .unwrap()
         .hub
         .subscribe();
-    let service = app.state.runs.clone();
+    let service = app.services.clone();
     let target = conversation.clone();
     let waiter = tokio::spawn(async move {
-        service
-            .start_root_run(RootRunRequest {
+        oct_agent::application::execution::launch_root(
+            &service,
+            RootRunRequest {
                 guard,
                 conversation_id: target,
                 project,
@@ -78,8 +80,9 @@ async fn dropped_root_startup_waiter(cancel: bool) {
                 idle: None,
                 reasoning: None,
                 attach_task_tool: false,
-            })
-            .await
+            },
+        )
+        .await
     });
     // The database is the synchronization point: once registration is visible,
     // assembly is blocked by the held prompt lock. No arbitrary delay is used.
@@ -197,7 +200,7 @@ async fn dropped_send_waiter_during_mcp_preparation_retains_cancellable_ownershi
         .await;
     assert_eq!(response.status(), 201);
 
-    let application = ConversationApplication::new(app.state.runs.clone());
+    let application = ConversationApplication::new(app.services.clone());
     let target = conversation.clone();
     let waiter = tokio::spawn(async move {
         application
@@ -255,7 +258,9 @@ async fn dropped_send_waiter_during_mcp_preparation_retains_cancellable_ownershi
     assert!(!app.state.sessions.contains_key(&conversation));
     assert!(llm.requests().is_empty());
     assert!(
-        oct_agent::application::conversation::preparation::can_resume(&app.pool, &conversation)
+        app.state
+            .conversations
+            .can_resume(&conversation)
             .await
             .unwrap()
     );
@@ -291,7 +296,7 @@ async fn stale_child_completion_cannot_publish_or_remove_the_current_execution()
     let (old_done, old) = watch::channel(false);
     let child_hub = Arc::new(EventHub::new());
     let parent_hub = Arc::new(EventHub::new());
-    app.state.runs.subagents.register_child(ChildRun {
+    app.state.subagents.register_child(ChildRun {
         run_id: row.id.clone(),
         agent_id: conversation.clone(),
         description: "epoch guard".into(),
@@ -309,7 +314,6 @@ async fn stale_child_completion_cannot_publish_or_remove_the_current_execution()
         error: None,
     };
     app.state
-        .runs
         .subagents
         .settle(
             &app.pool,
@@ -327,7 +331,7 @@ async fn stale_child_completion_cannot_publish_or_remove_the_current_execution()
     assert!(!*old.borrow());
     assert!(!*current.borrow());
     assert!(parent_hub.snapshot().is_empty());
-    assert!(app.state.runs.subagents.is_active(&conversation));
+    assert!(app.state.subagents.is_active(&conversation));
     assert_eq!(
         runs::get_run(&app.pool, &row.id)
             .await
@@ -338,7 +342,6 @@ async fn stale_child_completion_cannot_publish_or_remove_the_current_execution()
     );
 
     app.state
-        .runs
         .subagents
         .settle(
             &app.pool,
@@ -354,7 +357,7 @@ async fn stale_child_completion_cannot_publish_or_remove_the_current_execution()
         )
         .await;
     assert!(*current.borrow());
-    assert!(!app.state.runs.subagents.is_active(&conversation));
+    assert!(!app.state.subagents.is_active(&conversation));
     let settled = runs::get_run(&app.pool, &row.id).await.unwrap().unwrap();
     assert_eq!(settled.status, "completed");
     let observed = parent_hub.snapshot();

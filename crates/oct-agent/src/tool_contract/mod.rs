@@ -251,8 +251,8 @@ impl ToolContext {
     }
 
     /// Append live output text and flush lazily: a stream's buffer is sent
-    /// as one `ToolOutputDelta` when it reaches [`SMOOTHER_FLUSH_BYTES`] or
-    /// when [`SMOOTHER_FLUSH_INTERVAL`] has elapsed since its last flush
+    /// as one `ToolOutputDelta` when it reaches `SMOOTHER_FLUSH_BYTES` or
+    /// when `SMOOTHER_FLUSH_INTERVAL` has elapsed since its last flush
     /// (evaluated at emit time). Slow output therefore flushes immediately
     /// while bursty output is coalesced into ~10 events/sec or 8KB chunks.
     pub fn emit_output_delta(&self, stream: OutputStream, text: &str) {

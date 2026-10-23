@@ -40,7 +40,7 @@ async fn install_with_result(
         connection.clone(),
         vec![info],
     );
-    let tools: Vec<Arc<dyn oct_agent::tools::AgentTool>> = app
+    let tools: Vec<Arc<dyn oct_agent::tool_contract::AgentTool>> = app
         .mcp
         .tools_for_run(Some(project))
         .into_iter()
@@ -51,10 +51,10 @@ async fn install_with_result(
 
 #[tokio::test]
 async fn nested_mcp_errors_share_the_direct_structured_content_fallback() {
-    use oct_agent::agent::EventHub;
+    use oct_agent::events::EventHub;
     use oct_agent::permissions::gate::PermissionGate;
+    use oct_agent::tool_contract::ToolContext;
     use oct_agent::tool_host::dispatch;
-    use oct_agent::tools::ToolContext;
     use std::sync::atomic::AtomicUsize;
     use tokio_util::sync::CancellationToken;
 
@@ -168,18 +168,18 @@ async fn unset_mode_defaults_to_code_until_direct_is_persisted() {
     .unwrap();
     assert_eq!(
         oct_agent::codemode::mode(&pool, None).await.unwrap(),
-        oct_agent::codemode::McpToolMode::Code
+        oct_agent::tool_contract::McpToolMode::Code
     );
     oct_agent::db::settings::set(
         &pool,
         oct_agent::codemode::SETTING,
-        oct_agent::codemode::McpToolMode::Direct.as_str(),
+        oct_agent::tool_contract::McpToolMode::Direct.as_str(),
     )
     .await
     .unwrap();
     assert_eq!(
         oct_agent::codemode::mode(&pool, None).await.unwrap(),
-        oct_agent::codemode::McpToolMode::Direct
+        oct_agent::tool_contract::McpToolMode::Direct
     );
     // A project override beats both the global row and the built-in default.
     sqlx::query("INSERT INTO projects (id, name, working_dir) VALUES ('any-project', 'p', '/tmp')")
@@ -189,7 +189,7 @@ async fn unset_mode_defaults_to_code_until_direct_is_persisted() {
     oct_agent::codemode::set_project_mode(
         &pool,
         "any-project",
-        Some(oct_agent::codemode::McpToolMode::Code),
+        Some(oct_agent::tool_contract::McpToolMode::Code),
     )
     .await
     .unwrap();
@@ -197,7 +197,7 @@ async fn unset_mode_defaults_to_code_until_direct_is_persisted() {
         oct_agent::codemode::mode(&pool, Some("any-project"))
             .await
             .unwrap(),
-        oct_agent::codemode::McpToolMode::Code
+        oct_agent::tool_contract::McpToolMode::Code
     );
 }
 
@@ -360,7 +360,7 @@ async fn declarations_bind_original_identity_and_publish_only_types() {
     assert!(render(&json!({"type":"object","properties":{"bad*/\n":{"type":"string","description":"*/ inject\n"}},"additionalProperties":false})).contains("* / inject"));
 }
 
-fn fixture_tools(source: &str) -> Vec<Arc<dyn oct_agent::tools::AgentTool>> {
+fn fixture_tools(source: &str) -> Vec<Arc<dyn oct_agent::tool_contract::AgentTool>> {
     let fixture: Value = serde_json::from_str(source).unwrap();
     let server = fixture["server"].as_str().unwrap();
     let infos: Vec<_> = fixture["tools"]
@@ -387,7 +387,7 @@ fn fixture_tools(source: &str) -> Vec<Arc<dyn oct_agent::tools::AgentTool>> {
                     std::time::Duration::from_secs(1),
                 )
                 .with_server_id(format!("fixture:{server}")),
-            ) as Arc<dyn oct_agent::tools::AgentTool>
+            ) as Arc<dyn oct_agent::tool_contract::AgentTool>
         })
         .collect()
 }
@@ -602,14 +602,14 @@ mod runtime {
 
     #[tokio::test]
     async fn remote_timeout_keeps_the_outcome_unknown_instead_of_claiming_failure() {
-        use oct_agent::tools::ToolContext;
+        use oct_agent::tool_contract::ToolContext;
         let app = TestApp::new().await;
         let project = app.create_project().await;
         let (connection, _) = install(&app, &project, true).await;
         let mut info = fake_tool("search", None);
         info.input_schema =
             json!({"type":"object","properties":{"a":{"type":"number"}},"required":["a"]});
-        let tools: Vec<Arc<dyn oct_agent::tools::AgentTool>> = vec![Arc::new(
+        let tools: Vec<Arc<dyn oct_agent::tool_contract::AgentTool>> = vec![Arc::new(
             oct_agent::mcp::tool::McpTool::new(
                 "mcp__timeout__search".into(),
                 info,
@@ -631,11 +631,11 @@ mod runtime {
         .unwrap();
         let tool = prepared.tool(
             oct_agent::permissions::gate::PermissionGate::permissive(),
-            oct_agent::tool_host::CodeHostEvents::new(Arc::new(oct_agent::agent::EventHub::new())),
+            oct_agent::tool_host::CodeHostEvents::new(Arc::new(oct_agent::events::EventHub::new())),
         );
         let ctx = ToolContext::new(
             "timeout",
-            Arc::new(oct_agent::agent::EventHub::new()),
+            Arc::new(oct_agent::events::EventHub::new()),
             tokio_util::sync::CancellationToken::new(),
         );
         let output = tool.execute(json!({"code":source}), &ctx).await.unwrap();
@@ -921,7 +921,7 @@ mod runtime {
         assert_eq!(snapshot["tool_mode"], "code");
         assert_eq!(
             snapshot["code_catalog_version"],
-            oct_agent::codemode::catalog::VERSION
+            oct_agent::tool_contract::CODE_CATALOG_VERSION
         );
     }
 
@@ -1013,7 +1013,7 @@ mod runtime {
             LlmTurn::Complete(vec![text_chunk("parent done"), finish_chunk("stop")]),
         ])
         .await;
-        let denied = serde_json::to_string(&oct_agent::agent_settings::ToolSelector::Builtin {
+        let denied = serde_json::to_string(&oct_agent::tool_contract::ToolSelector::Builtin {
             name: "write_file".into(),
         })
         .unwrap();
@@ -1347,7 +1347,10 @@ mod runtime {
             oct_agent::agent_settings::WorkerSnapshot::decode(row.agent_config_json.as_deref())
                 .unwrap()
                 .unwrap();
-        assert_eq!(snapshot.tool_mode, oct_agent::codemode::McpToolMode::Code);
+        assert_eq!(
+            snapshot.tool_mode,
+            oct_agent::tool_contract::McpToolMode::Code
+        );
         assert!(snapshot.tools.is_empty());
         assert!(
             !app.dir
@@ -1360,7 +1363,7 @@ mod runtime {
 
     #[tokio::test]
     async fn crashed_worker_keeps_code_snapshot_and_recovers_trace_without_replaying() {
-        use oct_agent::agent_settings::ToolSelector;
+        use oct_agent::tool_contract::ToolSelector;
         let app = TestApp::new().await;
         let project = app.create_project().await;
         let (connection, catalog) = install(&app, &project, true).await;

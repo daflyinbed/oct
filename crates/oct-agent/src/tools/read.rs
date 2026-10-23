@@ -9,7 +9,9 @@ use std::sync::Arc;
 use super::shared::{AgentReadState, file_mtime};
 use super::truncate::{BoundedText, MAX_LINE_CHARS, MAX_TOOL_OUTPUT_BYTES, truncate_line};
 use super::workspace::WorkspaceRoots;
-use super::{AgentTool, ToolContext, ToolOutput};
+use crate::tool_contract::AgentTool;
+use crate::tool_contract::ToolContext;
+use crate::tool_contract::ToolOutput;
 
 pub struct ReadFileTool {
     roots: WorkspaceRoots,
@@ -273,7 +275,7 @@ mod tests {
         );
         let ctx = ToolContext::new(
             "read",
-            Arc::new(crate::agent::EventHub::new()),
+            Arc::new(crate::events::EventHub::new()),
             tokio_util::sync::CancellationToken::new(),
         );
         for (start, end, expected) in [(1, 1, "1. valid"), (2, 3, "2. bad�\n3. end�")] {

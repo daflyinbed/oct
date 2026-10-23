@@ -1,5 +1,6 @@
 mod support;
-use oct_agent::{agent::AgentEvent, db};
+use oct_agent::db;
+use oct_agent::events::AgentEvent;
 use oct_llm_provider::core::{FinishReason, StreamEvent, ToolCall};
 use support::llm::{LlmTurn, finish_chunk, spawn_llm_mock, text_chunk, tool_call_chunk};
 use support::{

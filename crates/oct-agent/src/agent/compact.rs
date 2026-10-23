@@ -29,9 +29,11 @@ use tokio_util::sync::CancellationToken;
 use oct_llm_provider::core::{Message, Role, ToolSpec};
 use oct_llm_provider::model::ChatModel;
 
-use super::{AgentEvent, CompactionTrigger, EventHub};
 use crate::context::ContextEntry;
 use crate::db::messages as msg_db;
+use crate::events::AgentEvent;
+use crate::events::CompactionTrigger;
+use crate::events::EventHub;
 
 // Estimation lives in the neutral `context` module (the DB layer's COW anchor
 // deduction needs it too — db → agent::compact was a reverse dependency).
@@ -377,7 +379,7 @@ pub enum CompactAttempt {
 /// Auto trigger wrapper around [`run_compaction`]: same window always, the
 /// run's system prompt and tool specs in the rebuilt estimate, the run's hub
 /// and cancellation token wired through. Loop-owned state lives on the
-/// [`ContextState`] the wrapper mutates (marker splice + anchor reset).
+/// [`ContextState`](crate::context::ContextState) the wrapper mutates (marker splice + anchor reset).
 #[allow(clippy::too_many_arguments)] // Supervisor/spawner entry: each argument is a distinct
 // input of the operation; a param struct would only shuffle names.
 pub async fn run_auto_compaction(

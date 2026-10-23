@@ -3,8 +3,8 @@
 
 use sqlx::SqlitePool;
 
-use crate::agent::AgentEvent;
 use crate::error::AppResult;
+use crate::events::AgentEvent;
 
 pub(crate) struct ReplayBase {
     revision: i64,

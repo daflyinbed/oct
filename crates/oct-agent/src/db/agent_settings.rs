@@ -1,10 +1,13 @@
 //! Transaction-scoped storage and reference facts for agent configuration.
 use sqlx::SqliteConnection;
 
-use crate::agent_settings::{
-    AgentKey, AgentSettings, ModelChoice, ReferenceSnapshot, ToolChoice, ToolSelector,
-};
+use crate::agent_settings::AgentKey;
+use crate::agent_settings::AgentSettings;
+use crate::agent_settings::ModelChoice;
+use crate::agent_settings::ReferenceSnapshot;
+use crate::agent_settings::ToolChoice;
 use crate::error::{AppError, AppResult};
+use crate::tool_contract::ToolSelector;
 
 pub(crate) async fn read_global(
     conn: &mut SqliteConnection,

@@ -2,13 +2,20 @@
 //! repository on one connection; the editor may display stale references.
 use sqlx::{SqliteConnection, SqlitePool};
 
-use crate::agent_settings::{
-    AgentKey, AgentOverride, BUILTIN_TOOLS, LiveCatalog, Patch, ResolvedSettings, SettingsPatch,
-    ToolChoice, ToolOption, ToolSelector, policy,
-};
+use crate::agent_settings::AgentKey;
+use crate::agent_settings::AgentOverride;
+use crate::agent_settings::BUILTIN_TOOLS;
+use crate::agent_settings::LiveCatalog;
+use crate::agent_settings::Patch;
+use crate::agent_settings::ResolvedSettings;
+use crate::agent_settings::SettingsPatch;
+use crate::agent_settings::ToolChoice;
+use crate::agent_settings::ToolOption;
+use crate::agent_settings::policy;
 use crate::db::agent_settings as repository;
 use crate::error::AppResult;
 use crate::mcp::{McpManager, manager::ServerStatus};
+use crate::tool_contract::ToolSelector;
 
 #[derive(Clone)]
 pub struct SettingsApplication {

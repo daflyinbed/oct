@@ -1,6 +1,6 @@
 //! Subagent runtime integration tests (PR2 acceptance).
 //!
-//! Everything rides the full production chain — HTTP API → RunService →
+//! Everything rides the full production chain — HTTP API → ApplicationServices →
 //! agent loop → real tools → SQLite → SSE — with the LLM behind the shared
 //! OpenAI-compatible mock. Per-agent scripting is routed by MARKER: each
 //! task's delegation prompt embeds a unique marker (`TASKA-7f3a`), so the

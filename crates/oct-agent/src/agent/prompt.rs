@@ -11,7 +11,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::tools::AgentTool;
+use crate::tool_contract::AgentTool;
 
 /// Curated one-line summaries of the built-in tools, in `default_tools`
 /// order. Keyed by tool name so a rebuilt toolset (e.g. a worker's file
@@ -240,7 +240,9 @@ pub fn worker_system_prompt(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::{AgentTool, ToolContext, ToolOutput};
+    use crate::tool_contract::AgentTool;
+    use crate::tool_contract::ToolContext;
+    use crate::tool_contract::ToolOutput;
 
     struct NamedTool {
         name: &'static str,

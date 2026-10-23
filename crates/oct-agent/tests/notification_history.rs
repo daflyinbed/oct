@@ -84,10 +84,10 @@ async fn legacy_parallel_batch_repair_is_atomic_idempotent_and_fork_scoped() {
     let fork = history::fork(
         &env.pool,
         &source,
-        &history::ForkRequest {
+        &oct_agent::history::ForkRequest {
             operation_id: "legacy-history-fork".into(),
             expected_revision: original_revision,
-            cut: history::ForkCut::Head,
+            cut: oct_agent::history::HistoryCut::Head,
             title: None,
         },
     )

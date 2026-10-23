@@ -336,7 +336,7 @@ mod tests {
 
     #[tokio::test]
     async fn tool_output_deltas_merge_only_for_same_call_and_stream() {
-        use crate::tools::OutputStream;
+        use crate::tool_contract::OutputStream;
 
         let delta = |call_id: &str, stream: OutputStream, text: &str| AgentEvent::ToolOutputDelta {
             call_id: call_id.to_string(),
@@ -374,7 +374,7 @@ mod tests {
 
     #[tokio::test]
     async fn merged_tool_output_entry_is_capped_from_the_front() {
-        use crate::tools::OutputStream;
+        use crate::tool_contract::OutputStream;
 
         let hub = EventHub::new();
         let head = "a".repeat(30_000);

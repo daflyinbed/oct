@@ -380,7 +380,8 @@ async fn oauth_logout_closes_retired_transports_still_borrowed_by_an_existing_ru
 }
 
 async fn assert_refresh_with_borrowed_transport(logout: bool) {
-    use oct_agent::{agent::EventHub, tools::ToolContext};
+    use oct_agent::events::EventHub;
+    use oct_agent::tool_contract::ToolContext;
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
 
@@ -487,7 +488,8 @@ async fn assert_refresh_with_borrowed_transport(logout: bool) {
 
 #[tokio::test]
 async fn oauth_rejection_retries_refresh_without_replaying_tools() {
-    use oct_agent::{agent::EventHub, tools::ToolContext};
+    use oct_agent::events::EventHub;
+    use oct_agent::tool_contract::ToolContext;
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
 

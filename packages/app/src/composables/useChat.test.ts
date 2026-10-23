@@ -3489,6 +3489,53 @@ describe("流所有权", () => {
     },
   });
 
+  it.each(["B", "A"])(
+    "回退后的迟到刷新不能把旧恢复状态写入新视图 %s",
+    async (currentId) => {
+      const session = createChatSession({ contextUsage: false });
+      const oldHistory = deferred<unknown>();
+      GET.mockReturnValueOnce(oldHistory.promise as never);
+      GET.mockImplementation(async (path, init) => {
+        if (path === "/api/conversations/{id}/run")
+          return { data: { running: false, resumable: true } } as never;
+        const id = (init as { params: { path: { id: string } } }).params.path
+          .id;
+        return {
+          data: [storedMessage("assistant", `${id} current`)],
+          response: new Response(null, {
+            headers: { "X-Context-Revision": "8", "X-Context-Tokens": "123" },
+          }),
+        } as never;
+      });
+      try {
+        expect(session.beginHistoryChange()).toBe(true);
+        const oldRefresh = session.endHistoryChange("A", true);
+        await session.refreshMessages("B");
+        if (currentId === "A") await session.refreshMessages("A");
+        oldHistory.resolve({
+          data: [storedMessage("assistant", "obsolete A")],
+          response: new Response(null, {
+            headers: { "X-Context-Revision": "7", "X-Context-Tokens": "9999" },
+          }),
+        });
+        await oldRefresh;
+        expect(session.messages.value.at(-1)?.parts).toEqual([
+          { kind: "text", text: `${currentId} current` },
+        ]);
+        expect(session.contextRevision.value).toBe(8);
+        expect(session.usage.inputTokens.value).toBe(123);
+        expect(session.resumable.value).toBe(false);
+        expect(
+          GET.mock.calls.some(
+            (call) => call[0] === "/api/conversations/{id}/run",
+          ),
+        ).toBe(false);
+      } finally {
+        session.dispose();
+      }
+    },
+  );
+
   it("切到 B 后历史尚未返回就发送，不沿用 A 的消息", async () => {
     const session = createChatSession({ contextUsage: false });
     GET.mockResolvedValueOnce({

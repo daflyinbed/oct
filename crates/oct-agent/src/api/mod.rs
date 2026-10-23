@@ -29,9 +29,13 @@ use utoipa_axum::router::{OpenApiRouter, UtoipaMethodRouterExt};
 use utoipa_scalar::{Scalar, Servable};
 
 use crate::agent::RunHandle;
+use crate::application::{
+    conversation::ConversationApplication, delegation::DelegationService,
+    history::HistoryApplication, lifecycle::LifecycleApplication,
+    permissions::PermissionsApplication, services::ApplicationServices,
+};
 use crate::mcp::McpManager;
 use crate::oauth::OAuthFlowStore;
-use crate::runtime::RunService;
 use oct_llm_provider::provider::ProviderRegistry;
 
 #[derive(Clone)]
@@ -39,13 +43,19 @@ pub struct AppState {
     pub pool: SqlitePool,
     pub registry: Arc<ProviderRegistry>,
     pub sessions: Arc<DashMap<String, RunHandle>>,
-    /// Application-layer run lifecycle: conversation
-    /// occupancy, agent_runs persistence and loop supervision. Holds clones
-    /// of the `Arc`s above — `sessions` in particular is the SAME instance,
-    /// so the reconnect/status endpoints keep observing the same occupancy.
-    /// Upload/read/send endpoints use this service's attachment component too:
-    /// hydration, read-only roots and sweeps have one shared lifecycle owner.
-    pub runs: Arc<RunService>,
+    /// Commands own execution preparation, deletion and history transactions.
+    /// HTTP receives these use cases and the shared query components below;
+    /// assembly resources and launcher requests stay inside application use cases.
+    pub conversations: ConversationApplication,
+    pub history: HistoryApplication,
+    pub lifecycle: LifecycleApplication,
+    pub permissions: PermissionsApplication,
+    pub delegation: DelegationService,
+    pub admission: crate::runtime::lifecycle::Lifecycle,
+    pub attachments: Arc<crate::attachments::AttachmentService>,
+    pub approvals: Arc<crate::permissions::registry::ApprovalRegistry>,
+    pub subagents: Arc<crate::subagent::SubagentManager>,
+    pub background: Arc<crate::runtime::background::BackgroundTaskManager>,
     /// Process-wide MCP connection manager: reconciled against the enabled
     /// `mcp_servers` rows on every chat turn, and read by the MCP list/get
     /// endpoints for live connection status.
@@ -60,11 +70,39 @@ pub struct AppState {
     pub terminals: Arc<crate::terminal::TerminalManager>,
 }
 
+impl AppState {
+    pub fn new(
+        services: Arc<ApplicationServices>,
+        wire_log: oct_llm_provider::wire::WireLogControl,
+        terminals: Arc<crate::terminal::TerminalManager>,
+    ) -> Self {
+        Self {
+            pool: services.pool.clone(),
+            registry: services.registry.clone(),
+            sessions: services.sessions.clone(),
+            conversations: ConversationApplication::new(services.clone()),
+            history: HistoryApplication::new(services.clone()),
+            lifecycle: LifecycleApplication::new(services.clone()),
+            permissions: PermissionsApplication::new(services.gates.clone()),
+            delegation: services.delegation_service(),
+            admission: services.lifecycle.clone(),
+            attachments: services.attachments.clone(),
+            approvals: services.approvals.clone(),
+            subagents: services.subagents.clone(),
+            background: services.background.clone(),
+            mcp: services.mcp.clone(),
+            oauth_flows: Arc::new(OAuthFlowStore::default()),
+            wire_log,
+            terminals,
+        }
+    }
+}
+
 #[derive(OpenApi)]
 #[openapi(
     info(title = "Oct Agent API", version = "0.1.0"),
     components(schemas(
-        crate::agent::AgentEvent,
+        crate::events::AgentEvent,
         crate::db::conversations::Conversation,
         crate::db::conversations::CreateConversationRequest,
         crate::db::conversations::UpdateConversationRequest,
@@ -95,7 +133,7 @@ pub struct AppState {
         settings::UpdateAppSettings,
         settings::ProjectMcpSettings,
         settings::UpdateProjectMcpSettings,
-        crate::codemode::NestedCall,
+        crate::tool_contract::NestedCall,
         mcp::RenderPromptRequest,
         mcp::RenderPromptResponse,
         mcp::PromptMessageResponse,
@@ -124,11 +162,11 @@ pub struct AppState {
         dto::KnownDetailsKind,
         dto::CompactionMetadata,
         dto::ToolResultImage,
-        crate::agent::CompactionTrigger,
-        crate::agent::MicrocompactTrigger,
-        crate::agent::MicrocompactReplacement,
-        crate::agent::SubagentRunStatus,
-        crate::agent::ApprovalOutcome,
+        crate::events::CompactionTrigger,
+        crate::events::MicrocompactTrigger,
+        crate::events::MicrocompactReplacement,
+        crate::events::SubagentRunStatus,
+        crate::events::ApprovalOutcome,
         files::FileContent,
         files::FileEntry,
         files::FileEntryKind,

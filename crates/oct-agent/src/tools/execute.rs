@@ -9,10 +9,13 @@ use std::time::Instant;
 
 use super::truncate::{MAX_TOOL_OUTPUT_BYTES, truncate_middle};
 use super::workspace::WorkspaceRoots;
-use super::{AgentTool, OutputStream, ToolContext, ToolOutput};
 use crate::process::GroupKillOnDrop;
 #[cfg(all(unix, target_os = "linux"))]
 use crate::process::set_pdeathsig;
+use crate::tool_contract::AgentTool;
+use crate::tool_contract::OutputStream;
+use crate::tool_contract::ToolContext;
+use crate::tool_contract::ToolOutput;
 
 use crate::tool_contract::ports::{BackgroundCommand, BackgroundCommands, BackgroundStarted};
 
@@ -542,7 +545,7 @@ mod tests {
     use serde_json::Value;
     use serde_json::json;
 
-    use crate::agent::events::EventHub;
+    use crate::events::EventHub;
 
     #[tokio::test]
     async fn relative_output_paths_are_absolute_in_envelopes_and_notifications() {
@@ -846,8 +849,8 @@ mod tests {
 
         let mut stdout = String::new();
         let mut stderr = String::new();
-        for event in stream.collect::<Vec<crate::agent::AgentEvent>>().await {
-            if let crate::agent::AgentEvent::ToolOutputDelta { stream, delta, .. } = event {
+        for event in stream.collect::<Vec<crate::events::AgentEvent>>().await {
+            if let crate::events::AgentEvent::ToolOutputDelta { stream, delta, .. } = event {
                 match stream {
                     OutputStream::Stdout => stdout.push_str(&delta),
                     OutputStream::Stderr => stderr.push_str(&delta),
@@ -874,7 +877,7 @@ mod tests {
                 .await
                 .expect("short output must arrive before EOF")
                 .unwrap();
-            assert!(matches!(event, crate::agent::AgentEvent::ToolOutputDelta {
+            assert!(matches!(event, crate::events::AgentEvent::ToolOutputDelta {
                 stream: actual, delta, ..
             } if actual == stream && delta == "ready 中文🍎"));
             assert!(!handle.1.is_finished());

@@ -138,7 +138,7 @@ pub(crate) struct PreparedToolMessage<'a> {
     _publication: RwLockReadGuard<'a, ()>,
     conversation_id: String,
     ids: Vec<String>,
-    pub output: crate::tools::ToolOutput,
+    pub output: crate::tool_contract::ToolOutput,
     pub message: Message,
 }
 impl PreparedToolMessage<'_> {
@@ -414,7 +414,7 @@ impl AttachmentService {
         &self,
         conversation_id: &str,
         call_id: &str,
-        mut output: crate::tools::ToolOutput,
+        mut output: crate::tool_contract::ToolOutput,
     ) -> PreparedToolMessage<'_> {
         let mut ids = Vec::new();
         let mut images = Vec::new();
@@ -447,7 +447,7 @@ impl AttachmentService {
             match prepared {
                 Ok(dto) => {
                     ids.push(dto.id.clone());
-                    images.push(crate::tools::ToolImage {
+                    images.push(crate::tool_contract::ToolImage {
                         mime_type: dto.mime_type,
                         data: attachment_url(&dto.id),
                     });

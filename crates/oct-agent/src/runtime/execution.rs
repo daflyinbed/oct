@@ -7,10 +7,14 @@ use std::sync::Arc;
 use oct_llm_provider::wire;
 use sqlx::SqlitePool;
 
+use crate::agent::AgentContext;
+use crate::agent::RunHandle;
+use crate::agent::RunOutcome;
+use crate::agent::RunStatus;
 use crate::agent::loop_runner::run_agent_loop;
-use crate::agent::{AgentContext, EventHub, RunHandle, RunOutcome, RunStatus};
 use crate::context::LlmView;
 use crate::db::runs as run_db;
+use crate::events::EventHub;
 use crate::permissions::gate::publish_cancelled_approvals;
 use crate::permissions::registry::ApprovalRegistry;
 

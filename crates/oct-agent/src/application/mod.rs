@@ -15,3 +15,7 @@ pub mod tool_ports;
 pub mod history;
 
 pub mod settings;
+
+pub mod lifecycle;
+pub mod permissions;
+pub mod services;

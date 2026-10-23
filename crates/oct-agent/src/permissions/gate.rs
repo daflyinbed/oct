@@ -1,11 +1,11 @@
 //! The permission gate: the single checkpoint every
 //! model-driven tool call passes through, invoked at the agent loop's
 //! dispatch point before `Tool::execute`. One gate instance serves one run;
-//! [`crate::runtime::RunService`] assembles it (root and child alike) from
+//! [`crate::application`] assembles it (root and child alike) from
 //! the persisted rules, the conversation's mode and the workspace roots.
 //!
 //! * **Allow** → [`GateVerdict::Proceed`] and the tool runs untouched.
-//! * **Deny** → an error [`ToolOutput`](crate::tools::ToolOutput) that
+//! * **Deny** → an error [`ToolOutput`] that
 //!   flows the NORMAL result path (event, persistence, model feed-back) —
 //!   the model sees and can react to the refusal; the loop treats it no
 //!   differently from a tool's own error.
@@ -19,12 +19,12 @@ use std::time::Duration;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::EventHub;
+use crate::events::EventHub;
 use crate::permissions::descriptor::describe;
 use crate::permissions::evaluator::{PermissionAction, PermissionMode, decide};
 use crate::permissions::registry::{ApprovalDecision, ApprovalRegistry};
 use crate::permissions::rules::{Rule, RuleSet};
-use crate::tools::ToolOutput;
+use crate::tool_contract::ToolOutput;
 use crate::tools::workspace::WorkspaceRoots;
 
 /// The gate's answer to one tool call. `Denied` carries the error
@@ -97,7 +97,7 @@ pub struct PermissionGate {
 }
 
 impl PermissionGate {
-    /// Assemble a run's gate. Shared through `Arc` so `RunService` can keep
+    /// Assemble a run's gate. Shared through `Arc` so `ApplicationServices` can keep
     /// weak references for live mode updates and `allow_always` injection.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -121,7 +121,7 @@ impl PermissionGate {
     }
 
     /// An all-allowing gate (bypass mode, no rules): for agent runs driven
-    /// outside `RunService` assembly (the test harness) where gating is not
+    /// outside `ApplicationServices` assembly (the test harness) where gating is not
     /// under test. Deny rules would still win, hence the empty rule set.
     pub fn permissive() -> Arc<Self> {
         Self::new(
@@ -345,8 +345,9 @@ pub fn publish_cancelled_approvals(registry: &ApprovalRegistry, run_id: &str, hu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::events::EventHub;
-    use crate::agent::{AgentEvent, ApprovalOutcome};
+    use crate::events::AgentEvent;
+    use crate::events::ApprovalOutcome;
+    use crate::events::EventHub;
     use crate::permissions::evaluator::Decision;
     use crate::permissions::rules::Effect;
     use futures_util::StreamExt;

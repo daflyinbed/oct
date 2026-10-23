@@ -464,11 +464,12 @@ async fn deleting_the_conversation_cancels_tasks_and_cleans_output() {
 /// gate of execute_command.
 #[tokio::test]
 async fn output_files_are_readable_with_generic_tools_and_stop_still_works() {
-    use oct_agent::agent::EventHub;
     use oct_agent::application::tool_ports::RunBackgroundCommands;
+    use oct_agent::events::EventHub;
+    use oct_agent::tool_contract::AgentTool;
+    use oct_agent::tool_contract::ToolContext;
     use oct_agent::tools::execute::ExecuteCommandTool;
     use oct_agent::tools::task_stop::TaskStopTool;
-    use oct_agent::tools::{AgentTool, ToolContext};
     use tokio_util::sync::CancellationToken;
 
     let app = TestApp::new().await;
