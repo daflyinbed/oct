@@ -167,10 +167,10 @@ impl DelegationService {
         // row in ONE transaction (the registration boundary). A concurrent
         // re-entry loses the (parent_run_id, parent_tool_call_id) UNIQUE
         // index race and re-reads the winner's row.
-        let settings =
-            crate::agent_settings::read_for_run(&pool, "worker", Some(&spawn.project.id))
-                .await
-                .map_err(|e| task_err(e.into()))?;
+        let settings = crate::application::settings::SettingsApplication::new(pool.clone())
+            .read_for_run("worker", Some(&spawn.project.id))
+            .await
+            .map_err(|e| task_err(e.into()))?;
         let selected = spawn
             .inheritance
             .select(&settings.effective.tools)

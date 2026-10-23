@@ -91,3 +91,16 @@ impl From<crate::history::HistoryPolicyError> for AppError {
         }
     }
 }
+
+impl From<crate::agent_settings::SettingsPolicyError> for AppError {
+    fn from(error: crate::agent_settings::SettingsPolicyError) -> Self {
+        match error {
+            crate::agent_settings::SettingsPolicyError::UnknownAgent => {
+                Self::NotFound(error.to_string())
+            }
+            crate::agent_settings::SettingsPolicyError::Invalid(message) => {
+                Self::BadRequest(message)
+            }
+        }
+    }
+}

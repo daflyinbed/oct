@@ -11,7 +11,7 @@ use utoipa::ToSchema;
 pub mod ports;
 
 pub mod identity;
-pub use identity::{ToolCallIdentity, ToolSelector};
+pub use identity::{CODE_CATALOG_VERSION, McpToolMode, ToolCallIdentity, ToolSelector};
 
 /// Per-call output capability. The host chooses where progress is delivered.
 pub trait ToolProgressSink: Send + Sync {

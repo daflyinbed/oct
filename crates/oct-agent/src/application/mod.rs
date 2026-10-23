@@ -13,3 +13,5 @@ pub mod notifications;
 pub mod tool_ports;
 
 pub mod history;
+
+pub mod settings;

@@ -47,7 +47,7 @@ pub struct SubagentTaskDto {
     pub running: bool,
     /// The configuration actually sealed for this task; absent on legacy runs.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub agent_config: Option<crate::agent_settings::WorkerSnapshot>,
+    pub agent_config: Option<super::agent_settings::WorkerSnapshot>,
 }
 
 #[utoipa::path(

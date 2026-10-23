@@ -70,8 +70,9 @@ async fn run(job: TitleJob) {
 }
 
 async fn call_model(job: &TitleJob) -> anyhow::Result<String> {
-    let settings =
-        crate::agent_settings::read_for_run(&job.pool, "title", Some(&job.project_id)).await?;
+    let settings = crate::application::settings::SettingsApplication::new(job.pool.clone())
+        .read_for_run("title", Some(&job.project_id))
+        .await?;
     let (provider_id, model_id) = settings
         .effective
         .model

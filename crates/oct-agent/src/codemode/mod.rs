@@ -9,34 +9,15 @@ use crate::tool_host::CodeHostEvents;
 use crate::tools::{AgentTool, OutputStream, ToolContext, ToolImage, ToolOutput};
 use anyhow::{Result, ensure};
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, atomic::AtomicUsize};
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, utoipa::ToSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum McpToolMode {
-    // `#[default]` MUST stay Direct: v1 WorkerSnapshot rows lack `tool_mode`
-    // and decode through serde's default; flipping this to Code would reject
-    // every pre-code-mode snapshot in the compatibility matrix. The runtime
-    // default lives in `mode()` below, not here.
-    #[default]
-    Direct,
-    Code,
-}
+pub use crate::tool_contract::McpToolMode;
 
-pub const SETTING: &str = "mcp_tool_mode";
-
-impl McpToolMode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Direct => "direct",
-            Self::Code => "code",
-        }
-    }
-}
+pub const SETTING: &str = crate::db::settings::KEY_MCP_TOOL_MODE;
 
 pub async fn project_mode(pool: &sqlx::SqlitePool, project: &str) -> Result<Option<McpToolMode>> {
     let key = SETTING;
@@ -66,18 +47,8 @@ pub async fn set_project_mode(
 }
 
 pub async fn mode(pool: &sqlx::SqlitePool, project: Option<&str>) -> Result<McpToolMode> {
-    if let Some(project) = project
-        && let Some(mode) = project_mode(pool, project).await?
-    {
-        return Ok(mode);
-    }
-    Ok(
-        if crate::db::settings::get(pool, SETTING).await?.as_deref() == Some("direct") {
-            McpToolMode::Direct
-        } else {
-            McpToolMode::Code
-        },
-    )
+    let mut conn = pool.acquire().await?;
+    crate::db::settings::mcp_tool_mode(&mut conn, project).await
 }
 
 pub struct Prepared {

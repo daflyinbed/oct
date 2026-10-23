@@ -1,3 +1,4 @@
+pub mod agent_settings;
 pub mod attachments;
 pub mod background;
 pub mod conversations;
