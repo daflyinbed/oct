@@ -4,6 +4,7 @@ pub mod attachments;
 pub mod background;
 pub mod chat;
 pub mod conversations;
+pub mod directories;
 pub mod dto;
 pub mod embed;
 pub mod error;
@@ -234,6 +235,7 @@ fn api_routes(state: AppState) -> OpenApiRouter<AppState> {
         .routes(utoipa_axum::routes!(mcp::mcp_oauth_callback))
         .routes(utoipa_axum::routes!(mcp::delete_mcp_oauth))
         // Projects
+        .routes(utoipa_axum::routes!(directories::list_directories))
         .routes(utoipa_axum::routes!(projects::list_projects))
         .routes(utoipa_axum::routes!(projects::create_project))
         .routes(utoipa_axum::routes!(projects::get_project))
