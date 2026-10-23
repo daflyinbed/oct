@@ -93,3 +93,80 @@ it("tool call card: generating → running with live output → done", async () 
 
   mounted.unmount();
 });
+
+it("file edits keep their path, line counts and diff across folding", async () => {
+  const mounted = await bootConversation([
+    {
+      type: "events",
+      events: [
+        toolCallStart(
+          "edit",
+          "edit_file",
+          "src/example.ts",
+          JSON.stringify({
+            file_path: "src/example.ts",
+            old_string: "before\n",
+            new_string: "after\nextra\n",
+          }),
+        ),
+        toolResult("edit", "Edited successfully", { replacements: 1 }),
+        finishEvent(),
+      ],
+    },
+  ]);
+  try {
+    const header = page.getByRole("button", { name: /编辑/ });
+    await sendChatMessage("edit the file");
+    await expect.element(header).toHaveAttribute("aria-expanded", "false");
+    await expect.element(header).toMatchTextContent(/example\.ts/);
+    await expect.element(header).toMatchTextContent(/src\//);
+    await expect.element(header).toMatchTextContent(/\+2/);
+    await expect.element(header).toMatchTextContent(/−1/);
+    await header.click();
+    await expect.poll(chatText).toContain("before");
+    await expect.poll(chatText).toContain("after");
+    await expect.poll(chatText).toContain("extra");
+    await expect.poll(chatText).toContain("1 处替换");
+    await header.click();
+    await expect.poll(chatText).not.toContain("before");
+    await header.click();
+    await expect.poll(chatText).toContain("before");
+    await expect.poll(chatText).toContain("extra");
+  } finally {
+    mounted.unmount();
+  }
+});
+
+it("unknown tools retain JSON arguments, result metadata and truncation hints", async () => {
+  const mounted = await bootConversation([
+    {
+      type: "events",
+      events: [
+        toolCallStart(
+          "inspect",
+          "mcp__demo__inspect",
+          "Inspect catalog",
+          '{"query":"widgets","limit":3}',
+        ),
+        toolResult("inspect", "truncated result", {
+          truncated: true,
+          original_bytes: 2048,
+          wall_time_ms: 1200,
+        }),
+        finishEvent(),
+      ],
+    },
+  ]);
+  try {
+    await sendChatMessage("inspect the catalog");
+    await page.getByRole("button", { name: /mcp__demo__inspect/ }).click();
+    await expect.poll(chatText).toContain('"query": "widgets"');
+    await expect.poll(chatText).toContain('"limit": 3');
+    await expect.poll(chatText).toContain("truncated result");
+    await expect.poll(chatText).toContain("已截断 · 原始 2.0 KB");
+    await expect.poll(chatText).toContain("1.2s");
+    await expect.poll(chatText).toContain("此内容已返回给模型（含截断）");
+  } finally {
+    mounted.unmount();
+  }
+});

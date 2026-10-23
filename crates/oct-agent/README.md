@@ -25,7 +25,7 @@ oct 的后端服务 crate：Axum REST/SSE API + agent loop 运行时。既是 li
 - `history/` — 无 SQL 的切点、工具批闭合、COW 恢复和草稿策略；`application/history.rs` 管 admission/占用，`db/history.rs` 在同一写事务内读快照、计划和提交；`api/history.rs` 仅负责公开 DTO 与 HTTP 转换
 - `agent_settings/` — 配置继承、PATCH 与快照的中性类型/纯规则；`application/settings.rs` 提供编辑读取、运行读取和事务更新，`db/agent_settings.rs` 读写配置及引用事实，`api/agent_settings.rs` 转换公开 DTO 和 PATCH 三态
 - `api/` — REST + SSE 路由、utoipa OpenAPI（`/scalar` UI、`/api/openapi.json`）、嵌入前端（`embed.rs`）
-- `agent/` — agent loop、上下文压缩（`compact.rs`）、microcompact（`micro.rs`）、repo instructions 与冻结 prompt 环境（`repo_instructions.rs`）
+- `agent/` — `loop_runner.rs` 协调回合，`loop_runner/` 分别管理上下文维护、模型回合收集/保存、工具批次执行/结算；另有上下文压缩（`compact.rs`）、microcompact（`micro.rs`）、repo instructions 与冻结 prompt 环境（`repo_instructions.rs`）
 - `application/assembly/` — 根/worker 装配器与共享权限、资源、冻结 prompt 环境；`application/execution.rs` 持有独立启动任务，`application/title.rs` 独立准备标题任务；code 恢复在 `assembly/code_recovery.rs`
 - `application/services.rs` — 共享资源装配；HTTP state 持会话/历史/删除/权限应用命令和查询组件，运行材料只在应用层流转
 - `application/lifecycle.rs` + `permissions.rs` — 会话/项目删除的执行 drain 与资源回收、活动权限门操作
@@ -39,6 +39,7 @@ oct 的后端服务 crate：Axum REST/SSE API + agent loop 运行时。既是 li
 - `terminal.rs` + `api/terminals.rs` — 项目级交互 shell（WezTerm `portable-pty`）；REST 创建/列出/关闭，WebSocket 收发原始字节与 resize。PTY 独立于浏览器连接，单会话只允许一个输入控制者，断线按字节游标重放最近约 1 MiB 输出。会话只驻留内存，最多 16 个；关闭终端/删除项目会终止 shell 与前台进程，服务重启后需重新创建。
 - `codemode/` — code mode 宿主侧：catalog 生成、SDK 发布、诊断、storage
 - `mcp/` — `McpManager`（连接对账/目录）、OAuth 凭据
+- `application/git.rs` + `git/` — 项目仓库解析、共享仓库锁、Git 查询/操作、进程执行和输出解析；`api/git.rs` 保留公开 DTO 与 HTTP 适配
 - `db/` — sqlx 数据层（compile-time checked 查询）
 - `context.rs` — token 估算与 loop 运行态 `ContextState`
 - `reasoning.rs` — models.dev `reasoning_options` 的解析与用户档位校验

@@ -27,3 +27,5 @@ pub mod tool_host;
 pub(crate) mod process;
 
 pub mod history;
+
+pub(crate) mod git;

@@ -19,3 +19,5 @@ pub mod settings;
 pub mod lifecycle;
 pub mod permissions;
 pub mod services;
+
+pub(crate) mod git;

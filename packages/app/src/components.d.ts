@@ -117,6 +117,8 @@ declare module 'vue' {
     ThreadItem: typeof import('./components/sidebar/ThreadItem.vue')['default']
     TitleBar: typeof import('./components/layout/TitleBar.vue')['default']
     ToolCallCard: typeof import('./components/chat/ToolCallCard.vue')['default']
+    ToolCommandOutput: typeof import('./components/chat/ToolCommandOutput.vue')['default']
+    ToolNestedCalls: typeof import('./components/chat/ToolNestedCalls.vue')['default']
     WorkspaceTabBar: typeof import('./components/layout/WorkspaceTabBar.vue')['default']
   }
 }

@@ -141,51 +141,11 @@
             : 'border-line-soft'
       "
     >
-      <div v-if="nestedCalls.length > 0" class="text-xs space-y-1">
-        <div
-          v-for="call in nestedCalls"
-          :key="call.id"
-          class="flex items-start gap-2 rounded bg-surface px-2.5 py-1.5"
-        >
-          <i-lucide-loader-circle
-            v-if="call.status === 'running' && part.status === 'running'"
-            class="mt-0.5 h-3 w-3 flex-none animate-spin text-accent-7"
-          />
-          <span
-            v-else
-            class="flex-none"
-            :class="
-              call.status === 'completed'
-                ? 'text-success-10'
-                : 'text-warning-10'
-            "
-            >{{
-              call.status === "completed"
-                ? "完成"
-                : call.status === "failed"
-                  ? "失败"
-                  : "结果未知"
-            }}</span
-          >
-          <div class="min-w-0">
-            <div class="break-all text-dim">{{ call.title || call.name }}</div>
-            <div
-              v-if="call.duration_ms != null || call.error_code"
-              class="text-badge text-dim"
-            >
-              <span v-if="call.duration_ms != null"
-                >{{ call.duration_ms }} ms</span
-              >
-              <span v-if="call.error_code" class="ml-2">{{
-                call.error_code
-              }}</span>
-            </div>
-            <div v-if="call.error" class="break-all text-danger-10">
-              {{ call.error }}
-            </div>
-          </div>
-        </div>
-      </div>
+      <ToolNestedCalls
+        v-if="nestedCalls.length > 0"
+        :calls="nestedCalls"
+        :running="part.status === 'running'"
+      />
       <!-- 生成中：参数流式累积， pulsing cursor，不解析半截 JSON -->
       <div
         v-if="part.status === 'generating' && part.arguments"
@@ -197,37 +157,12 @@
       <!-- 运行中/完成后：参数按工具自然展示 -->
       <template v-else>
         <!-- 终端：命令与 stdout/stderr 合并渲染成 shell 样式；运行中实时追加（用户在底部时才自动跟随滚动） -->
-        <div
+        <ToolCommandOutput
           v-if="terminal"
-          ref="liveEl"
-          class="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface px-2.5 py-1.5 text-code text-neutral-10 font-mono"
-          @scroll="onLiveScroll"
-        >
-          <span
-            v-if="terminal.cwd"
-            class="text-accent-10"
-            :title="terminal.cwd"
-            >{{ shortCwd(terminal.cwd) }}</span
-          ><span class="text-faint">$ </span>{{ terminal.command
-          }}<template
-            v-if="
-              part.status === 'running' ||
-              (part.status === 'done' && part.content === null)
-            "
-            ><span
-              v-for="(seg, i) in part.liveOutput.segments"
-              :key="i"
-              :class="
-                seg.stream === 'stderr' ? 'text-warning-10' : 'text-neutral-10'
-              "
-              >{{ `\n${seg.text}` }}</span
-            ></template
-          ><span
-            v-if="part.status === 'done' && part.content && !part.cleared"
-            :class="part.isError ? 'text-danger-10' : ''"
-            >{{ `\n${part.content}` }}</span
-          >
-        </div>
+          v-model:following="followOutput"
+          :part="part"
+          :command="terminal"
+        />
 
         <!-- 文件编辑：复用 Changes 面板的 diff 展示 -->
         <div
@@ -307,7 +242,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, ref } from "vue";
 import IconFilePen from "~icons/lucide/file-pen";
 import IconFilePenLine from "~icons/lucide/file-pen-line";
 import IconFileText from "~icons/lucide/file-text";
@@ -316,12 +251,28 @@ import IconFolderSearch from "~icons/lucide/folder-search";
 import IconTerminal from "~icons/lucide/terminal";
 import IconTextSearch from "~icons/lucide/text-search";
 import IconWrench from "~icons/lucide/wrench";
-import client from "@/api/client";
 import DiffLines from "@/components/diff/DiffLines.vue";
 import BashTaskCard from "./BashTaskCard.vue";
-import { buildDiffRows, splitLines } from "./toolDiff";
-import type { DiffRow } from "./toolDiff";
-import type { ToolCallPart } from "@/composables/useChat";
+import {
+  parseToolArguments,
+  toolArgumentBlocks,
+  toolCommand,
+  toolDiffStat,
+  toolFileEdit,
+  toolFilePath,
+} from "./toolCardArguments";
+import {
+  backgroundTaskId as getBackgroundTaskId,
+  nestedToolCalls,
+  toolDisplayName,
+  toolResultChips,
+} from "./toolCardMetadata";
+import ToolCommandOutput from "./ToolCommandOutput.vue";
+import ToolNestedCalls from "./ToolNestedCalls.vue";
+import { useToolOriginal } from "./useToolOriginal";
+import type { ArgBlockKind } from "./toolCardArguments";
+import type { ChipTone } from "./toolCardMetadata";
+import type { ToolCallPart } from "@/composables/chat/display";
 import type { Component } from "vue";
 
 const props = defineProps<{
@@ -333,68 +284,13 @@ const props = defineProps<{
 // 折叠/展开（默认折叠）
 const open = ref(false);
 
-// --- 后台任务信封识别 --------------------------------------------------------
-// live 路径 details 是 tool_result 事件的原始 JSON（kind 在顶层）；历史
-// 路径 details 是 DTO 透传的 extra（dto 层把未识别 kind 原样放进 extra，
-// useChat 已把它整体赋给 details），两处形状一致。
-const backgroundTaskId = computed<string | null>(() => {
-  if (props.part.name !== "execute_command") return null;
-  const details = props.part.details;
-  if (!details || details.kind !== "background_task") return null;
-  const taskId = details.task_id;
-  return typeof taskId === "string" && taskId ? taskId : null;
-});
-
-// --- 微压缩「查看原文」 ------------------------------------------------------
-
-const originalText = ref<string | null>(null);
-const loadingOriginal = ref(false);
-const originalFailed = ref(false);
-
-/** 经副本 id 回查被 supersedes 的原文（一次加载，失败可重试）。 */
-async function loadOriginal(): Promise<void> {
-  const copyId = props.part.clearedCopyMessageId;
-  if (
-    !copyId ||
-    !props.conversationId ||
-    loadingOriginal.value ||
-    originalText.value !== null
-  ) {
-    return;
-  }
-  loadingOriginal.value = true;
-  originalFailed.value = false;
-  try {
-    const { data, error } = await client.GET(
-      "/api/conversations/{id}/messages/{copy_id}/original",
-      {
-        params: {
-          path: { id: props.conversationId, copy_id: copyId },
-        },
-      },
-    );
-    if (error || !data) {
-      originalFailed.value = true;
-      return;
-    }
-    // 类型化 parts（与历史端点同一 DTO）；非 tool_result 的部分跳过。
-    const chunks: string[] = [];
-    for (const part of data.parts) {
-      if (part.type !== "tool_result") continue;
-      chunks.push(
-        typeof part.content === "string"
-          ? part.content
-          : JSON.stringify(part.content ?? "", null, 2),
-      );
-    }
-    originalText.value = chunks.join("\n");
-  } catch {
-    // 网络层异常（fetch 拒绝）：与 HTTP 错误同路径，允许重试。
-    originalFailed.value = true;
-  } finally {
-    loadingOriginal.value = false;
-  }
-}
+const followOutput = ref(true);
+const backgroundTaskId = computed(() => getBackgroundTaskId(props.part));
+const { originalText, loadingOriginal, originalFailed, loadOriginal } =
+  useToolOriginal(
+    () => props.part,
+    () => props.conversationId,
+  );
 
 // 图标按工具名映射（unplugin-icons 显式导入，<component :is> 渲染，颜色随外层 currentColor）
 const iconComponent = computed<Component>(() => {
@@ -418,55 +314,9 @@ const iconComponent = computed<Component>(() => {
   }
 });
 
-// 工具显示名（未知工具回退到原始名；生成中 name 为 null 时显示骨架占位）
-const displayName = computed<string | null>(() => {
-  switch (props.part.name) {
-    case "execute_command":
-      return "终端";
-    case "execute_code":
-      return "代码执行";
-    case "read_file":
-      return "读取文件";
-    case "write_file":
-      return "写入文件";
-    case "edit_file":
-      return "编辑";
-    case "list_dir":
-      return "列出目录";
-    case "grep":
-      return "搜索";
-    case "glob":
-      return "匹配文件";
-    default:
-      return props.part.name;
-  }
-});
-
+const displayName = computed(() => toolDisplayName(props.part));
 const titleText = computed(() => props.part.title?.trim() || null);
-
-interface NestedCall {
-  id: string;
-  name: string;
-  title: string;
-  status: string;
-  error?: string | null;
-  error_code?: string | null;
-  duration_ms?: number | null;
-}
-const nestedCalls = computed<NestedCall[]>(() => {
-  const calls = props.part.details?.calls;
-  if (props.part.name !== "execute_code" || !Array.isArray(calls)) return [];
-  return calls.filter(
-    (row): row is NestedCall =>
-      row &&
-      typeof row === "object" &&
-      typeof row.id === "string" &&
-      typeof row.name === "string" &&
-      typeof row.title === "string" &&
-      typeof row.status === "string",
-  );
-});
-
+const nestedCalls = computed(() => nestedToolCalls(props.part));
 const errorTone = computed(
   () => props.part.status === "done" && props.part.isError,
 );
@@ -484,15 +334,6 @@ const frameClass = computed(() => {
   return `rounded-[10px] border bg-panel ${border}`;
 });
 
-// --- details 徽标 -----------------------------------------------------------
-
-type ChipTone = "success" | "danger" | "warning" | "neutral";
-interface Chip {
-  key: string;
-  label: string;
-  tone: ChipTone;
-}
-
 const toneClass: Record<ChipTone, string> = {
   success: "bg-success-7 text-success-10",
   danger: "bg-danger-7 text-danger-10",
@@ -500,226 +341,16 @@ const toneClass: Record<ChipTone, string> = {
   neutral: "bg-neutral-2 text-dim",
 };
 
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.floor(ms / 60000)}m ${Math.floor((ms % 60000) / 1000)}s`;
-}
-
-const chips = computed<Chip[]>(() => {
-  const d = props.part.details;
-  if (!d || props.part.status !== "done") return [];
-  const num = (key: string): number | null =>
-    typeof d[key] === "number" ? (d[key] as number) : null;
-  const flag = (key: string) => d[key] === true;
-
-  const result: Chip[] = [];
-
-  const shown = num("shown_lines");
-  const total = num("total_lines");
-  if (shown !== null && total !== null) {
-    result.push({
-      key: "lines",
-      label: `${shown}/${total} 行`,
-      tone: "neutral",
-    });
-  }
-  const matched = num("matched");
-  if (matched !== null) {
-    result.push({
-      key: "matched",
-      label: `${matched} 个匹配`,
-      tone: "neutral",
-    });
-  }
-  const found = num("found");
-  if (found !== null) {
-    result.push({ key: "found", label: `${found} 个结果`, tone: "neutral" });
-  }
-  const bytes = num("bytes");
-  if (bytes !== null) {
-    result.push({ key: "bytes", label: formatBytes(bytes), tone: "neutral" });
-  }
-  const replacements = num("replacements");
-  if (replacements !== null) {
-    result.push({
-      key: "replacements",
-      label: `${replacements} 处替换`,
-      tone: "neutral",
-    });
-  }
-
-  const exitCode = num("exit_code");
-  if (exitCode !== null) {
-    result.push({
-      key: "exit",
-      label: `exit ${exitCode}`,
-      tone: exitCode === 0 ? "success" : "danger",
-    });
-  }
-  if (flag("timed_out")) {
-    result.push({ key: "timed_out", label: "超时", tone: "warning" });
-  }
-  if (flag("created")) {
-    result.push({ key: "created", label: "新建文件", tone: "success" });
-  }
-  const wallTime = num("wall_time_ms");
-  if (wallTime !== null) {
-    result.push({
-      key: "wall",
-      label: formatDuration(wallTime),
-      tone: "neutral",
-    });
-  }
-  if (flag("truncated")) {
-    const original = num("original_bytes");
-    result.push({
-      key: "truncated",
-      label:
-        original !== null ? `已截断 · 原始 ${formatBytes(original)}` : "已截断",
-      tone: "warning",
-    });
-  }
-  return result;
-});
-
+const chips = computed(() => toolResultChips(props.part));
 const isTruncated = computed(() => props.part.details?.truncated === true);
-
-// --- 参数展示 ---------------------------------------------------------------
-
-const prettyArguments = computed(() => {
-  const raw = props.part.arguments;
-  if (!raw) return "";
-  try {
-    return JSON.stringify(JSON.parse(raw), null, 2);
-  } catch {
-    return raw;
-  }
-});
-
-const parsedArgs = computed<Record<string, unknown> | null>(() => {
-  const raw = props.part.arguments;
-  if (!raw) return null;
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (
-      parsed === null ||
-      typeof parsed !== "object" ||
-      Array.isArray(parsed)
-    ) {
-      return null;
-    }
-    return parsed as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-});
-
-function argStr(key: string): string | null {
-  const value = parsedArgs.value?.[key];
-  return typeof value === "string" ? value : null;
-}
-
-function argNum(key: string): number | null {
-  const value = parsedArgs.value?.[key];
-  return typeof value === "number" ? value : null;
-}
-
-// 文件路径类工具：标题拆成 文件名（强调）+ 目录（弱化）
-const filePathInfo = computed<{
-  name: string;
-  dir: string | null;
-  full: string;
-} | null>(() => {
-  let path: string | null = null;
-  switch (props.part.name) {
-    case "edit_file":
-      path = argStr("file_path");
-      break;
-    case "write_file":
-    case "read_file":
-    case "list_dir":
-      path = argStr("path");
-      break;
-    case "glob":
-      path = argStr("pattern");
-      break;
-    default:
-      return null;
-  }
-  path ??= titleText.value;
-  if (!path) return null;
-  const cut = path.lastIndexOf("/");
-  return cut < 0
-    ? { name: path, dir: null, full: path }
-    : { name: path.slice(cut + 1), dir: path.slice(0, cut + 1), full: path };
-});
-
-// --- 编辑/写入：Changes 面板风格的 diff --------------------------------------
-
-// edit_file / write_file 展开后的 diff 行（路径已由标题展示，不再重复）
-const fileEdit = computed<{ lines: DiffRow[] } | null>(() => {
-  if (props.part.status === "generating") return null;
-  const name = props.part.name;
-  if (name !== "edit_file" && name !== "write_file") return null;
-  if (!parsedArgs.value) return null;
-  const linesOf = (key: string): string[] | null => {
-    const value = parsedArgs.value?.[key];
-    return typeof value === "string" ? splitLines(value) : null;
-  };
-  if (name === "write_file") {
-    const newLines = linesOf("content");
-    if (newLines === null) return null;
-    return { lines: buildDiffRows([], newLines) };
-  }
-  const oldLines = linesOf("old_string");
-  const newLines = linesOf("new_string");
-  if (oldLines === null || newLines === null) return null;
-  return { lines: buildDiffRows(oldLines, newLines) };
-});
-
-// 编辑/写入头部的增删行数统计
-const diffStat = computed<{ added: number; removed: number } | null>(() => {
-  if (props.part.status === "generating") return null;
-  const name = props.part.name;
-  if (name === "write_file") {
-    const content = argStr("content");
-    if (content === null) return null;
-    return { added: splitLines(content).length, removed: 0 };
-  }
-  if (name !== "edit_file") return null;
-  const oldText = argStr("old_string");
-  const newText = argStr("new_string");
-  if (oldText === null || newText === null) return null;
-  return {
-    added: splitLines(newText).length,
-    removed: splitLines(oldText).length,
-  };
-});
-
-// 终端卡片：命令与 stdout/stderr 合并渲染成 shell 样式
-const terminal = computed<{ command: string; cwd: string | null } | null>(
-  () => {
-    if (props.part.name !== "execute_command") return null;
-    const command = argStr("command");
-    if (command === null) return null;
-    return { command, cwd: argStr("working_dir") };
-  },
+const parsedArgs = computed(() => parseToolArguments(props.part));
+const filePathInfo = computed(() => toolFilePath(props.part, parsedArgs.value));
+const fileEdit = computed(() => toolFileEdit(props.part, parsedArgs.value));
+const diffStat = computed(() => toolDiffStat(props.part, parsedArgs.value));
+const terminal = computed(() => toolCommand(props.part, parsedArgs.value));
+const argBlocks = computed(() =>
+  toolArgumentBlocks(props.part, parsedArgs.value),
 );
-
-// 按工具把参数渲染成更易读的自然形式（路径、说明），
-// 未识别的工具或字段缺失时回退为完整 JSON。
-type ArgBlockKind = "code" | "note";
-interface ArgBlock {
-  kind: ArgBlockKind;
-  text: string;
-}
 
 const blockTone: Record<Exclude<ArgBlockKind, "note">, string> = {
   code: "bg-surface text-neutral-10",
@@ -729,113 +360,4 @@ function blockClassOf(kind: ArgBlockKind): string {
   if (kind === "note") return "";
   return `${blockTone[kind]} px-2.5`;
 }
-
-// 提示符里的 cwd 过长时只留尾部一段，完整路径由 hover（title）展示
-const CWD_TAIL_CHARS = 28;
-
-function shortCwd(cwd: string): string {
-  return cwd.length > CWD_TAIL_CHARS ? `…${cwd.slice(-CWD_TAIL_CHARS)}` : cwd;
-}
-
-const argBlocks = computed<ArgBlock[]>(() => {
-  const args = parsedArgs.value;
-  if (!args) {
-    // 半截/异常参数原样展示
-    const raw = props.part.arguments;
-    return raw ? [{ kind: "code", text: raw }] : [];
-  }
-
-  const blocks: ArgBlock[] = [];
-  const notes: string[] = [];
-
-  switch (props.part.name) {
-    case "execute_code": {
-      const code = argStr("code");
-      if (code !== null) blocks.push({ kind: "code", text: code });
-      break;
-    }
-    case "read_file": {
-      const path = argStr("path");
-      if (path === null) break;
-      blocks.push({ kind: "code", text: path });
-      const start = argNum("start_line");
-      const end = argNum("end_line");
-      if (start !== null && end !== null) notes.push(`第 ${start} - ${end} 行`);
-      else if (start !== null) notes.push(`自第 ${start} 行起`);
-      else if (end !== null) notes.push(`至第 ${end} 行`);
-      break;
-    }
-    case "list_dir": {
-      blocks.push({ kind: "code", text: argStr("path") ?? "." });
-      const depth = argNum("depth");
-      if (depth !== null) notes.push(`递归深度 ${depth}`);
-      break;
-    }
-    case "grep": {
-      const pattern = argStr("pattern");
-      if (pattern === null) break;
-      blocks.push({ kind: "code", text: `/${pattern}/` });
-      const path = argStr("path");
-      if (path) notes.push(`范围 ${path}`);
-      const glob = argStr("glob");
-      if (glob) notes.push(`仅 ${glob}`);
-      if (args.case_insensitive === true) notes.push("忽略大小写");
-      const mode = argStr("output_mode");
-      if (mode === "files_with_matches") notes.push("仅列出文件");
-      else if (mode === "count") notes.push("计数模式");
-      const before = argNum("before_context");
-      const after = argNum("after_context");
-      if (before !== null && after !== null)
-        notes.push(`上下文 -${before} / +${after} 行`);
-      else if (before !== null) notes.push(`前文 ${before} 行`);
-      else if (after !== null) notes.push(`后文 ${after} 行`);
-      break;
-    }
-    case "glob": {
-      const pattern = argStr("pattern");
-      if (pattern === null) break;
-      blocks.push({ kind: "code", text: pattern });
-      const path = argStr("path");
-      if (path) notes.push(`范围 ${path}`);
-      const limit = argNum("limit");
-      if (limit !== null) notes.push(`最多 ${limit} 个`);
-      break;
-    }
-    default:
-      break;
-  }
-
-  if (blocks.length === 0) {
-    return [{ kind: "code", text: prettyArguments.value }];
-  }
-  if (notes.length > 0) {
-    blocks.push({ kind: "note", text: notes.join(" · ") });
-  }
-  return blocks;
-});
-
-// --- 实时输出自动滚动（仅在用户本就位于底部时跟随） ---------------------------
-
-const liveEl = ref<HTMLElement | null>(null);
-const stickToBottom = ref(true);
-
-// 活跃输出总字符数（含被裁掉的头部），作为跟随滚动的触发信号
-const liveSize = computed(() => {
-  let size = props.part.liveOutput.droppedChars;
-  for (const seg of props.part.liveOutput.segments) size += seg.text.length;
-  return size;
-});
-
-function onLiveScroll() {
-  const el = liveEl.value;
-  if (!el) return;
-  stickToBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-}
-
-watch(liveSize, async () => {
-  if (!stickToBottom.value) return;
-  await nextTick();
-  const el = liveEl.value;
-  if (el) el.scrollTop = el.scrollHeight;
-});
 </script>
