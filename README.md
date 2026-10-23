@@ -17,11 +17,11 @@
 
 ## 快速开始
 
-前置：Rust（`rust-toolchain.toml` 钉 1.99.0）、pnpm。
+前置：Rust（`rust-toolchain.toml` 钉 1.99.0）、Node.js 与 pnpm（用 vp 管理环境，pnpm 版本见根 `package.json`）。
 
 ```bash
 # 后端（serve，默认 3000 端口）
-cargo run -p oct-agent
+cargo run -p oct-agent -- serve
 
 # 首次可从 models.dev 拉取 provider/model 目录
 cargo run -p oct-agent -- seed
@@ -38,9 +38,11 @@ pnpm --filter frontend dev
 
 ```bash
 pnpm --filter frontend build
-cargo build --release                                  # 不含 code mode worker
+cargo build -p oct-agent --release                     # 不含 code mode worker
 cargo build --workspace --features oct-codemode/runtime --release  # 含代码模式 worker
 ```
+
+CLI 需要显式子命令；例如 `oct-agent serve --port 3001`。`scripts/package-code-mode.sh` 构建并打包 Rust 组件，运行它之前也须先构建前端。
 
 ## 配置
 
@@ -65,12 +67,12 @@ crates/
   oct-llm-provider/   LLM provider 抽象、适配器、wire 日志
   oct-mcp/            MCP 客户端隔离层（rmcp 不出 crate）
   oct-codemode/       代码模式协议与 V8 worker（oct-codemode-worker）
-  oct-agent/          后端服务：API、agent loop、子代理、权限、压缩、恢复
+  oct-agent/          后端：应用用例/装配、执行监督、工具契约、历史/设置策略、API 与 DB
 migrations/           SQLite 迁移（启动自动执行）
 packages/app/         Vue 3 + Vite + UnoCSS 前端
 ```
 
-各 crate 有自己的 `README.md`（用户文档）与 `AGENTS.md`（开发约定与架构深挖）；API 文档在运行中的 `/scalar`，OpenAPI JSON 在 `/api/openapi.json`。
+各 crate 和前端包有自己的 `README.md`（用户文档）与 `AGENTS.md`（开发约定与架构深挖）。后端模块归属见 [oct-agent 模块地图](crates/oct-agent/README.md#模块地图)，前端开发说明见 [packages/app/README.md](packages/app/README.md)。API 文档在运行中的 `/scalar`，OpenAPI JSON 在 `/api/openapi.json`。
 
 ## 测试
 
@@ -80,9 +82,12 @@ CI 铁律：测试绝不调用真实模型——所有 LLM 交互由本地 mock 
 cargo test -p oct-llm-provider          # insta 快照 + wire 格式
 cargo test -p oct-agent                 # API e2e / agent loop / 子代理 / 后台任务 / code mode…
 cargo test -p oct-codemode --features runtime   # worker 运行时（与 workspace 快照测试分开跑）
+cargo build -p oct-codemode --features runtime  # 先构建 helper，再跑下方 agent 集成测试
 SQLX_OFFLINE=true cargo test -p oct-agent --features code-mode-tests --test code_mode
 pnpm --filter frontend test             # vitest 单测
 pnpm --filter frontend test:browser     # 浏览器 e2e 拦截层（首次需 playwright install chromium）
 ```
+
+`code-mode-tests` 不负责构建 helper；测试进程自动发现不到时，设置 `OCT_CODEMODE_WORKER` 为 worker 的绝对路径。
 
 开发约定（命令、构建顺序、测试陷阱、架构细节）见根目录与各包的 `AGENTS.md`。

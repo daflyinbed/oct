@@ -32,4 +32,4 @@ Anthropic 的签名思考块与脱敏块携带本地请求前缀指纹，随消�
 - **wire 格式测试**（`tests/http_wire.rs`）：raw-TCP mock server（`tests/http_mock/`）驱动真实 reqwest + SSE 解码路径，响应体按"恶意"字节边界切块，覆盖 401/429/500 状态映射
 - **wire layer 行为**：`tests/wire_layer_filter.rs` / `tests/wire_toggle.rs`
 
-CI 铁律：测试绝不调用真实模型，API key 经环境变量注入（Anthropic）或显式参数注入（OpenAI）。
+CI 铁律：测试绝不调用真实模型；单测/快照使用离线 fixture，HTTP 测试使用本地 mock 与测试密钥，不需要真实 API key。

@@ -33,6 +33,8 @@
 - `useChat` 的 SSE mock：用 `ReadableStream` 构造 `Response`，可按任意字符串切块模拟网络分片。
 - 发送失败（含 HTTP 错误）不等于消息未提交：按 `client_request_id` 回执对账后才清空 composer 的正文/附件。回执探测仅在确认时替换历史，未确认不得清掉已有快照与 revision；run 装配失败但消息已落库时走 resume，不重发已认领附件。历史草稿恢复按 `draft_attachments` 复制附件，正文不重复内联文件内容；恢复后的服务端缩略图 URL 不走 objectURL revoke。
 
+聊天边界验收以 `useChat` 公开 API 驱动（包含 A→B→A、旧 finally、历史变更收尾迟到、发送回执不确定、审批快照竞态、主/子实例隔离）；`chat/transport.test.ts` 确认异步 run_meta 初始化先于内容消费。`timeline.messages` 只读对外，session 不自行裁剪历史或匹配工具卡；reducer 不导入 Vue/网络/全局 store，submission 不修改 timeline/composer，底层模块不反向导入 useChat。
+
 ## 浏览器 e2e（拦截层）
 
 - `browser-e2e/` + 独立 `vitest.browser.config.ts`：vitest browser mode（Playwright chromium）在真实浏览器里挂载完整 App（复用 `main.ts` 的装配 + vue/unocss/unplugin 插件链），黑盒驱动 UI 全流程。
@@ -45,5 +47,3 @@
 ## Lint
 
 `pnpm -r exec eslint .`（@xwbx/eslint-config flat config，从仓库根跑）。
-
-聊天边界验收以 `useChat` 公开 API 驱动（包含 A→B→A、旧 finally、历史变更收尾迟到、发送回执不确定、审批快照竞态、主/子实例隔离）；`chat/transport.test.ts` 确认异步 run_meta 初始化先于内容消费。`timeline.messages` 只读对外，session 不自行裁剪历史或匹配工具卡；reducer 不导入 Vue/网络/全局 store，submission 不修改 timeline/composer，底层模块不反向导入 useChat。

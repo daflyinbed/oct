@@ -11,13 +11,15 @@ rmcp 的类型**绝不**进入公共 API：签名只说 `anyhow`、`serde_json`�
 - `src/connection.rs` — 启动 MCP server（stdio 拉起子进程，或 Streamable HTTP + 自定义 headers），跑 initialize 握手，然后经 `McpConnection` trait：list/call tools、list/render prompts、list/read resources、`tool_list_changed` 通知
 - `src/naming.rs` — 纯函数：server 侧工具名 ↔ 平面名 `mcp__{server}__{tool}` 的映射（`qualified_tool_name`/`ToolNameMap`）、输入 schema 归一化（`normalize_input_schema`）、`MAX_TOOL_NAME_LEN`
 
+连接函数的 timeout 只覆盖启动与 initialize 握手，后续请求的超时和取消由调用方管理。Linux stdio 子进程的父进程退出信号（PDEATHSIG/SIGTERM）在本 crate 的 `connect_stdio` 中设置。连接对账与 OAuth 由 `crates/oct-agent/src/mcp/` 的宿主组件负责。
+
 ## reqwest 0.13 铁律
 
 Streamable HTTP 传输（feature `transport-streamable-http-client-reqwest`）会拉入 rmcp 的 reqwest 0.13，因此**整个工作区统一钉 reqwest 0.13**——所有 crate 一个版本。改动后用 `cargo tree -d -p reqwest` 验证必须报告无重复。
 
-## Features
+## rmcp 依赖 features
 
-`oct-agent` 侧启用：`client` + `transport-child-process` + `transport-streamable-http-client-reqwest`。
+本 crate 的 `Cargo.toml` 为 rmcp 启用 `client` + `transport-child-process` + `transport-streamable-http-client-reqwest`；`oct-agent` 依赖包装后的 `oct-mcp`。
 
 ## 测试
 

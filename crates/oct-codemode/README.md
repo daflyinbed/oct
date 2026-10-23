@@ -2,11 +2,11 @@
 
 代码模式的协议与运行时 crate。模型在沙箱 TypeScript（deno_core）里组合调用宿主工具：V8 只活在独立的 `oct-codemode-worker` 辅助进程里，宿主（oct-agent）与 worker 通过 stdin/stdout 上的长度前缀 JSON 帧通信。
 
-- `src/protocol.rs` — 帧格式与全部限额常量（协议版本 3）
+- `src/protocol.rs` — 帧格式与载荷/调用配额常量（协议版本 3）
 - `src/client.rs` — 宿主侧：worker 发现/启动、rlimit/PDEATHSIG 设置、`Host` trait（call/emit/image）
 - `src/worker.rs` — `oct-codemode-worker` 二进制（`runtime` feature 才编译）：单 isolate，stdio 由 Rust 持有、不暴露给 V8
 
-工具目录生成、SDK 发布、诊断与崩溃恢复等宿主侧集成在 `crates/oct-agent/src/codemode/`（`catalog`/`diagnostics`/`storage`）与 `crates/oct-agent/src/runtime/code_recovery.rs`。
+工具目录生成、SDK 发布、诊断与保留在 `crates/oct-agent/src/codemode/`（`catalog`/`diagnostics`/`storage`），运行装配与崩溃恢复在 `crates/oct-agent/src/application/assembly/`（含 `code_recovery.rs`）。工具身份、调用方式与 SDK catalog 版本契约在 `crates/oct-agent/src/tool_contract/identity.rs`。
 
 ## 构建与部署
 
@@ -14,9 +14,12 @@
 
 ```bash
 cargo build -p oct-codemode --features runtime    # 构建 oct-codemode-worker（默认不编译）
+pnpm --filter frontend build                     # release/打包前先构建嵌入的界面
 cargo build --workspace --features oct-codemode/runtime --release  # 部署：两组件一起构建
-bash scripts/package-code-mode.sh                 # release 打包（组件 + SHA256 校验）
+bash scripts/package-code-mode.sh                 # 使用已构建的前端打包组件 + SHA256 校验
 ```
+
+打包脚本只构建 Rust 组件，前端构建须先完成。
 
 代码模式可在「设置 → AI → 工具调用方式」选择，全局默认代码模式（显式选「直接调用」或项目覆盖可改回），项目可覆盖或恢复继承。切换在下次运行生效，支持主会话和 Worker 子代理的文件、bash、MCP 工具编排。持久化字段为 `mcp_tool_mode`，兼容现有配置。
 
@@ -73,12 +76,13 @@ Worker 从父级实际工具集按现有 allowlist 选工具，其 SDK 只包含
 
 ```bash
 cargo test -p oct-codemode --features runtime
+cargo build -p oct-codemode --features runtime  # 先构建供下方集成测试启动的 helper
 SQLX_OFFLINE=true cargo test -p oct-agent --features code-mode-tests --test code_mode
 pnpm --filter frontend test
 pnpm --filter frontend test:browser
 ```
 
-运行时测试与常规 workspace 测试分开执行：Deno 的依赖 feature 会启用 `serde_json/preserve_order`，合并运行时 feature 的 workspace 快照比对会出现 JSON 键顺序差异；无需更新原有模型快照。
+agent 的 `code-mode-tests` feature 只启用用例，不构建 helper；测试进程自动发现不到构建产物时，设置 `OCT_CODEMODE_WORKER` 为 helper 的绝对路径。运行时测试与常规 workspace 测试分开执行：Deno 的依赖 feature 会启用 `serde_json/preserve_order`，合并运行时 feature 的 workspace 快照比对会出现 JSON 键顺序差异；无需更新原有模型快照。
 
 ## 手动 probe
 
