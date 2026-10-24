@@ -36,15 +36,6 @@ pub struct ChildRun {
     pub epoch: i64,
 }
 
-/// A launched child run, handed back to whoever waits on it.
-pub struct ChildHandle {
-    pub run_id: String,
-    pub agent_id: String,
-    pub done: watch::Receiver<bool>,
-    pub cancel: CancellationToken,
-    pub hub: Arc<EventHub>,
-}
-
 /// Whether a persisted run status is terminal (`lost` is NOT terminal — it
 /// is recoverable).
 pub(crate) fn is_terminal_status(status: &str) -> bool {

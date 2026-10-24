@@ -151,4 +151,12 @@ impl ApplicationServices {
             self.subagents.clone(),
         )
     }
+
+    pub(crate) fn child_startup(&self) -> crate::application::child_startup::ChildStartup {
+        crate::application::child_startup::ChildStartup::new(
+            self.assembly_services(),
+            self.occupancy(),
+            self.subagents.clone(),
+        )
+    }
 }

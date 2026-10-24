@@ -362,3 +362,167 @@ async fn dropped_waiter_and_duplicate_delegation_share_one_execution() {
         "reattachment cannot restart a child"
     );
 }
+
+#[tokio::test]
+async fn cancelling_registered_startup_returns_its_durable_cancelled_result() {
+    let app = support::TestApp::new().await;
+    let llm = spawn_llm_mock(vec![]).await;
+    app.register_llm_provider(&llm).await;
+    let (spawn, _tools) = spawn_config(&app).await;
+    let _parent_guard = app
+        .services
+        .occupancy()
+        .occupy_with(&spawn.parent_conversation_id, spawn.parent_cancel.clone())
+        .unwrap();
+    let (held, inserted, release) = registration_gate(&app).await;
+    let task = start_task(&app, &spawn);
+    tokio::time::timeout(Duration::from_secs(10), inserted)
+        .await
+        .unwrap()
+        .unwrap();
+    // Cancellation wins before model preparation, while COMMIT still has an
+    // independent owner. The waiting task must receive the settled result.
+    spawn.parent_cancel.cancel();
+    release.send(()).unwrap();
+    drop(held);
+    let run = tokio::time::timeout(Duration::from_secs(10), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_or_else(|error| panic!("cancelled startup lost its result: {error}"));
+    assert_eq!(run.status, "cancelled");
+    assert_eq!(run.execution_epoch, 1);
+    assert!(run.finished_at.is_some());
+    let envelope = oct_agent::subagent::build_task_envelope(&app.pool, &run)
+        .await
+        .unwrap();
+    let content: serde_json::Value = serde_json::from_str(&envelope.content).unwrap();
+    assert_eq!(content["status"], "cancelled");
+    assert!(envelope.is_error);
+    assert!(!app.state.sessions.contains_key(&run.conversation_id));
+    assert!(!app.state.subagents.is_active(&run.conversation_id));
+    assert!(llm.requests().is_empty());
+}
+
+async fn unowned_child(
+    app: &support::TestApp,
+    spawn: &TaskSpawnConfig,
+    final_answer: bool,
+) -> runs::AgentRun {
+    let mut tx = app.pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+    let child = oct_agent::db::conversations::create_subagent_conversation_in_tx(
+        &mut tx,
+        oct_agent::db::conversations::NewSubagentConversation {
+            project_id: &spawn.project.id,
+            parent_conversation_id: &spawn.parent_conversation_id,
+            root_conversation_id: &spawn.root_conversation_id,
+            agent_type: "worker",
+            title: "unowned child",
+        },
+    )
+    .await
+    .unwrap();
+    messages::insert_message_in_tx(
+        &mut tx,
+        &child.id,
+        &Message::text(Role::User, "original delegation"),
+        Some("removed-provider"),
+        Some("test-model"),
+        None,
+    )
+    .await
+    .unwrap();
+    if final_answer {
+        messages::insert_message_in_tx(
+            &mut tx,
+            &child.id,
+            &Message::text(Role::Assistant, "already persisted answer"),
+            Some("removed-provider"),
+            Some("test-model"),
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    let run = runs::create_run_in_tx(
+        &mut tx,
+        runs::NewRun {
+            conversation_id: child.id,
+            kind: "subagent",
+            parent_run_id: Some(spawn.parent_run_id.clone()),
+            root_run_id: Some(spawn.root_run_id.clone()),
+            parent_tool_call_id: Some("startup-task".into()),
+            provider_id: Some("removed-provider".into()),
+            model_id: Some("test-model".into()),
+            context_window: None,
+            description: Some("unowned child".into()),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    runs::mark_stale_runs_lost(&app.pool).await.unwrap();
+    runs::get_run(&app.pool, &run.id).await.unwrap().unwrap()
+}
+
+#[tokio::test]
+async fn duplicate_delegation_prepares_before_claiming_a_lost_child() {
+    let app = support::TestApp::new().await;
+    let llm = spawn_llm_mock(vec![]).await;
+    app.register_llm_provider(&llm).await;
+    let (spawn, _tools) = spawn_config(&app).await;
+    let child = unowned_child(&app, &spawn, false).await;
+
+    let error = app
+        .state
+        .delegation
+        .run_task(&spawn, "startup-task", "startup", "delegation")
+        .await
+        .unwrap_err();
+    assert_eq!(error.run_id.as_deref(), Some(child.id.as_str()));
+    assert!(error.message.contains("removed-provider"));
+    let after = runs::get_run(&app.pool, &child.id).await.unwrap().unwrap();
+    assert_eq!(after.status, "lost");
+    assert_eq!(after.execution_epoch, child.execution_epoch);
+    assert!(!app.state.sessions.contains_key(&child.conversation_id));
+    assert!(!app.state.subagents.is_active(&child.conversation_id));
+    assert!(
+        app.state
+            .delegation
+            .cancel_run(&child.conversation_id)
+            .await
+            .unwrap()
+    );
+    let cancelled = runs::get_run(&app.pool, &child.id).await.unwrap().unwrap();
+    assert_eq!(cancelled.status, "cancelled");
+    assert_eq!(cancelled.execution_epoch, child.execution_epoch);
+    assert!(llm.requests().is_empty());
+}
+
+#[tokio::test]
+async fn duplicate_delegation_reuses_a_persisted_answer_without_its_provider() {
+    let app = support::TestApp::new().await;
+    let llm = spawn_llm_mock(vec![]).await;
+    app.register_llm_provider(&llm).await;
+    let (spawn, _tools) = spawn_config(&app).await;
+    let child = unowned_child(&app, &spawn, true).await;
+
+    let settled = app
+        .state
+        .delegation
+        .run_task(&spawn, "startup-task", "startup", "delegation")
+        .await
+        .unwrap_or_else(|error| panic!("persisted answer must remain usable: {error}"));
+    assert_eq!(settled.id, child.id);
+    assert_eq!(settled.status, "completed");
+    assert_eq!(settled.execution_epoch, child.execution_epoch + 1);
+    let envelope = oct_agent::subagent::build_task_envelope(&app.pool, &settled)
+        .await
+        .unwrap();
+    let content: serde_json::Value = serde_json::from_str(&envelope.content).unwrap();
+    assert_eq!(content["output"], "already persisted answer");
+    assert!(!envelope.is_error);
+    assert!(!app.state.sessions.contains_key(&child.conversation_id));
+    assert!(!app.state.subagents.is_active(&child.conversation_id));
+    assert!(llm.requests().is_empty());
+}

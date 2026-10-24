@@ -4,6 +4,7 @@
 pub mod conversation;
 
 pub(crate) mod assembly;
+pub(crate) mod child_startup;
 pub mod execution;
 pub(crate) mod title;
 

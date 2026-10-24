@@ -30,7 +30,8 @@ oct 的后端服务 crate：Axum REST/SSE API + agent loop 运行时。既是 li
 - `application/services.rs` — 共享资源装配；HTTP state 持会话/历史/删除/权限应用命令和查询组件，运行材料只在应用层流转
 - `application/lifecycle.rs` + `permissions.rs` — 会话/项目删除的执行 drain 与资源回收、活动权限门操作
 - `runtime/` — 会话占用和 admission/tombstone；`execution.rs` 统一监督根/子 loop、终态持久化和收尾；`ModelResolver` 独立解析模型；另有后台进程管理（`background.rs`）与 worker 快照选择/恢复（`worker_config.rs`）
-- `application/delegation.rs` + `inheritance.rs` — 委派注册、幂等、取消与 worker 启动；父工具继承只保留冻结描述及 MCP 实例
+- `application/delegation.rs` + `inheritance.rs` — 原子委派注册、幂等与取消；父工具继承只保留冻结描述及 MCP 实例
+- `application/child_startup.rs` — 子代理启动与恢复：只读准备、执行认领、装配、监督交接和失败结算共用一个 module；调用方取已结算结果，不持执行 future
 - `application/notifications.rs` + `tool_ports.rs` — 通知聚合/wake 重试与按 run 绑定的后台能力；启动入口持有并关闭 drainer
 - `subagent/` — 活动子代理索引、完成观察与持久结果信封；不回调应用服务
 - `permissions/` — 权限规则求值（rules/evaluator/descriptor/gate/registry）
@@ -47,7 +48,7 @@ oct 的后端服务 crate：Axum REST/SSE API + agent loop 运行时。既是 li
 - `attachment_types.rs` — 中性正文/附件/固定文本快照契约与旧格式兼容读取
 - `attachments/` — AttachmentService 生命周期、纯文件 AssetStore、共享 MediaNormalizer、请求物化 RequestAssembler；`context/projection.rs` 负责无 IO 的媒体选择与 usage 快照
 
-发送准备和根/子运行启动由独立任务负责；断开请求或丢弃等待 future 不会中止已经提交的准备工作。子代理从注册到监督接管同样持续拥有执行者。取消父回合会通知启动中的子代理，子代理落到终态后释放会话占用；单独取消子代理也覆盖启动装配阶段。数据库中没有执行所有者的 `running` 子任务可直接取消，或在父委派仍未结算时恢复，无需重启服务。
+发送准备和根/子运行启动由独立任务负责；断开请求或丢弃等待 future 不会中止已经提交的准备工作。子代理由统一启动 module 从注册/恢复到监督接管持续拥有执行者；重复委派与会话恢复复用同一份预检和结算规则。取消父回合会通知启动中的子代理，子代理落到终态后释放会话占用；单独取消子代理也覆盖启动装配阶段。数据库中没有执行所有者的 `running` 子任务可直接取消，或在父委派仍未结算时恢复，无需重启服务。
 
 ## 数据库
 
